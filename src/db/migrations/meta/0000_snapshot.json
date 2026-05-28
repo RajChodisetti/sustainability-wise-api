@@ -1,0 +1,2359 @@
+{
+  "id": "568a57a4-6653-48ff-87d5-ff14d379cc80",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.ea_additional_switchboards": {
+      "name": "ea_additional_switchboards",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "map_locator": {
+          "name": "map_locator",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo": {
+          "name": "photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sub_circuits_description": {
+          "name": "sub_circuits_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "comments": {
+          "name": "comments",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_audits": {
+      "name": "ea_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "site_name": {
+          "name": "site_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "site_address": {
+          "name": "site_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "inspector_name": {
+          "name": "inspector_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_date": {
+          "name": "audit_date",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Draft'"
+        },
+        "report_pdf_local_path": {
+          "name": "report_pdf_local_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "report_pdf_remote_url": {
+          "name": "report_pdf_remote_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "assigned_inspector_user_id": {
+          "name": "assigned_inspector_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_forklift_chargers": {
+      "name": "ea_forklift_chargers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "charger_type": {
+          "name": "charger_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "charger_photo": {
+          "name": "charger_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "brand_model": {
+          "name": "brand_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rating": {
+          "name": "rating",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "charger_label_photo": {
+          "name": "charger_label_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "power_supply": {
+          "name": "power_supply",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "electric_connection_photo": {
+          "name": "electric_connection_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "charger_space_photo": {
+          "name": "charger_space_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connection_description": {
+          "name": "connection_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "socket_connection_photo": {
+          "name": "socket_connection_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_isolator": {
+          "name": "local_isolator",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "circuit_identifiable": {
+          "name": "circuit_identifiable",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "distance_to_switchboard": {
+          "name": "distance_to_switchboard",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "space_for_additional": {
+          "name": "space_for_additional",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "hardwired_socket": {
+          "name": "hardwired_socket",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scheduling_opportunity": {
+          "name": "scheduling_opportunity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "energy_improvement_observations": {
+          "name": "energy_improvement_observations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_general_electricity": {
+      "name": "ea_general_electricity",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question": {
+          "name": "question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "answer": {
+          "name": "answer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photos": {
+          "name": "photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_general_water": {
+      "name": "ea_general_water",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "question": {
+          "name": "question",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "answer": {
+          "name": "answer",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photos": {
+          "name": "photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_hot_water_systems": {
+      "name": "ea_hot_water_systems",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dhw_details_type": {
+          "name": "dhw_details_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "photo": {
+          "name": "photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "serial_number": {
+          "name": "serial_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "size_liters": {
+          "name": "size_liters",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fuel_type": {
+          "name": "fuel_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pipe_insulation": {
+          "name": "pipe_insulation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pipe_insulation_thickness": {
+          "name": "pipe_insulation_thickness",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tempering_valve": {
+          "name": "tempering_valve",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additional_photo": {
+          "name": "additional_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "more_dhw_systems": {
+          "name": "more_dhw_systems",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additional_comments": {
+          "name": "additional_comments",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "energy_improvement_observations": {
+          "name": "energy_improvement_observations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_hvac_units": {
+      "name": "ea_hvac_units",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_name": {
+          "name": "unit_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "make": {
+          "name": "make",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo": {
+          "name": "photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "serial_number": {
+          "name": "serial_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "heating_capacity_kw": {
+          "name": "heating_capacity_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cooling_capacity_kw": {
+          "name": "cooling_capacity_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "power_supply_phase": {
+          "name": "power_supply_phase",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "nameplate_photos": {
+          "name": "nameplate_photos",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "indoor_unit_model": {
+          "name": "indoor_unit_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "indoor_unit_serial": {
+          "name": "indoor_unit_serial",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "indoor_unit_nameplate_photo": {
+          "name": "indoor_unit_nameplate_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_type": {
+          "name": "controller_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_model": {
+          "name": "controller_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_photo": {
+          "name": "controller_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "temperature_sensor_type": {
+          "name": "temperature_sensor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "system_coverage": {
+          "name": "system_coverage",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "energy_improvement_observations": {
+          "name": "energy_improvement_observations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_lighting_systems": {
+      "name": "ea_lighting_systems",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "light_type": {
+          "name": "light_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "brand_model": {
+          "name": "brand_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo": {
+          "name": "photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rated_wattage": {
+          "name": "rated_wattage",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fixtures_installed": {
+          "name": "fixtures_installed",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fixtures_photo": {
+          "name": "fixtures_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "area_location": {
+          "name": "area_location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controls_type": {
+          "name": "controls_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "operating_hours": {
+          "name": "operating_hours",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mounting_height": {
+          "name": "mounting_height",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mounting_constraints_photo": {
+          "name": "mounting_constraints_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "circuit_grouping": {
+          "name": "circuit_grouping",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sensors_photo": {
+          "name": "sensors_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "access_limitations": {
+          "name": "access_limitations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "switchboard_photo_notes": {
+          "name": "switchboard_photo_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "energy_improvement_observations": {
+          "name": "energy_improvement_observations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_main_switchboards": {
+      "name": "ea_main_switchboards",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "map_locator": {
+          "name": "map_locator",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "site_nmi": {
+          "name": "site_nmi",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photo": {
+          "name": "photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sub_circuits_description": {
+          "name": "sub_circuits_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "comments": {
+          "name": "comments",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_solar_pv": {
+      "name": "ea_solar_pv",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "system_size_kw": {
+          "name": "system_size_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_photo": {
+          "name": "roof_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inverter_brand_model": {
+          "name": "inverter_brand_model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inverter_location": {
+          "name": "inverter_location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inverter_label_photo": {
+          "name": "inverter_label_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "power_supply_to_pv": {
+          "name": "power_supply_to_pv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "electricity_meter_photo": {
+          "name": "electricity_meter_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "available_roof_space": {
+          "name": "available_roof_space",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_space_amount": {
+          "name": "roof_space_amount",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additional_solar_space_photo": {
+          "name": "additional_solar_space_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "suitable_switchboard": {
+          "name": "suitable_switchboard",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "switchboard_photo": {
+          "name": "switchboard_photo",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "switchboard_location": {
+          "name": "switchboard_location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cable_distance": {
+          "name": "cable_distance",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cable_route_description": {
+          "name": "cable_route_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "energy_improvement_observations": {
+          "name": "energy_improvement_observations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_notes": {
+          "name": "extra_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "extra_photos": {
+          "name": "extra_photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_users": {
+      "name": "ea_users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "full_name": {
+          "name": "full_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'inspector'"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "ea_users_email_unique": {
+          "name": "ea_users_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ea_zones": {
+      "name": "ea_zones",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_id": {
+          "name": "audit_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "zone_name": {
+          "name": "zone_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "zone_description": {
+          "name": "zone_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "photos": {
+          "name": "photos",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.api_keys": {
+      "name": "api_keys",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "hashed_key": {
+          "name": "hashed_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "app": {
+          "name": "app",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_used_at": {
+          "name": "last_used_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.photo_registry": {
+      "name": "photo_registry",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "checksum": {
+          "name": "checksum",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "remote_url": {
+          "name": "remote_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "onedrive_item_id": {
+          "name": "onedrive_item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "app": {
+          "name": "app",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_id": {
+          "name": "parent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_type": {
+          "name": "entity_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "field_name": {
+          "name": "field_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "file_size_bytes": {
+          "name": "file_size_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.refresh_tokens": {
+      "name": "refresh_tokens",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "app": {
+          "name": "app",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ss_rooftop_assessments": {
+      "name": "ss_rooftop_assessments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "site_id": {
+          "name": "site_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "site_name": {
+          "name": "site_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "building_id_name": {
+          "name": "building_id_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "heritage_status": {
+          "name": "heritage_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "heritage_deal_breaker": {
+          "name": "heritage_deal_breaker",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "aerial_photo_uri": {
+          "name": "aerial_photo_uri",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_area_total_m2": {
+          "name": "roof_area_total_m2",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_material": {
+          "name": "roof_material",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_framing_type": {
+          "name": "roof_framing_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_pitch_angle": {
+          "name": "roof_pitch_angle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_construction_material": {
+          "name": "roof_construction_material",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "asbestos_flag": {
+          "name": "asbestos_flag",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "roof_condition": {
+          "name": "roof_condition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_estimated_age": {
+          "name": "roof_estimated_age",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_orientation_primary": {
+          "name": "roof_orientation_primary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_shading_sources": {
+          "name": "roof_shading_sources",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_shading_usable_pct": {
+          "name": "roof_shading_usable_pct",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "roof_orientation_shading": {
+          "name": "roof_orientation_shading",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "structural_feasibility": {
+          "name": "structural_feasibility",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "structural_risk_flag": {
+          "name": "structural_risk_flag",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "roof_area_usable_m2": {
+          "name": "roof_area_usable_m2",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pv_size_kw_dc": {
+          "name": "pv_size_kw_dc",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ac_export_kw": {
+          "name": "ac_export_kw",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "access_safety_constraints": {
+          "name": "access_safety_constraints",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "switchboards": {
+          "name": "switchboards",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "msb_details": {
+          "name": "msb_details",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "msb_photo_uri": {
+          "name": "msb_photo_uri",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "existing_generation": {
+          "name": "existing_generation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "distance_to_connection_m": {
+          "name": "distance_to_connection_m",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "electrical_pits_entry": {
+          "name": "electrical_pits_entry",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "inverter_siting": {
+          "name": "inverter_siting",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "transformer_supply_capacity": {
+          "name": "transformer_supply_capacity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dnsp_constraints": {
+          "name": "dnsp_constraints",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "load_profile_metering": {
+          "name": "load_profile_metering",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "other_considerations": {
+          "name": "other_considerations",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "site_rep_feedback": {
+          "name": "site_rep_feedback",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "viability_status": {
+          "name": "viability_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deal_breaker_reason": {
+          "name": "deal_breaker_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rag_priority": {
+          "name": "rag_priority",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "key_assumptions_gaps": {
+          "name": "key_assumptions_gaps",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additional_photos": {
+          "name": "additional_photos",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "photo_metadata": {
+          "name": "photo_metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Draft'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ss_sites": {
+      "name": "ss_sites",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_status": {
+          "name": "sync_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'local'"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deleted_at": {
+          "name": "deleted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "site_name": {
+          "name": "site_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "location": {
+          "name": "location",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "date_of_assessment": {
+          "name": "date_of_assessment",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document_classification": {
+          "name": "document_classification",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "electrical_infrastructure_summary": {
+          "name": "electrical_infrastructure_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "known_constraints": {
+          "name": "known_constraints",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "load_profile_metering_summary": {
+          "name": "load_profile_metering_summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ppa_asset_demarcation": {
+          "name": "ppa_asset_demarcation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "appendix_notes": {
+          "name": "appendix_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "appendix_items": {
+          "name": "appendix_items",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "report_pdf_local_path": {
+          "name": "report_pdf_local_path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "report_pdf_remote_url": {
+          "name": "report_pdf_remote_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'Draft'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.ss_users": {
+      "name": "ss_users",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "full_name": {
+          "name": "full_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'inspector'"
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "ss_users_email_unique": {
+          "name": "ss_users_email_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "email"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

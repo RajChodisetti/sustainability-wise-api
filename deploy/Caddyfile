@@ -1,0 +1,9 @@
+# Phase 1: HTTP only on IP — swap the :80 block for a domain name
+# when DNS is pointed at 170.64.154.143 and Caddy will auto-issue HTTPS.
+#
+# To enable HTTPS, replace `:80 {` with `api.yourdomain.com.au {`
+# and reload: systemctl reload caddy
+
+:80 {
+    reverse_proxy localhost:3000
+}
