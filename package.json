@@ -1,0 +1,34 @@
+{
+  "name": "sustainability-wise-api",
+  "version": "1.0.0",
+  "description": "Unified API server for EcoAudit Pro and SolarSense",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "node --import tsx/esm src/index.ts",
+    "build": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
+  },
+  "dependencies": {
+    "@fastify/jwt": "^9.0.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^5.0.0",
+    "@microsoft/microsoft-graph-client": "^3.0.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.0.0",
+    "drizzle-orm": "^0.38.0",
+    "fastify": "^5.0.0",
+    "postgres": "^3.4.0",
+    "puppeteer-core": "^23.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.29.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
