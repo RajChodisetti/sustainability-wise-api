@@ -6,7 +6,7 @@ Unified REST API serving both **EcoAudit Pro** and **SolarSense** mobile applica
 |---|---|
 | **Hosting** | DigitalOcean 2 GB Droplet, SYD1 (Sydney) |
 | **Database** | PostgreSQL 16 (self-hosted on droplet) |
-| **Photo storage** | Microsoft OneDrive Business (via Graph API) |
+| **Photo storage** | Phase 2 starts with VM-local storage under `LOCAL_FILE_STORAGE_ROOT`; OneDrive can be added later |
 | **PDF generation** | Puppeteer / headless Chromium |
 | **Framework** | Fastify + TypeScript |
 | **Cost** | ~$15 USD / ~$23 AUD per month |
@@ -25,7 +25,8 @@ Unified REST API serving both **EcoAudit Pro** and **SolarSense** mobile applica
 src/
   auth/           JWT + API key auth
   db/             Drizzle ORM schema + migrations
-  onedrive/       Microsoft Graph API client + upload sessions
+  storage/        VM-local file storage helpers
+  onedrive/       Microsoft Graph API client + upload sessions (deferred)
   pdf/            Puppeteer renderer + HTML templates
   routes/
     auth.ts

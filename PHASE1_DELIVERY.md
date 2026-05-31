@@ -44,9 +44,9 @@ Fill in every value:
 ```
 NODE_ENV=production
 PORT=3000
-DATABASE_URL=postgres://swapi:YOUR_SWAPI_PASSWORD@localhost:5432/sw_production
-JWT_SECRET=<generate: openssl rand -hex 32>
-JWT_REFRESH_SECRET=<generate: openssl rand -hex 32>
+DATABASE_URL=postgres://swapi:passw
+JWT_SECRET=d3f456f33ef2f8bc3ea14a954a85d55ee35f37a79dfbfb4c510024aae6fe5b23
+JWT_REFRESH_SECRET=90d8d89c6df1fdcb63828837a6bab9ac865321d338959e97f31ef3ab931be8e7
 # Azure fields can be left blank for Phase 1 — not used yet
 AZURE_CLIENT_ID=
 AZURE_CLIENT_SECRET=
@@ -116,7 +116,7 @@ Copy the printed hash, then insert the user:
 ```bash
 psql -U swapi -d sw_production -c "
 INSERT INTO ea_users (email, password_hash, full_name, role)
-VALUES ('admin@ecoaudit.com', 'PASTE_HASH_HERE', 'Admin User', 'admin');
+VALUES ('admin@ecoaudit.com', '$2b$10$eBAb9HeVIKn4zPlmzVEv.OjW4qtZRzsamxSBOd1NugKgiVWDZT8eW', 'Admin User', 'admin');
 "
 ```
 
@@ -149,7 +149,7 @@ curl -s -X POST http://170.64.154.143/v1/auth/login \
 
 Save the `accessToken` value for subsequent tests:
 ```bash
-TOKEN="eyJ..."   # paste your access token here
+TOKEN="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiIwMTdjODk0ZS00YWFlLTQ5NjMtOGVkZi0wZjVkZWVjNWMxNTciLCJhcHAiOiJlY29hdWRpdCIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTc4MDAwMzYyNSwiZXhwIjoxNzgwMDA0NTI1fQ.PmirQkKO2QBg4LK2N8nUTZF5ylEuzjd0_fR4Q8QekKA"   # paste your access token here
 ```
 
 ---

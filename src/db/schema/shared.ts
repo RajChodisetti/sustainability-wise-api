@@ -29,6 +29,9 @@ export const photoRegistry = pgTable('photo_registry', {
   checksum: text('checksum').notNull(),
   remoteUrl: text('remote_url'),
   onedriveItemId: text('onedrive_item_id'),
+  storageKey: text('storage_key'),
+  contentType: text('content_type'),
+  originalFilename: text('original_filename'),
   app: text('app').notNull(),
   parentId: text('parent_id').notNull(),
   entityType: text('entity_type').notNull(),
@@ -36,5 +39,6 @@ export const photoRegistry = pgTable('photo_registry', {
   fieldName: text('field_name').notNull(),
   fileSizeBytes: integer('file_size_bytes'),
   status: text('status').notNull().default('pending'),
+  uploadedAt: timestamp('uploaded_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

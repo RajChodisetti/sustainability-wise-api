@@ -10,12 +10,27 @@ function optional(name: string, fallback = ''): string {
   return process.env[name] ?? fallback;
 }
 
+const nodeEnv = optional('NODE_ENV', 'development');
+const port = parseInt(optional('PORT', '3000'), 10);
+const defaultPublicBaseUrl =
+  nodeEnv === 'production' ? 'http://170.64.154.143' : `http://localhost:${port}`;
+
 export const config = {
-  nodeEnv: optional('NODE_ENV', 'development'),
-  port: parseInt(optional('PORT', '3000'), 10),
+  nodeEnv,
+  port,
+  publicBaseUrl: optional('PUBLIC_BASE_URL', defaultPublicBaseUrl).replace(/\/$/, ''),
   databaseUrl: required('DATABASE_URL'),
   jwtSecret: required('JWT_SECRET'),
   jwtRefreshSecret: required('JWT_REFRESH_SECRET'),
+  storage: {
+    localRoot: optional(
+      'LOCAL_FILE_STORAGE_ROOT',
+      nodeEnv === 'production'
+        ? '/var/lib/sustainability-wise-api/uploads'
+        : './uploads',
+    ),
+    maxUploadBytes: parseInt(optional('MAX_UPLOAD_BYTES', String(50 * 1024 * 1024)), 10),
+  },
   azure: {
     clientId: optional('AZURE_CLIENT_ID'),
     clientSecret: optional('AZURE_CLIENT_SECRET'),

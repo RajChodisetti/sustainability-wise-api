@@ -12,7 +12,7 @@ All changes required in `solarsense-mobile/` and `ecoaudit-pro/mobile/` to suppo
 |---|---|
 | `src/api/apiClient.ts` | HTTP client for API server (auth headers, typed responses) |
 | `src/repositories/uploadQueueRepository.ts` | All SQL access for photo_upload_queue |
-| `src/services/syncService.ts` | Core sync algorithm (queue → upload → push → clear) |
+| `src/services/syncService.ts` | Core sync algorithm (push completed records → upload photos → confirm → clear) |
 | `src/services/SyncStatusContext.tsx` | React context exposing sync state to all screens |
 | `src/components/SyncStatusBanner.tsx` | Header banner showing upload progress / errors |
 | `src/screens/SyncSetupScreen.tsx` | First-run screen to enter API URL and key |
@@ -71,7 +71,7 @@ ALTER TABLE sites ADD COLUMN status TEXT NOT NULL DEFAULT 'Draft';
 ALTER TABLE rooftop_assessments ADD COLUMN status TEXT NOT NULL DEFAULT 'Draft';
 ALTER TABLE photo_upload_queue ADD COLUMN checksum TEXT;
 ALTER TABLE photo_upload_queue ADD COLUMN session_id TEXT;
-ALTER TABLE photo_upload_queue ADD COLUMN onedrive_item_id TEXT;
+ALTER TABLE photo_upload_queue ADD COLUMN storage_provider TEXT DEFAULT 'local_vm';
 ALTER TABLE photo_upload_queue ADD COLUMN cleared_at TEXT;
 ```
 
@@ -81,13 +81,17 @@ ALTER TABLE photo_upload_queue ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE photo_upload_queue ADD COLUMN last_error TEXT;
 ALTER TABLE photo_upload_queue ADD COLUMN checksum TEXT;
 ALTER TABLE photo_upload_queue ADD COLUMN session_id TEXT;
-ALTER TABLE photo_upload_queue ADD COLUMN onedrive_item_id TEXT;
+ALTER TABLE photo_upload_queue ADD COLUMN storage_provider TEXT DEFAULT 'local_vm';
 ALTER TABLE photo_upload_queue ADD COLUMN cleared_at TEXT;
 ```
 
 ---
 
 ## Upload Queue Status Lifecycle
+
+The mobile sync service must push completed site/assessment metadata before
+creating photo upload sessions. The API rejects upload sessions when the target
+site or assessment is missing or still `Draft`.
 
 ```
 pending
@@ -97,6 +101,8 @@ pending
   └── create-upload-session
         │
         └── uploading
+              │
+              ├── PUT uploadUrl raw bytes → API stores file on VM
               │
               ├── confirm-upload success → uploaded → cleared
               │

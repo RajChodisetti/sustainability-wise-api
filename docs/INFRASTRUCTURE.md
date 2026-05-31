@@ -5,7 +5,7 @@
 | Component | Provider | Spec | Cost (USD/mo) |
 |---|---|---|---|
 | API Server + PostgreSQL + Puppeteer | DigitalOcean Droplet SYD1 | 2 GB RAM / 1 vCPU / 50 GB SSD | $12.00 |
-| Photo + PDF storage | OneDrive Business (M365, already paid) | 1 TB included | $0 |
+| Photo + PDF storage | Droplet local disk, `LOCAL_FILE_STORAGE_ROOT` | Uses included 50 GB SSD | $0 initially |
 | SSL certificate | Caddy via Let's Encrypt | Automatic | $0 |
 | DNS | DigitalOcean DNS | Free with Droplet | $0 |
 | Database backups | OneDrive (already paid) | Daily pg_dump gzip | $0 |
@@ -15,13 +15,20 @@
 ## Storage Budget
 
 ```
+Current 2 GB / 50 GB droplet practical budget:
+  OS + dependencies + app:  ~8-12 GB
+  PostgreSQL:               ~1-5 GB initially
+  Safe local file budget:   ~25-30 GB
+
 Worst case (10 users × 10 audits × 400 photos × 8 MB average):
   Photos:  320 GB
   PDFs:    ~5 GB
   DB:      ~100 MB
   Total:   ~325 GB
 
-OneDrive 1 TB capacity:  68% headroom remaining
+Conclusion: VM-local storage is acceptable for the beginning, but it is not a
+long-term storage target at the current droplet size. Move to OneDrive/object
+storage before photo volume approaches 25 GB, or attach a larger volume.
 ```
 
 ## Droplet RAM Budget
@@ -75,12 +82,33 @@ Backup files land in `OneDrive:SustainabilityWise/backups/db/` as
 Retention: OneDrive does not auto-delete — prune manually or add a cleanup step.
 Recommended: keep last 30 days.
 
+## Local File Storage
+
+Phase 2 stores uploaded SolarSense photos and generated PDFs on the VM:
+
+```bash
+mkdir -p /var/lib/sustainability-wise-api/uploads
+chown -R swapi:swapi /var/lib/sustainability-wise-api
+```
+
+Set these environment variables:
+
+```bash
+PUBLIC_BASE_URL=https://api.sustainabilitywise.com.au
+LOCAL_FILE_STORAGE_ROOT=/var/lib/sustainability-wise-api/uploads
+MAX_UPLOAD_BYTES=52428800
+```
+
+Add `LOCAL_FILE_STORAGE_ROOT` to backup/snapshot coverage. Database backups alone
+are not enough because `photo_registry` stores file metadata while the actual
+bytes live on disk.
+
 ## Weekly Droplet Snapshots
 
 For full-server disaster recovery:
 - Enable via DigitalOcean control panel: Droplet → Backups → Enable
 - Cost: ~$3/month (20% of droplet price)
-- Restores the entire disk including PostgreSQL data, Node.js app, and config
+- Restores the entire disk including PostgreSQL data, uploaded files, Node.js app, and config
 
 ## Deployment Workflow
 

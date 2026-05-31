@@ -24,6 +24,12 @@ where the token is either a JWT access token or a service account API key.
 | POST | `/v1/api-keys` | admin | Create key — raw value returned once only |
 | DELETE | `/v1/api-keys/:id` | admin | Revoke key |
 
+## Files
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/v1/files/:storageKey` | public URL | Download VM-local file referenced by `remoteUrl` |
+
 ---
 
 ## SolarSense
@@ -62,21 +68,22 @@ where the token is either a JWT access token or a service account API key.
 |---|---|---|---|
 | GET | `/v1/solarsense/sites/:siteId/photos` | inspector/admin | List all photos for site |
 | GET | `/v1/solarsense/sites/:siteId/photos/export` | inspector/admin | Download ZIP of all photos |
-| DELETE | `/v1/solarsense/photos/:photoId` | admin | Delete photo from OneDrive |
+| DELETE | `/v1/solarsense/photos/:photoId` | admin | Delete photo from VM-local storage and registry |
 
 ### Sync
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/solarsense/sync/check-photo` | service/inspector | SHA-256 dedup check |
-| POST | `/v1/solarsense/sync/create-upload-session` | service/inspector | Create OneDrive upload session |
-| POST | `/v1/solarsense/sync/confirm-upload` | service/inspector | Confirm upload complete |
+| POST | `/v1/solarsense/sync/create-upload-session` | service/inspector | Create VM-local upload session |
+| PUT | `/v1/solarsense/sync/upload/:sessionId` | session URL | Upload raw image bytes to VM-local storage |
+| POST | `/v1/solarsense/sync/confirm-upload` | service/inspector | Confirm VM-local upload complete |
 | POST | `/v1/solarsense/sync/push` | service/inspector | Upsert sites + assessments |
 | GET | `/v1/solarsense/sync/pull` | service/inspector | Delta pull since timestamp |
 
 ### PDF
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/solarsense/sites/:siteId/site-pack/pdf` | inspector/admin | Generate site pack PDF (server-side Puppeteer) |
+| POST | `/v1/solarsense/sites/:siteId/site-pack/pdf` | inspector/admin | Generate site pack PDF and store generated PDF on the VM |
 
 ---
 
@@ -167,7 +174,7 @@ Each type has identical CRUD. Replace `{type}` with one of:
 ```json
 {
   "sessionId": "uuid",
-  "uploadUrl": "https://api.onedrive.com/v1.0/drive/items/...",
+  "uploadUrl": "https://api.sustainabilitywise.com.au/v1/solarsense/sync/upload/uuid",
   "alreadyExists": false
 }
 ```
