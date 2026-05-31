@@ -12,6 +12,7 @@ export interface AuthUser {
   app: App;
   role: Role;
   authType: 'jwt' | 'apikey';
+  keyName?: string;
 }
 
 declare module 'fastify' {
@@ -56,6 +57,7 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply): Promi
           app: key.app as App,
           role: key.role as Role,
           authType: 'apikey',
+          keyName: key.name,
         };
         return;
       }

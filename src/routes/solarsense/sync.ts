@@ -303,6 +303,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const written = await writeLocalFile(found.storageKey, body);
     if (written.checksum !== found.checksum) {
       await deleteLocalFile(found.storageKey);
+      await db.update(photoRegistry).set({ status: 'failed' }).where(eq(photoRegistry.id, sessionId));
       throw badRequest('Uploaded checksum does not match session');
     }
 

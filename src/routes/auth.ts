@@ -52,7 +52,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       expiresAt,
     });
 
-    return reply.send({ accessToken, refreshToken, expiresIn: 900 });
+    return reply.send({
+      accessToken,
+      refreshToken,
+      expiresIn: 900,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role: user.role,
+        app,
+      },
+    });
   });
 
   // POST /v1/auth/refresh
@@ -131,7 +142,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       .update(refreshTokens)
       .set({ revokedAt: new Date() })
       .where(eq(refreshTokens.tokenHash, tokenHash));
-    return reply.status(204).send();
+    return reply.status(200).send({ ok: true });
   });
 
   // GET /v1/auth/me
@@ -143,7 +154,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     },
     preHandler: [authenticate],
   }, async (request, reply) => {
-    const { userId, app, role } = request.user;
+    const { userId, app, role, authType, keyName } = request.user;
+    if (authType === 'apikey') {
+      return reply.send({ id: null, email: null, fullName: keyName ?? null, role, app });
+    }
     const userTable = app === 'ecoaudit' ? eaUsers : ssUsers;
     const [user] = await db.select().from(userTable).where(eq(userTable.id, userId));
     if (!user) throw notFound('User');

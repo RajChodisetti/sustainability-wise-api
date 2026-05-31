@@ -107,7 +107,7 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
-    const body = request.body as { assessmentIds?: string[] };
+    const body = (request.body as { assessmentIds?: string[] }) ?? {};
 
     const [site] = await db
       .select()

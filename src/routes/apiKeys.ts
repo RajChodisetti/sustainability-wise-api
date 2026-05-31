@@ -43,16 +43,16 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
-        required: ['name', 'role'],
+        required: ['name'],
         properties: {
           name: { type: 'string', minLength: 1 },
-          role: { type: 'string', enum: ['inspector', 'service_account', 'admin'] },
+          role: { type: 'string', enum: ['inspector', 'service_account', 'admin'], default: 'service_account' },
         },
       },
     },
     preHandler: [authenticate, requireRole('admin')],
   }, async (request, reply) => {
-    const { name, role } = request.body as { name: string; role: string };
+    const { name, role = 'service_account' } = request.body as { name: string; role?: string };
     const { app: callerApp, userId } = request.user;
 
     const { raw, prefix, hashed } = generateKey(callerApp);
@@ -98,6 +98,6 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
 
     await db.update(apiKeys).set({ revokedAt: new Date() }).where(eq(apiKeys.id, id));
 
-    return reply.status(204).send();
+    return reply.status(200).send({ ok: true });
   });
 }

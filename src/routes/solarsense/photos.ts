@@ -5,7 +5,7 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
-import { deleteLocalFile, storageKeyToPath } from '../../storage/localFiles.js';
+import { deleteLocalFile, localFileExists, storageKeyToPath } from '../../storage/localFiles.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   file(source: string, data: { name: string }): void;
@@ -51,7 +51,22 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     assertSiteAccess(site, request.user);
 
     const photos = await db
-      .select()
+      .select({
+        id: photoRegistry.id,
+        checksum: photoRegistry.checksum,
+        remoteUrl: photoRegistry.remoteUrl,
+        contentType: photoRegistry.contentType,
+        originalFilename: photoRegistry.originalFilename,
+        app: photoRegistry.app,
+        parentId: photoRegistry.parentId,
+        entityType: photoRegistry.entityType,
+        entityId: photoRegistry.entityId,
+        fieldName: photoRegistry.fieldName,
+        fileSizeBytes: photoRegistry.fileSizeBytes,
+        status: photoRegistry.status,
+        uploadedAt: photoRegistry.uploadedAt,
+        createdAt: photoRegistry.createdAt,
+      })
       .from(photoRegistry)
       .where(and(
         eq(photoRegistry.app, 'solarsense'),
@@ -85,7 +100,7 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
 
     const archive = await createZipArchive();
     for (const photo of photos) {
-      if (photo.storageKey) {
+      if (photo.storageKey && await localFileExists(photo.storageKey)) {
         archive.file(storageKeyToPath(photo.storageKey), { name: zipEntryName(photo) });
       }
     }
