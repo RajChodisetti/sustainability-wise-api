@@ -5,10 +5,10 @@ import { refreshTokens } from '../db/schema/shared.js';
 import { eaUsers } from '../db/schema/ecoaudit.js';
 import { ssUsers } from '../db/schema/solarsense.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../auth/jwt.js';
-import { verifyPassword } from '../auth/apiKey.js';
+import { verifyPassword, hashPassword } from '../auth/apiKey.js';
 import { authenticate } from '../auth/middleware.js';
 import { sha256String, randomToken } from '../utils/crypto.js';
-import { unauthorized, badRequest, notFound } from '../utils/errors.js';
+import { unauthorized, badRequest, notFound, conflict } from '../utils/errors.js';
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // POST /v1/auth/login
@@ -143,6 +143,55 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       .set({ revokedAt: new Date() })
       .where(eq(refreshTokens.tokenHash, tokenHash));
     return reply.status(200).send({ ok: true });
+  });
+
+  // POST /v1/auth/register — self-registration (migrates local device account to cloud)
+  app.post('/register', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Self-register a new cloud account (no auth required)',
+      body: {
+        type: 'object',
+        required: ['email', 'password', 'app'],
+        properties: {
+          email:    { type: 'string', format: 'email' },
+          password: { type: 'string', minLength: 6 },
+          fullName: { type: 'string' },
+          app:      { type: 'string', enum: ['ecoaudit', 'solarsense'] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { email, password, fullName, app } = request.body as {
+      email: string; password: string; fullName?: string; app: 'ecoaudit' | 'solarsense';
+    };
+    const userTable = app === 'ecoaudit' ? eaUsers : ssUsers;
+    const [existing] = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, email.toLowerCase().trim()));
+    if (existing) throw conflict('An account with this email already exists');
+
+    const { randomUUID } = await import('node:crypto');
+    const id = randomUUID();
+    const passwordHash = await hashPassword(password);
+    await db.insert(userTable).values({
+      id,
+      email: email.toLowerCase().trim(),
+      passwordHash,
+      fullName: fullName?.trim() || null,
+      role: 'inspector',
+    });
+
+    const accessToken  = signAccessToken({ userId: id, app, role: 'inspector' });
+    const refreshToken = signRefreshToken({ userId: id, app });
+    const tokenId      = randomToken(16);
+    const expiresAt    = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    await db.insert(refreshTokens).values({ id: tokenId, userId: id, app, tokenHash: sha256String(refreshToken), expiresAt });
+
+    return reply.status(201).send({
+      accessToken,
+      refreshToken,
+      expiresIn: 900,
+      user: { id, email: email.toLowerCase().trim(), fullName: fullName?.trim() || null, role: 'inspector', app },
+    });
   });
 
   // GET /v1/auth/me
