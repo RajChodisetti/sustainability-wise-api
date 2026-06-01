@@ -31,6 +31,7 @@ export const config = {
     ),
     maxUploadBytes: parseInt(optional('MAX_UPLOAD_BYTES', String(50 * 1024 * 1024)), 10),
   },
+  registrationSecret: optional('REGISTRATION_SECRET'),
   azure: {
     clientId: optional('AZURE_CLIENT_ID'),
     clientSecret: optional('AZURE_CLIENT_SECRET'),

@@ -23,3 +23,6 @@ export const badRequest = (detail?: string) =>
 
 export const conflict = (detail?: string) =>
   new AppError(409, 'Conflict', detail);
+
+export const gone = (detail?: string) =>
+  new AppError(410, 'Gone', detail);
