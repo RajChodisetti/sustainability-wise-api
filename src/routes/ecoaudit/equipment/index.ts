@@ -1,0 +1,9 @@
+export { eaMainSwitchboardRoutes } from './mainSwitchboards.js';
+export { eaAdditionalSwitchboardRoutes } from './additionalSwitchboards.js';
+export { eaHvacUnitRoutes } from './hvacUnits.js';
+export { eaLightingSystemRoutes } from './lightingSystems.js';
+export { eaSolarPvRoutes } from './solarPv.js';
+export { eaForkliftChargerRoutes } from './forkliftChargers.js';
+export { eaHotWaterSystemRoutes } from './hotWaterSystems.js';
+export { eaGeneralWaterRoutes } from './generalWater.js';
+export { eaGeneralElectricityRoutes } from './generalElectricity.js';

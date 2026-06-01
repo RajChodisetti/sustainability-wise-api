@@ -6,6 +6,7 @@ import { authenticate } from './auth/middleware.js';
 import { authRoutes } from './routes/auth.js';
 import { apiKeyRoutes } from './routes/apiKeys.js';
 import { solarsenseRoutes } from './routes/solarsense/index.js';
+import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { AppError } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
 import { config } from './config.js';
@@ -101,8 +102,7 @@ export async function buildApp() {
   await app.register(authRoutes,   { prefix: '/v1/auth' });
   await app.register(apiKeyRoutes, { prefix: '/v1/api-keys' });
 
-  // EcoAudit remains a placeholder until its server API phase is implemented.
-  app.register(async () => {}, { prefix: '/v1/ecoaudit' });
+  await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });
 
   return app;
