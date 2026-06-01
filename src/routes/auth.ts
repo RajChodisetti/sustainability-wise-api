@@ -164,8 +164,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['Auth'], summary: 'Migrate local account to cloud (requires app registration secret)' },
   }, async (request, reply) => {
     // Guard 1 — check permanent closed flag
-    const rows = await db.execute(sql`SELECT value FROM server_settings WHERE key = 'registrations_closed'`) as unknown as { rows: Array<{ value: string }> };
-    const closed = rows.rows[0]?.value === 'true';
+    const result = await db.execute(sql`SELECT value FROM server_settings WHERE key = 'registrations_closed'`);
+    const closed = (result as unknown as Array<{ value: string }>)[0]?.value === 'true';
     if (closed) throw gone('Self-registration is permanently closed. Contact your administrator.');
 
     // Guard 2 — check build-time secret header
