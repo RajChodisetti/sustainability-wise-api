@@ -4,7 +4,17 @@ import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, optionalString, type JsonRecord } from './helpers.js';
+import {
+  assertFound,
+  assertAuditAccess,
+  dateOrNow,
+  isElevated,
+  optionalString,
+  purgeEcoauditAuditTree,
+  requiredString,
+  shouldPurgeQuery,
+  type JsonRecord,
+} from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
 
 export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
@@ -82,9 +92,17 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
+    const purge = shouldPurgeQuery(request.query as Record<string, unknown> | undefined);
+    const [audit] = await db
+      .select()
+      .from(eaAudits)
+      .where(purge ? eq(eaAudits.id, id) : and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
     const found = assertFound(audit, 'Audit');
     assertAuditAccess(found, request.user);
+    if (purge) {
+      await purgeEcoauditAuditTree(id, found.reportPdfLocalPath);
+      return reply.status(204).send();
+    }
     await db.update(eaAudits).set({ deletedAt: new Date(), updatedAt: new Date(), syncStatus: 'local' }).where(eq(eaAudits.id, id));
     return reply.status(204).send();
   });

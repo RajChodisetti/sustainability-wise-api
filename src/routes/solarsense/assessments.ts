@@ -13,7 +13,9 @@ import {
   optionalJson,
   optionalNumber,
   optionalString,
+  purgeSolarsenseAssessment,
   requiredString,
+  shouldPurgeQuery,
   type JsonRecord,
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
@@ -259,6 +261,19 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    const purge = shouldPurgeQuery(request.query as Record<string, unknown> | undefined);
+    if (purge) {
+      const [assessment] = await db
+        .select({ id: ssRooftopAssessments.id })
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+        ));
+      assertFound(assessment, 'Assessment');
+      await purgeSolarsenseAssessment(id);
+      return reply.status(204).send();
+    }
 
     const [updated] = await db
       .update(ssRooftopAssessments)

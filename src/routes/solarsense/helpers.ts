@@ -1,4 +1,9 @@
+import { and, eq } from 'drizzle-orm';
 import type { AuthUser } from '../../auth/middleware.js';
+import { db } from '../../db/client.js';
+import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
+import { photoRegistry, recordVersions } from '../../db/schema/shared.js';
+import { deleteLocalFile } from '../../storage/localFiles.js';
 import { forbidden, notFound, badRequest } from '../../utils/errors.js';
 
 export type JsonRecord = Record<string, unknown>;
@@ -81,4 +86,41 @@ export function requireCompleted(records: Array<{ id?: string; status?: unknown 
   if (incomplete) {
     throw badRequest(`${label} ${incomplete.id ?? ''} must be Completed before sync`);
   }
+}
+
+export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
+  const value = query?.purge;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+  return false;
+}
+
+export async function purgeSolarsenseAssessment(assessmentId: string): Promise<void> {
+  const photoWhere = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.entityId, assessmentId));
+  const photos = await db.select().from(photoRegistry).where(photoWhere);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(photoWhere);
+  await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.id, assessmentId));
+}
+
+export async function purgeSolarsenseSiteTree(siteId: string, reportPdfStorageKey?: string | null): Promise<void> {
+  const photoWhere = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.parentId, siteId));
+  const photos = await db.select().from(photoRegistry).where(photoWhere);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(photoWhere);
+
+  await deleteLocalFile(reportPdfStorageKey);
+
+  await db.delete(recordVersions).where(and(
+    eq(recordVersions.app, 'solarsense'),
+    eq(recordVersions.entityType, 'site'),
+    eq(recordVersions.entityId, siteId),
+  ));
+
+  await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.siteId, siteId));
+  await db.delete(ssSites).where(eq(ssSites.id, siteId));
 }

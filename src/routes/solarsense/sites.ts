@@ -12,7 +12,9 @@ import {
   optionalDate,
   optionalJson,
   optionalString,
+  purgeSolarsenseSiteTree,
   requiredString,
+  shouldPurgeQuery,
   type JsonRecord,
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
@@ -170,13 +172,18 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
+    const purge = shouldPurgeQuery(request.query as Record<string, unknown> | undefined);
     const [site] = await db
       .select()
       .from(ssSites)
-      .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
+      .where(purge ? eq(ssSites.id, id) : and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
 
     const found = assertFound(site, 'Site');
     assertSiteAccess(found, request.user);
+    if (purge) {
+      await purgeSolarsenseSiteTree(id, found.reportPdfLocalPath);
+      return reply.status(204).send();
+    }
 
     await db
       .update(ssSites)
