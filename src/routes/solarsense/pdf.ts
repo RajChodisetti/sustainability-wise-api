@@ -12,214 +12,519 @@ import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storag
 import { assertFound, assertSiteAccess } from './helpers.js';
 
 const MAX_PDF_BYTES = 50 * 1024 * 1024;
-const templateUrl = new URL('../../pdf/templates/solarsense.html', import.meta.url);
+const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
 
-let templatePromise: Promise<string> | null = null;
+type SiteRow = typeof ssSites.$inferSelect;
+type AssessmentRow = typeof ssRooftopAssessments.$inferSelect;
+type PhotoRow = typeof photoRegistry.$inferSelect;
 
-function loadTemplate(): Promise<string> {
-  templatePromise ??= readFile(templateUrl, 'utf8');
-  return templatePromise;
+type PhotoMetadata = {
+  name?: string;
+  largeInPdf?: boolean;
+};
+
+type PhotoMetadataValue = string | PhotoMetadata | null | undefined;
+type PhotoMetadataMap = Record<string, PhotoMetadataValue>;
+
+type Switchboard = {
+  panelNameId?: string | null;
+  locationInBuilding?: string | null;
+  incomingSupplyVoltage?: string | null;
+  mainBreakerRating?: string | null;
+  spareBreakers?: string | null;
+  photoUri?: string | null;
+};
+
+type OtherConsideration = {
+  issue?: string | null;
+  details?: string | null;
+  photoUris?: string[] | null;
+};
+
+type AssessmentView = AssessmentRow & {
+  switchboards: Switchboard[];
+  otherConsiderations: OtherConsideration[];
+  additionalPhotos: string[];
+  photoMetadata: PhotoMetadataMap;
+};
+
+type SitePackOptions = {
+  includeRagFramework: boolean;
+  includeAppendix: boolean;
+};
+
+let brandLogoDataUriPromise: Promise<string> | null = null;
+
+function loadBrandLogo(): Promise<string> {
+  brandLogoDataUriPromise ??= readFile(brandLogoUrl).then(
+    (buffer) => `data:image/png;base64,${buffer.toString('base64')}`,
+  );
+  return brandLogoDataUriPromise;
 }
 
-function escapeHtml(value: unknown): string {
-  return String(value ?? '')
+function esc(v: unknown): string {
+  return String(v ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/"/g, '&quot;');
 }
 
-function isBlank(value: unknown): boolean {
-  return value === null || value === undefined || value === '';
+function field(label: string, value: unknown): string {
+  if (value == null || value === '') return '';
+  return `<div class="field"><div class="fl">${esc(label)}</div><div class="fv">${esc(value)}</div></div>`;
 }
 
-function displayValue(value: unknown): string {
-  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
-  if (value instanceof Date) return value.toISOString();
-  return String(value ?? '');
+function parseDisplayDate(ds: string | Date | null | undefined): Date | null {
+  if (!ds) return null;
+  if (ds instanceof Date) return Number.isNaN(ds.getTime()) ? null : ds;
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ds.trim());
+  if (isoDate) {
+    const [, year, month, day] = isoDate;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+  const parsed = new Date(ds);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function valueRow(label: string, value: unknown): string {
-  if (isBlank(value)) return '';
-  return `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(displayValue(value))}</td></tr>`;
+function fmtDate(ds: string | null | undefined): string {
+  if (!ds) return '—';
+  const d = parseDisplayDate(ds);
+  if (!d) return ds;
+  const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${d.getDate()} ${m[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-function summaryCard(label: string, value: unknown): string {
-  return `
-    <div class="summary-card">
-      <div class="summary-label">${escapeHtml(label)}</div>
-      <div class="summary-value">${escapeHtml(displayValue(value))}</div>
-    </div>
-  `;
+function viabilityBadge(v: string | null | undefined): string {
+  if (v === 'Yes') return '<span class="badge badge-green">Viable</span>';
+  if (v === 'No') return '<span class="badge badge-red">Excluded</span>';
+  if (v === 'TBD') return '<span class="badge badge-tbd">TBD</span>';
+  return '';
 }
 
-function badge(label: unknown, kind: 'green' | 'amber' | 'red' | 'gray' = 'gray'): string {
-  if (isBlank(label)) return '';
-  return `<span class="badge ${kind}">${escapeHtml(label)}</span>`;
+function ragBadge(r: string | null | undefined): string {
+  if (r === 'Green') return '<span class="badge badge-green">Green</span>';
+  if (r === 'Amber') return '<span class="badge badge-amber">Amber</span>';
+  if (r === 'Red') return '<span class="badge badge-red">Red</span>';
+  return '';
 }
 
-function statusKind(value: unknown): 'green' | 'amber' | 'red' | 'gray' {
-  const text = String(value ?? '').toLowerCase();
-  if (text.includes('viable') || text.includes('green') || text.includes('low')) return 'green';
-  if (text.includes('red') || text.includes('not') || text.includes('deal')) return 'red';
-  if (text.includes('amber') || text.includes('medium') || text.includes('risk')) return 'amber';
-  return 'gray';
+function flag(show: boolean, label: string): string {
+  return show ? `<span class="badge badge-flag">&#9888; ${esc(label)}</span>` : '';
 }
 
-function sectionTable(rows: string): string {
-  return rows.trim() ? `<table>${rows}</table>` : '<p class="empty">No details recorded.</p>';
+function chunk2<T>(arr: T[]): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < arr.length; i += 2) rows.push(arr.slice(i, i + 2));
+  return rows;
 }
 
-function renderJsonList(title: string, value: unknown): string {
-  if (!Array.isArray(value) || value.length === 0) return '';
-  const items = value.map((item) => {
-    if (item && typeof item === 'object') {
-      const fields = Object.entries(item as Record<string, unknown>)
-        .filter(([, fieldValue]) => !isBlank(fieldValue))
-        .map(([key, fieldValue]) => `${escapeHtml(key)}: ${escapeHtml(displayValue(fieldValue))}`)
-        .join('<br/>');
-      return `<li>${fields || escapeHtml(JSON.stringify(item))}</li>`;
-    }
-    return `<li>${escapeHtml(displayValue(item))}</li>`;
-  }).join('');
-  return items ? `<h3>${escapeHtml(title)}</h3><ul>${items}</ul>` : '';
+function normalizePhotoMetadata(value: PhotoMetadataValue): PhotoMetadata {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    return value ? { name: value } : {};
+  }
+  return {
+    ...(typeof value.name === 'string' ? { name: value.name } : {}),
+    ...(value.largeInPdf ? { largeInPdf: true } : {}),
+  };
 }
 
-function photosForEntity(
-  photos: Array<typeof photoRegistry.$inferSelect>,
-  entityId: string,
-): string {
-  const figures = photos
-    .filter((photo) => photo.entityId === entityId && photo.remoteUrl)
-    .map((photo) => {
-      const caption = [photo.fieldName, photo.originalFilename].filter(Boolean).join(' - ');
-      return `
-        <figure>
-          <img src="${escapeHtml(photo.remoteUrl)}" />
-          <figcaption>${escapeHtml(caption)}</figcaption>
-        </figure>
-      `;
-    })
-    .join('');
-
-  return figures ? `<div class="photos">${figures}</div>` : '';
+function normalizePhotoMetadataMap(value: unknown): PhotoMetadataMap {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as PhotoMetadataMap;
 }
 
-function buildBody(args: {
-  site: typeof ssSites.$inferSelect;
-  assessments: Array<typeof ssRooftopAssessments.$inferSelect>;
-  photos: Array<typeof photoRegistry.$inferSelect>;
-}): string {
-  const totalPv = args.assessments.reduce((sum, assessment) => sum + (assessment.pvSizeKwDc ?? 0), 0);
-  const viableCount = args.assessments.filter((assessment) => {
-    const status = String(assessment.viabilityStatus ?? '').toLowerCase();
-    return status.includes('viable') && !status.includes('not');
-  }).length;
-  const dealBreakerCount = args.assessments.filter((assessment) =>
-    assessment.heritageDealBreaker || assessment.structuralRiskFlag || !isBlank(assessment.dealBreakerReason),
-  ).length;
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length > 0) : [];
+}
 
-  const assessmentHtml = args.assessments.map((assessment) => {
-    const title = assessment.buildingIdName || assessment.siteName || 'Assessment';
-    const rows = [
-      valueRow('Viability', assessment.viabilityStatus),
-      valueRow('RAG Priority', assessment.ragPriority),
-      valueRow('Heritage Status', assessment.heritageStatus),
-      valueRow('Heritage Deal Breaker', assessment.heritageDealBreaker),
-      valueRow('Roof Area Total m2', assessment.roofAreaTotalM2),
-      valueRow('Usable Roof Area m2', assessment.roofAreaUsableM2),
-      valueRow('PV Size kW DC', assessment.pvSizeKwDc),
-      valueRow('AC Export kW', assessment.acExportKw),
-      valueRow('Roof Material', assessment.roofMaterial),
-      valueRow('Roof Framing Type', assessment.roofFramingType),
-      valueRow('Roof Pitch / Angle', assessment.roofPitchAngle),
-      valueRow('Roof Construction', assessment.roofConstructionMaterial),
-      valueRow('Asbestos Flag', assessment.asbestosFlag),
-      valueRow('Roof Condition', assessment.roofCondition),
-      valueRow('Estimated Roof Age', assessment.roofEstimatedAge),
-      valueRow('Primary Orientation', assessment.roofOrientationPrimary),
-      valueRow('Shading Sources', assessment.roofShadingSources),
-      valueRow('Usable Shading %', assessment.roofShadingUsablePct),
-      valueRow('Orientation / Shading', assessment.roofOrientationShading),
-      valueRow('Structural Feasibility', assessment.structuralFeasibility),
-      valueRow('Structural Risk Flag', assessment.structuralRiskFlag),
-      valueRow('Access / Safety Constraints', assessment.accessSafetyConstraints),
-      valueRow('MSB Details', assessment.msbDetails),
-      valueRow('Existing Generation', assessment.existingGeneration),
-      valueRow('Distance to Connection m', assessment.distanceToConnectionM),
-      valueRow('Electrical Pits / Entry', assessment.electricalPitsEntry),
-      valueRow('Inverter Siting', assessment.inverterSiting),
-      valueRow('Transformer / Supply Capacity', assessment.transformerSupplyCapacity),
-      valueRow('DNSP Constraints', assessment.dnspConstraints),
-      valueRow('Load Profile / Metering', assessment.loadProfileMetering),
-      valueRow('Site Rep Feedback', assessment.siteRepFeedback),
-      valueRow('Deal Breaker Reason', assessment.dealBreakerReason),
-      valueRow('Key Assumptions / Gaps', assessment.keyAssumptionsGaps),
-    ].join('');
+function asSwitchboards(value: unknown): Switchboard[] {
+  return Array.isArray(value) ? (value as Switchboard[]) : [];
+}
 
+function asOtherConsiderations(value: unknown): OtherConsideration[] {
+  return Array.isArray(value) ? (value as OtherConsideration[]) : [];
+}
+
+function normalizeAssessment(assessment: AssessmentRow): AssessmentView {
+  return {
+    ...assessment,
+    switchboards: asSwitchboards(assessment.switchboards),
+    otherConsiderations: asOtherConsiderations(assessment.otherConsiderations),
+    additionalPhotos: asStringArray(assessment.additionalPhotos),
+    photoMetadata: normalizePhotoMetadataMap(assessment.photoMetadata),
+  };
+}
+
+function photoFieldKey(entityId: string, fieldName: string): string {
+  return `${entityId}::${fieldName}`;
+}
+
+function buildPhotoMap(photos: PhotoRow[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const photo of photos) {
+    if (!photo.remoteUrl) continue;
+    map.set(photoFieldKey(photo.entityId, photo.fieldName), photo.remoteUrl);
+  }
+  return map;
+}
+
+function getPhoto(photoMap: Map<string, string>, entityId: string, fieldName: string): string | null {
+  return photoMap.get(photoFieldKey(entityId, fieldName)) ?? null;
+}
+
+function photoImg(dataUri: string | null | undefined, caption: string | undefined, large: boolean): string {
+  if (!dataUri) return '';
+  const cls = large ? 'photo-img-large' : 'photo-img';
+  const cap = caption ? `<div class="photo-caption">${esc(caption)}</div>` : '';
+  return `<div class="photo-block"><img src="${dataUri}" class="${cls}" onerror="this.parentNode.style.display='none'" />${cap}</div>`;
+}
+
+function photoGrid(cells: string[]): string {
+  if (!cells.length) return '';
+  return `<table class="photo-grid-2">${chunk2(cells).map((row) => `<tr>${row.join('')}</tr>`).join('')}</table>`;
+}
+
+function secFields(title: string, rows: string): string {
+  const content = rows.trim();
+  if (!content) return '';
+  return `<div class="sec-bar">${esc(title)}</div><div class="fields">${content}</div>`;
+}
+
+function renderSwitchboards(a: AssessmentView, photoMap: Map<string, string>): string {
+  if (!a.switchboards.length) return '';
+  return '<div class="sec-bar">Switchboards</div>' + a.switchboards.map((sb, i) => {
+    const sbDu = getPhoto(photoMap, a.id, `switchboards[${i}].photoUri`);
+    const sbMeta = normalizePhotoMetadata(a.photoMetadata[`switchboard.${i}.photo`]);
     return `
-      <section class="assessment">
-        <h2>
-          ${escapeHtml(title)}
-          ${badge(assessment.viabilityStatus, statusKind(assessment.viabilityStatus))}
-          ${badge(assessment.ragPriority, statusKind(assessment.ragPriority))}
-        </h2>
-        ${sectionTable(rows)}
-        ${renderJsonList('Switchboards', assessment.switchboards)}
-        ${renderJsonList('Other Considerations', assessment.otherConsiderations)}
-        ${photosForEntity(args.photos, assessment.id)}
-      </section>
-    `;
+    <div class="sb-card">
+      <div class="sb-card-title">Switchboard ${i + 1}${sb.panelNameId ? ` &mdash; ${esc(sb.panelNameId)}` : ''}</div>
+      ${field('Location', sb.locationInBuilding)}
+      ${field('Supply Voltage', sb.incomingSupplyVoltage)}
+      ${field('Main Breaker', sb.mainBreakerRating)}
+      ${field('Spare Breakers', sb.spareBreakers)}
+      ${sbDu ? photoImg(sbDu, sbMeta.name, false) : ''}
+    </div>`;
   }).join('');
+}
+
+function renderConsiderations(a: AssessmentView, photoMap: Map<string, string>): string {
+  if (!a.otherConsiderations.length) return '';
+  const items = a.otherConsiderations.map((oc, i) => {
+    const cells = (oc.photoUris ?? []).map((_, j) => {
+      const du = getPhoto(photoMap, a.id, `other_considerations[${i}].photoUris[${j}]`);
+      if (!du) return '';
+      const meta = normalizePhotoMetadata(a.photoMetadata[`consideration.${i}.${j}`]);
+      return `<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`;
+    }).filter(Boolean);
+    return `<div class="consideration">
+      ${oc.issue ? `<div class="consideration-issue">${esc(oc.issue)}</div>` : ''}
+      ${oc.details ? `<div class="consideration-details">${esc(oc.details)}</div>` : ''}
+      ${photoGrid(cells)}
+    </div>`;
+  }).join('');
+  return `<div class="sec-bar">Other Considerations</div>${items}`;
+}
+
+function renderBuilding(a: AssessmentView, idx: number, photoMap: Map<string, string>): string {
+  const aerialDu = getPhoto(photoMap, a.id, 'aerial_photo_uri');
+  const aerialMeta = normalizePhotoMetadata(a.photoMetadata.aerialPhoto);
+  const msbDu = getPhoto(photoMap, a.id, 'msb_photo_uri');
+  const msbMeta = normalizePhotoMetadata(a.photoMetadata.msbPhoto);
+
+  const aerialHtml = aerialDu ? photoImg(aerialDu, aerialMeta.name, !!aerialMeta.largeInPdf) : '';
+  const msbHtml = msbDu
+    ? `<div class="sec-bar">Switchboard Photo</div>${photoImg(msbDu, msbMeta.name, !!msbMeta.largeInPdf)}`
+    : '';
+
+  const addlCells = a.additionalPhotos.map((_, i) => {
+    const du = getPhoto(photoMap, a.id, `additional_photos[${i}]`);
+    if (!du) return '';
+    const meta = normalizePhotoMetadata(a.photoMetadata[`additionalPhoto.${i}`]);
+    return `<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`;
+  }).filter(Boolean);
+  const addlHtml = addlCells.length
+    ? `<div class="sec-bar">Additional Photos</div>${photoGrid(addlCells)}`
+    : '';
 
   return `
-    <section class="cover">
-      <div class="eyebrow">SolarSense Site Pack</div>
-      <h1>${escapeHtml(args.site.siteName)}</h1>
-      <div class="meta">
-        ${escapeHtml(args.site.location ?? '')}
-        ${args.site.dateOfAssessment ? ` | ${escapeHtml(args.site.dateOfAssessment)}` : ''}
-        ${args.site.documentClassification ? ` | ${escapeHtml(args.site.documentClassification)}` : ''}
+  <div class="building">
+    <div class="building-hdr">
+      <div class="building-num">Building ${idx + 1}</div>
+      <div class="building-name">${esc(a.buildingIdName)}</div>
+      <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">
+        ${viabilityBadge(a.viabilityStatus)}
+        ${ragBadge(a.ragPriority)}
+        ${flag(a.asbestosFlag, 'Asbestos')}
+        ${flag(a.heritageDealBreaker, 'Heritage')}
+        ${flag(a.structuralRiskFlag, 'Structural')}
       </div>
-      <div class="summary-grid">
-        ${summaryCard('Assessments', args.assessments.length)}
-        ${summaryCard('Viable', viableCount)}
-        ${summaryCard('Deal Breakers', dealBreakerCount)}
-        ${summaryCard('PV kW DC', totalPv ? totalPv.toFixed(2) : '0')}
-      </div>
-    </section>
+    </div>
+    <div class="building-body">
+      <table class="b-metrics"><tr>
+        <td class="b-metric"><span class="b-metric-val">${a.roofAreaTotalM2 != null ? a.roofAreaTotalM2.toLocaleString() : '—'}</span><span class="b-metric-lbl">Roof m²</span></td>
+        <td class="b-metric"><span class="b-metric-val">${a.roofAreaUsableM2 != null ? a.roofAreaUsableM2.toLocaleString() : '—'}</span><span class="b-metric-lbl">Usable m²</span></td>
+        <td class="b-metric"><span class="b-metric-val">${a.pvSizeKwDc != null ? a.pvSizeKwDc.toFixed(1) : '—'}</span><span class="b-metric-lbl">kW DC</span></td>
+        <td class="b-metric"><span class="b-metric-val">${a.acExportKw != null ? a.acExportKw.toFixed(1) : '—'}</span><span class="b-metric-lbl">kW AC</span></td>
+      </tr></table>
 
-    <section>
-      <h2>Site Overview</h2>
-      ${sectionTable([
-        valueRow('Document Classification', args.site.documentClassification),
-        valueRow('Electrical Infrastructure Summary', args.site.electricalInfrastructureSummary),
-        valueRow('Known Constraints', args.site.knownConstraints),
-        valueRow('Load Profile / Metering Summary', args.site.loadProfileMeteringSummary),
-        valueRow('PPA Asset Demarcation', args.site.ppaAssetDemarcation),
-        valueRow('Appendix Notes', args.site.appendixNotes),
+      ${aerialHtml}
+
+      ${secFields('Roof Characteristics', [
+        field('Material', a.roofMaterial),
+        field('Construction Material', a.roofConstructionMaterial),
+        field('Framing Type', a.roofFramingType),
+        field('Pitch Angle', a.roofPitchAngle),
+        field('Condition', a.roofCondition),
+        field('Estimated Age', a.roofEstimatedAge),
+        field('Primary Orientation', a.roofOrientationPrimary),
+        field('Shading Sources', a.roofShadingSources),
+        field('Shading % Affected', a.roofShadingUsablePct),
+        field('Orientation & Shading Notes', a.roofOrientationShading),
+        field('Structural Feasibility', a.structuralFeasibility),
+        field('Access & Safety', a.accessSafetyConstraints),
+        field('Heritage Status', a.heritageStatus),
       ].join(''))}
-      ${renderJsonList('Appendix Items', args.site.appendixItems)}
-    </section>
 
-    <section>
-      <h2>Rooftop Assessments</h2>
-      ${assessmentHtml || '<p class="empty">No assessments selected.</p>'}
-    </section>
-  `;
+      ${secFields('PV Sizing', [
+        field('Indicative PV Size (kW DC)', a.pvSizeKwDc != null ? `${a.pvSizeKwDc.toFixed(1)} kW` : null),
+        field('AC Export Capacity (kW AC)', a.acExportKw != null ? `${a.acExportKw.toFixed(1)} kW` : null),
+      ].join(''))}
+
+      ${secFields('Electrical & Network', [
+        field('Existing Generation', a.existingGeneration),
+        field('Distance to Connection', a.distanceToConnectionM != null ? `${a.distanceToConnectionM} m` : null),
+        field('Electrical Pits & Entry', a.electricalPitsEntry),
+        field('Inverter Siting', a.inverterSiting),
+        field('Transformer / Supply Capacity', a.transformerSupplyCapacity),
+        field('DNSP Constraints', a.dnspConstraints),
+        field('Load Profile / Metering', a.loadProfileMetering),
+      ].join(''))}
+
+      ${renderSwitchboards(a, photoMap)}
+      ${msbHtml}
+      ${renderConsiderations(a, photoMap)}
+
+      ${secFields('Viability & Assessment', [
+        field('Site Representative Feedback', a.siteRepFeedback),
+        field('Deal-Breaker Reason', a.dealBreakerReason),
+        field('Key Assumptions & Data Gaps', a.keyAssumptionsGaps),
+      ].join(''))}
+
+      ${addlHtml}
+    </div>
+  </div>`;
 }
+
+const RAG_FRAMEWORK = `
+<div style="page-break-before:always">
+  <div class="sec-bar">RAG Priority Framework</div>
+  <div class="fields">
+    <div class="field">
+      <div class="fl"><span class="badge badge-green">Green</span></div>
+      <div class="fv">High viability. Strong roof structural condition, clear north-facing orientation (±45°), minimal shading, adequate electrical infrastructure, high kW AC potential. Recommended for immediate feasibility advancement.</div>
+    </div>
+    <div class="field">
+      <div class="fl"><span class="badge badge-amber">Amber</span></div>
+      <div class="fv">Moderate viability. One or more constraints present — suboptimal orientation, partial shading, ageing roof, switchboard upgrades required. Warrants further investigation before commitment.</div>
+    </div>
+    <div class="field">
+      <div class="fl"><span class="badge badge-red">Red</span></div>
+      <div class="fv">Low viability. Significant constraints identified: poor roof condition, major structural concerns, high shading, restricted access, or prohibitive DNSP constraints. Not recommended without major remediation works.</div>
+    </div>
+  </div>
+</div>`;
 
 async function buildHtml(args: {
-  site: typeof ssSites.$inferSelect;
-  assessments: Array<typeof ssRooftopAssessments.$inferSelect>;
-  photos: Array<typeof photoRegistry.$inferSelect>;
+  site: SiteRow;
+  assessments: AssessmentRow[];
+  photos: PhotoRow[];
+  options: SitePackOptions;
 }): Promise<string> {
-  const title = `${args.site.siteName} Site Pack`;
-  const template = await loadTemplate();
-  return template
-    .replaceAll('{{TITLE}}', escapeHtml(title))
-    .replaceAll('{{BODY}}', buildBody(args));
+  const assessments = args.assessments.map(normalizeAssessment);
+  const viable = assessments.filter((a) => a.viabilityStatus === 'Yes');
+  const totalAcKw = viable.reduce((sum, a) => sum + (a.acExportKw ?? 0), 0);
+  const ragCounts = viable.reduce(
+    (counts, assessment) => {
+      if (assessment.ragPriority === 'Green') counts.G += 1;
+      else if (assessment.ragPriority === 'Amber') counts.A += 1;
+      else if (assessment.ragPriority === 'Red') counts.R += 1;
+      return counts;
+    },
+    { G: 0, A: 0, R: 0 },
+  );
+  const brandLogo = await loadBrandLogo();
+  const photoMap = buildPhotoMap(args.photos);
+
+  const viableRows = viable.length
+    ? viable.map((a) => `<tr>
+        <td>${esc(a.buildingIdName)}</td>
+        <td>${a.pvSizeKwDc != null ? `${a.pvSizeKwDc.toFixed(1)} kW` : '—'}</td>
+        <td>${a.acExportKw != null ? `${a.acExportKw.toFixed(1)} kW` : '—'}</td>
+        <td>${ragBadge(a.ragPriority)}</td>
+        <td>${esc(a.roofCondition || '—')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" style="color:#94A3B8;text-align:center;padding:12px">No viable buildings assessed.</td></tr>';
+
+  const classTag = args.site.documentClassification
+    ? `<span class="cover-class">${esc(args.site.documentClassification)}</span>`
+    : '';
+
+  const buildingsHtml = assessments.map((assessment, index) => renderBuilding(assessment, index, photoMap)).join('');
+
+  const appendixHtml = args.options.includeAppendix ? secFields('Appendix', [
+    field('Electrical Infrastructure Summary', args.site.electricalInfrastructureSummary),
+    field('Known Site Constraints', args.site.knownConstraints),
+    field('Load Profile / Metering Summary', args.site.loadProfileMeteringSummary),
+    field('PPA Asset Demarcation', args.site.ppaAssetDemarcation),
+    field('Appendix Notes', args.site.appendixNotes),
+  ].join('')) : '';
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @page { size: A4 portrait; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; color: #0F172A; font-size: 10pt; margin: 0; line-height: 1.45; }
+
+  /* Cover */
+  .cover { background: #142F70; border-top: 5px solid #0B3F59; border-radius: 8px; padding: 22px 24px 20px; margin-bottom: 18px; }
+  .cover-eyebrow { color: #DBEAFE; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 8px; }
+  .cover-title { color: #FFFFFF; font-size: 19pt; font-weight: 900; margin-bottom: 14px; }
+  .cover-brand { margin: 10px 0 14px; }
+  .cover-brand-label { font-size: 7pt; font-weight: 800; color: #BFDBFE; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 5px; }
+  .cover-brand-logo { display: block; width: 162px; height: auto; background: #FFFFFF; border-radius: 6px; padding: 5px 9px; }
+  .cover-meta { display: table; width: 100%; border-radius: 6px; border-collapse: collapse; overflow: hidden; }
+  .cover-meta-row { display: table-row; }
+  .cm { display: table-cell; padding: 11px 14px; background: #FFFFFF; border: 1px solid #BFDBFE; width: 50%; }
+  .cml { font-size: 7pt; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 3px; }
+  .cmv { font-size: 10.5pt; font-weight: 600; color: #0F172A; }
+  .cover-class { display: inline-block; margin-top: 12px; padding: 4px 12px; border: 1.5px solid #D97706; border-radius: 4px; background: #FEF3C7; color: #92400E; font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; }
+
+  /* Stats row */
+  .stats { display: table; width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+  .stat { display: table-cell; text-align: center; padding: 10px 6px; border: 1px solid #DBEAFE; background: #EFF6FF; border-top: 3px solid #1E3A8A; }
+  .stat-val { font-size: 15pt; font-weight: 900; color: #1E3A8A; display: block; }
+  .stat-lbl { font-size: 7pt; font-weight: 700; color: #64748B; text-transform: uppercase; letter-spacing: 0.06em; }
+
+  /* Sections */
+  .sec-bar { background: #1E3A8A; color: #FFFFFF; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 7px 12px; margin-top: 14px; page-break-after: avoid; }
+  .fields { border: 1px solid #DBEAFE; border-top: none; margin-bottom: 4px; }
+  .field { display: table; width: 100%; border-top: 1px solid #DBEAFE; page-break-inside: avoid; }
+  .fl { display: table-cell; width: 36%; padding: 6px 10px 6px 12px; color: #64748B; font-weight: 700; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.06em; vertical-align: top; }
+  .fv { display: table-cell; padding: 6px 12px 6px 0; font-size: 9pt; white-space: pre-wrap; line-height: 1.5; vertical-align: top; }
+
+  /* Badges */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 8pt; font-weight: 800; border: 1.5px solid; }
+  .badge-green { background: #DCFCE7; color: #166534; border-color: #86EFAC; }
+  .badge-amber { background: #FEF9C3; color: #854D0E; border-color: #FDE047; }
+  .badge-red { background: #FEE2E2; color: #991B1B; border-color: #FCA5A5; }
+  .badge-tbd { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+  .badge-flag { background: #FEE2E2; color: #991B1B; border-color: #FCA5A5; }
+
+  /* Buildings */
+  .building { border: 1.5px solid #DBEAFE; border-left: 3px solid #1E3A8A; border-radius: 8px; margin-bottom: 16px; page-break-inside: avoid; overflow: hidden; }
+  .building-hdr { background: #1E3A8A; color: #FFFFFF; padding: 10px 14px; }
+  .building-num { font-size: 7.5pt; font-weight: 700; color: #93C5FD; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 2px; }
+  .building-name { font-size: 12.5pt; font-weight: 900; }
+  .building-body { padding: 12px 14px 6px; }
+  .b-metrics { display: table; width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  .b-metric { display: table-cell; text-align: center; padding: 8px 4px; border: 1px solid #DBEAFE; background: #EFF6FF; }
+  .b-metric-val { font-size: 11pt; font-weight: 900; color: #1E3A8A; display: block; }
+  .b-metric-lbl { font-size: 6.5pt; font-weight: 700; color: #94A3B8; text-transform: uppercase; }
+
+  /* Photos */
+  .photo-block { margin: 8px 0; page-break-inside: avoid; }
+  .photo-img-large { width: 100%; max-height: 260px; object-fit: cover; border-radius: 8px; border: 1px solid #DBEAFE; }
+  .photo-img { max-width: 100%; max-height: 180px; object-fit: cover; border-radius: 6px; border: 1px solid #DBEAFE; }
+  .photo-caption { color: #64748B; font-size: 8pt; margin-top: 4px; }
+  .photo-grid-2 { display: table; width: 100%; border-collapse: separate; border-spacing: 8px; }
+  .photo-cell { display: table-cell; width: 50%; vertical-align: top; text-align: center; page-break-inside: avoid; }
+
+  /* Switchboard */
+  .sb-card { border: 1px solid #DBEAFE; border-left: 3px solid #1E3A8A; border-radius: 6px; padding: 8px 12px; margin-bottom: 8px; background: #EFF6FF; }
+  .sb-card-title { font-size: 8pt; font-weight: 800; color: #1E3A8A; margin-bottom: 4px; }
+
+  /* Consideration */
+  .consideration { border-left: 3px solid #93C5FD; padding: 6px 10px; margin: 6px 0 10px; }
+  .consideration-issue { font-size: 10pt; font-weight: 800; color: #1E3A8A; margin-bottom: 4px; }
+  .consideration-details { font-size: 9pt; color: #374151; white-space: pre-wrap; margin-bottom: 6px; }
+
+  /* Summary table */
+  .summary-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 9pt; }
+  .summary-table th { background: #1E3A8A; color: #FFFFFF; padding: 7px 10px; text-align: left; font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+  .summary-table td { padding: 7px 10px; border-bottom: 1px solid #DBEAFE; vertical-align: middle; }
+  .summary-table tr:nth-child(even) td { background: #F8FAFC; }
+
+  /* Footer */
+  .footer-note { color: #94A3B8; font-size: 7pt; text-align: center; margin-top: 20px; border-top: 1.5px solid #93C5FD; padding-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="cover-eyebrow">Rooftop Solar &nbsp;&middot;&nbsp; Site Information Pack &nbsp;&middot;&nbsp; SolarSense</div>
+  <div class="cover-title">SolarSense</div>
+  <div class="cover-brand">
+    <div class="cover-brand-label">Prepared by</div>
+    <img class="cover-brand-logo" src="${brandLogo}" alt="Sustainability Wise" />
+  </div>
+  <div class="cover-meta">
+    <div class="cover-meta-row">
+      <div class="cm"><div class="cml">Site Name</div><div class="cmv">${esc(args.site.siteName)}</div></div>
+      <div class="cm"><div class="cml">Location</div><div class="cmv">${esc(args.site.location || '—')}</div></div>
+    </div>
+    <div class="cover-meta-row">
+      <div class="cm"><div class="cml">Date of Assessment</div><div class="cmv">${fmtDate(args.site.dateOfAssessment)}</div></div>
+      <div class="cm"><div class="cml">Buildings Assessed</div><div class="cmv">${assessments.length}</div></div>
+    </div>
+    <div class="cover-meta-row">
+      <div class="cm"><div class="cml">Viable Buildings</div><div class="cmv">${viable.length}</div></div>
+      <div class="cm"><div class="cml">Total AC Capacity</div><div class="cmv">${totalAcKw >= 1000 ? `${(totalAcKw / 1000).toFixed(2)} MW` : `${totalAcKw.toFixed(1)} kW`}</div></div>
+    </div>
+  </div>
+  ${classTag}
+</div>
+
+<table class="stats">
+  <tr>
+    <td class="stat"><span class="stat-val">${assessments.length}</span><span class="stat-lbl">Buildings</span></td>
+    <td class="stat"><span class="stat-val">${viable.length}</span><span class="stat-lbl">Viable</span></td>
+    <td class="stat"><span class="stat-val">${(totalAcKw / 1000).toFixed(2)}</span><span class="stat-lbl">AC MW</span></td>
+    <td class="stat"><span class="stat-val">${ragCounts.G}</span><span class="stat-lbl">Green</span></td>
+    <td class="stat"><span class="stat-val">${ragCounts.A}</span><span class="stat-lbl">Amber</span></td>
+    <td class="stat"><span class="stat-val">${ragCounts.R}</span><span class="stat-lbl">Red</span></td>
+  </tr>
+</table>
+
+${secFields('Site Context', [
+  field('Document Classification', args.site.documentClassification),
+  field('Date of Assessment', args.site.dateOfAssessment),
+  field('Location', args.site.location),
+].join(''))}
+
+${viable.length ? `
+<div class="sec-bar">Viable Buildings Summary</div>
+<table class="summary-table">
+  <thead><tr><th>Building</th><th>kW DC</th><th>kW AC</th><th>RAG</th><th>Roof Condition</th></tr></thead>
+  <tbody>${viableRows}</tbody>
+</table>` : ''}
+
+<div class="sec-bar">Building Assessments</div>
+${buildingsHtml}
+
+${args.options.includeRagFramework ? RAG_FRAMEWORK : ''}
+
+${appendixHtml}
+
+<div class="footer-note">
+  Generated by SolarSense &nbsp;&middot;&nbsp; ${new Date().toLocaleDateString('en-AU')}
+</div>
+</body>
+</html>`;
 }
 
 export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
@@ -245,7 +550,10 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
-    const body = (request.body as { assessmentIds?: string[] }) ?? {};
+    const body = (request.body as {
+      assessmentIds?: string[];
+      options?: Record<string, unknown>;
+    }) ?? {};
 
     const [site] = await db
       .select()
@@ -278,7 +586,18 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       ));
     const compressedPhotos = await prepareCompressedPdfPhotos(photos);
 
-    const pdf = await renderPdf(await buildHtml({ site: foundSite, assessments, photos: compressedPhotos }));
+    const rawOptions = (body.options && typeof body.options === 'object' ? body.options : {}) as Record<string, unknown>;
+    const options: SitePackOptions = {
+      includeRagFramework: rawOptions.includeRagFramework !== false,
+      includeAppendix: rawOptions.includeAppendix !== false,
+    };
+
+    const pdf = await renderPdf(await buildHtml({
+      site: foundSite,
+      assessments,
+      photos: compressedPhotos,
+      options,
+    }));
     if (pdf.byteLength > MAX_PDF_BYTES) {
       return reply.status(413).send({
         error: 'PDF too large to generate server-side',

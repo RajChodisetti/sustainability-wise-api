@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastify';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { photoRegistry } from '../../db/schema/shared.js';
 import {
@@ -63,6 +63,7 @@ const FIELD_LABELS: Record<string, string> = {
   mountingConstraintsPhoto: 'Mounting / Access',
   sensorsPhoto: 'Switches / Sensors',
   switchboardControlsPhoto: 'Switchboard / Controls',
+  switchboardPhotoNotes: 'Switchboard / Controls',
   nameplatePhotos: 'Nameplate',
   controllerPhoto: 'Controller',
   indoorUnitNameplatePhoto: 'Indoor Unit Nameplate',
@@ -107,12 +108,23 @@ function formatText(text: string | null | undefined): string {
   return html;
 }
 
+function parseDisplayDate(ds: string | Date | null | undefined): Date | null {
+  if (!ds) return null;
+  if (ds instanceof Date) return Number.isNaN(ds.getTime()) ? null : ds;
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ds.trim());
+  if (isoDate) {
+    const [, year, month, day] = isoDate;
+    return new Date(Number(year), Number(month) - 1, Number(day));
+  }
+  const parsed = new Date(ds);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 function fmtDate(ds: string | Date | null | undefined): string {
   if (!ds) return '—';
-  try {
-    const d = new Date(ds as string);
-    return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
-  } catch { return String(ds); }
+  const d = parseDisplayDate(ds);
+  if (!d) return String(ds);
+  return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
 }
 
 function gallery(photos: PhotoEntry[], title = 'Photographic Evidence', count = photos.length, className = '', colsOverride?: number): string {
@@ -396,6 +408,7 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 
 .exec-title{font-size:13pt;font-weight:800;color:#0F172A;margin-bottom:8px;padding-bottom:7px;border-bottom:2px solid #1E3A8A;}
 .exec-mode{font-size:8pt;font-weight:700;color:#1E3A8A;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;}
+.exec-copy{font-size:10pt;line-height:1.6;color:#334155;background:#F8FAFC;border-left:3px solid #1E3A8A;padding:11px 14px 18px;margin-bottom:18px;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;overflow-wrap:anywhere;orphans:3;widows:3;}
 .stats{display:table;width:100%;border-collapse:separate;border-spacing:6px;margin-bottom:24px;}
 .stats-row{display:table-row;}
 .sp{display:table-cell;text-align:center;background:#F8FAFC;border:1px solid #DBEAFE;border-radius:8px;padding:10px 6px;border-top:3px solid #1E3A8A;}
@@ -504,12 +517,36 @@ function zonePhotoCount(zoneId: string, photos: PhotoRow[], allEquipment: Equipm
   return photos.filter((p) => entityIds.has(p.entityId) && p.remoteUrl).length;
 }
 
+function defaultExecutiveSummary(args: BodyArgs): string {
+  const itemCount = args.msList.length + args.addlSbList.length + args.hvacList.length + args.lightList.length
+    + args.solarList.length + args.forkliftList.length + args.hotWaterList.length + args.genWaterList.length + args.genElecList.length;
+  return `This energy audit report summarises findings for ${args.audit.siteName || 'the audited site'}, covering ${args.zones.length} zone${args.zones.length === 1 ? '' : 's'} and ${itemCount} captured item${itemCount === 1 ? '' : 's'}.`;
+}
+
+function defaultConsolidatedObservations(
+  hvacList: EquipmentItem[],
+  lightList: EquipmentItem[],
+  solarList: EquipmentItem[],
+  forkliftList: EquipmentItem[],
+  hotWaterList: EquipmentItem[],
+): string {
+  const observations = [
+    ...hvacList.map((item) => sf('energyImprovementObservations', item)),
+    ...lightList.map((item) => sf('energyImprovementObservations', item)),
+    ...solarList.map((item) => sf('energyImprovementObservations', item)),
+    ...forkliftList.map((item) => sf('energyImprovementObservations', item)),
+    ...hotWaterList.map((item) => sf('energyImprovementObservations', item)),
+  ].filter((value): value is string => !!value);
+  return observations.length ? observations.join('\n\n') : '';
+}
+
 function observationsBody(
   hvacList: EquipmentItem[],
   lightList: EquipmentItem[],
   solarList: EquipmentItem[],
   forkliftList: EquipmentItem[],
   hotWaterList: EquipmentItem[],
+  consolidated: string | null | undefined,
 ): string {
   const allObs: Array<{ section: string; text: string }> = [
     ...hvacList.filter((h) => sf('energyImprovementObservations', h)).map((h) => ({ section: `HVAC · ${esc(sf('unitName', h))}`, text: sf('energyImprovementObservations', h)! })),
@@ -518,10 +555,11 @@ function observationsBody(
     ...forkliftList.filter((f) => sf('energyImprovementObservations', f)).map((f) => ({ section: `Forklift · ${esc(sf('chargerType', f))}`, text: sf('energyImprovementObservations', f)! })),
     ...hotWaterList.filter((h) => sf('energyImprovementObservations', h)).map((h) => ({ section: `Hot Water · ${esc(sf('dhwDetailsType', h))}`, text: sf('energyImprovementObservations', h)! })),
   ];
-  if (allObs.length === 0) return '';
+  if (!consolidated && allObs.length === 0) return '';
   return `
     ${secHeader('9', 'Observations for Energy Improvements')}
-    <p class="sec-desc">Equipment-specific observations provided by the auditor.</p>
+    ${consolidated ? `<div class="obs-block obs-summary"><div class="obs-title">Consolidated Observations</div><div class="obs-text">${formatText(consolidated)}</div></div>` : ''}
+    ${allObs.length ? `<p class="sec-desc">Equipment-specific observations provided by the auditor.</p>` : ''}
     ${allObs.map((o, i) => `<div class="obs-block"><div class="obs-num">Observation ${i + 1}</div><div class="obs-title">${o.section}</div><div class="obs-text">${formatText(o.text)}</div></div>`).join('')}`;
 }
 
@@ -543,6 +581,7 @@ function zonePhotosBody(zones: Array<typeof eaZones.$inferSelect>, photos: Photo
 function byEquipmentBody(args: BodyArgs): string {
   const zoneMap = new Map(args.zones.map((z) => [z.id, z.zoneName]));
   const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList } = args;
+  const consolidatedObservations = defaultConsolidatedObservations(hvacList, lightList, solarList, forkliftList, hotWaterList);
 
   const elecParts = [
     msList.length ? `<div class="subsec-title">1.1 &nbsp;Main Switchboard</div>${msList.map((m) => renderMs(m, photosForEntity(photos, m.id), zoneMap)).join('')}` : '',
@@ -558,7 +597,7 @@ function byEquipmentBody(args: BodyArgs): string {
     + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id), zoneMap)).join('')}` : '')
     + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
     + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
-    + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList);
+    + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations);
 }
 
 function byZoneBody(args: BodyArgs): string {
@@ -603,7 +642,7 @@ function byZoneBody(args: BodyArgs): string {
     zoneBlocks.push({ id: null, title: 'Unzoned', description: null, zMs: unzMs, zAddl: unzAddl, zHvac: unzHvac, zLight: unzLight, zSolar: unzSolar, zFork: unzFork, zHw: unzHw, zGw: unzGw, zGe: unzGe, total: unzTotal, zPhotos: [], photoCount: unzTotal });
   }
 
-  if (zoneBlocks.length === 0) return '<p class="empty-note">No equipment captured in this report.</p>';
+  if (zoneBlocks.length === 0) return '<p class="empty-note">No selected zone items in this report.</p>';
 
   return zoneBlocks.map((zone, zIdx) => {
     const pb = zIdx > 0 ? ' style="page-break-before:auto;break-before:auto;"' : '';
@@ -629,8 +668,7 @@ function byZoneBody(args: BodyArgs): string {
       ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
       ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
     </div>`;
-  }).join('')
-    + observationsBody(args.hvacList, args.lightList, args.solarList, args.forkliftList, args.hotWaterList);
+  }).join('');
 }
 
 // ── Full HTML builder ─────────────────────────────────────────────────────────────
@@ -640,10 +678,27 @@ function buildAuditHtml(args: BodyArgs): string {
   const statusLabel = audit.status === 'Completed' ? 'Completed' : 'In Progress';
   const totalEquipment = msList.length + addlSbList.length + hvacList.length + lightList.length + solarList.length + forkliftList.length + hotWaterList.length + genWaterList.length + genElecList.length;
   const totalPhotos = photos.filter((p) => p.remoteUrl).length;
+  const consolidatedObservations = defaultConsolidatedObservations(hvacList, lightList, solarList, forkliftList, hotWaterList);
+  const executiveSummary = defaultExecutiveSummary(args);
+  const knownZoneIds = new Set(zones.map((zone) => zone.id));
+  const representedZones = new Set<string>();
+  [
+    ...zones.filter((zone) => photosForEntity(photos, zone.id).length > 0).map((zone) => zone.id),
+    ...msList.map((item) => item.zoneId),
+    ...addlSbList.map((item) => item.zoneId),
+    ...hvacList.map((item) => item.zoneId),
+    ...lightList.map((item) => item.zoneId),
+    ...solarList.map((item) => item.zoneId),
+    ...forkliftList.map((item) => item.zoneId),
+    ...hotWaterList.map((item) => item.zoneId),
+    ...genWaterList.map((item) => item.zoneId),
+    ...genElecList.map((item) => item.zoneId),
+  ].forEach((zoneId) => representedZones.add(zoneId && knownZoneIds.has(zoneId) ? zoneId : '__unzoned__'));
+  const selectedZoneCount = representedZones.size;
 
-  const statCells = ([
-    { count: zones.length, label: 'Zones' },
-    { count: totalPhotos, label: 'Photos' },
+  const statCells = [
+    { count: selectedZoneCount, label: 'Zones', always: true },
+    { count: totalPhotos, label: 'Photos', always: true },
     { count: msList.length + addlSbList.length, label: 'Switchboards' },
     { count: hvacList.length, label: 'HVAC' },
     { count: lightList.length, label: 'Lighting' },
@@ -651,13 +706,11 @@ function buildAuditHtml(args: BodyArgs): string {
     { count: forkliftList.length, label: 'Forklift' },
     { count: hotWaterList.length, label: 'Hot Water' },
     { count: genWaterList.length + genElecList.length, label: 'General' },
-    { count: totalEquipment, label: 'Total' },
-  ] as Array<{ count: number; label: string }>)
-    .filter((s) => s.count > 0)
-    .map((s) => statPill(s.count, s.label))
+    { count: totalEquipment, label: 'Total', always: true },
+  ]
+    .filter((stat) => stat.always || stat.count > 0)
+    .map((stat) => statPill(stat.count, stat.label))
     .join('');
-
-  const bodyContent = mode === 'by-zone' ? byZoneBody(args) : byEquipmentBody(args);
 
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>${buildCss()}</style></head>
@@ -707,9 +760,12 @@ function buildAuditHtml(args: BodyArgs): string {
 
       <div class="exec-title">Executive Summary</div>
       <div class="exec-mode">${modeLabel}</div>
+      ${executiveSummary ? `<div class="exec-copy">${formatText(executiveSummary)}</div>` : ''}
       <div class="stats"><div class="stats-row">${statCells}</div></div>
 
-      ${bodyContent}
+      ${mode === 'by-zone'
+        ? byZoneBody(args) + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations)
+        : byEquipmentBody(args)}
 
       <div class="end-block">
         <div class="end-inner">
@@ -796,7 +852,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
       eq(photoRegistry.app, 'ecoaudit'),
       eq(photoRegistry.parentId, auditId),
       eq(photoRegistry.status, 'confirmed'),
-    )),
+    )).orderBy(asc(photoRegistry.createdAt)),
   ]);
 
   const allowedPhotoEntityIds = new Set([
