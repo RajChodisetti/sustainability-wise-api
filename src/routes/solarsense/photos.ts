@@ -5,9 +5,10 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
-import { deleteLocalFile, localFileExists, storageKeyToPath } from '../../storage/localFiles.js';
+import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
+  append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
   file(source: string, data: { name: string }): void;
   finalize(): Promise<void>;
 };
@@ -101,7 +102,7 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     const archive = await createZipArchive();
     for (const photo of photos) {
       if (photo.storageKey && await localFileExists(photo.storageKey)) {
-        archive.file(storageKeyToPath(photo.storageKey), { name: zipEntryName(photo) });
+        archive.append(await localFileStream(photo.storageKey), { name: zipEntryName(photo) });
       }
     }
     void archive.finalize();

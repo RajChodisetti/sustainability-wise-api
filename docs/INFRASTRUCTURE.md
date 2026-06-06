@@ -59,6 +59,9 @@ pm2 monit         # live CPU/RAM dashboard
 pm2 restart sw-api # rolling restart (zero downtime for single instance)
 ```
 
+The PM2 config runs `src/index.ts` through `tsx`, so `tsx` is a runtime dependency.
+The API applies Drizzle migrations during startup before listening on the configured port.
+
 ## Reverse Proxy (Caddy)
 
 Caddy manages:
@@ -76,8 +79,10 @@ crontab -e
 # 0 2 * * * /opt/sw-api/deploy/backup.sh >> /var/log/sw-backup.log 2>&1
 ```
 
-Backup files land in `OneDrive:SustainabilityWise/backups/db/` as
-`sw_backup_YYYYMMDD_HHMMSS.sql.gz`.
+Backup files land under `OneDrive:SustainabilityWise/backups/` by default:
+
+- `db/sw_db_backup_YYYYMMDD_HHMMSS.sql.gz`
+- `uploads/sw_uploads_backup_YYYYMMDD_HHMMSS.tar.gz`
 
 Retention: OneDrive does not auto-delete — prune manually or add a cleanup step.
 Recommended: keep last 30 days.
@@ -120,13 +125,28 @@ git push origin main
 cd /opt/sw-api
 git pull origin main
 npm ci --omit=dev
-npx drizzle-kit migrate   # no-op if no new migrations
-pm2 restart sw-api
+pm2 restart sw-api        # startup runs migrations before listening
 pm2 logs --lines 50       # verify startup
 ```
 
 Alternatively, configure a GitHub webhook or GitHub Actions CD pipeline to
 trigger the deploy script on push to main.
+
+## Smoke Tests
+
+After deploy:
+
+```bash
+BASE_URL=https://api.sustainabilitywise.com.au \
+EA_ADMIN_EMAIL=admin@sustainabilitywise.com.au \
+EA_ADMIN_PASSWORD='...' \
+SS_ADMIN_EMAIL=admin@sustainabilitywise.com.au \
+SS_ADMIN_PASSWORD='...' \
+./deploy/smoke-test.sh
+```
+
+With no credential variables, the script still verifies `/health` and skips
+authenticated checks.
 
 ## Monitoring
 

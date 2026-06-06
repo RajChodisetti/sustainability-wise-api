@@ -4,9 +4,9 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaUsers } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { hashPassword } from '../../auth/apiKey.js';
+import { hashPassword, verifyPassword } from '../../auth/apiKey.js';
 import { assertFound, assertSelfOrAdmin } from './helpers.js';
-import { badRequest, conflict } from '../../utils/errors.js';
+import { badRequest, conflict, unauthorized } from '../../utils/errors.js';
 
 export async function eaUserRoutes(app: FastifyInstance): Promise<void> {
   const cols = {
@@ -27,11 +27,11 @@ export async function eaUserRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['EcoAudit Users'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('admin')],
   }, async (request, reply) => {
-    const body = request.body as { email?: string; password?: string; fullName?: string | null; role?: string };
+    const body = request.body as { id?: string; email?: string; password?: string; fullName?: string | null; role?: string };
     if (!body.email || !body.password) throw badRequest('email and password are required');
     const role = body.role ?? 'inspector';
     if (!['admin', 'inspector'].includes(role)) throw badRequest('role must be admin or inspector');
-    const id = randomUUID();
+    const id = body.id?.trim() || randomUUID();
     const passwordHash = await hashPassword(body.password);
     try {
       await db.insert(eaUsers).values({ id, email: body.email.toLowerCase().trim(), passwordHash, fullName: body.fullName?.trim() || null, role });
@@ -64,6 +64,31 @@ export async function eaUserRoutes(app: FastifyInstance): Promise<void> {
     }
     if (body.isActive !== undefined) changes.isActive = Boolean(body.isActive);
     const [updated] = await db.update(eaUsers).set(changes).where(eq(eaUsers.id, id)).returning(cols);
+    return reply.send(assertFound(updated, 'User'));
+  });
+
+  app.patch('/:id/password', {
+    schema: { tags: ['EcoAudit Users'], security: [{ bearerAuth: [] }] },
+    preHandler: [authenticate, requireApp('ecoaudit')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    assertSelfOrAdmin(id, request.user);
+    const body = request.body as { currentPassword?: string; newPassword?: string };
+    if (!body.currentPassword || !body.newPassword) {
+      throw badRequest('currentPassword and newPassword are required');
+    }
+    if (body.newPassword.length < 6) throw badRequest('newPassword must be at least 6 characters');
+
+    const [user] = await db.select().from(eaUsers).where(eq(eaUsers.id, id));
+    const found = assertFound(user, 'User');
+    const currentValid = await verifyPassword(body.currentPassword, found.passwordHash);
+    if (!currentValid) throw unauthorized('Current password is incorrect');
+
+    const [updated] = await db.update(eaUsers)
+      .set({ passwordHash: await hashPassword(body.newPassword), updatedAt: new Date() })
+      .where(eq(eaUsers.id, id))
+      .returning(cols);
+
     return reply.send(assertFound(updated, 'User'));
   });
 

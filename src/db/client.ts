@@ -11,4 +11,8 @@ export const db = drizzle(sql, {
   schema: { ...sharedSchema, ...solarsenseSchema, ...ecoauditSchema },
 });
 
+export async function closeDb(): Promise<void> {
+  await sql.end({ timeout: 5 });
+}
+
 export { sql };

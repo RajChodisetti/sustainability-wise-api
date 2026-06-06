@@ -1,9 +1,12 @@
 # API Reference
 
-Full live documentation is available at `GET /v1/docs` (Swagger UI, JWT required).
+Full live documentation is available at `GET /v1/docs/` (Swagger UI, JWT required).
+For browser use, open `/v1/docs/?access_token=<JWT or API key>` once; the UI stores the token
+locally and uses it for the OpenAPI JSON request.
 
-This file is a quick-reference index. All endpoints require `Authorization: Bearer <token>`
-where the token is either a JWT access token or a service account API key.
+This file is a quick-reference index. Protected endpoints require `Authorization: Bearer <token>`
+where the token is either a JWT access token or a service account API key. Public exceptions are
+`/health`, `/v1/files/...`, and raw upload session URLs returned by create-upload-session.
 
 ---
 
@@ -28,7 +31,7 @@ where the token is either a JWT access token or a service account API key.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/v1/files/:storageKey` | public URL | Download VM-local file referenced by `remoteUrl` |
+| GET | `/v1/files/:storageKey` | public URL | Download stored file referenced by `remoteUrl` |
 
 ---
 
@@ -68,15 +71,15 @@ where the token is either a JWT access token or a service account API key.
 |---|---|---|---|
 | GET | `/v1/solarsense/sites/:siteId/photos` | inspector/admin | List all photos for site |
 | GET | `/v1/solarsense/sites/:siteId/photos/export` | inspector/admin | Download ZIP of all photos |
-| DELETE | `/v1/solarsense/photos/:photoId` | admin | Delete photo from VM-local storage and registry |
+| DELETE | `/v1/solarsense/photos/:photoId` | admin | Delete photo from configured storage and registry |
 
 ### Sync
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/solarsense/sync/check-photo` | service/inspector | SHA-256 dedup check |
-| POST | `/v1/solarsense/sync/create-upload-session` | service/inspector | Create VM-local upload session |
-| PUT | `/v1/solarsense/sync/upload/:sessionId` | session URL | Upload raw image bytes to VM-local storage |
-| POST | `/v1/solarsense/sync/confirm-upload` | service/inspector | Confirm VM-local upload complete |
+| POST | `/v1/solarsense/sync/create-upload-session` | service/inspector | Create photo upload session |
+| PUT | `/v1/solarsense/sync/upload/:sessionId` | session URL | Upload raw image bytes to configured storage |
+| POST | `/v1/solarsense/sync/confirm-upload` | service/inspector | Confirm upload complete |
 | POST | `/v1/solarsense/sync/push` | service/inspector | Upsert sites + assessments |
 | GET | `/v1/solarsense/sync/pull` | service/inspector | Delta pull since timestamp |
 
@@ -107,9 +110,9 @@ Same shape as SolarSense Users at `/v1/ecoaudit/users/…`
 |---|---|---|---|
 | GET | `/v1/ecoaudit/audits/:auditId/zones` | inspector/admin | List zones |
 | POST | `/v1/ecoaudit/audits/:auditId/zones` | inspector/admin | Create zone |
-| GET | `/v1/ecoaudit/audits/:auditId/zones/:id` | inspector/admin | Get zone |
-| PATCH | `/v1/ecoaudit/audits/:auditId/zones/:id` | inspector/admin | Update zone |
-| DELETE | `/v1/ecoaudit/audits/:auditId/zones/:id` | inspector/admin | Soft-delete |
+| GET | `/v1/ecoaudit/zones/:id` | inspector/admin | Get zone |
+| PATCH | `/v1/ecoaudit/zones/:id` | inspector/admin | Update zone |
+| DELETE | `/v1/ecoaudit/zones/:id` | inspector/admin | Soft-delete |
 
 ### Equipment (× 9 types)
 Each type has identical CRUD. Replace `{type}` with one of:
@@ -118,24 +121,25 @@ Each type has identical CRUD. Replace `{type}` with one of:
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/v1/ecoaudit/audits/:id/zones/:zid/{type}` | inspector/admin | List items |
-| POST | `/v1/ecoaudit/audits/:id/zones/:zid/{type}` | inspector/admin | Create item |
-| GET | `/v1/ecoaudit/audits/:id/zones/:zid/{type}/:eid` | inspector/admin | Get item |
-| PATCH | `/v1/ecoaudit/audits/:id/zones/:zid/{type}/:eid` | inspector/admin | Update item |
-| DELETE | `/v1/ecoaudit/audits/:id/zones/:zid/{type}/:eid` | inspector/admin | Soft-delete |
+| GET | `/v1/ecoaudit/audits/:auditId/{type}` | inspector/admin | List items for an audit |
+| POST | `/v1/ecoaudit/audits/:auditId/{type}` | inspector/admin | Create item; body includes `zoneId` |
+| GET | `/v1/ecoaudit/{type}/:id` | inspector/admin | Get item |
+| PATCH | `/v1/ecoaudit/{type}/:id` | inspector/admin | Update item |
+| DELETE | `/v1/ecoaudit/{type}/:id` | inspector/admin | Soft-delete |
 
 ### Photos
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/v1/ecoaudit/audits/:auditId/photos` | inspector/admin | List all photos for audit |
 | GET | `/v1/ecoaudit/audits/:auditId/photos/export` | inspector/admin | Download ZIP |
-| DELETE | `/v1/ecoaudit/photos/:photoId` | admin | Delete from OneDrive |
+| DELETE | `/v1/ecoaudit/photos/:photoId` | admin | Delete from configured storage and registry |
 
 ### Sync
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/ecoaudit/sync/check-photo` | service/inspector | SHA-256 dedup check |
-| POST | `/v1/ecoaudit/sync/create-upload-session` | service/inspector | Create OneDrive upload session |
+| POST | `/v1/ecoaudit/sync/create-upload-session` | service/inspector | Create photo upload session |
+| PUT | `/v1/ecoaudit/sync/upload/:sessionId` | session URL | Upload raw image bytes to configured storage |
 | POST | `/v1/ecoaudit/sync/confirm-upload` | service/inspector | Confirm upload complete |
 | POST | `/v1/ecoaudit/sync/push` | service/inspector | Upsert audit + zones + all 9 equipment types |
 | GET | `/v1/ecoaudit/sync/pull` | service/inspector | Delta pull since timestamp |
@@ -162,11 +166,19 @@ Each type has identical CRUD. Replace `{type}` with one of:
 }
 ```
 
-### Sync Push Response
+### SolarSense Sync Push Response
 ```json
 {
   "siteIds": { "<localId>": "<serverId>", ... },
   "assessmentIds": { "<localId>": "<serverId>", ... }
+}
+```
+
+### EcoAudit Sync Push Response
+```json
+{
+  "auditId": "<localId>",
+  "serverId": "<serverId>"
 }
 ```
 

@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer } from 'drizzle-orm/pg-core';
+import { jsonb, pgTable, text, timestamp, integer } from 'drizzle-orm/pg-core';
 
 export const apiKeys = pgTable('api_keys', {
   id: text('id').primaryKey(),
@@ -40,5 +40,16 @@ export const photoRegistry = pgTable('photo_registry', {
   fileSizeBytes: integer('file_size_bytes'),
   status: text('status').notNull().default('pending'),
   uploadedAt: timestamp('uploaded_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const recordVersions = pgTable('record_versions', {
+  id: text('id').primaryKey(),
+  app: text('app').notNull(),
+  entityType: text('entity_type').notNull(),
+  entityId: text('entity_id').notNull(),
+  versionNumber: integer('version_number').notNull(),
+  snapshot: jsonb('snapshot').notNull(),
+  createdByUserId: text('created_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

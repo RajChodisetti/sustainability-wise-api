@@ -5,11 +5,69 @@ import { refreshTokens } from '../db/schema/shared.js';
 import { eaUsers } from '../db/schema/ecoaudit.js';
 import { ssUsers } from '../db/schema/solarsense.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../auth/jwt.js';
+import type { App, Role } from '../auth/jwt.js';
 import { verifyPassword, hashPassword } from '../auth/apiKey.js';
 import { authenticate, requireRole } from '../auth/middleware.js';
 import { sha256String, randomToken } from '../utils/crypto.js';
 import { unauthorized, badRequest, notFound, conflict, gone, forbidden } from '../utils/errors.js';
 import { config } from '../config.js';
+
+type UserTable = typeof eaUsers | typeof ssUsers;
+
+function tableForApp(app: App): UserTable {
+  return app === 'ecoaudit' ? eaUsers : ssUsers;
+}
+
+function normalizeRole(value: unknown): Extract<Role, 'admin' | 'inspector'> {
+  return value === 'admin' ? 'admin' : 'inspector';
+}
+
+function cloudEmailForLogin(app: App, value: string): string {
+  const normalized = value.toLowerCase().trim();
+  if (normalized.includes('@')) return normalized;
+  const safeUsername = normalized.replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
+  return `${safeUsername}@${app}.users.local`;
+}
+
+async function registrationsAreClosed(): Promise<boolean> {
+  const result = await db.execute(sql`SELECT value FROM server_settings WHERE key = 'registrations_closed'`);
+  return (result as unknown as Array<{ value: string }>)[0]?.value === 'true';
+}
+
+function assertRegistrationSecret(secret: string | string[] | undefined): void {
+  if (!config.registrationSecret || secret !== config.registrationSecret) {
+    throw forbidden('Invalid or missing registration secret');
+  }
+}
+
+async function issueTokens(user: { id: string; email: string; fullName: string | null; role: string }, app: App) {
+  const role = normalizeRole(user.role);
+  const accessToken = signAccessToken({ userId: user.id, app, role });
+  const refreshToken = signRefreshToken({ userId: user.id, app });
+  const tokenId = randomToken(16);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  await db.insert(refreshTokens).values({
+    id: tokenId,
+    userId: user.id,
+    app,
+    tokenHash: sha256String(refreshToken),
+    expiresAt,
+  });
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresIn: 900,
+    user: {
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role,
+      app,
+    },
+  };
+}
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // POST /v1/auth/login
@@ -21,7 +79,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         type: 'object',
         required: ['email', 'password', 'app'],
         properties: {
-          email:    { type: 'string', format: 'email' },
+          email:    { type: 'string', minLength: 1 },
           password: { type: 'string', minLength: 1 },
           app:      { type: 'string', enum: ['ecoaudit', 'solarsense'] },
         },
@@ -32,39 +90,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       email: string; password: string; app: 'ecoaudit' | 'solarsense';
     };
 
-    const userTable = app === 'ecoaudit' ? eaUsers : ssUsers;
-    const [user] = await db.select().from(userTable).where(eq(userTable.email, email));
+    const userTable = tableForApp(app);
+    const loginEmail = cloudEmailForLogin(app, email);
+    const [user] = await db.select().from(userTable).where(eq(userTable.email, loginEmail));
 
     if (!user || !user.isActive) throw unauthorized('Invalid credentials');
 
     const valid = await verifyPassword(password, user.passwordHash);
     if (!valid) throw unauthorized('Invalid credentials');
 
-    const accessToken  = signAccessToken({ userId: user.id, app, role: user.role as any });
-    const refreshToken = signRefreshToken({ userId: user.id, app });
-    const tokenId      = randomToken(16);
-    const expiresAt    = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-    await db.insert(refreshTokens).values({
-      id: tokenId,
-      userId: user.id,
-      app,
-      tokenHash: sha256String(refreshToken),
-      expiresAt,
-    });
-
-    return reply.send({
-      accessToken,
-      refreshToken,
-      expiresIn: 900,
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        role: user.role,
-        app,
-      },
-    });
+    return reply.send(await issueTokens(user, app));
   });
 
   // POST /v1/auth/refresh
@@ -105,7 +140,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(refreshTokens.id, stored.id));
 
     // Lookup user for role
-    const userTable = payload.app === 'ecoaudit' ? eaUsers : ssUsers;
+    const userTable = tableForApp(payload.app);
     const [user] = await db.select().from(userTable).where(eq(userTable.id, payload.userId));
     if (!user || !user.isActive) throw unauthorized('User not found or inactive');
 
@@ -156,23 +191,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   `);
 
   // POST /v1/auth/register
-  // Purpose: one-time migration of local device accounts to cloud.
+  // Purpose: one-time public migration of local device accounts to cloud.
   // Guards:
   //   1. X-Registration-Secret header must match REGISTRATION_SECRET env var.
   //   2. Permanently locked once POST /v1/auth/close-registrations is called.
   app.post('/register', {
     schema: { tags: ['Auth'], summary: 'Migrate local account to cloud (requires app registration secret)' },
   }, async (request, reply) => {
-    // Guard 1 — check permanent closed flag
-    const result = await db.execute(sql`SELECT value FROM server_settings WHERE key = 'registrations_closed'`);
-    const closed = (result as unknown as Array<{ value: string }>)[0]?.value === 'true';
-    if (closed) throw gone('Self-registration is permanently closed. Contact your administrator.');
-
-    // Guard 2 — check build-time secret header
-    const secret = request.headers['x-registration-secret'];
-    if (!config.registrationSecret || secret !== config.registrationSecret) {
-      throw forbidden('Invalid or missing registration secret');
+    if (await registrationsAreClosed()) {
+      throw gone('Self-registration is permanently closed. Contact your administrator.');
     }
+
+    assertRegistrationSecret(request.headers['x-registration-secret']);
 
     const { email, password, fullName, app } = request.body as {
       email: string; password: string; fullName?: string; app: 'ecoaudit' | 'solarsense';
@@ -182,14 +212,15 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!['ecoaudit', 'solarsense'].includes(app)) throw badRequest('app must be ecoaudit or solarsense');
 
     const userTable = app === 'ecoaudit' ? eaUsers : ssUsers;
-    const [existing] = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, email.toLowerCase().trim()));
+    const normalizedEmail = cloudEmailForLogin(app, email);
+    const [existing] = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, normalizedEmail));
     if (existing) throw conflict('An account with this email already exists');
 
     const { randomUUID } = await import('node:crypto');
     const id = randomUUID();
     const passwordHash = await hashPassword(password);
     await db.insert(userTable).values({
-      id, email: email.toLowerCase().trim(),
+      id, email: normalizedEmail,
       passwordHash, fullName: fullName?.trim() || null, role: 'inspector',
     });
 
@@ -201,8 +232,92 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     return reply.status(201).send({
       accessToken, refreshToken, expiresIn: 900,
-      user: { id, email: email.toLowerCase().trim(), fullName: fullName?.trim() || null, role: 'inspector', app },
+      user: { id, email: normalizedEmail, fullName: fullName?.trim() || null, role: 'inspector', app },
     });
+  });
+
+  // POST /v1/auth/bootstrap-local
+  // Creates or refreshes a cloud identity that uses the same local mobile user ID.
+  // This is intentionally separate from public self-registration. Mobile apps use
+  // it after a successful local login so Cloud Backup can be enabled for
+  // existing offline users even after /register has been permanently closed. If
+  // the mobile app still has the login password, the cloud password is updated;
+  // otherwise the endpoint issues tokens with a temporary server-only password.
+  app.post('/bootstrap-local', {
+    schema: {
+      tags: ['Auth'],
+      summary: 'Bootstrap cloud tokens for the current local mobile account',
+      body: {
+        type: 'object',
+        required: ['app', 'localUserId', 'username', 'role'],
+        properties: {
+          app: { type: 'string', enum: ['ecoaudit', 'solarsense'] },
+          localUserId: { type: 'string', minLength: 1 },
+          username: { type: 'string', minLength: 1 },
+          password: { type: 'string', minLength: 6 },
+          fullName: { type: 'string' },
+          role: { type: 'string', enum: ['admin', 'inspector'] },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!config.allowLocalBootstrap) {
+      throw gone('Local account bootstrap is disabled. Sign in with an API server account or ask an administrator to create one.');
+    }
+
+    assertRegistrationSecret(request.headers['x-registration-secret']);
+
+    const { app, localUserId, username, password, fullName, role } = request.body as {
+      app: App;
+      localUserId: string;
+      username: string;
+      password?: string;
+      fullName?: string | null;
+      role?: string;
+    };
+    if (!['ecoaudit', 'solarsense'].includes(app)) throw badRequest('app must be ecoaudit or solarsense');
+    if (password !== undefined && password.length < 6) throw badRequest('password must be at least 6 characters');
+    const id = localUserId.trim();
+    if (!id) throw badRequest('localUserId is required');
+
+    const userTable = tableForApp(app);
+    const now = new Date();
+    const email = cloudEmailForLogin(app, username);
+    const requestedRole = normalizeRole(role);
+    const normalizedRole = requestedRole === 'admin' && !config.allowBootstrapAdminRole
+      ? 'inspector'
+      : requestedRole;
+    const normalizedName = fullName?.trim() || username.trim();
+
+    const [existing] = await db.select().from(userTable).where(eq(userTable.id, id));
+    const [emailOwner] = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, email));
+    if (emailOwner && emailOwner.id !== id) throw conflict('Email already exists');
+    const passwordHash = password ? await hashPassword(password) : null;
+    if (existing) {
+      const changes: Record<string, unknown> = {
+        email,
+        fullName: normalizedName,
+        role: normalizedRole,
+        isActive: true,
+        updatedAt: now,
+      };
+      if (passwordHash) changes.passwordHash = passwordHash;
+      await db.update(userTable).set(changes).where(eq(userTable.id, id));
+    } else {
+      await db.insert(userTable).values({
+        id,
+        email,
+        passwordHash: passwordHash ?? await hashPassword(randomToken(32)),
+        fullName: normalizedName,
+        role: normalizedRole,
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const [user] = await db.select().from(userTable).where(eq(userTable.id, id));
+    return reply.status(existing ? 200 : 201).send(await issueTokens(user, app));
   });
 
   // POST /v1/auth/close-registrations — admin-only, permanently disables /register.
@@ -231,7 +346,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (authType === 'apikey') {
       return reply.send({ id: null, email: null, fullName: keyName ?? null, role, app });
     }
-    const userTable = app === 'ecoaudit' ? eaUsers : ssUsers;
+    const userTable = tableForApp(app);
     const [user] = await db.select().from(userTable).where(eq(userTable.id, userId));
     if (!user) throw notFound('User');
     return reply.send({

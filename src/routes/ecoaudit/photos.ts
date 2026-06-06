@@ -5,9 +5,10 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess } from './helpers.js';
-import { deleteLocalFile, localFileExists, storageKeyToPath } from '../../storage/localFiles.js';
+import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
+  append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
   file(source: string, data: { name: string }): void;
   finalize(): Promise<void>;
 };
@@ -58,7 +59,7 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     for (const photo of photos) {
       if (photo.storageKey && await localFileExists(photo.storageKey)) {
         const name = [photo.entityType, photo.entityId, photo.fieldName, photo.originalFilename || `${photo.fieldName}-${photo.id}`].join('/').replace(/[^\w/.()-]+/g, '-');
-        archive.file(storageKeyToPath(photo.storageKey), { name });
+        archive.append(await localFileStream(photo.storageKey), { name });
       }
     }
     void archive.finalize();

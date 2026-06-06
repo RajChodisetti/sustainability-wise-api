@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
 import { photoRegistry } from '../../db/schema/shared.js';
@@ -10,9 +10,10 @@ import {
   eaHotWaterSystems, eaGeneralWater, eaGeneralElectricity,
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertAuditAccess, dateOrNow, requiredString, str, num, arr, type JsonRecord } from './helpers.js';
+import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, str, num, arr, type JsonRecord } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
 import { deleteLocalFile, localFileExists, makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { saveRecordVersion } from '../recordVersions.js';
 
 function uploadUrl(sessionId: string): string {
   return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
@@ -20,6 +21,24 @@ function uploadUrl(sessionId: string): string {
 
 function assertUploadSessionFresh(createdAt: Date): void {
   if (Date.now() - createdAt.getTime() > 24 * 60 * 60 * 1000) throw badRequest('Upload session has expired');
+}
+
+async function deletePhotosForAudit(auditId: string): Promise<void> {
+  const where = and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.parentId, auditId));
+  const photos = await db.select().from(photoRegistry).where(where);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(where);
+}
+
+async function deletePhotosForEntity(entityId: string): Promise<void> {
+  const where = and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.entityId, entityId));
+  const photos = await db.select().from(photoRegistry).where(where);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(where);
 }
 
 export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
@@ -30,9 +49,17 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
+    const auditId = requiredString(body, 'auditId');
+    const fieldName = requiredString(body, 'fieldName');
+    const entityId = typeof body.entityId === 'string' && body.entityId.trim() ? body.entityId.trim() : auditId;
+    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
+    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
     const [existing] = await db.select().from(photoRegistry).where(and(
       eq(photoRegistry.app, 'ecoaudit'),
       eq(photoRegistry.checksum, checksum),
+      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.entityId, entityId),
+      eq(photoRegistry.fieldName, fieldName),
       eq(photoRegistry.status, 'confirmed'),
     ));
     return reply.send({
@@ -63,10 +90,14 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const entityId = typeof body.entityId === 'string' && body.entityId.trim() ? body.entityId.trim() : auditId;
     const entityType = typeof body.entityType === 'string' && body.entityType.trim() ? body.entityType.trim() : 'audit';
 
-    // Check for duplicate
+    // Check for duplicate only for the exact same record field. Other uses should still
+    // create their own DB/storage entry so scoped file browsing is complete.
     const [duplicate] = await db.select().from(photoRegistry).where(and(
       eq(photoRegistry.app, 'ecoaudit'),
       eq(photoRegistry.checksum, checksum),
+      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.entityId, entityId),
+      eq(photoRegistry.fieldName, fieldName),
       eq(photoRegistry.status, 'confirmed'),
     ));
     if (duplicate?.remoteUrl) {
@@ -123,13 +154,13 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     if (!found.storageKey) throw badRequest('Upload session has no storage key');
     if (found.status === 'confirmed' && found.remoteUrl) return reply.send({ remoteUrl: found.remoteUrl });
     if (found.status !== 'uploaded') throw badRequest(`Upload session is ${found.status}`);
-    if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from local storage');
+    if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from configured storage');
     const remoteUrl = publicFileUrl(found.storageKey);
     await db.update(photoRegistry).set({ status: 'confirmed', remoteUrl, uploadedAt: new Date() }).where(eq(photoRegistry.id, sessionId));
     return reply.send({ remoteUrl });
   });
 
-  // POST /push — push completed audit with all its data
+  // POST /push — push audit with all its data
   app.post('/push', {
     schema: { tags: ['EcoAudit Sync'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
@@ -150,7 +181,6 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
 
     if (!body.audit) throw badRequest('audit is required');
     const auditPayload = body.audit;
-    if (auditPayload.status !== 'Completed') throw badRequest('Audit must be Completed before sync');
 
     const localAuditId = requiredString(auditPayload, 'id');
     const [existingAudit] = await db.select().from(eaAudits).where(eq(eaAudits.id, localAuditId));
@@ -166,13 +196,24 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       siteAddress: requiredString(auditPayload, 'siteAddress'),
       inspectorName: requiredString(auditPayload, 'inspectorName'),
       auditDate: typeof auditPayload.auditDate === 'string' ? auditPayload.auditDate : null,
-      status: 'Completed',
+      status: str(auditPayload.status) ?? existingAudit?.status ?? 'Draft',
       createdByUserId: existingAudit?.createdByUserId ?? (str(auditPayload.createdByUserId) ?? request.user.userId),
       assignedInspectorUserId: str(auditPayload.assignedInspectorUserId),
       createdAt: dateOrNow(auditPayload.createdAt),
     };
     const { id: _aid, ...auditUpdateValues } = auditValues;
     await db.insert(eaAudits).values(auditValues as any).onConflictDoUpdate({ target: eaAudits.id, set: auditUpdateValues as any });
+    if (auditValues.deletedAt) {
+      await deletePhotosForAudit(localAuditId);
+      const versionNumber = await saveRecordVersion({
+        app: 'ecoaudit',
+        entityType: 'audit',
+        entityId: localAuditId,
+        snapshot: body,
+        userId: request.user.userId,
+      });
+      return reply.send({ auditId: localAuditId, serverId: auditServerId, versionNumber });
+    }
 
     // Upsert zones
     for (const zone of (body.zones ?? [])) {
@@ -188,6 +229,9 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       };
       const { id: _zid, ...zoneUpdate } = vals;
       await db.insert(eaZones).values(vals as any).onConflictDoUpdate({ target: eaZones.id, set: zoneUpdate as any });
+      if (vals.deletedAt) {
+        await deletePhotosForEntity(zoneId);
+      }
     }
 
     // Generic equipment upsert helper
@@ -202,6 +246,9 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         const vals = buildValues(item, existing);
         const { id: _id, ...updateVals } = vals;
         await db.insert(table).values(vals as any).onConflictDoUpdate({ target: table.id, set: updateVals as any });
+        if (vals.deletedAt) {
+          await deletePhotosForEntity(itemId);
+        }
       }
     }
 
@@ -282,7 +329,15 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       question: str(item.question), answer: str(item.answer), photos: arr(item.photos),
     }));
 
-    return reply.send({ auditId: localAuditId, serverId: auditServerId });
+    const versionNumber = await saveRecordVersion({
+      app: 'ecoaudit',
+      entityType: 'audit',
+      entityId: localAuditId,
+      snapshot: body,
+      userId: request.user.userId,
+    });
+
+    return reply.send({ auditId: localAuditId, serverId: auditServerId, versionNumber });
   });
 
   // GET /pull
@@ -295,10 +350,41 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     if (Number.isNaN(since.getTime())) throw badRequest('since must be an ISO date');
 
     const conds = [gt(eaAudits.updatedAt, since), isNull(eaAudits.deletedAt)];
-    if (!(['admin', 'service_account'].includes(request.user.role))) conds.push(eq(eaAudits.createdByUserId, request.user.userId) as any);
+    if (!isElevated(request.user)) {
+      conds.push(or(
+        eq(eaAudits.createdByUserId, request.user.userId),
+        eq(eaAudits.assignedInspectorUserId, request.user.userId),
+      ) as any);
+    }
     if (query.auditId) conds.push(eq(eaAudits.id, query.auditId) as any);
 
     const audits = await db.select().from(eaAudits).where(and(...(conds as any)));
-    return reply.send({ audits, pulledAt: new Date().toISOString() });
+    const auditIds = audits.map((audit) => audit.id);
+    const byAudit = auditIds.length
+      ? {
+          zones: await db.select().from(eaZones).where(and(inArray(eaZones.auditId, auditIds), isNull(eaZones.deletedAt))),
+          mainSwitchboards: await db.select().from(eaMainSwitchboards).where(and(inArray(eaMainSwitchboards.auditId, auditIds), isNull(eaMainSwitchboards.deletedAt))),
+          additionalSwitchboards: await db.select().from(eaAdditionalSwitchboards).where(and(inArray(eaAdditionalSwitchboards.auditId, auditIds), isNull(eaAdditionalSwitchboards.deletedAt))),
+          hvacUnits: await db.select().from(eaHvacUnits).where(and(inArray(eaHvacUnits.auditId, auditIds), isNull(eaHvacUnits.deletedAt))),
+          lightingSystems: await db.select().from(eaLightingSystems).where(and(inArray(eaLightingSystems.auditId, auditIds), isNull(eaLightingSystems.deletedAt))),
+          solarPv: await db.select().from(eaSolarPv).where(and(inArray(eaSolarPv.auditId, auditIds), isNull(eaSolarPv.deletedAt))),
+          forkliftChargers: await db.select().from(eaForkliftChargers).where(and(inArray(eaForkliftChargers.auditId, auditIds), isNull(eaForkliftChargers.deletedAt))),
+          hotWaterSystems: await db.select().from(eaHotWaterSystems).where(and(inArray(eaHotWaterSystems.auditId, auditIds), isNull(eaHotWaterSystems.deletedAt))),
+          generalWater: await db.select().from(eaGeneralWater).where(and(inArray(eaGeneralWater.auditId, auditIds), isNull(eaGeneralWater.deletedAt))),
+          generalElectricity: await db.select().from(eaGeneralElectricity).where(and(inArray(eaGeneralElectricity.auditId, auditIds), isNull(eaGeneralElectricity.deletedAt))),
+        }
+      : {
+          zones: [],
+          mainSwitchboards: [],
+          additionalSwitchboards: [],
+          hvacUnits: [],
+          lightingSystems: [],
+          solarPv: [],
+          forkliftChargers: [],
+          hotWaterSystems: [],
+          generalWater: [],
+          generalElectricity: [],
+        };
+    return reply.send({ audits, ...byAudit, pulledAt: new Date().toISOString() });
   });
 }

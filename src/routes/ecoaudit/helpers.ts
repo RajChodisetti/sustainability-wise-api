@@ -8,11 +8,12 @@ export function isElevated(user: AuthUser): boolean {
 }
 
 export function assertAuditAccess(
-  audit: { createdByUserId: string | null },
+  audit: { createdByUserId: string | null; assignedInspectorUserId?: string | null },
   user: AuthUser,
 ): void {
   if (isElevated(user)) return;
-  if (audit.createdByUserId !== user.userId) throw forbidden('Audit belongs to another user');
+  if (audit.createdByUserId === user.userId || audit.assignedInspectorUserId === user.userId) return;
+  throw forbidden('Audit belongs to another user');
 }
 
 export function assertZoneAccess(

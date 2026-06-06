@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
@@ -13,7 +13,12 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const conditions = [isNull(eaAudits.deletedAt)];
-    if (!isElevated(request.user)) conditions.push(eq(eaAudits.createdByUserId, request.user.userId));
+    if (!isElevated(request.user)) {
+      conditions.push(or(
+        eq(eaAudits.createdByUserId, request.user.userId),
+        eq(eaAudits.assignedInspectorUserId, request.user.userId),
+      ) as any);
+    }
     const audits = await db.select().from(eaAudits).where(and(...conditions)).orderBy(asc(eaAudits.siteName));
     return reply.send({ data: audits });
   });

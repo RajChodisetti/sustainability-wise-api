@@ -11,11 +11,11 @@ import {
   assertSiteAccess,
   dateOrNow,
   isElevated,
-  requireCompleted,
   requiredString,
   type JsonRecord,
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
+import { saveRecordVersion } from '../recordVersions.js';
 import {
   deleteLocalFile,
   localFileExists,
@@ -34,8 +34,32 @@ async function loadAccessibleSite(siteId: string, request: { user: Parameters<ty
   return found;
 }
 
-function statusMustBeCompleted(record: { status: string }, label: string): void {
-  if (record.status !== 'Completed') throw badRequest(`${label} must be Completed before sync`);
+async function loadAnyAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
+  const [site] = await db
+    .select()
+    .from(ssSites)
+    .where(eq(ssSites.id, siteId));
+  const found = assertFound(site, 'Site');
+  assertSiteAccess(found, request.user);
+  return found;
+}
+
+async function deletePhotosForSite(siteId: string): Promise<void> {
+  const where = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.parentId, siteId));
+  const photos = await db.select().from(photoRegistry).where(where);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(where);
+}
+
+async function deletePhotosForAssessment(assessmentId: string): Promise<void> {
+  const where = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.entityId, assessmentId));
+  const photos = await db.select().from(photoRegistry).where(where);
+  for (const photo of photos) {
+    await deleteLocalFile(photo.storageKey);
+  }
+  await db.delete(photoRegistry).where(where);
 }
 
 function uploadUrl(sessionId: string): string {
@@ -74,7 +98,7 @@ function siteValuesFromPayload(site: JsonRecord, userId: string, existing?: type
     reportPdfRemoteUrl: typeof site.reportPdfRemoteUrl === 'string' ? site.reportPdfRemoteUrl : null,
     createdByUserId: existing?.createdByUserId ?? (typeof site.createdByUserId === 'string' ? site.createdByUserId : userId),
     createdAt: dateOrNow(site.createdAt),
-    status: 'Completed',
+    status: typeof site.status === 'string' ? site.status : (existing?.status ?? 'Draft'),
   };
 }
 
@@ -148,7 +172,7 @@ function assessmentValuesFromPayload(
     photoMetadata: assessment.photoMetadata && typeof assessment.photoMetadata === 'object' ? assessment.photoMetadata : {},
     createdByUserId: existing?.createdByUserId ?? (typeof assessment.createdByUserId === 'string' ? assessment.createdByUserId : userId),
     createdAt: dateOrNow(assessment.createdAt),
-    status: 'Completed',
+    status: typeof assessment.status === 'string' ? assessment.status : (existing?.status ?? 'Draft'),
   };
 }
 
@@ -163,6 +187,12 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
   }, async (request, reply) => {
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
+    const siteId = requiredString(body, 'siteId');
+    const fieldName = requiredString(body, 'fieldName');
+    await loadAccessibleSite(siteId, request);
+    const assessmentId = typeof body.assessmentId === 'string' && body.assessmentId.trim()
+      ? body.assessmentId.trim()
+      : null;
 
     const [existing] = await db
       .select()
@@ -170,6 +200,9 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       .where(and(
         eq(photoRegistry.app, 'solarsense'),
         eq(photoRegistry.checksum, checksum),
+        eq(photoRegistry.parentId, siteId),
+        eq(photoRegistry.entityId, assessmentId ?? siteId),
+        eq(photoRegistry.fieldName, fieldName),
         eq(photoRegistry.status, 'confirmed'),
       ));
 
@@ -184,7 +217,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
   app.post('/create-upload-session', {
     schema: {
       tags: ['SolarSense Sync'],
-      summary: 'Create a VM-local photo upload session',
+      summary: 'Create a photo upload session',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
@@ -202,8 +235,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       throw badRequest(`File exceeds max upload size of ${config.storage.maxUploadBytes} bytes`);
     }
 
-    const site = await loadAccessibleSite(siteId, request);
-    statusMustBeCompleted(site, 'Site');
+    await loadAccessibleSite(siteId, request);
 
     const assessmentId = typeof body.assessmentId === 'string' && body.assessmentId.trim()
       ? body.assessmentId.trim()
@@ -217,15 +249,20 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
           eq(ssRooftopAssessments.siteId, siteId),
           isNull(ssRooftopAssessments.deletedAt),
         ));
-      statusMustBeCompleted(assertFound(assessment, 'Assessment'), 'Assessment');
+      assertFound(assessment, 'Assessment');
     }
 
+    const entityType = assessmentId ? 'rooftop_assessment' : 'site';
+    const entityId = assessmentId ?? siteId;
     const [duplicate] = await db
       .select()
       .from(photoRegistry)
       .where(and(
         eq(photoRegistry.app, 'solarsense'),
         eq(photoRegistry.checksum, checksum),
+        eq(photoRegistry.parentId, siteId),
+        eq(photoRegistry.entityId, entityId),
+        eq(photoRegistry.fieldName, fieldName),
         eq(photoRegistry.status, 'confirmed'),
       ));
     if (duplicate?.remoteUrl) {
@@ -238,8 +275,6 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     }
 
     const sessionId = randomUUID();
-    const entityType = assessmentId ? 'rooftop_assessment' : 'site';
-    const entityId = assessmentId ?? siteId;
     const storageKey = makeLocalStorageKey({
       app: 'solarsense',
       parentId: siteId,
@@ -277,7 +312,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
   app.put('/upload/:sessionId', {
     schema: {
       tags: ['SolarSense Sync'],
-      summary: 'Upload photo bytes for a VM-local upload session',
+      summary: 'Upload photo bytes for an upload session',
     },
     bodyLimit: config.storage.maxUploadBytes,
   }, async (request, reply) => {
@@ -324,7 +359,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
   app.post('/confirm-upload', {
     schema: {
       tags: ['SolarSense Sync'],
-      summary: 'Confirm a VM-local upload and expose a file URL',
+      summary: 'Confirm an upload and expose a file URL',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
@@ -344,7 +379,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       return reply.send({ remoteUrl: found.remoteUrl });
     }
     if (found.status !== 'uploaded') throw badRequest(`Upload session is ${found.status}`);
-    if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from local storage');
+    if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from configured storage');
 
     const remoteUrl = publicFileUrl(found.storageKey);
     await db
@@ -362,7 +397,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
   app.post('/push', {
     schema: {
       tags: ['SolarSense Sync'],
-      summary: 'Push completed SolarSense sites and assessments',
+      summary: 'Push SolarSense sites and assessments',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
@@ -370,11 +405,10 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const body = request.body as { sites?: JsonRecord[]; assessments?: JsonRecord[] };
     const sites = body.sites ?? [];
     const assessments = body.assessments ?? [];
-    requireCompleted(sites, 'Site');
-    requireCompleted(assessments, 'Assessment');
 
     const siteIds: Record<string, string> = {};
     const assessmentIds: Record<string, string> = {};
+    const versionNumbers: Record<string, number> = {};
 
     for (const site of sites) {
       const localId = requiredString(site, 'id');
@@ -390,13 +424,15 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
           set: updateValues,
         });
       siteIds[localId] = values.serverId;
+      if (values.deletedAt) {
+        await deletePhotosForSite(localId);
+      }
     }
 
     for (const assessment of assessments) {
       const localId = requiredString(assessment, 'id');
       const siteId = requiredString(assessment, 'siteId');
-      const site = await loadAccessibleSite(siteId, request);
-      statusMustBeCompleted(site, 'Site');
+      await loadAnyAccessibleSite(siteId, request);
 
       const [existing] = await db
         .select()
@@ -412,9 +448,31 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
           set: updateValues,
         });
       assessmentIds[localId] = values.serverId;
+      if (values.deletedAt) {
+        await deletePhotosForAssessment(localId);
+      }
     }
 
-    return reply.send({ siteIds, assessmentIds });
+    const touchedSiteIds = new Set<string>([
+      ...sites.map((site) => requiredString(site, 'id')),
+      ...assessments
+        .map((assessment) => typeof assessment.siteId === 'string' ? assessment.siteId.trim() : '')
+        .filter(Boolean),
+    ]);
+    for (const siteId of touchedSiteIds) {
+      versionNumbers[siteId] = await saveRecordVersion({
+        app: 'solarsense',
+        entityType: 'site',
+        entityId: siteId,
+        snapshot: {
+          site: sites.find((site) => typeof site.id === 'string' && site.id === siteId) ?? null,
+          assessments: assessments.filter((assessment) => typeof assessment.siteId === 'string' && assessment.siteId === siteId),
+        },
+        userId: request.user.userId,
+      });
+    }
+
+    return reply.send({ siteIds, assessmentIds, versionNumbers });
   });
 
   app.get('/pull', {

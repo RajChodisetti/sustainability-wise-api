@@ -4,9 +4,9 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { ssUsers } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { hashPassword } from '../../auth/apiKey.js';
+import { hashPassword, verifyPassword } from '../../auth/apiKey.js';
 import { assertFound, assertSelfOrAdmin } from './helpers.js';
-import { badRequest, conflict } from '../../utils/errors.js';
+import { badRequest, conflict, unauthorized } from '../../utils/errors.js';
 
 export async function solarsenseUserRoutes(app: FastifyInstance): Promise<void> {
   app.get('/', {
@@ -42,6 +42,7 @@ export async function solarsenseUserRoutes(app: FastifyInstance): Promise<void> 
     preHandler: [authenticate, requireApp('solarsense'), requireRole('admin')],
   }, async (request, reply) => {
     const body = request.body as {
+      id?: string;
       email?: string;
       password?: string;
       fullName?: string | null;
@@ -51,7 +52,7 @@ export async function solarsenseUserRoutes(app: FastifyInstance): Promise<void> 
     const role = body.role ?? 'inspector';
     if (!['admin', 'inspector'].includes(role)) throw badRequest('role must be admin or inspector');
 
-    const id = randomUUID();
+    const id = body.id?.trim() || randomUUID();
     const passwordHash = await hashPassword(body.password);
 
     try {
@@ -130,6 +131,44 @@ export async function solarsenseUserRoutes(app: FastifyInstance): Promise<void> 
     const [updated] = await db
       .update(ssUsers)
       .set(changes)
+      .where(eq(ssUsers.id, id))
+      .returning({
+        id: ssUsers.id,
+        email: ssUsers.email,
+        fullName: ssUsers.fullName,
+        role: ssUsers.role,
+        isActive: ssUsers.isActive,
+        createdAt: ssUsers.createdAt,
+        updatedAt: ssUsers.updatedAt,
+      });
+
+    return reply.send(assertFound(updated, 'User'));
+  });
+
+  app.patch('/:id/password', {
+    schema: {
+      tags: ['SolarSense Users'],
+      summary: 'Change SolarSense user password',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('solarsense')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    assertSelfOrAdmin(id, request.user);
+    const body = request.body as { currentPassword?: string; newPassword?: string };
+    if (!body.currentPassword || !body.newPassword) {
+      throw badRequest('currentPassword and newPassword are required');
+    }
+    if (body.newPassword.length < 6) throw badRequest('newPassword must be at least 6 characters');
+
+    const [user] = await db.select().from(ssUsers).where(eq(ssUsers.id, id));
+    const found = assertFound(user, 'User');
+    const currentValid = await verifyPassword(body.currentPassword, found.passwordHash);
+    if (!currentValid) throw unauthorized('Current password is incorrect');
+
+    const [updated] = await db
+      .update(ssUsers)
+      .set({ passwordHash: await hashPassword(body.newPassword), updatedAt: new Date() })
       .where(eq(ssUsers.id, id))
       .returning({
         id: ssUsers.id,

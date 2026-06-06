@@ -1,99 +1,907 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastify';
+import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { photoRegistry } from '../../db/schema/shared.js';
-import { eaAudits, eaZones, eaHvacUnits, eaLightingSystems, eaSolarPv, eaMainSwitchboards } from '../../db/schema/ecoaudit.js';
+import {
+  eaAdditionalSwitchboards,
+  eaAudits,
+  eaForkliftChargers,
+  eaGeneralElectricity,
+  eaGeneralWater,
+  eaHotWaterSystems,
+  eaHvacUnits,
+  eaLightingSystems,
+  eaMainSwitchboards,
+  eaSolarPv,
+  eaZones,
+} from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { renderPdf } from '../../pdf/renderer.js';
+import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
-import { assertFound, assertAuditAccess } from './helpers.js';
+import { assertAuditAccess, assertFound } from './helpers.js';
 
-function esc(v: unknown): string {
-  return String(v ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const MAX_PDF_BYTES = 50 * 1024 * 1024;
+const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
+
+type EquipmentItem = {
+  id: string;
+  zoneId: string;
+  auditId: string;
+  [key: string]: unknown;
+};
+
+type PhotoRow = typeof photoRegistry.$inferSelect;
+type PhotoEntry = { src: string; label: string; largeInPdf: boolean };
+
+// ── Brand logo (cached after first load) ─────────────────────────────────────────
+let _brandLogoDataUri: string | null = null;
+async function loadBrandLogo(): Promise<string> {
+  if (!_brandLogoDataUri) {
+    const buf = await readFile(brandLogoUrl);
+    _brandLogoDataUri = `data:image/png;base64,${buf.toString('base64')}`;
+  }
+  return _brandLogoDataUri;
 }
 
-function row(label: string, value: unknown): string {
-  if (value === null || value === undefined || value === '') return '';
-  return `<tr><th>${esc(label)}</th><td>${esc(value)}</td></tr>`;
+// ── Photo registry → PhotoEntry ───────────────────────────────────────────────────
+const FIELD_LABELS: Record<string, string> = {
+  photo: 'Photo',
+  roofPhoto: 'Roof / Array',
+  inverterLabelPhoto: 'Inverter Label',
+  electricityMeterPhoto: 'Electricity Meter',
+  additionalSolarSpacePhoto: 'Additional Roof Space',
+  switchboardPhoto: 'Switchboard',
+  chargerPhoto: 'Charger',
+  chargerLabelPhoto: 'Charger Label',
+  electricConnectionPhoto: 'Electrical Connection',
+  chargerSpacePhoto: 'Charger Space',
+  socketConnectionPhoto: 'Socket Connection',
+  fixturesPhoto: 'Fixtures Installed',
+  mountingConstraintsPhoto: 'Mounting / Access',
+  sensorsPhoto: 'Switches / Sensors',
+  switchboardControlsPhoto: 'Switchboard / Controls',
+  nameplatePhotos: 'Nameplate',
+  controllerPhoto: 'Controller',
+  indoorUnitNameplatePhoto: 'Indoor Unit Nameplate',
+  additionalPhoto: 'Additional',
+  extraPhotos: 'Extra Photo',
+  photos: 'Photo',
+};
+
+function photosForEntity(photos: PhotoRow[], entityId: string): PhotoEntry[] {
+  return photos
+    .filter((p) => p.entityId === entityId && p.remoteUrl)
+    .map((p) => ({
+      src: p.remoteUrl!,
+      label: FIELD_LABELS[p.fieldName ?? ''] ?? (p.originalFilename ?? p.fieldName ?? 'Photo'),
+      largeInPdf: false,
+    }));
 }
+
+// ── HTML helpers ──────────────────────────────────────────────────────────────────
+function esc(v: string | null | undefined): string {
+  if (!v) return '';
+  return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function formatText(text: string | null | undefined): string {
+  if (!text) return '';
+  const lines = text.split('\n');
+  let html = '';
+  let inList = false;
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line.startsWith('- ') || line.startsWith('• ')) {
+      if (!inList) { html += '<ul class="fmt-list">'; inList = true; }
+      html += `<li>${esc(line.slice(2))}</li>`;
+    } else {
+      if (inList) { html += '</ul>'; inList = false; }
+      if (html && !html.endsWith('>')) html += '<br />';
+      html += esc(line);
+    }
+  }
+  if (inList) html += '</ul>';
+  return html;
+}
+
+function fmtDate(ds: string | Date | null | undefined): string {
+  if (!ds) return '—';
+  try {
+    const d = new Date(ds as string);
+    return `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  } catch { return String(ds); }
+}
+
+function gallery(photos: PhotoEntry[], title = 'Photographic Evidence', count = photos.length, className = '', colsOverride?: number): string {
+  if (photos.length === 0) return '';
+  const cols = colsOverride ?? (photos.length <= 2 ? 2 : 3);
+  const rows: PhotoEntry[][] = [];
+  for (let i = 0; i < photos.length; i += cols) rows.push(photos.slice(i, i + cols));
+  const cells = (row: PhotoEntry[]) =>
+    row.map((p) => `<div class="photo-cell"><img src="${p.src}" alt="" class="photo-img" onerror="this.parentNode.style.display='none'" /><div class="photo-lbl">${esc(p.label)}</div></div>`).join('')
+    + Array.from({ length: cols - row.length }, () => '<div class="photo-cell photo-empty"></div>').join('');
+  return `<div class="photos photos-cols-${cols}${className ? ` ${className}` : ''}">
+    <div class="photos-title"><span>${title}</span><b>${count}</b></div>
+    <div class="photo-grid">${rows.map((r) => `<div class="photo-row-pair">${cells(r)}</div>`).join('')}</div>
+  </div>`;
+}
+
+function largePhotoBlock(photo: PhotoEntry, title: string, count: number, showTitle: boolean): string {
+  return `<div class="photos photos-large">
+    ${showTitle ? `<div class="photos-title"><span>${title}</span><b>${count}</b></div>` : ''}
+    <div class="photo-large-cell">
+      <img src="${photo.src}" alt="" class="photo-large-img" onerror="this.parentNode.style.display='none'" />
+      <div class="photo-lbl photo-large-lbl">${esc(photo.label)}</div>
+    </div>
+  </div>`;
+}
+
+function renderPhotoBlocks(photos: PhotoEntry[], title = 'Photographic Evidence', count = photos.length, className = ''): string {
+  if (photos.length === 0) return '';
+  let html = '';
+  let compact: PhotoEntry[] = [];
+  let titleShown = false;
+  const flushCompact = () => {
+    if (!compact.length) return;
+    html += gallery(compact, titleShown ? 'Additional Photos' : title, count, className || (titleShown ? 'photos-more' : 'photos-lead'));
+    titleShown = true;
+    compact = [];
+  };
+  photos.forEach((photo) => {
+    if (photo.largeInPdf) { flushCompact(); html += largePhotoBlock(photo, titleShown ? 'Additional Photos' : title, count, !titleShown); titleShown = true; }
+    else { compact.push(photo); }
+  });
+  flushCompact();
+  return html;
+}
+
+function renderItem(header: string, details: string, photos: PhotoEntry[]): string {
+  return `<div class="item"><div class="item-lead">${header}${details}${renderPhotoBlocks(photos)}</div></div>`;
+}
+
+function noteBox(label: string, text: string | null | undefined, cls: string): string {
+  if (!text) return '';
+  return `<div class="${cls}"><div class="note-label">${label}</div><div class="note-text">${formatText(text)}</div></div>`;
+}
+
+function fieldRow(label: string, value: string | null | undefined): string {
+  if (!value) return '';
+  return `<div class="ifield"><span class="fl">${label}</span><span class="fv">${esc(value)}</span></div>`;
+}
+
+function fieldHtml(label: string, html: string | null | undefined): string {
+  if (!html) return '';
+  return `<div class="ifield"><span class="fl">${label}</span><span class="fv">${html}</span></div>`;
+}
+
+function fieldGrid(...rows: string[]): string {
+  const fields = rows.filter(Boolean);
+  if (!fields.length) return '';
+  const fieldRows: string[] = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    fieldRows.push(`<div class="field-row">${fields.slice(i, i + 2).join('')}${fields[i + 1] ? '' : '<div class="ifield ifield-empty"></div>'}</div>`);
+  }
+  return `<div class="fields">${fieldRows.join('')}</div>`;
+}
+
+function secHeader(num: string, title: string): string {
+  return `<div class="sec-bar"><span class="sec-num-badge">${num.padStart(2, '0')}</span><span class="sec-bar-name">${title}</span></div>`;
+}
+
+function secHeaderLabel(label: string, title: string): string {
+  return `<div class="sec-bar"><span class="sec-num-badge">${label}</span><span class="sec-bar-name">${title}</span></div>`;
+}
+
+function zoneBadge(name: string | undefined): string {
+  return name ? `<span class="zone-badge">${esc(name)}</span>` : '';
+}
+
+function statPill(n: number, label: string): string {
+  return `<div class="sp"><div class="sn">${n}</div><div class="sl">${label}</div></div>`;
+}
+
+// ── Field accessors for generic EquipmentItem ─────────────────────────────────────
+function sf(key: string, item: EquipmentItem): string | null {
+  const v = item[key];
+  return v != null && v !== '' ? String(v) : null;
+}
+
+function nf(key: string, item: EquipmentItem): number | null {
+  const v = item[key];
+  return v != null && !isNaN(Number(v)) ? Number(v) : null;
+}
+
+// ── Item renderers ────────────────────────────────────────────────────────────────
+function renderMs(m: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+      <div class="iname">${esc(sf('name', m))}</div>
+      <div class="isub">Main Switchboard${sf('location', m) ? ` &middot; ${esc(sf('location', m))}` : ''}${sf('siteNmi', m) ? ` &middot; NMI: ${esc(sf('siteNmi', m))}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(m.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(fieldRow('GPS Locator', sf('mapLocator', m)), fieldRow('Sub-Circuits', sf('subCircuitsDescription', m)), fieldRow('Comments', sf('comments', m)))}
+    ${noteBox('Additional Notes', sf('extraNotes', m), 'note-green')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderAddlSb(a: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+      <div class="iname">${esc(sf('name', a))}${sf('type', a) ? ` <span class="type-chip">(${esc(sf('type', a))})</span>` : ''}</div>
+      <div class="isub">Additional Switchboard${sf('location', a) ? ` &middot; ${esc(sf('location', a))}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(a.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(fieldRow('GPS Locator', sf('mapLocator', a)), fieldRow('Sub-Circuits', sf('subCircuitsDescription', a)), fieldRow('Comments', sf('comments', a)))}
+    ${noteBox('Additional Notes', sf('extraNotes', a), 'note-green')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderHvac(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const heatingKw = nf('heatingCapacityKw', h);
+  const coolingKw = nf('coolingCapacityKw', h);
+  const header = `<div class="item-head"><span class="iico">&#127777;</span><div class="item-title">
+      <div class="iname">${esc(sf('unitName', h))}</div>
+      <div class="isub">${esc([sf('type', h), sf('make', h), sf('model', h)].filter(Boolean).join(' · ')) || 'HVAC Unit'}</div>
+      ${showZone ? zoneBadge(zoneMap.get(h.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(
+    fieldRow('Location', sf('location', h)), fieldRow('Serial Number', sf('serialNumber', h)),
+    heatingKw != null ? fieldHtml('Heating Capacity', `${heatingKw} kW`) : '',
+    coolingKw != null ? fieldHtml('Cooling Capacity', `${coolingKw} kW`) : '',
+    fieldRow('Power Supply', sf('powerSupplyPhase', h)), fieldRow('Indoor Unit Model', sf('indoorUnitModel', h)),
+    fieldRow('Indoor Unit Serial', sf('indoorUnitSerial', h)), fieldRow('Controller Type', sf('controllerType', h)),
+    fieldRow('Controller Model', sf('controllerModel', h)), fieldRow('Temperature Sensor', sf('temperatureSensorType', h)),
+    fieldRow('System Coverage', sf('systemCoverage', h)),
+  )}
+  ${noteBox('Additional Notes', sf('extraNotes', h), 'note-green')}
+  ${noteBox('Observations for Energy Improvement', sf('energyImprovementObservations', h), 'note-amber')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderLight(l: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const qty = nf('quantity', l);
+  const watts = nf('ratedWattage', l);
+  const header = `<div class="item-head"><span class="iico">&#128161;</span><div class="item-title">
+      <div class="iname">${esc(sf('lightType', l))}${sf('brandModel', l) ? ` &mdash; ${esc(sf('brandModel', l))}` : ''}</div>
+      <div class="isub">${[sf('areaLocation', l), qty != null ? `×${qty}` : null].filter(Boolean).join(' · ') || 'Lighting System'}</div>
+      ${showZone ? zoneBadge(zoneMap.get(l.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(
+    fieldRow('Area / Location', sf('areaLocation', l)),
+    qty != null ? fieldHtml('Quantity', `${qty}`) : '',
+    watts != null ? fieldHtml('Rated Wattage', `${watts} W / fixture${qty != null ? ` · Total ${((watts * qty) / 1000).toFixed(2)} kW` : ''}`) : '',
+    fieldRow('Controls', sf('controlsType', l)), fieldRow('Operating Hours', sf('operatingHours', l)),
+    fieldRow('Mounting Height', sf('mountingHeight', l)), fieldRow('Fixtures Installed', sf('fixturesInstalled', l)),
+    fieldRow('Circuit Grouping', sf('circuitGrouping', l)), fieldRow('Access Limitations', sf('accessLimitations', l)),
+  )}
+  ${noteBox('Additional Notes', sf('extraNotes', l), 'note-green')}
+  ${noteBox('Observations for Energy Improvement', sf('energyImprovementObservations', l), 'note-amber')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderSolar(sv: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const sizeKw = nf('systemSizeKw', sv);
+  const hasRoofSpace = sf('availableRoofSpace', sv);
+  const header = `<div class="item-head"><span class="iico">&#9728;</span><div class="item-title">
+      <div class="iname">Solar PV${sizeKw != null ? ` &mdash; ${sizeKw} kW` : ''}</div>
+      <div class="isub">${sf('inverterBrandModel', sv) ? esc(sf('inverterBrandModel', sv)) : 'Solar PV System'}</div>
+      ${showZone ? zoneBadge(zoneMap.get(sv.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(
+    sizeKw != null ? fieldHtml('System Size', `${sizeKw} kW`) : '',
+    fieldRow('Inverter Brand / Model', sf('inverterBrandModel', sv)),
+    fieldRow('Inverter Location', sf('inverterLocation', sv)), fieldRow('Power Supply to PV', sf('powerSupplyToPv', sv)),
+    hasRoofSpace ? fieldHtml('Additional Roof Space', `${esc(hasRoofSpace)}${sf('roofSpaceAmount', sv) ? ` · ${esc(sf('roofSpaceAmount', sv))}` : ''}`) : '',
+    fieldRow('Suitable Switchboard', sf('suitableSwitchboard', sv)), fieldRow('Switchboard Location', sf('switchboardLocation', sv)),
+    fieldRow('Cable Distance', sf('cableDistance', sv)), fieldRow('Cable Route', sf('cableRouteDescription', sv)),
+  )}
+  ${noteBox('Additional Notes', sf('extraNotes', sv), 'note-green')}
+  ${noteBox('Observations for Energy Improvement', sf('energyImprovementObservations', sv), 'note-amber')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderForklift(f: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const qty = nf('quantity', f);
+  const header = `<div class="item-head"><span class="iico">&#128267;</span><div class="item-title">
+      <div class="iname">${esc(sf('chargerType', f))}${sf('brandModel', f) ? ` &mdash; ${esc(sf('brandModel', f))}` : ''}</div>
+      <div class="isub">Forklift Charger${sf('location', f) ? ` · ${esc(sf('location', f))}` : ''}${qty != null ? ` · ×${qty}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(f.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(
+    fieldRow('Location', sf('location', f)), qty != null ? fieldHtml('Quantity', `${qty}`) : '',
+    fieldRow('Rating', sf('rating', f)), fieldRow('Power Supply', sf('powerSupply', f)),
+    fieldRow('Connection Description', sf('connectionDescription', f)), fieldRow('Local Isolator', sf('localIsolator', f)),
+    fieldRow('Circuit Identifiable', sf('circuitIdentifiable', f)), fieldRow('Distance to Switchboard', sf('distanceToSwitchboard', f)),
+    fieldRow('Space for Additional', sf('spaceForAdditional', f)), fieldRow('Connection Type', sf('hardwiredSocket', f)),
+    fieldRow('Scheduling Opportunity', sf('schedulingOpportunity', f)),
+  )}
+  ${noteBox('Additional Notes', sf('extraNotes', f), 'note-green')}
+  ${noteBox('Observations for Energy Improvement', sf('energyImprovementObservations', f), 'note-amber')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderHotWater(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const liters = nf('sizeLiters', h);
+  const header = `<div class="item-head"><span class="iico">&#128167;</span><div class="item-title">
+      <div class="iname">${esc(sf('dhwDetailsType', h))}</div>
+      <div class="isub">${[sf('fuelType', h), liters != null ? `${liters} L` : null, sf('location', h)].filter(Boolean).join(' · ') || 'Hot Water System'}</div>
+      ${showZone ? zoneBadge(zoneMap.get(h.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(
+    fieldRow('Location', sf('location', h)), fieldRow('Fuel Type', sf('fuelType', h)),
+    liters != null ? fieldHtml('Size', `${liters} L`) : '',
+    fieldRow('Serial Number', sf('serialNumber', h)), fieldRow('Pipe Insulation', sf('pipeInsulation', h)),
+    fieldRow('Insulation Thickness', sf('pipeInsulationThickness', h)), fieldRow('Tempering Valve', sf('temperingValve', h)),
+    fieldRow('More DHW on Site', sf('moreDhwSystems', h)), fieldRow('Additional Comments', sf('additionalComments', h)),
+  )}
+  ${noteBox('Additional Notes', sf('extraNotes', h), 'note-green')}
+  ${noteBox('Observations for Energy Improvement', sf('energyImprovementObservations', h), 'note-amber')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderGenWater(g: EquipmentItem, idx: number, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const header = `<div class="item-head"><span class="iico">&#128167;</span><div class="item-title">
+      <div class="iname">Water Item ${idx + 1}${sf('question', g) ? ` &mdash; ${esc(sf('question', g))}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(g.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(fieldRow('Question', sf('question', g)), fieldRow('Answer', sf('answer', g)))}
+    ${noteBox('Additional Notes', sf('extraNotes', g), 'note-green')}`;
+  return renderItem(header, details, photos);
+}
+
+function renderGenElec(g: EquipmentItem, idx: number, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
+  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+      <div class="iname">Electricity Item ${idx + 1}${sf('question', g) ? ` &mdash; ${esc(sf('question', g))}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(g.zoneId)) : ''}
+    </div></div>`;
+  const details = `${fieldGrid(fieldRow('Question', sf('question', g)), fieldRow('Answer', sf('answer', g)))}
+    ${noteBox('Additional Notes', sf('extraNotes', g), 'note-green')}`;
+  return renderItem(header, details, photos);
+}
+
+// ── CSS (matches mobile generateAuditPdf.ts exactly) ─────────────────────────────
+function buildCss(): string {
+  return `
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5pt;color:#1E293B;background:#fff;line-height:1.55;}
+
+.doc-table{width:100%;border-collapse:collapse;border-spacing:0;}
+
+.hdr-cell{background:#142F70;padding:0;height:56px;border-bottom:8px solid #FFFFFF;}
+.hdr-inner{width:100%;height:56px;display:table;}
+.hdr-brand{display:table-cell;vertical-align:middle;padding:0 18px;white-space:nowrap;width:1%;}
+.hdr-brand-title{font-size:10pt;font-weight:800;color:#fff;text-transform:uppercase;letter-spacing:0.12em;}
+.hdr-sep{display:table-cell;vertical-align:middle;width:1px;padding:0;}
+.hdr-sep-line{width:1px;height:28px;background:rgba(255,255,255,0.28);}
+.hdr-report{display:table-cell;vertical-align:middle;padding:0 16px;color:rgba(255,255,255,0.92);font-size:9pt;font-weight:600;letter-spacing:0.03em;}
+
+.ftr-cell{border-top:1.5px solid #93C5FD;border-left:2.5px solid #1E3A8A;border-right:2.5px solid #1E3A8A;border-bottom:2.5px solid #1E3A8A;padding:0;height:30px;}
+.ftr-inner{width:100%;height:30px;display:table;}
+.ftr-left{display:table-cell;vertical-align:middle;padding:0 20px;font-size:7pt;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:0.12em;}
+.ftr-right{display:table-cell;vertical-align:middle;padding:0 20px;text-align:right;font-size:7pt;color:#CBD5E1;}
+
+.content-cell{padding:18px 28px 40px;border-left:2.5px solid #1E3A8A;border-right:2.5px solid #1E3A8A;background:#FFFFFF;}
+
+.cover{border:1px solid #1D4ED8;border-top:5px solid #0B3F59;border-radius:0 0 8px 8px;padding:20px 24px 18px;margin-bottom:20px;background:#142F70;}
+.cover-eyebrow{font-size:7.5pt;font-weight:700;color:#DBEAFE;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:5px;}
+.cover-brand{margin:10px 0 14px;}
+.cover-brand-label{font-size:7pt;font-weight:800;color:#BFDBFE;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:5px;}
+.cover-brand-logo{display:block;width:162px;height:auto;background:#FFFFFF;border-radius:6px;padding:5px 9px;}
+.cover-meta{display:table;width:100%;border:1px solid rgba(255,255,255,0.28);border-radius:6px;border-collapse:collapse;}
+.cover-meta-row{display:table-row;}
+.cm{display:table-cell;padding:11px 14px;background:#FFFFFF;border:1px solid #BFDBFE;width:50%;}
+.cml{font-size:7pt;font-weight:700;color:#64748B;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px;}
+.cmv{font-size:10.5pt;font-weight:600;color:#1E293B;}
+
+.exec-title{font-size:13pt;font-weight:800;color:#0F172A;margin-bottom:8px;padding-bottom:7px;border-bottom:2px solid #1E3A8A;}
+.exec-mode{font-size:8pt;font-weight:700;color:#1E3A8A;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;}
+.stats{display:table;width:100%;border-collapse:separate;border-spacing:6px;margin-bottom:24px;}
+.stats-row{display:table-row;}
+.sp{display:table-cell;text-align:center;background:#F8FAFC;border:1px solid #DBEAFE;border-radius:8px;padding:10px 6px;border-top:3px solid #1E3A8A;}
+.sn{font-size:16pt;font-weight:800;color:#1E3A8A;line-height:1;display:block;}
+.sl{font-size:7pt;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:0.04em;margin-top:3px;display:block;}
+
+.sec-bar{display:block;background:#1E3A8A;border-radius:8px 8px 0 0;padding:12px 16px;margin-top:26px;page-break-after:avoid;break-after:avoid;}
+.sec-num-badge{display:inline-block;width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);text-align:center;line-height:26px;font-size:9pt;font-weight:800;color:#fff;margin-right:10px;vertical-align:middle;}
+.sec-bar-name{display:inline;font-size:12pt;font-weight:800;color:#fff;vertical-align:middle;letter-spacing:0.04em;text-transform:uppercase;}
+
+.sec-desc{font-size:9.5pt;color:#64748B;margin-bottom:12px;margin-top:10px;}
+.subsec-title{display:block;background:#EFF6FF;border-left:4px solid #1E3A8A;color:#1E3A8A;font-size:9.5pt;font-weight:800;padding:8px 14px;margin:10px 0 4px;letter-spacing:0.04em;text-transform:uppercase;page-break-after:avoid;break-after:avoid;}
+
+.zone-hdr{background:#1E3A8A;border-radius:8px 8px 0 0;padding:12px 16px;page-break-after:avoid;break-after:avoid;}
+.zone-hdr-inner{display:table;width:100%;}
+.zh-left{display:table-cell;vertical-align:middle;}
+.zh-num-wrap{display:inline-block;width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);text-align:center;line-height:26px;font-size:9pt;font-weight:800;color:#fff;margin-right:10px;vertical-align:middle;}
+.zh-name{display:inline;font-size:12pt;font-weight:800;color:#fff;vertical-align:middle;}
+.zh-desc{font-size:9pt;color:rgba(255,255,255,0.7);margin-top:4px;padding-left:36px;}
+.zh-right{display:table-cell;vertical-align:middle;text-align:right;font-size:8pt;font-weight:600;color:#93C5FD;white-space:nowrap;}
+.zone-section{margin-bottom:4px;}
+.zone-type-label{display:block;background:#EFF6FF;border-left:4px solid #1E3A8A;color:#1E3A8A;font-size:9.5pt;font-weight:800;padding:8px 14px;margin:10px 0 4px;letter-spacing:0.04em;text-transform:uppercase;page-break-after:avoid;break-after:avoid;}
+
+.item{background:#FFFFFF;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 8px 8px 0;padding:11px 14px 18px;margin-bottom:14px;page-break-inside:auto;break-inside:auto;}
+.item-lead{page-break-inside:auto;break-inside:auto;}
+.item-head{display:table;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0;page-break-after:avoid;break-after:avoid;}
+.iico{display:table-cell;vertical-align:top;font-size:15px;width:24px;padding-top:2px;}
+.item-title{display:table-cell;vertical-align:top;}
+.iname{font-size:11.5pt;font-weight:700;color:#1E3A8A;}
+.isub{font-size:9.5pt;color:#64748B;margin-top:2px;}
+.zone-badge{display:inline-block;font-size:7.5pt;color:#166534;background:#DCFCE7;border:1px solid #BBF7D0;padding:2px 8px;border-radius:4px;font-weight:700;margin-top:5px;}
+.type-chip{font-size:9.5pt;font-weight:400;color:#64748B;}
+.empty-note{font-size:10pt;color:#CBD5E1;font-style:italic;padding:8px 0 12px;}
+
+.fields{display:table;width:100%;border-collapse:separate;border-spacing:0 5px;margin-bottom:5px;}
+.field-row{display:table-row;}
+.ifield{display:table-cell;width:50%;padding-right:16px;vertical-align:top;}
+.ifield-empty{visibility:hidden;}
+.fl{display:block;font-size:7pt;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;}
+.fv{display:block;font-size:10pt;color:#1E293B;font-weight:600;overflow-wrap:anywhere;padding-bottom:3px;orphans:3;widows:3;}
+
+.note-green{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#F0FDF4;border:1px solid #BBF7D0;border-left:3px solid #86EFAC;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
+.note-amber{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#FEFCE8;border:1px solid #FEF08A;border-left:3px solid #FDE047;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
+.note-label{font-size:7.5pt;font-weight:700;color:#334155;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em;page-break-after:avoid;break-after:avoid;}
+.note-text{font-size:9.5pt;color:#334155;line-height:1.65;overflow-wrap:anywhere;padding-bottom:5px;}
+
+.photos{margin-top:11px;padding-top:9px;border-top:1px solid #E2E8F0;page-break-inside:auto;break-inside:auto;}
+.photos-lead{page-break-inside:avoid;break-inside:avoid;}
+.photos-more{margin-top:7px;padding-top:7px;}
+.photos-title{display:table;width:100%;font-size:7.5pt;font-weight:800;color:#64748B;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.06em;}
+.photos-title span{display:table-cell;}
+.photos-title b{display:table-cell;text-align:right;color:#1E3A8A;font-size:8pt;}
+.photo-grid{display:table;width:100%;border-collapse:separate;border-spacing:8px 9px;}
+.photo-row-pair{display:table-row;}
+.photo-cell{display:table-cell;width:33.33%;vertical-align:top;text-align:center;page-break-inside:avoid;break-inside:avoid;}
+.photos-cols-2 .photo-cell{width:50%;}
+.photos-cols-3 .photo-cell{width:33.33%;}
+.photo-empty{visibility:hidden;}
+.photo-img{max-width:100%;max-height:172px;width:auto;height:auto;display:inline-block;border:0;border-radius:3px;background:transparent;}
+.photo-lbl{font-size:7pt;color:#64748B;margin-top:4px;text-align:center;word-break:break-word;line-height:1.25;}
+.photos-large{page-break-inside:avoid;break-inside:avoid;}
+.photo-large-cell{width:100%;text-align:center;page-break-inside:avoid;break-inside:avoid;}
+.photo-large-img{max-width:100%;max-height:370px;width:auto;height:auto;display:inline-block;border:0;border-radius:4px;background:transparent;}
+.photo-large-lbl{font-size:7.5pt;font-weight:700;margin-top:5px;}
+.fmt-list{margin:4px 0 4px 16px;padding:0;}
+.fmt-list li{margin-bottom:2px;}
+
+.obs-block{border-radius:0 8px 8px 0;border-left:3px solid #1E3A8A;padding:12px 16px 20px;background:#FEFCE8;margin-bottom:16px;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
+.obs-summary{background:#F8FAFC;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;}
+.obs-num{font-size:7.5pt;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px;page-break-after:avoid;break-after:avoid;}
+.obs-title{font-size:10.5pt;font-weight:700;color:#1E3A8A;margin-bottom:5px;page-break-after:avoid;break-after:avoid;}
+.obs-text{font-size:9.5pt;line-height:1.65;color:#334155;overflow-wrap:anywhere;padding-bottom:5px;}
+
+.end-block{margin-top:28px;padding:18px 24px;background:#1E3A8A;border-radius:8px;}
+.end-inner{display:table;width:100%;}
+.end-left{display:table-cell;vertical-align:middle;}
+.end-right{display:table-cell;vertical-align:middle;text-align:right;}
+.end-title{font-size:11pt;font-weight:800;color:#fff;}
+.end-sub{font-size:8pt;color:#93C5FD;margin-top:4px;}
+.end-badge{display:inline-block;background:#fff;border-radius:5px;padding:4px 7px;}
+.end-logo{display:block;width:116px;height:auto;}
+  `;
+}
+
+// ── Body builders ─────────────────────────────────────────────────────────────────
+type BodyArgs = {
+  audit: typeof eaAudits.$inferSelect;
+  zones: Array<typeof eaZones.$inferSelect>;
+  photos: PhotoRow[];
+  mode: 'by-equipment' | 'by-zone';
+  msList: EquipmentItem[];
+  addlSbList: EquipmentItem[];
+  hvacList: EquipmentItem[];
+  lightList: EquipmentItem[];
+  solarList: EquipmentItem[];
+  forkliftList: EquipmentItem[];
+  hotWaterList: EquipmentItem[];
+  genWaterList: EquipmentItem[];
+  genElecList: EquipmentItem[];
+  brandLogo: string;
+  genDate: string;
+};
+
+function zonePhotoCount(zoneId: string, photos: PhotoRow[], allEquipment: EquipmentItem[][]): number {
+  const entityIds = new Set<string>([zoneId, ...allEquipment.flat().filter((x) => x.zoneId === zoneId).map((x) => x.id)]);
+  return photos.filter((p) => entityIds.has(p.entityId) && p.remoteUrl).length;
+}
+
+function observationsBody(
+  hvacList: EquipmentItem[],
+  lightList: EquipmentItem[],
+  solarList: EquipmentItem[],
+  forkliftList: EquipmentItem[],
+  hotWaterList: EquipmentItem[],
+): string {
+  const allObs: Array<{ section: string; text: string }> = [
+    ...hvacList.filter((h) => sf('energyImprovementObservations', h)).map((h) => ({ section: `HVAC · ${esc(sf('unitName', h))}`, text: sf('energyImprovementObservations', h)! })),
+    ...lightList.filter((l) => sf('energyImprovementObservations', l)).map((l) => ({ section: `Lighting · ${esc(sf('lightType', l))}`, text: sf('energyImprovementObservations', l)! })),
+    ...solarList.filter((s) => sf('energyImprovementObservations', s)).map((s) => ({ section: `Solar PV${nf('systemSizeKw', s) != null ? ` · ${nf('systemSizeKw', s)} kW` : ''}`, text: sf('energyImprovementObservations', s)! })),
+    ...forkliftList.filter((f) => sf('energyImprovementObservations', f)).map((f) => ({ section: `Forklift · ${esc(sf('chargerType', f))}`, text: sf('energyImprovementObservations', f)! })),
+    ...hotWaterList.filter((h) => sf('energyImprovementObservations', h)).map((h) => ({ section: `Hot Water · ${esc(sf('dhwDetailsType', h))}`, text: sf('energyImprovementObservations', h)! })),
+  ];
+  if (allObs.length === 0) return '';
+  return `
+    ${secHeader('9', 'Observations for Energy Improvements')}
+    <p class="sec-desc">Equipment-specific observations provided by the auditor.</p>
+    ${allObs.map((o, i) => `<div class="obs-block"><div class="obs-num">Observation ${i + 1}</div><div class="obs-title">${o.section}</div><div class="obs-text">${formatText(o.text)}</div></div>`).join('')}`;
+}
+
+function zonePhotosBody(zones: Array<typeof eaZones.$inferSelect>, photos: PhotoRow[]): string {
+  const blocks = zones.map((zone) => {
+    const zPhotos = photosForEntity(photos, zone.id);
+    if (zPhotos.length === 0) return '';
+    return `<div class="item">
+      <div class="item-head"><span class="iico">&#128247;</span><div class="item-title">
+        <div class="iname">${esc(zone.zoneName)}</div>
+        ${zone.zoneDescription ? `<div class="isub">${esc(zone.zoneDescription)}</div>` : '<div class="isub">Zone Photos</div>'}
+      </div></div>
+      ${renderPhotoBlocks(zPhotos, 'Zone Photos', zPhotos.length)}
+    </div>`;
+  }).filter(Boolean).join('');
+  return blocks ? `${secHeaderLabel('ZP', 'Zone Photos')}${blocks}` : '';
+}
+
+function byEquipmentBody(args: BodyArgs): string {
+  const zoneMap = new Map(args.zones.map((z) => [z.id, z.zoneName]));
+  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList } = args;
+
+  const elecParts = [
+    msList.length ? `<div class="subsec-title">1.1 &nbsp;Main Switchboard</div>${msList.map((m) => renderMs(m, photosForEntity(photos, m.id), zoneMap)).join('')}` : '',
+    addlSbList.length ? `<div class="subsec-title" style="margin-top:16px;">1.2 &nbsp;Additional Switchboards</div>${addlSbList.map((a) => renderAddlSb(a, photosForEntity(photos, a.id), zoneMap)).join('')}` : '',
+  ].filter(Boolean).join('');
+
+  return zonePhotosBody(args.zones, photos)
+    + (elecParts ? `${secHeader('1', 'Electrical Infrastructure')}${elecParts}` : '')
+    + (hvacList.length ? `${secHeader('2', 'HVAC Systems')}${hvacList.map((h) => renderHvac(h, photosForEntity(photos, h.id), zoneMap)).join('')}` : '')
+    + (lightList.length ? `${secHeader('3', 'Lighting Systems')}${lightList.map((l) => renderLight(l, photosForEntity(photos, l.id), zoneMap)).join('')}` : '')
+    + (solarList.length ? `${secHeader('4', 'Solar PV Infrastructure')}${solarList.map((s) => renderSolar(s, photosForEntity(photos, s.id), zoneMap)).join('')}` : '')
+    + (forkliftList.length ? `${secHeader('5', 'Forklift Charging')}${forkliftList.map((f) => renderForklift(f, photosForEntity(photos, f.id), zoneMap)).join('')}` : '')
+    + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id), zoneMap)).join('')}` : '')
+    + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
+    + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
+    + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList);
+}
+
+function byZoneBody(args: BodyArgs): string {
+  const zoneMap = new Map(args.zones.map((z) => [z.id, z.zoneName]));
+  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList, zones } = args;
+  const allEquipment = [msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList];
+  const knownZoneIds = new Set(zones.map((z) => z.id));
+
+  type ZoneBlock = {
+    id: string | null; title: string; description: string | null;
+    zMs: EquipmentItem[]; zAddl: EquipmentItem[]; zHvac: EquipmentItem[]; zLight: EquipmentItem[];
+    zSolar: EquipmentItem[]; zFork: EquipmentItem[]; zHw: EquipmentItem[]; zGw: EquipmentItem[]; zGe: EquipmentItem[];
+    zPhotos: PhotoEntry[]; total: number; photoCount: number;
+  };
+
+  const zoneBlocks: ZoneBlock[] = zones.map((zone) => {
+    const zMs = msList.filter((x) => x.zoneId === zone.id);
+    const zAddl = addlSbList.filter((x) => x.zoneId === zone.id);
+    const zHvac = hvacList.filter((x) => x.zoneId === zone.id);
+    const zLight = lightList.filter((x) => x.zoneId === zone.id);
+    const zSolar = solarList.filter((x) => x.zoneId === zone.id);
+    const zFork = forkliftList.filter((x) => x.zoneId === zone.id);
+    const zHw = hotWaterList.filter((x) => x.zoneId === zone.id);
+    const zGw = genWaterList.filter((x) => x.zoneId === zone.id);
+    const zGe = genElecList.filter((x) => x.zoneId === zone.id);
+    const total = zMs.length + zAddl.length + zHvac.length + zLight.length + zSolar.length + zFork.length + zHw.length + zGw.length + zGe.length;
+    const zPhotos = photosForEntity(photos, zone.id);
+    return { id: zone.id, title: zone.zoneName, description: zone.zoneDescription, zMs, zAddl, zHvac, zLight, zSolar, zFork, zHw, zGw, zGe, total, zPhotos, photoCount: zonePhotoCount(zone.id, photos, allEquipment) };
+  }).filter((z) => z.total > 0 || z.photoCount > 0);
+
+  const unzMs = msList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzAddl = addlSbList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzHvac = hvacList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzLight = lightList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzSolar = solarList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzFork = forkliftList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzHw = hotWaterList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzGw = genWaterList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzGe = genElecList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzTotal = unzMs.length + unzAddl.length + unzHvac.length + unzLight.length + unzSolar.length + unzFork.length + unzHw.length + unzGw.length + unzGe.length;
+  if (unzTotal > 0) {
+    zoneBlocks.push({ id: null, title: 'Unzoned', description: null, zMs: unzMs, zAddl: unzAddl, zHvac: unzHvac, zLight: unzLight, zSolar: unzSolar, zFork: unzFork, zHw: unzHw, zGw: unzGw, zGe: unzGe, total: unzTotal, zPhotos: [], photoCount: unzTotal });
+  }
+
+  if (zoneBlocks.length === 0) return '<p class="empty-note">No equipment captured in this report.</p>';
+
+  return zoneBlocks.map((zone, zIdx) => {
+    const pb = zIdx > 0 ? ' style="page-break-before:auto;break-before:auto;"' : '';
+    return `<div class="zone-section"${pb}>
+      <div class="zone-hdr">
+        <div class="zone-hdr-inner">
+          <div class="zh-left">
+            <span class="zh-num-wrap">${zIdx + 1}</span>
+            <span class="zh-name">${esc(zone.title)}</span>
+            ${zone.description ? `<div class="zh-desc">${esc(zone.description)}</div>` : ''}
+          </div>
+          <div class="zh-right">${zone.total} item${zone.total !== 1 ? 's' : ''} &nbsp;·&nbsp; ${zone.photoCount} photo${zone.photoCount !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
+      ${zone.zPhotos.length ? renderPhotoBlocks(zone.zPhotos, 'Zone Photos', zone.zPhotos.length, 'photos-lead') : ''}
+      ${zone.zMs.length ? `<div class="zone-type-label">Main Switchboard</div>${zone.zMs.map((m) => renderMs(m, photosForEntity(photos, m.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zAddl.length ? `<div class="zone-type-label">Additional Switchboards</div>${zone.zAddl.map((a) => renderAddlSb(a, photosForEntity(photos, a.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zHvac.length ? `<div class="zone-type-label">HVAC Systems</div>${zone.zHvac.map((h) => renderHvac(h, photosForEntity(photos, h.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zLight.length ? `<div class="zone-type-label">Lighting Systems</div>${zone.zLight.map((l) => renderLight(l, photosForEntity(photos, l.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zSolar.length ? `<div class="zone-type-label">Solar PV</div>${zone.zSolar.map((s) => renderSolar(s, photosForEntity(photos, s.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zFork.length ? `<div class="zone-type-label">Forklift Charging</div>${zone.zFork.map((f) => renderForklift(f, photosForEntity(photos, f.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zHw.length ? `<div class="zone-type-label">Hot Water</div>${zone.zHw.map((h) => renderHotWater(h, photosForEntity(photos, h.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
+    </div>`;
+  }).join('')
+    + observationsBody(args.hvacList, args.lightList, args.solarList, args.forkliftList, args.hotWaterList);
+}
+
+// ── Full HTML builder ─────────────────────────────────────────────────────────────
+function buildAuditHtml(args: BodyArgs): string {
+  const { audit, zones, mode, brandLogo, genDate, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList, photos } = args;
+  const modeLabel = mode === 'by-zone' ? 'Report by Zone' : 'Report by Equipment';
+  const statusLabel = audit.status === 'Completed' ? 'Completed' : 'In Progress';
+  const totalEquipment = msList.length + addlSbList.length + hvacList.length + lightList.length + solarList.length + forkliftList.length + hotWaterList.length + genWaterList.length + genElecList.length;
+  const totalPhotos = photos.filter((p) => p.remoteUrl).length;
+
+  const statCells = ([
+    { count: zones.length, label: 'Zones' },
+    { count: totalPhotos, label: 'Photos' },
+    { count: msList.length + addlSbList.length, label: 'Switchboards' },
+    { count: hvacList.length, label: 'HVAC' },
+    { count: lightList.length, label: 'Lighting' },
+    { count: solarList.length, label: 'Solar PV' },
+    { count: forkliftList.length, label: 'Forklift' },
+    { count: hotWaterList.length, label: 'Hot Water' },
+    { count: genWaterList.length + genElecList.length, label: 'General' },
+    { count: totalEquipment, label: 'Total' },
+  ] as Array<{ count: number; label: string }>)
+    .filter((s) => s.count > 0)
+    .map((s) => statPill(s.count, s.label))
+    .join('');
+
+  const bodyContent = mode === 'by-zone' ? byZoneBody(args) : byEquipmentBody(args);
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>${buildCss()}</style></head>
+<body>
+<table class="doc-table">
+  <thead>
+    <tr><td class="hdr-cell">
+      <div class="hdr-inner">
+        <div class="hdr-brand"><span class="hdr-brand-title">Energy Audit Report</span></div>
+        <div class="hdr-sep"><div class="hdr-sep-line"></div></div>
+        <div class="hdr-report">${esc(audit.siteName)} &mdash; ${modeLabel}</div>
+      </div>
+    </td></tr>
+  </thead>
+  <tfoot>
+    <tr><td class="ftr-cell">
+      <div class="ftr-inner">
+        <div class="ftr-left">Confidential</div>
+        <div class="ftr-right">${modeLabel} &nbsp;·&nbsp; Generated ${genDate}</div>
+      </div>
+    </td></tr>
+  </tfoot>
+  <tbody>
+    <tr><td class="content-cell">
+
+      <div class="cover">
+        <div class="cover-eyebrow">Energy Audit Report &nbsp;·&nbsp; ${modeLabel}</div>
+        <div class="cover-brand">
+          <div class="cover-brand-label">Audit by</div>
+          <img class="cover-brand-logo" src="${brandLogo}" alt="Sustainability Wise" />
+        </div>
+        <div class="cover-meta">
+          <div class="cover-meta-row">
+            <div class="cm"><div class="cml">Audit Site</div><div class="cmv">${esc(audit.siteName)}</div></div>
+            <div class="cm"><div class="cml">Inspector</div><div class="cmv">${esc(audit.inspectorName)}</div></div>
+          </div>
+          <div class="cover-meta-row">
+            <div class="cm"><div class="cml">Date of Audit</div><div class="cmv">${fmtDate(audit.auditDate)}</div></div>
+            <div class="cm"><div class="cml">Status</div><div class="cmv">${statusLabel}</div></div>
+          </div>
+          <div class="cover-meta-row">
+            <div class="cm"><div class="cml">Site Address</div><div class="cmv">${esc(audit.siteAddress)}</div></div>
+            <div class="cm"><div class="cml">Report Type</div><div class="cmv">${modeLabel}</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="exec-title">Executive Summary</div>
+      <div class="exec-mode">${modeLabel}</div>
+      <div class="stats"><div class="stats-row">${statCells}</div></div>
+
+      ${bodyContent}
+
+      <div class="end-block">
+        <div class="end-inner">
+          <div class="end-left">
+            <div class="end-title">End of Report</div>
+            <div class="end-sub">Sustainability Wise &nbsp;·&nbsp; ${esc(audit.siteName)} &nbsp;·&nbsp; ${genDate}</div>
+          </div>
+          <div class="end-right"><div class="end-badge"><img class="end-logo" src="${brandLogo}" alt="Sustainability Wise" /></div></div>
+        </div>
+      </div>
+
+    </td></tr>
+  </tbody>
+</table>
+</body></html>`;
+}
+
+// ── DB helpers ────────────────────────────────────────────────────────────────────
+function zoneScopedWhere<T extends { auditId: unknown; deletedAt: unknown; zoneId: unknown }>(
+  table: T,
+  auditId: string,
+  selectedZoneIds: string[],
+  restrictToZones: boolean,
+) {
+  const conditions = [
+    eq(table.auditId as never, auditId),
+    isNull(table.deletedAt as never),
+  ];
+  if (restrictToZones) {
+    if (selectedZoneIds.length === 0) {
+      conditions.push(eq(table.zoneId as never, '__no_matching_zone__'));
+      return and(...conditions);
+    }
+    conditions.push(inArray(table.zoneId as never, selectedZoneIds));
+  }
+  return and(...conditions);
+}
+
+// ── Route handler ─────────────────────────────────────────────────────────────────
+async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
+  const { auditId } = request.params as { auditId: string };
+  const body = (request.body ?? {}) as { zoneIds?: string[]; mode?: 'by-equipment' | 'by-zone' };
+  const mode = body.mode === 'by-zone' ? 'by-zone' : 'by-equipment';
+  const requestedZoneIds = Array.isArray(body.zoneIds) ? body.zoneIds.filter(Boolean) : [];
+
+  const [audit] = await db
+    .select()
+    .from(eaAudits)
+    .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
+  const foundAudit = assertFound(audit, 'Audit');
+  assertAuditAccess(foundAudit, request.user);
+
+  const zoneConditions = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
+  if (requestedZoneIds.length > 0) {
+    zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
+  }
+
+  const zones = await db.select().from(eaZones).where(and(...zoneConditions));
+  const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((zone) => zone.id) : [];
+  const restrictToZones = requestedZoneIds.length > 0;
+
+  const [
+    mainSwitchboards,
+    additionalSwitchboards,
+    hvacUnits,
+    lightingSystems,
+    solarPv,
+    forkliftChargers,
+    hotWaterSystems,
+    generalWater,
+    generalElectricity,
+    photos,
+  ] = await Promise.all([
+    db.select().from(eaMainSwitchboards).where(zoneScopedWhere(eaMainSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaAdditionalSwitchboards).where(zoneScopedWhere(eaAdditionalSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaHvacUnits).where(zoneScopedWhere(eaHvacUnits, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaLightingSystems).where(zoneScopedWhere(eaLightingSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(photoRegistry).where(and(
+      eq(photoRegistry.app, 'ecoaudit'),
+      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.status, 'confirmed'),
+    )),
+  ]);
+
+  const allowedPhotoEntityIds = new Set([
+    foundAudit.id,
+    ...zones.map((zone) => zone.id),
+    ...mainSwitchboards.map((x) => x.id),
+    ...additionalSwitchboards.map((x) => x.id),
+    ...hvacUnits.map((x) => x.id),
+    ...lightingSystems.map((x) => x.id),
+    ...solarPv.map((x) => x.id),
+    ...forkliftChargers.map((x) => x.id),
+    ...hotWaterSystems.map((x) => x.id),
+    ...generalWater.map((x) => x.id),
+    ...generalElectricity.map((x) => x.id),
+  ]);
+  const scopedPhotos = restrictToZones
+    ? photos.filter((photo) => allowedPhotoEntityIds.has(photo.entityId))
+    : photos;
+  const compressedPhotos = await prepareCompressedPdfPhotos(scopedPhotos);
+
+  const brandLogo = await loadBrandLogo();
+  const genDate = fmtDate(new Date().toISOString());
+
+  const html = buildAuditHtml({
+    audit: foundAudit,
+    zones,
+    photos: compressedPhotos,
+    mode,
+    brandLogo,
+    genDate,
+    msList: mainSwitchboards as unknown as EquipmentItem[],
+    addlSbList: additionalSwitchboards as unknown as EquipmentItem[],
+    hvacList: hvacUnits as unknown as EquipmentItem[],
+    lightList: lightingSystems as unknown as EquipmentItem[],
+    solarList: solarPv as unknown as EquipmentItem[],
+    forkliftList: forkliftChargers as unknown as EquipmentItem[],
+    hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
+    genWaterList: generalWater as unknown as EquipmentItem[],
+    genElecList: generalElectricity as unknown as EquipmentItem[],
+  });
+
+  const pdf = await renderPdf(html);
+  if (pdf.byteLength > MAX_PDF_BYTES) {
+    return reply.status(413).send({
+      error: 'PDF too large to generate server-side',
+      actualSizeBytes: pdf.byteLength,
+      suggestion: 'Reduce the number of selected zones, sections, or photos',
+    });
+  }
+
+  const storageKey = makeLocalStorageKey({
+    app: 'ecoaudit',
+    parentId: auditId,
+    entityType: 'audit',
+    entityId: auditId,
+    fieldName: 'audit-pdf',
+    sessionId: randomUUID(),
+    filename: 'audit-report.pdf',
+  });
+  await writeLocalFile(storageKey, pdf);
+  const remoteUrl = publicFileUrl(storageKey);
+
+  await db
+    .update(eaAudits)
+    .set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() })
+    .where(eq(eaAudits.id, auditId));
+
+  return reply
+    .header('Content-Disposition', `attachment; filename="ecoaudit-${auditId}.pdf"`)
+    .header('Content-Length', String(pdf.byteLength))
+    .type('application/pdf')
+    .send(pdf);
+}
+
+const reportPdfRoute: RouteShorthandOptions = {
+  schema: {
+    tags: ['EcoAudit PDF'],
+    summary: 'Generate an EcoAudit report PDF',
+    description: 'Builds a server-side PDF from an audit, its zones, equipment records, and synced photos. Supports by-equipment and by-zone layouts.',
+    security: [{ bearerAuth: [] }],
+    params: {
+      type: 'object',
+      required: ['auditId'],
+      properties: { auditId: { type: 'string' } },
+    },
+    body: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['by-equipment', 'by-zone'], default: 'by-equipment' },
+        zoneIds: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+};
 
 export async function eaPdfRoutes(app: FastifyInstance): Promise<void> {
+  app.post('/audits/:auditId/report/pdf', reportPdfRoute, handleEcoAuditPdf);
+
   app.post('/audits/:auditId/site-pack/pdf', {
-    schema: { tags: ['EcoAudit PDF'], security: [{ bearerAuth: [] }] },
-    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
-  }, async (request, reply) => {
-    const { auditId } = request.params as { auditId: string };
-    const body = (request.body as { zoneIds?: string[] }) ?? {};
-
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
-
-    const zones = await db.select().from(eaZones).where(and(eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)));
-    const hvacUnits = await db.select().from(eaHvacUnits).where(and(eq(eaHvacUnits.auditId, auditId), isNull(eaHvacUnits.deletedAt)));
-    const lighting = await db.select().from(eaLightingSystems).where(and(eq(eaLightingSystems.auditId, auditId), isNull(eaLightingSystems.deletedAt)));
-    const solarPv = await db.select().from(eaSolarPv).where(and(eq(eaSolarPv.auditId, auditId), isNull(eaSolarPv.deletedAt)));
-    const mainSwitchboards = await db.select().from(eaMainSwitchboards).where(and(eq(eaMainSwitchboards.auditId, auditId), isNull(eaMainSwitchboards.deletedAt)));
-    const photos = await db.select().from(photoRegistry).where(and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.parentId, auditId), eq(photoRegistry.status, 'confirmed')));
-
-    const html = `<!doctype html><html><head><meta charset="utf-8"/><style>
-      body{color:#172033;font-family:Arial,sans-serif;font-size:12px;line-height:1.45}
-      h1{color:#0a3d62;font-size:26px;margin:0 0 6px}h2{color:#12394f;font-size:18px;margin:20px 0 8px}
-      .meta{color:#5b6577;margin-bottom:16px}table{border-collapse:collapse;width:100%;margin:8px 0 12px}
-      th,td{border:1px solid #d8dee8;padding:7px 8px;text-align:left;vertical-align:top}th{background:#f0f7ee;width:34%}
-      .photos{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
-      figure{margin:0;border:1px solid #d8dee8;padding:6px}img{display:block;width:100%;max-height:220px;object-fit:contain}
-      figcaption{color:#5b6577;font-size:10px;margin-top:4px}
-    </style></head><body>
-    <h1>${esc(audit.siteName)} — Energy Audit Report</h1>
-    <div class="meta">${esc(audit.siteAddress)}${audit.auditDate ? ` | ${esc(audit.auditDate)}` : ''} | Inspector: ${esc(audit.inspectorName)}</div>
-    <table>${row('Status', audit.status)}${row('Audit Date', audit.auditDate)}</table>
-
-    <h2>Zones (${zones.length})</h2>
-    ${zones.map(z => `<p><strong>${esc(z.zoneName)}</strong>${z.zoneDescription ? ` — ${esc(z.zoneDescription)}` : ''}</p>`).join('')}
-
-    <h2>HVAC Units (${hvacUnits.length})</h2>
-    ${hvacUnits.map(u => `<section><h3>${esc(u.unitName)}</h3><table>
-      ${row('Type', u.type)}${row('Model', u.model)}${row('Heating kW', u.heatingCapacityKw)}${row('Cooling kW', u.coolingCapacityKw)}
-      ${row('Energy Improvements', u.energyImprovementObservations)}
-    </table></section>`).join('')}
-
-    <h2>Lighting Systems (${lighting.length})</h2>
-    ${lighting.map(l => `<section><h3>${esc(l.lightType)}</h3><table>
-      ${row('Brand/Model', l.brandModel)}${row('Wattage', l.ratedWattage)}${row('Quantity', l.quantity)}
-      ${row('Controls', l.controlsType)}${row('Energy Improvements', l.energyImprovementObservations)}
-    </table></section>`).join('')}
-
-    <h2>Solar PV (${solarPv.length})</h2>
-    ${solarPv.map(s => `<section><table>
-      ${row('System Size kW', s.systemSizeKw)}${row('Inverter', s.inverterBrandModel)}${row('Available Roof Space', s.availableRoofSpace)}
-      ${row('Energy Improvements', s.energyImprovementObservations)}
-    </table></section>`).join('')}
-
-    <h2>Main Switchboards (${mainSwitchboards.length})</h2>
-    ${mainSwitchboards.map(m => `<section><h3>${esc(m.name)}</h3><table>
-      ${row('Location', m.location)}${row('Site NMI', m.siteNmi)}${row('Sub-circuits', m.subCircuitsDescription)}
-    </table></section>`).join('')}
-
-    ${photos.filter(p => p.remoteUrl).length > 0 ? `<h2>Photos</h2><div class="photos">
-      ${photos.filter(p => p.remoteUrl).map(p => `<figure><img src="${esc(p.remoteUrl)}"/><figcaption>${esc(p.fieldName)}</figcaption></figure>`).join('')}
-    </div>` : ''}
-    </body></html>`;
-
-    const pdf = await renderPdf(html);
-    if (pdf.byteLength > 50 * 1024 * 1024) {
-      return reply.status(413).send({ error: 'Generated PDF exceeds 50 MB limit', actualSizeBytes: pdf.byteLength });
-    }
-
-    const storageKey = makeLocalStorageKey({ app: 'ecoaudit', parentId: auditId, entityType: 'audit', entityId: auditId, fieldName: 'audit-pdf', sessionId: randomUUID(), filename: 'audit.pdf' });
-    await writeLocalFile(storageKey, pdf);
-    const remoteUrl = publicFileUrl(storageKey);
-    await db.update(eaAudits).set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() }).where(eq(eaAudits.id, auditId));
-
-    return reply
-      .header('Content-Disposition', `attachment; filename="ecoaudit-${auditId}.pdf"`)
-      .header('Content-Length', String(pdf.byteLength))
-      .type('application/pdf')
-      .send(pdf);
-  });
+    ...reportPdfRoute,
+    schema: {
+      ...reportPdfRoute.schema,
+      hide: true,
+      summary: 'Generate an EcoAudit report PDF (legacy alias)',
+    },
+  }, handleEcoAuditPdf);
 }
