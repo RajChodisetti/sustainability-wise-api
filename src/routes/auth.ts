@@ -1,3 +1,4 @@
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { eq, and, isNull, gt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
@@ -35,9 +36,11 @@ async function registrationsAreClosed(): Promise<boolean> {
 }
 
 function assertRegistrationSecret(secret: string | string[] | undefined): void {
-  if (!config.registrationSecret || secret !== config.registrationSecret) {
-    throw forbidden('Invalid or missing registration secret');
-  }
+  if (!config.registrationSecret) throw forbidden('Invalid or missing registration secret');
+  const key = randomBytes(32);
+  const a = createHmac('sha256', key).update(config.registrationSecret).digest();
+  const b = createHmac('sha256', key).update(typeof secret === 'string' ? secret : '').digest();
+  if (!timingSafeEqual(a, b)) throw forbidden('Invalid or missing registration secret');
 }
 
 async function issueTokens(user: { id: string; email: string; fullName: string | null; role: string }, app: App) {
