@@ -7,11 +7,15 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { renderPdf } from '../../pdf/renderer.js';
+import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
 
-const MAX_PDF_BYTES = 50 * 1024 * 1024;
+const MAX_PDF_BYTES = 300 * 1024 * 1024;
+const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
+const LARGE_PDF_RAW_BYTES_THRESHOLD = 120 * 1024 * 1024;
+const PDF_PHOTO_APPENDIX_CHUNK_SIZE = 60;
 const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
 
 type SiteRow = typeof ssSites.$inferSelect;
@@ -117,6 +121,37 @@ function chunk2<T>(arr: T[]): T[][] {
   const rows: T[][] = [];
   for (let i = 0; i < arr.length; i += 2) rows.push(arr.slice(i, i + 2));
   return rows;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function totalPhotoBytes(photos: PhotoRow[]): number {
+  return photos.reduce((sum, photo) => sum + (photo.fileSizeBytes ?? 0), 0);
+}
+
+function shouldUsePhotoAppendix(photos: PhotoRow[]): boolean {
+  return photos.length > LARGE_PDF_PHOTO_COUNT_THRESHOLD
+    || totalPhotoBytes(photos) > LARGE_PDF_RAW_BYTES_THRESHOLD;
+}
+
+function humanEntityType(value: string | null | undefined): string {
+  if (!value) return 'Photo';
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function appendixPhotoLabel(photo: PhotoRow): string {
+  const field = photo.originalFilename ?? photo.fieldName ?? 'Photo';
+  return `${humanEntityType(photo.entityType)} · ${field}`;
 }
 
 function normalizePhotoMetadata(value: PhotoMetadataValue): PhotoMetadata {
@@ -527,6 +562,107 @@ ${appendixHtml}
 </html>`;
 }
 
+async function buildPhotoAppendixHtml(args: {
+  site: SiteRow;
+  photos: PhotoRow[];
+  partIndex: number;
+  totalParts: number;
+  totalPhotos: number;
+}): Promise<string> {
+  const brandLogo = await loadBrandLogo();
+  const cells = args.photos
+    .filter((photo) => photo.remoteUrl)
+    .map((photo) => `<td class="photo-cell">${photoImg(photo.remoteUrl, appendixPhotoLabel(photo), false)}</td>`);
+  const photoStart = ((args.partIndex - 1) * PDF_PHOTO_APPENDIX_CHUNK_SIZE) + 1;
+  const photoEnd = Math.min(args.partIndex * PDF_PHOTO_APPENDIX_CHUNK_SIZE, args.totalPhotos);
+
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  @page { size: A4 portrait; margin: 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; color: #0F172A; font-size: 10pt; margin: 0; line-height: 1.45; }
+  .appendix-head { background: #142F70; border-top: 5px solid #0B3F59; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; color: #FFFFFF; display: table; width: 100%; }
+  .appendix-title { display: table-cell; vertical-align: middle; }
+  .appendix-eyebrow { color: #DBEAFE; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 3px; }
+  .appendix-name { font-size: 15pt; font-weight: 900; }
+  .appendix-logo-wrap { display: table-cell; vertical-align: middle; text-align: right; }
+  .appendix-logo { display: inline-block; width: 142px; height: auto; background: #FFFFFF; border-radius: 6px; padding: 5px 9px; }
+  .sec-bar { background: #1E3A8A; color: #FFFFFF; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 7px 12px; margin-top: 14px; page-break-after: avoid; }
+  .appendix-note { color: #64748B; font-size: 9pt; margin: 8px 0 12px; }
+  .photo-block { margin: 8px 0; page-break-inside: avoid; }
+  .photo-img { max-width: 100%; max-height: 180px; object-fit: cover; border-radius: 6px; border: 1px solid #DBEAFE; }
+  .photo-caption { color: #64748B; font-size: 8pt; margin-top: 4px; }
+  .photo-grid-2 { display: table; width: 100%; border-collapse: separate; border-spacing: 8px; }
+  .photo-cell { display: table-cell; width: 50%; vertical-align: top; text-align: center; page-break-inside: avoid; }
+  .footer-note { color: #94A3B8; font-size: 7pt; text-align: center; margin-top: 20px; border-top: 1.5px solid #93C5FD; padding-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="appendix-head">
+    <div class="appendix-title">
+      <div class="appendix-eyebrow">SolarSense Site Pack</div>
+      <div class="appendix-name">${esc(args.site.siteName)} &mdash; Photo Appendix</div>
+    </div>
+    <div class="appendix-logo-wrap"><img class="appendix-logo" src="${brandLogo}" alt="Sustainability Wise" /></div>
+  </div>
+  <div class="sec-bar">Photographic Evidence Appendix</div>
+  <div class="appendix-note">Photo appendix part ${args.partIndex} of ${args.totalParts}, covering photos ${photoStart}-${photoEnd} of ${args.totalPhotos}. Large reports are split internally for reliable server-side rendering, then merged into this single PDF.</div>
+  ${photoGrid(cells)}
+  <div class="footer-note">Generated by SolarSense &nbsp;&middot;&nbsp; ${new Date().toLocaleDateString('en-AU')}</div>
+</body>
+</html>`;
+}
+
+async function renderSolarSensePdf(args: {
+  site: SiteRow;
+  assessments: AssessmentRow[];
+  photos: PhotoRow[];
+  options: SitePackOptions;
+}): Promise<Buffer> {
+  if (!shouldUsePhotoAppendix(args.photos)) {
+    const compressedPhotos = await prepareCompressedPdfPhotos(args.photos);
+    return renderPdf(await buildHtml({
+      site: args.site,
+      assessments: args.assessments,
+      photos: compressedPhotos,
+      options: args.options,
+    }));
+  }
+
+  console.info('[pdf] Using chunked SolarSense photo appendix render', {
+    siteId: args.site.id,
+    photoCount: args.photos.length,
+    rawBytes: totalPhotoBytes(args.photos),
+    chunkSize: PDF_PHOTO_APPENDIX_CHUNK_SIZE,
+  });
+
+  const photoChunks = chunkArray(args.photos, PDF_PHOTO_APPENDIX_CHUNK_SIZE);
+  const pdfParts: Buffer[] = [
+    await renderPdf(await buildHtml({
+      site: args.site,
+      assessments: args.assessments,
+      photos: [],
+      options: args.options,
+    })),
+  ];
+
+  for (let index = 0; index < photoChunks.length; index += 1) {
+    const compressedPhotos = await prepareCompressedPdfPhotos(photoChunks[index]);
+    pdfParts.push(await renderPdf(await buildPhotoAppendixHtml({
+      site: args.site,
+      photos: compressedPhotos,
+      partIndex: index + 1,
+      totalParts: photoChunks.length,
+      totalPhotos: args.photos.length,
+    })));
+  }
+
+  return mergePdfBuffers(pdfParts);
+}
+
 export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
   app.post('/sites/:siteId/site-pack/pdf', {
     schema: {
@@ -584,7 +720,11 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
         eq(photoRegistry.parentId, siteId),
         eq(photoRegistry.status, 'confirmed'),
       ));
-    const compressedPhotos = await prepareCompressedPdfPhotos(photos);
+    const selectedPhotoEntityIds = new Set([
+      siteId,
+      ...assessments.map((assessment) => assessment.id),
+    ]);
+    const scopedPhotos = photos.filter((photo) => selectedPhotoEntityIds.has(photo.entityId));
 
     const rawOptions = (body.options && typeof body.options === 'object' ? body.options : {}) as Record<string, unknown>;
     const options: SitePackOptions = {
@@ -592,16 +732,17 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       includeAppendix: rawOptions.includeAppendix !== false,
     };
 
-    const pdf = await renderPdf(await buildHtml({
+    const pdf = await renderSolarSensePdf({
       site: foundSite,
       assessments,
-      photos: compressedPhotos,
+      photos: scopedPhotos,
       options,
-    }));
+    });
     if (pdf.byteLength > MAX_PDF_BYTES) {
       return reply.status(413).send({
         error: 'PDF too large to generate server-side',
         actualSizeBytes: pdf.byteLength,
+        maxSizeBytes: MAX_PDF_BYTES,
         suggestion: 'Reduce the number of selected assessments or photos',
       });
     }

@@ -24,6 +24,7 @@ export async function getBrowser(): Promise<Browser> {
 export async function renderPdf(html: string): Promise<Buffer> {
   const browserInstance = await getBrowser();
   const page = await browserInstance.newPage();
+  let renderedPdf: Buffer | null = null;
   try {
     await page.setContent(html, { waitUntil: 'load', timeout: 60_000 });
     await page.evaluate(async () => {
@@ -42,9 +43,26 @@ export async function renderPdf(html: string): Promise<Buffer> {
       printBackground: true,
       margin: { top: '0', right: '0', bottom: '0', left: '0' },
     });
-    return Buffer.from(pdf);
+    renderedPdf = Buffer.from(pdf);
+    return renderedPdf;
   } finally {
-    await page.close();
+    try {
+      await page.close();
+    } catch (error) {
+      if (renderedPdf) {
+        console.warn('[pdf] Ignoring page close error after successful render', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      } else {
+        console.warn('[pdf] Page close failed after render error', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      if (!browserInstance.connected) {
+        browser = null;
+      }
+    }
   }
 }
 

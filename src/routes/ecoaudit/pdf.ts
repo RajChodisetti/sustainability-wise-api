@@ -19,11 +19,15 @@ import {
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { renderPdf } from '../../pdf/renderer.js';
+import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
 
-const MAX_PDF_BYTES = 50 * 1024 * 1024;
+const MAX_PDF_BYTES = 300 * 1024 * 1024;
+const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
+const LARGE_PDF_RAW_BYTES_THRESHOLD = 120 * 1024 * 1024;
+const PDF_PHOTO_APPENDIX_CHUNK_SIZE = 60;
 const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
 
 type EquipmentItem = {
@@ -80,6 +84,40 @@ function photosForEntity(photos: PhotoRow[], entityId: string): PhotoEntry[] {
       label: FIELD_LABELS[p.fieldName ?? ''] ?? (p.originalFilename ?? p.fieldName ?? 'Photo'),
       largeInPdf: false,
     }));
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function totalPhotoBytes(photos: PhotoRow[]): number {
+  return photos.reduce((sum, photo) => sum + (photo.fileSizeBytes ?? 0), 0);
+}
+
+function shouldUsePhotoAppendix(photos: PhotoRow[]): boolean {
+  return photos.length > LARGE_PDF_PHOTO_COUNT_THRESHOLD
+    || totalPhotoBytes(photos) > LARGE_PDF_RAW_BYTES_THRESHOLD;
+}
+
+function humanEntityType(value: string | null | undefined): string {
+  if (!value) return 'Photo';
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function appendixPhotoLabel(photo: PhotoRow): string {
+  const field = FIELD_LABELS[photo.fieldName ?? '']
+    ?? photo.originalFilename
+    ?? photo.fieldName
+    ?? 'Photo';
+  return `${humanEntityType(photo.entityType)} · ${field}`;
 }
 
 // ── HTML helpers ──────────────────────────────────────────────────────────────────
@@ -671,8 +709,25 @@ function byZoneBody(args: BodyArgs): string {
   }).join('');
 }
 
+function buildAuditEndBlock(args: Pick<BodyArgs, 'audit' | 'brandLogo' | 'genDate'>): string {
+  return `<div class="end-block">
+    <div class="end-inner">
+      <div class="end-left">
+        <div class="end-title">End of Report</div>
+        <div class="end-sub">Sustainability Wise &nbsp;·&nbsp; ${esc(args.audit.siteName)} &nbsp;·&nbsp; ${args.genDate}</div>
+      </div>
+      <div class="end-right"><div class="end-badge"><img class="end-logo" src="${args.brandLogo}" alt="Sustainability Wise" /></div></div>
+    </div>
+  </div>`;
+}
+
+type BuildAuditHtmlOptions = {
+  includeEnd?: boolean;
+  introNoticeHtml?: string;
+};
+
 // ── Full HTML builder ─────────────────────────────────────────────────────────────
-function buildAuditHtml(args: BodyArgs): string {
+function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): string {
   const { audit, zones, mode, brandLogo, genDate, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList, photos } = args;
   const modeLabel = mode === 'by-zone' ? 'Report by Zone' : 'Report by Equipment';
   const statusLabel = audit.status === 'Completed' ? 'Completed' : 'In Progress';
@@ -762,25 +817,106 @@ function buildAuditHtml(args: BodyArgs): string {
       <div class="exec-mode">${modeLabel}</div>
       ${executiveSummary ? `<div class="exec-copy">${formatText(executiveSummary)}</div>` : ''}
       <div class="stats"><div class="stats-row">${statCells}</div></div>
+      ${options.introNoticeHtml ?? ''}
 
       ${mode === 'by-zone'
         ? byZoneBody(args) + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations)
         : byEquipmentBody(args)}
 
-      <div class="end-block">
-        <div class="end-inner">
-          <div class="end-left">
-            <div class="end-title">End of Report</div>
-            <div class="end-sub">Sustainability Wise &nbsp;·&nbsp; ${esc(audit.siteName)} &nbsp;·&nbsp; ${genDate}</div>
-          </div>
-          <div class="end-right"><div class="end-badge"><img class="end-logo" src="${brandLogo}" alt="Sustainability Wise" /></div></div>
-        </div>
-      </div>
+      ${options.includeEnd === false ? '' : buildAuditEndBlock(args)}
 
     </td></tr>
   </tbody>
 </table>
 </body></html>`;
+}
+
+function buildAuditPhotoAppendixHtml(
+  args: BodyArgs,
+  partIndex: number,
+  totalParts: number,
+  totalPhotos: number,
+  includeEnd: boolean,
+): string {
+  const modeLabel = args.mode === 'by-zone' ? 'Report by Zone' : 'Report by Equipment';
+  const entries = args.photos
+    .filter((photo) => photo.remoteUrl)
+    .map((photo) => ({
+      src: photo.remoteUrl!,
+      label: appendixPhotoLabel(photo),
+      largeInPdf: false,
+    }));
+  const photoStart = ((partIndex - 1) * PDF_PHOTO_APPENDIX_CHUNK_SIZE) + 1;
+  const photoEnd = Math.min(partIndex * PDF_PHOTO_APPENDIX_CHUNK_SIZE, totalPhotos);
+
+  return `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>${buildCss()}</style></head>
+<body>
+<table class="doc-table">
+  <thead>
+    <tr><td class="hdr-cell">
+      <div class="hdr-inner">
+        <div class="hdr-brand"><span class="hdr-brand-title">Energy Audit Report</span></div>
+        <div class="hdr-sep"><div class="hdr-sep-line"></div></div>
+        <div class="hdr-report">${esc(args.audit.siteName)} &mdash; Photo Appendix</div>
+      </div>
+    </td></tr>
+  </thead>
+  <tfoot>
+    <tr><td class="ftr-cell">
+      <div class="ftr-inner">
+        <div class="ftr-left">Confidential</div>
+        <div class="ftr-right">${modeLabel} &nbsp;·&nbsp; Generated ${args.genDate}</div>
+      </div>
+    </td></tr>
+  </tfoot>
+  <tbody>
+    <tr><td class="content-cell">
+      ${secHeaderLabel('PH', 'Photographic Evidence Appendix')}
+      <p class="sec-desc">Photo appendix part ${partIndex} of ${totalParts}, covering photos ${photoStart}-${photoEnd} of ${totalPhotos}. Large reports are split internally for reliable server-side rendering, then merged into this single PDF.</p>
+      ${renderPhotoBlocks(entries, 'Photographic Evidence', entries.length, 'photos-lead')}
+      ${includeEnd ? buildAuditEndBlock(args) : ''}
+    </td></tr>
+  </tbody>
+</table>
+</body></html>`;
+}
+
+async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Promise<Buffer> {
+  if (!shouldUsePhotoAppendix(scopedPhotos)) {
+    const compressedPhotos = await prepareCompressedPdfPhotos(scopedPhotos);
+    return renderPdf(buildAuditHtml({ ...args, photos: compressedPhotos }));
+  }
+
+  console.info('[pdf] Using chunked EcoAudit photo appendix render', {
+    auditId: args.audit.id,
+    photoCount: scopedPhotos.length,
+    rawBytes: totalPhotoBytes(scopedPhotos),
+    chunkSize: PDF_PHOTO_APPENDIX_CHUNK_SIZE,
+  });
+
+  const noPhotoArgs = { ...args, photos: [] };
+  const photoChunks = chunkArray(scopedPhotos, PDF_PHOTO_APPENDIX_CHUNK_SIZE);
+  const pdfParts: Buffer[] = [
+    await renderPdf(buildAuditHtml(noPhotoArgs, {
+      includeEnd: false,
+      introNoticeHtml: `<div class="obs-block obs-summary"><div class="obs-title">Photographic Evidence Appendix</div><div class="obs-text">This report contains ${scopedPhotos.length} synced photo${scopedPhotos.length === 1 ? '' : 's'}. To keep server-side generation reliable for large photo-heavy reports, photos are included after the report body in a merged appendix.</div></div>`,
+    })),
+  ];
+
+  for (let index = 0; index < photoChunks.length; index += 1) {
+    const compressedPhotos = await prepareCompressedPdfPhotos(photoChunks[index]);
+    const appendixArgs = { ...args, photos: compressedPhotos };
+    pdfParts.push(await renderPdf(buildAuditPhotoAppendixHtml(
+      appendixArgs,
+      index + 1,
+      photoChunks.length,
+      scopedPhotos.length,
+      index === photoChunks.length - 1,
+    )));
+  }
+
+  return mergePdfBuffers(pdfParts);
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────────
@@ -871,15 +1007,14 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   const scopedPhotos = restrictToZones
     ? photos.filter((photo) => allowedPhotoEntityIds.has(photo.entityId))
     : photos;
-  const compressedPhotos = await prepareCompressedPdfPhotos(scopedPhotos);
 
   const brandLogo = await loadBrandLogo();
   const genDate = fmtDate(new Date().toISOString());
 
-  const html = buildAuditHtml({
+  const pdf = await renderEcoAuditPdf({
     audit: foundAudit,
     zones,
-    photos: compressedPhotos,
+    photos: [],
     mode,
     brandLogo,
     genDate,
@@ -892,13 +1027,12 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
     genWaterList: generalWater as unknown as EquipmentItem[],
     genElecList: generalElectricity as unknown as EquipmentItem[],
-  });
-
-  const pdf = await renderPdf(html);
+  }, scopedPhotos);
   if (pdf.byteLength > MAX_PDF_BYTES) {
     return reply.status(413).send({
       error: 'PDF too large to generate server-side',
       actualSizeBytes: pdf.byteLength,
+      maxSizeBytes: MAX_PDF_BYTES,
       suggestion: 'Reduce the number of selected zones, sections, or photos',
     });
   }
