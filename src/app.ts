@@ -10,6 +10,7 @@ import { apiKeyRoutes } from './routes/apiKeys.js';
 import { solarsenseRoutes } from './routes/solarsense/index.js';
 import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
+import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { AppError } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
 import { config } from './config.js';
@@ -46,6 +47,7 @@ const orderedTags = [
   { name: 'EcoAudit / Photos', description: 'EcoAudit Pro synced photo listing, export, and deletion.' },
   { name: 'EcoAudit / Sync', description: 'EcoAudit Pro mobile sync and photo upload endpoints.' },
   { name: 'EcoAudit / PDF', description: 'EcoAudit Pro server-side report generation.' },
+  { name: 'PDF Jobs', description: 'Async PDF job status polling and download.' },
   { name: 'Files', description: 'Stored photo and generated PDF downloads.' },
   { name: 'System', description: 'Public operational checks.' },
 ];
@@ -304,6 +306,7 @@ export async function buildApp() {
 
   await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });
+  await app.register(pdfJobRoutes, { prefix: '/v1' });
 
   return app;
 }

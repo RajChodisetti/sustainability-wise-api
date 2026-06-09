@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { photoRegistry } from '../../db/schema/shared.js';
+import { photoRegistry, pdfJobs } from '../../db/schema/shared.js';
+import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
 import {
   eaAdditionalSwitchboards,
   eaAudits,
@@ -1061,6 +1062,180 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     .send(pdf);
 }
 
+// ── Async job runner ──────────────────────────────────────────────────────────────
+export async function runEcoAuditPdfJob(
+  auditId: string,
+  mode: 'by-equipment' | 'by-zone',
+  zoneIds: string[],
+  onPhase?: (phase: string) => void | Promise<void>,
+): Promise<{ storageKey: string; remoteUrl: string }> {
+  await onPhase?.('Fetching audit data…');
+
+  const [audit] = await db
+    .select()
+    .from(eaAudits)
+    .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
+  if (!audit) throw new Error('Audit not found');
+
+  const requestedZoneIds = zoneIds.filter(Boolean);
+  const zoneConditions: ReturnType<typeof eq>[] = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
+  if (requestedZoneIds.length > 0) {
+    zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
+  }
+  const zones = await db.select().from(eaZones).where(and(...zoneConditions));
+  const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((z) => z.id) : [];
+  const restrictToZones = requestedZoneIds.length > 0;
+
+  const [
+    mainSwitchboards,
+    additionalSwitchboards,
+    hvacUnits,
+    lightingSystems,
+    solarPv,
+    forkliftChargers,
+    hotWaterSystems,
+    generalWater,
+    generalElectricity,
+    photos,
+  ] = await Promise.all([
+    db.select().from(eaMainSwitchboards).where(zoneScopedWhere(eaMainSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaAdditionalSwitchboards).where(zoneScopedWhere(eaAdditionalSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaHvacUnits).where(zoneScopedWhere(eaHvacUnits, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaLightingSystems).where(zoneScopedWhere(eaLightingSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(photoRegistry).where(and(
+      eq(photoRegistry.app, 'ecoaudit'),
+      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.status, 'confirmed'),
+    )).orderBy(asc(photoRegistry.createdAt)),
+  ]);
+
+  const allowedPhotoEntityIds = new Set([
+    audit.id,
+    ...zones.map((z) => z.id),
+    ...mainSwitchboards.map((x) => x.id),
+    ...additionalSwitchboards.map((x) => x.id),
+    ...hvacUnits.map((x) => x.id),
+    ...lightingSystems.map((x) => x.id),
+    ...solarPv.map((x) => x.id),
+    ...forkliftChargers.map((x) => x.id),
+    ...hotWaterSystems.map((x) => x.id),
+    ...generalWater.map((x) => x.id),
+    ...generalElectricity.map((x) => x.id),
+  ]);
+  const scopedPhotos = restrictToZones
+    ? photos.filter((p) => allowedPhotoEntityIds.has(p.entityId))
+    : photos;
+
+  const brandLogo = await loadBrandLogo();
+  const genDate = fmtDate(new Date().toISOString());
+
+  await onPhase?.(`Rendering PDF (${scopedPhotos.length} photo${scopedPhotos.length !== 1 ? 's' : ''})…`);
+
+  const pdf = await renderEcoAuditPdf({
+    audit,
+    zones,
+    photos: [],
+    mode,
+    brandLogo,
+    genDate,
+    msList: mainSwitchboards as unknown as EquipmentItem[],
+    addlSbList: additionalSwitchboards as unknown as EquipmentItem[],
+    hvacList: hvacUnits as unknown as EquipmentItem[],
+    lightList: lightingSystems as unknown as EquipmentItem[],
+    solarList: solarPv as unknown as EquipmentItem[],
+    forkliftList: forkliftChargers as unknown as EquipmentItem[],
+    hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
+    genWaterList: generalWater as unknown as EquipmentItem[],
+    genElecList: generalElectricity as unknown as EquipmentItem[],
+  }, scopedPhotos);
+
+  if (pdf.byteLength > MAX_PDF_BYTES) {
+    throw new Error(
+      `PDF too large (${(pdf.byteLength / 1024 / 1024).toFixed(1)} MB). Reduce the number of selected zones or photos.`,
+    );
+  }
+
+  await onPhase?.('Saving PDF…');
+
+  const storageKey = makeLocalStorageKey({
+    app: 'ecoaudit',
+    parentId: auditId,
+    entityType: 'audit',
+    entityId: auditId,
+    fieldName: 'audit-pdf',
+    sessionId: randomUUID(),
+    filename: 'audit-report.pdf',
+  });
+  await writeLocalFile(storageKey, pdf);
+  const remoteUrl = publicFileUrl(storageKey);
+
+  await db
+    .update(eaAudits)
+    .set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() })
+    .where(eq(eaAudits.id, auditId));
+
+  return { storageKey, remoteUrl };
+}
+
+async function runEcoAuditPdfJobInBackground(
+  jobId: string,
+  auditId: string,
+  mode: 'by-equipment' | 'by-zone',
+  zoneIds: string[],
+): Promise<void> {
+  try {
+    await markJobRunning(jobId, 'Starting…');
+    const { storageKey, remoteUrl } = await runEcoAuditPdfJob(
+      auditId,
+      mode,
+      zoneIds,
+      (phase) => updateJobPhase(jobId, phase),
+    );
+    await completeJob(jobId, remoteUrl, storageKey);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await failJob(jobId, message);
+    console.error('[pdf-job] EcoAudit job failed', { jobId, auditId, error: message });
+  }
+}
+
+async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: FastifyReply) {
+  const { auditId } = request.params as { auditId: string };
+  const body = (request.body ?? {}) as { zoneIds?: string[]; mode?: 'by-equipment' | 'by-zone' };
+  const mode = body.mode === 'by-zone' ? 'by-zone' : 'by-equipment';
+  const zoneIds = Array.isArray(body.zoneIds) ? body.zoneIds.filter(Boolean) : [];
+
+  const [audit] = await db
+    .select()
+    .from(eaAudits)
+    .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
+  const foundAudit = assertFound(audit, 'Audit');
+  assertAuditAccess(foundAudit, request.user);
+
+  const jobId = randomUUID();
+  await db.insert(pdfJobs).values({
+    id: jobId,
+    app: 'ecoaudit',
+    entityId: auditId,
+    entityType: 'audit',
+    userId: request.user.userId,
+    params: { mode, zoneIds } as Record<string, unknown>,
+    status: 'queued',
+    phase: 'Queued…',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  setImmediate(() => { void runEcoAuditPdfJobInBackground(jobId, auditId, mode, zoneIds); });
+
+  return reply.status(202).send({ jobId });
+}
+
 const reportPdfRoute: RouteShorthandOptions = {
   schema: {
     tags: ['EcoAudit PDF'],
@@ -1085,6 +1260,34 @@ const reportPdfRoute: RouteShorthandOptions = {
 
 export async function eaPdfRoutes(app: FastifyInstance): Promise<void> {
   app.post('/audits/:auditId/report/pdf', reportPdfRoute, handleEcoAuditPdf);
+
+  app.post('/audits/:auditId/report/pdf/jobs', {
+    schema: {
+      tags: ['EcoAudit PDF'],
+      summary: 'Start an async EcoAudit PDF generation job',
+      description: 'Queues a background PDF generation job and returns a jobId immediately. Poll GET /v1/pdf/jobs/:jobId for progress.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['auditId'],
+        properties: { auditId: { type: 'string' } },
+      },
+      body: {
+        type: 'object',
+        properties: {
+          mode: { type: 'string', enum: ['by-equipment', 'by-zone'], default: 'by-equipment' },
+          zoneIds: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      response: {
+        202: {
+          type: 'object',
+          properties: { jobId: { type: 'string' } },
+        },
+      },
+    },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, handleEcoAuditPdfJobCreate);
 
   app.post('/audits/:auditId/site-pack/pdf', {
     ...reportPdfRoute,

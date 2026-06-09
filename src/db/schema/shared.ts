@@ -53,3 +53,21 @@ export const recordVersions = pgTable('record_versions', {
   createdByUserId: text('created_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+export const pdfJobs = pgTable('pdf_jobs', {
+  id: text('id').primaryKey(),
+  app: text('app').notNull(),
+  entityId: text('entity_id').notNull(),
+  entityType: text('entity_type').notNull(),
+  userId: text('user_id').notNull(),
+  params: jsonb('params').notNull().$type<Record<string, unknown>>(),
+  status: text('status').notNull().default('queued'),
+  phase: text('phase'),
+  progressCurrent: integer('progress_current'),
+  progressTotal: integer('progress_total'),
+  pdfUrl: text('pdf_url'),
+  storageKey: text('storage_key'),
+  error: text('error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});

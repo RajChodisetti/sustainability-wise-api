@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { photoRegistry } from '../../db/schema/shared.js';
+import { photoRegistry, pdfJobs } from '../../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { renderPdf } from '../../pdf/renderer.js';
@@ -11,6 +11,7 @@ import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
+import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
@@ -663,7 +664,166 @@ async function renderSolarSensePdf(args: {
   return mergePdfBuffers(pdfParts);
 }
 
+// ── Async job runner ──────────────────────────────────────────────────────────────
+export async function runSolarSensePdfJob(
+  siteId: string,
+  assessmentIds: string[],
+  options: SitePackOptions,
+  onPhase?: (phase: string) => void | Promise<void>,
+): Promise<{ storageKey: string; remoteUrl: string }> {
+  await onPhase?.('Fetching site data…');
+
+  const [site] = await db
+    .select()
+    .from(ssSites)
+    .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
+  if (!site) throw new Error('Site not found');
+
+  const assessmentConditions: ReturnType<typeof eq>[] = [
+    eq(ssRooftopAssessments.siteId, siteId),
+    isNull(ssRooftopAssessments.deletedAt),
+  ];
+  if (assessmentIds.length > 0) {
+    assessmentConditions.push(inArray(ssRooftopAssessments.id, assessmentIds));
+  }
+  const assessments = await db
+    .select()
+    .from(ssRooftopAssessments)
+    .where(and(...assessmentConditions))
+    .orderBy(asc(ssRooftopAssessments.createdAt));
+
+  const photos = await db
+    .select()
+    .from(photoRegistry)
+    .where(and(
+      eq(photoRegistry.app, 'solarsense'),
+      eq(photoRegistry.parentId, siteId),
+      eq(photoRegistry.status, 'confirmed'),
+    ));
+  const selectedPhotoEntityIds = new Set([siteId, ...assessments.map((a) => a.id)]);
+  const scopedPhotos = photos.filter((p) => selectedPhotoEntityIds.has(p.entityId));
+
+  await onPhase?.(`Rendering PDF (${scopedPhotos.length} photo${scopedPhotos.length !== 1 ? 's' : ''})…`);
+
+  const pdf = await renderSolarSensePdf({ site, assessments, photos: scopedPhotos, options });
+
+  if (pdf.byteLength > MAX_PDF_BYTES) {
+    throw new Error(
+      `PDF too large (${(pdf.byteLength / 1024 / 1024).toFixed(1)} MB). Reduce the number of selected assessments or photos.`,
+    );
+  }
+
+  await onPhase?.('Saving PDF…');
+
+  const storageKey = makeLocalStorageKey({
+    app: 'solarsense',
+    parentId: siteId,
+    entityType: 'site-pack',
+    entityId: siteId,
+    fieldName: 'site-pack-pdf',
+    sessionId: randomUUID(),
+    filename: 'site-pack.pdf',
+  });
+  await writeLocalFile(storageKey, pdf);
+  const remoteUrl = publicFileUrl(storageKey);
+
+  await db
+    .update(ssSites)
+    .set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() })
+    .where(eq(ssSites.id, siteId));
+
+  return { storageKey, remoteUrl };
+}
+
+async function runSolarSensePdfJobInBackground(
+  jobId: string,
+  siteId: string,
+  assessmentIds: string[],
+  options: SitePackOptions,
+): Promise<void> {
+  try {
+    await markJobRunning(jobId, 'Starting…');
+    const { storageKey, remoteUrl } = await runSolarSensePdfJob(
+      siteId,
+      assessmentIds,
+      options,
+      (phase) => updateJobPhase(jobId, phase),
+    );
+    await completeJob(jobId, remoteUrl, storageKey);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await failJob(jobId, message);
+    console.error('[pdf-job] SolarSense job failed', { jobId, siteId, error: message });
+  }
+}
+
 export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
+  app.post('/sites/:siteId/site-pack/pdf/jobs', {
+    schema: {
+      tags: ['SolarSense PDF'],
+      summary: 'Start an async SolarSense site pack PDF generation job',
+      description: 'Queues a background PDF generation job and returns a jobId immediately. Poll GET /v1/pdf/jobs/:jobId for progress.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['siteId'],
+        properties: { siteId: { type: 'string' } },
+      },
+      body: {
+        type: 'object',
+        properties: {
+          assessmentIds: { type: 'array', items: { type: 'string' } },
+          options: { type: 'object', additionalProperties: true },
+        },
+      },
+      response: {
+        202: {
+          type: 'object',
+          properties: { jobId: { type: 'string' } },
+        },
+      },
+    },
+    preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { siteId } = request.params as { siteId: string };
+    const body = (request.body as {
+      assessmentIds?: string[];
+      options?: Record<string, unknown>;
+    }) ?? {};
+
+    const [site] = await db
+      .select()
+      .from(ssSites)
+      .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
+    const foundSite = assertFound(site, 'Site');
+    assertSiteAccess(foundSite, request.user);
+
+    const assessmentIds = Array.isArray(body.assessmentIds) ? body.assessmentIds.filter(Boolean) : [];
+    const rawOptions = (body.options && typeof body.options === 'object' ? body.options : {}) as Record<string, unknown>;
+    const options: SitePackOptions = {
+      includeRagFramework: rawOptions.includeRagFramework !== false,
+      includeAppendix: rawOptions.includeAppendix !== false,
+    };
+
+    const jobId = randomUUID();
+    await db.insert(pdfJobs).values({
+      id: jobId,
+      app: 'solarsense',
+      entityId: siteId,
+      entityType: 'site',
+      userId: request.user.userId,
+      params: { assessmentIds, options } as Record<string, unknown>,
+      status: 'queued',
+      phase: 'Queued…',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    setImmediate(() => { void runSolarSensePdfJobInBackground(jobId, siteId, assessmentIds, options); });
+
+    return reply.status(202).send({ jobId });
+  });
+
   app.post('/sites/:siteId/site-pack/pdf', {
     schema: {
       tags: ['SolarSense PDF'],
