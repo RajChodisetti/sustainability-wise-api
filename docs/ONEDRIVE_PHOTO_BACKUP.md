@@ -54,3 +54,40 @@ ONEDRIVE_PHOTO_BACKUP_ENABLED=true
 ```
 
 Then restart the API. New confirmed photo uploads and generated PDFs will be mirrored to OneDrive.
+
+## Existing Data Backfill
+
+Automatic backup only runs for new confirmed uploads and newly generated PDFs. To copy existing confirmed photos and existing generated PDFs, run the one-time backfill command.
+
+Dry run first:
+
+```bash
+DOTENV_CONFIG_PATH=.env.production npm run onedrive:backfill -- --dry-run
+```
+
+Then run the backfill:
+
+```bash
+DOTENV_CONFIG_PATH=.env.production npm run onedrive:backfill
+```
+
+On the production Droplet, where env vars are stored in `/opt/sw-api/.env`, run:
+
+```bash
+cd /opt/sw-api
+DOTENV_CONFIG_PATH=/opt/sw-api/.env npm run onedrive:backfill -- --dry-run
+DOTENV_CONFIG_PATH=/opt/sw-api/.env npm run onedrive:backfill
+```
+
+The command is idempotent. Photo paths are derived from each existing storage key, so rerunning it writes to the same OneDrive path and updates `photo_registry.onedrive_item_id`; it does not create duplicate photo copies. By default it skips photo rows that already have a OneDrive item id. Use `--force` only when you intentionally want to re-upload every confirmed photo.
+
+Useful options:
+
+```bash
+--photos-only
+--pdfs-only
+--dry-run
+--force
+--limit 25
+--fail-fast
+```
