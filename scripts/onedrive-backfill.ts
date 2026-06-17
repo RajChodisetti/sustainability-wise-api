@@ -1,11 +1,10 @@
-import path from 'node:path';
 import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { config } from '../src/config.js';
 import { closeDb, db } from '../src/db/client.js';
 import { eaAudits } from '../src/db/schema/ecoaudit.js';
 import { photoRegistry } from '../src/db/schema/shared.js';
 import { ssSites } from '../src/db/schema/solarsense.js';
-import { joinOneDrivePath, oneDrivePathForStorageKey } from '../src/onedrive/paths.js';
+import { oneDrivePathForStorageKey } from '../src/onedrive/paths.js';
 import {
   requireOneDriveTarget,
   uploadBufferToOneDrivePath,
@@ -248,13 +247,7 @@ async function backfillPdfs(target: OneDriveTarget, options: Options): Promise<S
 }
 
 function pdfDrivePath(target: OneDriveTarget, job: PdfJob): string {
-  return joinOneDrivePath(
-    target.photosFolder,
-    job.app,
-    job.parentId,
-    'pdfs',
-    path.posix.basename(job.storageKey),
-  );
+  return oneDrivePathForStorageKey(target.photosFolder, job.storageKey);
 }
 
 function printSummary(label: string, summary: Summary): void {

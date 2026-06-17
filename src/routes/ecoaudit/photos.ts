@@ -6,6 +6,7 @@ import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess } from './helpers.js';
 import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { loadEcoAuditByIdOrName, loadPhotoByIdOrName } from '../../services/storageNaming.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
@@ -25,9 +26,9 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { auditId } = request.params as { auditId: string };
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const { auditId: auditRef } = request.params as { auditId: string };
+    const audit = await loadEcoAuditByIdOrName(auditRef);
+    assertAuditAccess(audit, request.user);
     const photos = await db.select({
       id: photoRegistry.id, checksum: photoRegistry.checksum, remoteUrl: photoRegistry.remoteUrl,
       contentType: photoRegistry.contentType, originalFilename: photoRegistry.originalFilename,
@@ -37,22 +38,22 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
       uploadedAt: photoRegistry.uploadedAt, createdAt: photoRegistry.createdAt,
     }).from(photoRegistry).where(and(
       eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.parentId, audit.id),
       eq(photoRegistry.status, 'confirmed'),
     ));
-    return reply.send({ data: photos });
+    return reply.send({ auditRef, auditId: audit.id, auditName: audit.siteName, data: photos });
   });
 
   app.get('/audits/:auditId/photos/export', {
     schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { auditId } = request.params as { auditId: string };
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const { auditId: auditRef } = request.params as { auditId: string };
+    const audit = await loadEcoAuditByIdOrName(auditRef);
+    assertAuditAccess(audit, request.user);
     const photos = await db.select().from(photoRegistry).where(and(
       eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, auditId),
+      eq(photoRegistry.parentId, audit.id),
       eq(photoRegistry.status, 'confirmed'),
     ));
     const archive = await createZipArchive();
@@ -64,9 +65,20 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     }
     void archive.finalize();
     return reply
-      .header('Content-Disposition', `attachment; filename="ecoaudit-${auditId}-photos.zip"`)
+      .header('Content-Disposition', `attachment; filename="ecoaudit-${audit.id}-photos.zip"`)
       .type('application/zip')
       .send(archive);
+  });
+
+  app.get('/photos/:photoId', {
+    schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { photoId } = request.params as { photoId: string };
+    const photo = await loadPhotoByIdOrName('ecoaudit', photoId);
+    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, photo.parentId), isNull(eaAudits.deletedAt)));
+    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    return reply.send(photo);
   });
 
   app.delete('/photos/:photoId', {
@@ -74,10 +86,9 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('admin')],
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
-    const [photo] = await db.select().from(photoRegistry).where(and(eq(photoRegistry.id, photoId), eq(photoRegistry.app, 'ecoaudit')));
-    const found = assertFound(photo, 'Photo');
+    const found = await loadPhotoByIdOrName('ecoaudit', photoId);
     await deleteLocalFile(found.storageKey);
-    await db.delete(photoRegistry).where(eq(photoRegistry.id, photoId));
+    await db.delete(photoRegistry).where(eq(photoRegistry.id, found.id));
     return reply.status(204).send();
   });
 }

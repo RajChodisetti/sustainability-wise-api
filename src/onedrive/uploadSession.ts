@@ -171,6 +171,24 @@ export async function downloadBufferFromOneDrivePath(args: {
   return graphBuffer(args.target, contentByPathPath(args.target.userEmail, args.drivePath));
 }
 
+export async function deleteOneDrivePath(args: {
+  target: OneDriveTarget;
+  drivePath: string;
+  ignoreNotFound?: boolean;
+}): Promise<void> {
+  const drivePath = normalizeOneDrivePath(args.drivePath);
+  try {
+    await graphJson<unknown>(
+      args.target,
+      itemByPathPath(args.target.userEmail, drivePath),
+      { method: 'DELETE' },
+    );
+  } catch (error) {
+    if (args.ignoreNotFound && error instanceof GraphRequestError && error.status === 404) return;
+    throw error;
+  }
+}
+
 export async function uploadPhotoBackupToOneDrive(args: {
   target: OneDriveTarget;
   storageKey: string;

@@ -9,8 +9,9 @@ import { authenticate, requireApp, requireRole } from '../../auth/middleware.js'
 import { renderPdf } from '../../pdf/renderer.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
-import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
+import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
 import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
 
@@ -675,11 +676,9 @@ export async function runSolarSensePdfJob(
 
   await onPhase?.('Saving PDF…');
 
-  const storageKey = makeLocalStorageKey({
+  const storageKey = makePdfStorageKeyFromName({
     app: 'solarsense',
-    parentId: siteId,
-    entityType: 'site-pack',
-    entityId: siteId,
+    parentName: site.siteName,
     fieldName: 'site-pack-pdf',
     sessionId: randomUUID(),
     filename: 'site-pack.pdf',
@@ -690,6 +689,7 @@ export async function runSolarSensePdfJob(
     app: 'solarsense',
     parentId: siteId,
     filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+    storageKey,
     body: pdf,
   });
 
@@ -872,11 +872,9 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const storageKey = makeLocalStorageKey({
+    const storageKey = makePdfStorageKeyFromName({
       app: 'solarsense',
-      parentId: siteId,
-      entityType: 'site-pack',
-      entityId: siteId,
+      parentName: foundSite.siteName,
       fieldName: 'site-pack-pdf',
       sessionId: randomUUID(),
       filename: 'site-pack.pdf',
@@ -887,6 +885,7 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       app: 'solarsense',
       parentId: siteId,
       filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+      storageKey,
       body: pdf,
       logger: request.log,
     });

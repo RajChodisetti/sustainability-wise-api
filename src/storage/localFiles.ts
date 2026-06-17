@@ -33,7 +33,7 @@ export type StoredFileListing = {
   lastModified: Date | null;
 };
 
-function sanitizeSegment(value: string): string {
+export function sanitizeStorageSegment(value: string): string {
   return value
     .trim()
     .toLowerCase()
@@ -56,10 +56,58 @@ export function makeLocalStorageKey(args: {
   sessionId: string;
   filename: string;
 }): string {
-  const filename = `${sanitizeSegment(args.fieldName)}-${args.sessionId}${safeExtension(args.filename)}`;
+  const filename = `${sanitizeStorageSegment(args.fieldName)}-${args.sessionId}${safeExtension(args.filename)}`;
   return [
     makeStoragePrefix(args),
-    sanitizeSegment(args.fieldName),
+    sanitizeStorageSegment(args.fieldName),
+    filename,
+  ].join('/');
+}
+
+export function makeNamedLocalStorageKey(args: {
+  app: 'solarsense' | 'ecoaudit';
+  parentName: string;
+  entityType: string;
+  entityName: string;
+  fieldName: string;
+  sessionId: string;
+  filename: string;
+}): string {
+  const filename = `${sanitizeStorageSegment(args.fieldName)}-${args.sessionId}${safeExtension(args.filename)}`;
+  return [
+    makeNamedStoragePrefix(args),
+    sanitizeStorageSegment(args.fieldName),
+    filename,
+  ].join('/');
+}
+
+export function makeNamedStorageKeyForFilename(args: {
+  app: 'solarsense' | 'ecoaudit';
+  parentName: string;
+  entityType?: string;
+  entityName?: string;
+  fieldName?: string;
+  filename: string;
+}): string {
+  return [
+    makeNamedStoragePrefix(args),
+    args.fieldName ? sanitizeStorageSegment(args.fieldName) : null,
+    sanitizeStorageSegment(args.filename),
+  ].filter(Boolean).join('/');
+}
+
+export function makeNamedPdfStorageKey(args: {
+  app: 'solarsense' | 'ecoaudit';
+  parentName: string;
+  fieldName: string;
+  sessionId: string;
+  filename: string;
+}): string {
+  const filename = `${sanitizeStorageSegment(args.fieldName)}-${args.sessionId}${safeExtension(args.filename)}`;
+  return [
+    args.app,
+    sanitizeStorageSegment(args.parentName),
+    'pdfs',
     filename,
   ].join('/');
 }
@@ -72,9 +120,23 @@ export function makeStoragePrefix(args: {
 }): string {
   return [
     args.app,
-    sanitizeSegment(args.parentId),
-    args.entityType ? sanitizeSegment(args.entityType) : null,
-    args.entityId ? sanitizeSegment(args.entityId) : null,
+    sanitizeStorageSegment(args.parentId),
+    args.entityType ? sanitizeStorageSegment(args.entityType) : null,
+    args.entityId ? sanitizeStorageSegment(args.entityId) : null,
+  ].filter(Boolean).join('/');
+}
+
+export function makeNamedStoragePrefix(args: {
+  app: 'solarsense' | 'ecoaudit';
+  parentName: string;
+  entityType?: string;
+  entityName?: string;
+}): string {
+  return [
+    args.app,
+    sanitizeStorageSegment(args.parentName),
+    args.entityType ? sanitizeStorageSegment(args.entityType) : null,
+    args.entityName ? sanitizeStorageSegment(args.entityName) : null,
   ].filter(Boolean).join('/');
 }
 

@@ -6,7 +6,7 @@ import {
   uploadPhotoBackupToOneDrive,
   type OneDriveUploadResult,
 } from './uploadSession.js';
-import { joinOneDrivePath } from './paths.js';
+import { joinOneDrivePath, oneDrivePathForStorageKey } from './paths.js';
 
 type Logger = {
   warn: (bindings: Record<string, unknown>, message?: string) => void;
@@ -39,19 +39,22 @@ export async function mirrorStoredPhotoToOneDrive(args: {
 }
 
 export async function mirrorPdfToOneDrive(args: {
-  app: 'solarsense' | 'ecoaudit';
-  parentId: string;
+  app?: 'solarsense' | 'ecoaudit';
+  parentId?: string;
   filename: string;
   body: Buffer;
+  storageKey?: string;
   logger?: Logger;
 }): Promise<OneDriveUploadResult | null> {
-  const drivePath = joinOneDrivePath(
-    config.oneDrive.photosFolder,
-    args.app,
-    args.parentId,
-    'pdfs',
-    args.filename,
-  );
+  const drivePath = args.storageKey
+    ? oneDrivePathForStorageKey(config.oneDrive.photosFolder, args.storageKey)
+    : joinOneDrivePath(
+      config.oneDrive.photosFolder,
+      args.app,
+      args.parentId,
+      'pdfs',
+      args.filename,
+    );
 
   return withOneDriveBackup('PDF', drivePath, args.logger, async () => {
     return uploadBufferToOneDrivePath({

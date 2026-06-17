@@ -12,9 +12,10 @@ import {
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, str, num, arr, type JsonRecord } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
-import { deleteLocalFile, localFileExists, makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { deleteLocalFile, localFileExists, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { saveRecordVersion } from '../recordVersions.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
+import { loadEcoEntityName, makePhotoStorageKeyFromNames } from '../../services/storageNaming.js';
 
 function uploadUrl(sessionId: string): string {
   return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
@@ -106,7 +107,15 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const sessionId = randomUUID();
-    const storageKey = makeLocalStorageKey({ app: 'ecoaudit', parentId: auditId, entityType, entityId, fieldName, sessionId, filename });
+    const storageKey = makePhotoStorageKeyFromNames({
+      app: 'ecoaudit',
+      parentName: audit.siteName,
+      entityType,
+      entityName: await loadEcoEntityName(audit, entityType, entityId),
+      fieldName,
+      sessionId,
+      filename,
+    });
     await db.insert(photoRegistry).values({
       id: sessionId, checksum, remoteUrl: null, onedriveItemId: null, storageKey,
       contentType: null, originalFilename: filename, app: 'ecoaudit', parentId: auditId,

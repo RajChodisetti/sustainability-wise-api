@@ -19,11 +19,11 @@ import { saveRecordVersion } from '../recordVersions.js';
 import {
   deleteLocalFile,
   localFileExists,
-  makeLocalStorageKey,
   publicFileUrl,
   writeLocalFile,
 } from '../../storage/localFiles.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
+import { makePhotoStorageKeyFromNames } from '../../services/storageNaming.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -236,13 +236,14 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       throw badRequest(`File exceeds max upload size of ${config.storage.maxUploadBytes} bytes`);
     }
 
-    await loadAccessibleSite(siteId, request);
+    const site = await loadAccessibleSite(siteId, request);
 
     const assessmentId = typeof body.assessmentId === 'string' && body.assessmentId.trim()
       ? body.assessmentId.trim()
       : null;
+    let assessment: typeof ssRooftopAssessments.$inferSelect | null = null;
     if (assessmentId) {
-      const [assessment] = await db
+      const [foundAssessment] = await db
         .select()
         .from(ssRooftopAssessments)
         .where(and(
@@ -250,7 +251,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
           eq(ssRooftopAssessments.siteId, siteId),
           isNull(ssRooftopAssessments.deletedAt),
         ));
-      assertFound(assessment, 'Assessment');
+      assessment = assertFound(foundAssessment, 'Assessment');
     }
 
     const entityType = assessmentId ? 'rooftop_assessment' : 'site';
@@ -276,11 +277,11 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     }
 
     const sessionId = randomUUID();
-    const storageKey = makeLocalStorageKey({
+    const storageKey = makePhotoStorageKeyFromNames({
       app: 'solarsense',
-      parentId: siteId,
+      parentName: site.siteName,
       entityType,
-      entityId,
+      entityName: assessment?.buildingIdName ?? site.siteName,
       fieldName,
       sessionId,
       filename,

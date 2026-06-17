@@ -22,8 +22,9 @@ import { authenticate, requireApp, requireRole } from '../../auth/middleware.js'
 import { renderPdf } from '../../pdf/renderer.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
-import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
+import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
@@ -1170,11 +1171,9 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     });
   }
 
-  const storageKey = makeLocalStorageKey({
+  const storageKey = makePdfStorageKeyFromName({
     app: 'ecoaudit',
-    parentId: auditId,
-    entityType: 'audit',
-    entityId: auditId,
+    parentName: foundAudit.siteName,
     fieldName: 'audit-pdf',
     sessionId: randomUUID(),
     filename: 'audit-report.pdf',
@@ -1185,6 +1184,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     app: 'ecoaudit',
     parentId: auditId,
     filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    storageKey,
     body: pdf,
     logger: request.log,
   });
@@ -1303,11 +1303,9 @@ export async function runEcoAuditPdfJob(
 
   await onPhase?.('Saving PDF…');
 
-  const storageKey = makeLocalStorageKey({
+  const storageKey = makePdfStorageKeyFromName({
     app: 'ecoaudit',
-    parentId: auditId,
-    entityType: 'audit',
-    entityId: auditId,
+    parentName: audit.siteName,
     fieldName: 'audit-pdf',
     sessionId: randomUUID(),
     filename: 'audit-report.pdf',
@@ -1318,6 +1316,7 @@ export async function runEcoAuditPdfJob(
     app: 'ecoaudit',
     parentId: auditId,
     filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    storageKey,
     body: pdf,
   });
 

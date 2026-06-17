@@ -91,3 +91,30 @@ Useful options:
 --limit 25
 --fail-fast
 ```
+
+## Name-Based Folder Migration
+
+New uploads use human-readable storage and OneDrive folders:
+
+```text
+SustainabilityWise/photos/solarsense/site-name/rooftop_assessment/building-name/field-name/file.jpg
+SustainabilityWise/photos/ecoaudit/audit-site-name/zone/zone-name/field-name/file.jpg
+SustainabilityWise/photos/ecoaudit/audit-site-name/pdfs/audit-pdf-uuid.pdf
+```
+
+Existing UUID-based folders can be migrated with:
+
+```bash
+DOTENV_CONFIG_PATH=.env.production npm run storage:rename-to-names -- --dry-run
+DOTENV_CONFIG_PATH=.env.production npm run storage:rename-to-names
+```
+
+On production:
+
+```bash
+cd /opt/sw-api
+DOTENV_CONFIG_PATH=/opt/sw-api/.env npm run storage:rename-to-names -- --dry-run
+DOTENV_CONFIG_PATH=/opt/sw-api/.env npm run storage:rename-to-names
+```
+
+The migration copies each object to its name-based key, uploads the new OneDrive copy, updates database URLs and OneDrive item ids, deletes the old storage object, and removes old UUID-named OneDrive parent folders after a zero-failure run.

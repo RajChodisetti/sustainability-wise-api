@@ -7,34 +7,34 @@ import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
 import { photoRegistry, recordVersions } from '../db/schema/shared.js';
 import {
   contentTypeForStorageKey,
-  listStoredFiles,
-  makeStoragePrefix,
+  localFileExists,
+  localFileSize,
   publicFileUrl,
   type StoredFileListing,
 } from '../storage/localFiles.js';
 import { badRequest, notFound } from '../utils/errors.js';
 import { assertAuditAccess } from './ecoaudit/helpers.js';
 import { assertSiteAccess } from './solarsense/helpers.js';
+import {
+  currentNamedPrefixForEcoAudit,
+  currentNamedPrefixForSolarAssessment,
+  currentNamedPrefixForSolarSite,
+  loadEcoAuditByIdOrName,
+  loadSolarsenseAssessmentByIdOrName,
+  loadSolarsenseSiteByIdOrName,
+} from '../services/storageNaming.js';
 
 type AppName = 'ecoaudit' | 'solarsense';
 type EntityType = 'audit' | 'site';
 
-async function loadSolarSenseSiteForAccess(siteId: string, user: Parameters<typeof assertSiteAccess>[1]) {
-  const [site] = await db
-    .select()
-    .from(ssSites)
-    .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
-  if (!site) throw notFound('Site');
+async function loadSolarSenseSiteForAccess(siteRef: string, user: Parameters<typeof assertSiteAccess>[1]) {
+  const site = await loadSolarsenseSiteByIdOrName(siteRef);
   assertSiteAccess(site, user);
   return site;
 }
 
-async function loadEcoAuditForAccess(auditId: string, user: Parameters<typeof assertAuditAccess>[1]) {
-  const [audit] = await db
-    .select()
-    .from(eaAudits)
-    .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-  if (!audit) throw notFound('Audit');
+async function loadEcoAuditForAccess(auditRef: string, user: Parameters<typeof assertAuditAccess>[1]) {
+  const audit = await loadEcoAuditByIdOrName(auditRef);
   assertAuditAccess(audit, user);
   return audit;
 }
@@ -65,30 +65,42 @@ function fileResponse(
   };
 }
 
-async function listFilesForPrefix(input: {
+async function storageListingForKey(storageKey: string): Promise<StoredFileListing | null> {
+  if (!(await localFileExists(storageKey))) return null;
+  return {
+    storageKey,
+    sizeBytes: await localFileSize(storageKey),
+    lastModified: null,
+  };
+}
+
+async function listFilesForRecords(input: {
   app: AppName;
-  prefix: string;
   parentId: string;
   entityId?: string;
   reportPdfLocalPath?: string | null;
 }) {
-  const [files, registryRows] = await Promise.all([
-    listStoredFiles(input.prefix),
-    db
-      .select()
-      .from(photoRegistry)
-      .where(and(
-        eq(photoRegistry.app, input.app),
-        eq(photoRegistry.parentId, input.parentId),
-        ...(input.entityId ? [eq(photoRegistry.entityId, input.entityId)] : []),
-      )),
-  ]);
+  const registryRows = await db
+    .select()
+    .from(photoRegistry)
+    .where(and(
+      eq(photoRegistry.app, input.app),
+      eq(photoRegistry.parentId, input.parentId),
+      eq(photoRegistry.status, 'confirmed'),
+      ...(input.entityId ? [eq(photoRegistry.entityId, input.entityId)] : []),
+    ));
   const metadataByKey = new Map(
     registryRows
       .filter((row) => row.storageKey)
       .map((row) => [row.storageKey as string, row]),
   );
   const reportPdfKeys = new Set(input.reportPdfLocalPath ? [input.reportPdfLocalPath] : []);
+  const keys = [
+    ...registryRows.map((row) => row.storageKey).filter((key): key is string => Boolean(key)),
+    ...reportPdfKeys,
+  ];
+  const files = (await Promise.all(keys.map(storageListingForKey)))
+    .filter((file): file is StoredFileListing => Boolean(file));
   return files.map((file) => fileResponse(file, metadataByKey, reportPdfKeys));
 }
 
@@ -140,16 +152,15 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { siteId } = request.params as { siteId: string };
-    const site = await loadSolarSenseSiteForAccess(siteId, request.user);
-    const prefix = makeStoragePrefix({ app: 'solarsense', parentId: siteId });
-    const files = await listFilesForPrefix({
+    const { siteId: siteRef } = request.params as { siteId: string };
+    const site = await loadSolarSenseSiteForAccess(siteRef, request.user);
+    const prefix = currentNamedPrefixForSolarSite(site);
+    const files = await listFilesForRecords({
       app: 'solarsense',
-      prefix,
-      parentId: siteId,
+      parentId: site.id,
       reportPdfLocalPath: site.reportPdfLocalPath,
     });
-    return reply.send({ app: 'solarsense', entityType: 'site', siteId, prefix, files });
+    return reply.send({ app: 'solarsense', entityType: 'site', siteRef, siteId: site.id, siteName: site.siteName, prefix, files });
   });
 
   app.get('/v1/solarsense/assessments/:assessmentId/files', {
@@ -160,30 +171,24 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { assessmentId } = request.params as { assessmentId: string };
-    const [assessment] = await db
-      .select()
-      .from(ssRooftopAssessments)
-      .where(and(eq(ssRooftopAssessments.id, assessmentId), isNull(ssRooftopAssessments.deletedAt)));
+    const { assessmentId: assessmentRef } = request.params as { assessmentId: string };
+    const assessment = await loadSolarsenseAssessmentByIdOrName(assessmentRef);
     if (!assessment?.siteId) throw notFound('Assessment');
-    await loadSolarSenseSiteForAccess(assessment.siteId, request.user);
-    const prefix = makeStoragePrefix({
+    const site = await loadSolarSenseSiteForAccess(assessment.siteId, request.user);
+    const prefix = currentNamedPrefixForSolarAssessment(site, assessment);
+    const files = await listFilesForRecords({
       app: 'solarsense',
       parentId: assessment.siteId,
-      entityType: 'rooftop_assessment',
-      entityId: assessmentId,
-    });
-    const files = await listFilesForPrefix({
-      app: 'solarsense',
-      prefix,
-      parentId: assessment.siteId,
-      entityId: assessmentId,
+      entityId: assessment.id,
     });
     return reply.send({
       app: 'solarsense',
       entityType: 'assessment',
       siteId: assessment.siteId,
-      assessmentId,
+      siteName: site.siteName,
+      assessmentRef,
+      assessmentId: assessment.id,
+      assessmentName: assessment.buildingIdName,
       prefix,
       files,
     });
@@ -197,16 +202,15 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
     },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { auditId } = request.params as { auditId: string };
-    const audit = await loadEcoAuditForAccess(auditId, request.user);
-    const prefix = makeStoragePrefix({ app: 'ecoaudit', parentId: auditId });
-    const files = await listFilesForPrefix({
+    const { auditId: auditRef } = request.params as { auditId: string };
+    const audit = await loadEcoAuditForAccess(auditRef, request.user);
+    const prefix = currentNamedPrefixForEcoAudit(audit);
+    const files = await listFilesForRecords({
       app: 'ecoaudit',
-      prefix,
-      parentId: auditId,
+      parentId: audit.id,
       reportPdfLocalPath: audit.reportPdfLocalPath,
     });
-    return reply.send({ app: 'ecoaudit', entityType: 'audit', auditId, prefix, files });
+    return reply.send({ app: 'ecoaudit', entityType: 'audit', auditRef, auditId: audit.id, auditName: audit.siteName, prefix, files });
   });
 
   app.get('/v1/solarsense/sites/:siteId/versions', {

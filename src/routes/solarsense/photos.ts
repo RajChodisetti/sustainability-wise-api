@@ -6,6 +6,7 @@ import { ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
 import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { loadPhotoByIdOrName, loadSolarsenseSiteByIdOrName } from '../../services/storageNaming.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
@@ -21,11 +22,7 @@ async function createZipArchive(): Promise<ZipArchiveInstance> {
 }
 
 async function loadSite(siteId: string) {
-  const [site] = await db
-    .select()
-    .from(ssSites)
-    .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
-  return assertFound(site, 'Site');
+  return loadSolarsenseSiteByIdOrName(siteId);
 }
 
 function zipEntryName(photo: typeof photoRegistry.$inferSelect): string {
@@ -47,8 +44,8 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { siteId } = request.params as { siteId: string };
-    const site = await loadSite(siteId);
+    const { siteId: siteRef } = request.params as { siteId: string };
+    const site = await loadSite(siteRef);
     assertSiteAccess(site, request.user);
 
     const photos = await db
@@ -71,11 +68,11 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
       .from(photoRegistry)
       .where(and(
         eq(photoRegistry.app, 'solarsense'),
-        eq(photoRegistry.parentId, siteId),
+        eq(photoRegistry.parentId, site.id),
         eq(photoRegistry.status, 'confirmed'),
       ));
 
-    return reply.send({ data: photos });
+    return reply.send({ siteRef, siteId: site.id, siteName: site.siteName, data: photos });
   });
 
   app.get('/sites/:siteId/photos/export', {
@@ -86,8 +83,8 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
-    const { siteId } = request.params as { siteId: string };
-    const site = await loadSite(siteId);
+    const { siteId: siteRef } = request.params as { siteId: string };
+    const site = await loadSite(siteRef);
     assertSiteAccess(site, request.user);
 
     const photos = await db
@@ -95,7 +92,7 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
       .from(photoRegistry)
       .where(and(
         eq(photoRegistry.app, 'solarsense'),
-        eq(photoRegistry.parentId, siteId),
+        eq(photoRegistry.parentId, site.id),
         eq(photoRegistry.status, 'confirmed'),
       ));
 
@@ -108,28 +105,43 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     void archive.finalize();
 
     return reply
-      .header('Content-Disposition', `attachment; filename="solarsense-${siteId}-photos.zip"`)
+      .header('Content-Disposition', `attachment; filename="solarsense-${site.id}-photos.zip"`)
       .type('application/zip')
       .send(archive);
+  });
+
+  app.get('/photos/:photoId', {
+    schema: {
+      tags: ['SolarSense Photos'],
+      summary: 'Get a SolarSense photo by id, original filename, or storage key',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { photoId } = request.params as { photoId: string };
+    const photo = await loadPhotoByIdOrName('solarsense', photoId);
+    const [site] = await db
+      .select()
+      .from(ssSites)
+      .where(and(eq(ssSites.id, photo.parentId), isNull(ssSites.deletedAt)));
+    const foundSite = assertFound(site, 'Site');
+    assertSiteAccess(foundSite, request.user);
+    return reply.send(photo);
   });
 
   app.delete('/photos/:photoId', {
     schema: {
       tags: ['SolarSense Photos'],
-      summary: 'Delete a SolarSense photo',
+      summary: 'Delete a SolarSense photo by id, original filename, or storage key',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('admin')],
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
-    const [photo] = await db
-      .select()
-      .from(photoRegistry)
-      .where(and(eq(photoRegistry.id, photoId), eq(photoRegistry.app, 'solarsense')));
-    const found = assertFound(photo, 'Photo');
+    const found = await loadPhotoByIdOrName('solarsense', photoId);
 
     await deleteLocalFile(found.storageKey);
-    await db.delete(photoRegistry).where(eq(photoRegistry.id, photoId));
+    await db.delete(photoRegistry).where(eq(photoRegistry.id, found.id));
 
     return reply.status(204).send();
   });
