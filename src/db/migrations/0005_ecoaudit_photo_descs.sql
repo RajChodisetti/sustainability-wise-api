@@ -1,0 +1,10 @@
+ALTER TABLE "ea_zones" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_main_switchboards" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_additional_switchboards" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_hvac_units" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_lighting_systems" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_solar_pv" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_forklift_chargers" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_hot_water_systems" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_general_water" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;
+ALTER TABLE "ea_general_electricity" ADD COLUMN IF NOT EXISTS "photo_descs" jsonb DEFAULT '{}'::jsonb NOT NULL;

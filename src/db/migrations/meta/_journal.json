@@ -29,6 +29,20 @@
       "when": 1749340800000,
       "tag": "0003_pdf_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1780991000000,
+      "tag": "0004_ensure_pdf_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1780993000000,
+      "tag": "0005_ecoaudit_photo_descs",
+      "breakpoints": true
     }
   ]
 }

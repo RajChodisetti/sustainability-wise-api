@@ -30,6 +30,16 @@ function optionalList(name: string): string[] {
     .filter(Boolean);
 }
 
+function normalizeOneDriveFolder(value: string): string {
+  return value
+    .trim()
+    .replace(/^[a-zA-Z0-9_-]+:/, '')
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('/');
+}
+
 const nodeEnv = optional('NODE_ENV', 'development');
 const port = parseInt(optional('PORT', '3000'), 10);
 const isProduction = nodeEnv === 'production';
@@ -50,6 +60,13 @@ if (isProduction && !allowInsecurePublicBaseUrl && !publicBaseUrl.startsWith('ht
 if (!['local', 'spaces'].includes(storageProvider)) {
   throw new Error('STORAGE_PROVIDER must be either local or spaces');
 }
+
+const azure = {
+  clientId: optional('AZURE_CLIENT_ID'),
+  clientSecret: optional('AZURE_CLIENT_SECRET'),
+  tenantId: optional('AZURE_TENANT_ID'),
+  userEmail: optional('ONEDRIVE_USER_EMAIL'),
+} as const;
 
 export const config = {
   nodeEnv,
@@ -89,11 +106,14 @@ export const config = {
       : null,
   },
   registrationSecret: optional('REGISTRATION_SECRET'),
-  azure: {
-    clientId: optional('AZURE_CLIENT_ID'),
-    clientSecret: optional('AZURE_CLIENT_SECRET'),
-    tenantId: optional('AZURE_TENANT_ID'),
-    userEmail: optional('ONEDRIVE_USER_EMAIL'),
+  azure,
+  oneDrive: {
+    ...azure,
+    enabled: optionalBool('ONEDRIVE_PHOTO_BACKUP_ENABLED', false),
+    photosFolder: normalizeOneDriveFolder(
+      optional('ONEDRIVE_PHOTOS_FOLDER', 'SustainabilityWise/photos'),
+    ),
+    backupRequired: optionalBool('ONEDRIVE_BACKUP_REQUIRED', false),
   },
   puppeteerExecutablePath: optional(
     'PUPPETEER_EXECUTABLE_PATH',

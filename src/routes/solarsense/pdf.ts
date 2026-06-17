@@ -10,13 +10,14 @@ import { renderPdf } from '../../pdf/renderer.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
 import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
 const LARGE_PDF_RAW_BYTES_THRESHOLD = 120 * 1024 * 1024;
-const PDF_PHOTO_APPENDIX_CHUNK_SIZE = 60;
+const PDF_INLINE_CHUNK_PHOTO_TARGET = 50;
 const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
 
 type SiteRow = typeof ssSites.$inferSelect;
@@ -124,11 +125,25 @@ function chunk2<T>(arr: T[]): T[][] {
   return rows;
 }
 
-function chunkArray<T>(items: T[], size: number): T[][] {
+function splitByPhotoTarget<T>(
+  items: T[],
+  countPhotos: (item: T) => number,
+  target = PDF_INLINE_CHUNK_PHOTO_TARGET,
+): T[][] {
   const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
+  let current: T[] = [];
+  let currentPhotos = 0;
+  for (const item of items) {
+    const itemPhotos = Math.max(1, countPhotos(item));
+    if (current.length > 0 && currentPhotos + itemPhotos > target) {
+      chunks.push(current);
+      current = [];
+      currentPhotos = 0;
+    }
+    current.push(item);
+    currentPhotos += itemPhotos;
   }
+  if (current.length > 0) chunks.push(current);
   return chunks;
 }
 
@@ -139,20 +154,6 @@ function totalPhotoBytes(photos: PhotoRow[]): number {
 function shouldUsePhotoAppendix(photos: PhotoRow[]): boolean {
   return photos.length > LARGE_PDF_PHOTO_COUNT_THRESHOLD
     || totalPhotoBytes(photos) > LARGE_PDF_RAW_BYTES_THRESHOLD;
-}
-
-function humanEntityType(value: string | null | undefined): string {
-  if (!value) return 'Photo';
-  return value
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function appendixPhotoLabel(photo: PhotoRow): string {
-  const field = photo.originalFilename ?? photo.fieldName ?? 'Photo';
-  return `${humanEntityType(photo.entityType)} · ${field}`;
 }
 
 function normalizePhotoMetadata(value: PhotoMetadataValue): PhotoMetadata {
@@ -240,7 +241,7 @@ function renderSwitchboards(a: AssessmentView, photoMap: Map<string, string>): s
       ${field('Supply Voltage', sb.incomingSupplyVoltage)}
       ${field('Main Breaker', sb.mainBreakerRating)}
       ${field('Spare Breakers', sb.spareBreakers)}
-      ${sbDu ? photoImg(sbDu, sbMeta.name, false) : ''}
+      ${sbDu ? photoImg(sbDu, sbMeta.name, !!sbMeta.largeInPdf) : ''}
     </div>`;
   }).join('');
 }
@@ -248,15 +249,19 @@ function renderSwitchboards(a: AssessmentView, photoMap: Map<string, string>): s
 function renderConsiderations(a: AssessmentView, photoMap: Map<string, string>): string {
   if (!a.otherConsiderations.length) return '';
   const items = a.otherConsiderations.map((oc, i) => {
-    const cells = (oc.photoUris ?? []).map((_, j) => {
+    const cells: string[] = [];
+    const largeBlocks: string[] = [];
+    (oc.photoUris ?? []).forEach((_, j) => {
       const du = getPhoto(photoMap, a.id, `other_considerations[${i}].photoUris[${j}]`);
-      if (!du) return '';
+      if (!du) return;
       const meta = normalizePhotoMetadata(a.photoMetadata[`consideration.${i}.${j}`]);
-      return `<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`;
-    }).filter(Boolean);
+      if (meta.largeInPdf) largeBlocks.push(photoImg(du, meta.name, true));
+      else cells.push(`<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`);
+    });
     return `<div class="consideration">
       ${oc.issue ? `<div class="consideration-issue">${esc(oc.issue)}</div>` : ''}
       ${oc.details ? `<div class="consideration-details">${esc(oc.details)}</div>` : ''}
+      ${largeBlocks.join('')}
       ${photoGrid(cells)}
     </div>`;
   }).join('');
@@ -274,14 +279,17 @@ function renderBuilding(a: AssessmentView, idx: number, photoMap: Map<string, st
     ? `<div class="sec-bar">Switchboard Photo</div>${photoImg(msbDu, msbMeta.name, !!msbMeta.largeInPdf)}`
     : '';
 
-  const addlCells = a.additionalPhotos.map((_, i) => {
+  const addlCells: string[] = [];
+  const addlLargeBlocks: string[] = [];
+  a.additionalPhotos.forEach((_, i) => {
     const du = getPhoto(photoMap, a.id, `additional_photos[${i}]`);
-    if (!du) return '';
+    if (!du) return;
     const meta = normalizePhotoMetadata(a.photoMetadata[`additionalPhoto.${i}`]);
-    return `<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`;
-  }).filter(Boolean);
-  const addlHtml = addlCells.length
-    ? `<div class="sec-bar">Additional Photos</div>${photoGrid(addlCells)}`
+    if (meta.largeInPdf) addlLargeBlocks.push(photoImg(du, meta.name, true));
+    else addlCells.push(`<td class="photo-cell">${photoImg(du, meta.name, false)}</td>`);
+  });
+  const addlHtml = addlCells.length || addlLargeBlocks.length
+    ? `<div class="sec-bar">Additional Photos</div>${addlLargeBlocks.join('')}${photoGrid(addlCells)}`
     : '';
 
   return `
@@ -377,7 +385,7 @@ async function buildHtml(args: {
   assessments: AssessmentRow[];
   photos: PhotoRow[];
   options: SitePackOptions;
-}): Promise<string> {
+}, renderOptions: { includeIntro?: boolean; includeEnd?: boolean } = {}): Promise<string> {
   const assessments = args.assessments.map(normalizeAssessment);
   const viable = assessments.filter((a) => a.viabilityStatus === 'Yes');
   const totalAcKw = viable.reduce((sum, a) => sum + (a.acExportKw ?? 0), 0);
@@ -501,6 +509,7 @@ async function buildHtml(args: {
 </head>
 <body>
 
+${renderOptions.includeIntro === false ? '' : `
 <div class="cover">
   <div class="cover-eyebrow">Rooftop Solar &nbsp;&middot;&nbsp; Site Information Pack &nbsp;&middot;&nbsp; SolarSense</div>
   <div class="cover-title">SolarSense</div>
@@ -548,10 +557,12 @@ ${viable.length ? `
   <thead><tr><th>Building</th><th>kW DC</th><th>kW AC</th><th>RAG</th><th>Roof Condition</th></tr></thead>
   <tbody>${viableRows}</tbody>
 </table>` : ''}
+`}
 
 <div class="sec-bar">Building Assessments</div>
 ${buildingsHtml}
 
+${renderOptions.includeEnd === false ? '' : `
 ${args.options.includeRagFramework ? RAG_FRAMEWORK : ''}
 
 ${appendixHtml}
@@ -559,60 +570,7 @@ ${appendixHtml}
 <div class="footer-note">
   Generated by SolarSense &nbsp;&middot;&nbsp; ${new Date().toLocaleDateString('en-AU')}
 </div>
-</body>
-</html>`;
-}
-
-async function buildPhotoAppendixHtml(args: {
-  site: SiteRow;
-  photos: PhotoRow[];
-  partIndex: number;
-  totalParts: number;
-  totalPhotos: number;
-}): Promise<string> {
-  const brandLogo = await loadBrandLogo();
-  const cells = args.photos
-    .filter((photo) => photo.remoteUrl)
-    .map((photo) => `<td class="photo-cell">${photoImg(photo.remoteUrl, appendixPhotoLabel(photo), false)}</td>`);
-  const photoStart = ((args.partIndex - 1) * PDF_PHOTO_APPENDIX_CHUNK_SIZE) + 1;
-  const photoEnd = Math.min(args.partIndex * PDF_PHOTO_APPENDIX_CHUNK_SIZE, args.totalPhotos);
-
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<style>
-  @page { size: A4 portrait; margin: 14mm; }
-  * { box-sizing: border-box; }
-  body { font-family: Arial, sans-serif; color: #0F172A; font-size: 10pt; margin: 0; line-height: 1.45; }
-  .appendix-head { background: #142F70; border-top: 5px solid #0B3F59; border-radius: 8px; padding: 14px 18px; margin-bottom: 16px; color: #FFFFFF; display: table; width: 100%; }
-  .appendix-title { display: table-cell; vertical-align: middle; }
-  .appendix-eyebrow { color: #DBEAFE; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 3px; }
-  .appendix-name { font-size: 15pt; font-weight: 900; }
-  .appendix-logo-wrap { display: table-cell; vertical-align: middle; text-align: right; }
-  .appendix-logo { display: inline-block; width: 142px; height: auto; background: #FFFFFF; border-radius: 6px; padding: 5px 9px; }
-  .sec-bar { background: #1E3A8A; color: #FFFFFF; font-size: 8.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding: 7px 12px; margin-top: 14px; page-break-after: avoid; }
-  .appendix-note { color: #64748B; font-size: 9pt; margin: 8px 0 12px; }
-  .photo-block { margin: 8px 0; page-break-inside: avoid; }
-  .photo-img { max-width: 100%; max-height: 180px; object-fit: cover; border-radius: 6px; border: 1px solid #DBEAFE; }
-  .photo-caption { color: #64748B; font-size: 8pt; margin-top: 4px; }
-  .photo-grid-2 { display: table; width: 100%; border-collapse: separate; border-spacing: 8px; }
-  .photo-cell { display: table-cell; width: 50%; vertical-align: top; text-align: center; page-break-inside: avoid; }
-  .footer-note { color: #94A3B8; font-size: 7pt; text-align: center; margin-top: 20px; border-top: 1.5px solid #93C5FD; padding-top: 8px; }
-</style>
-</head>
-<body>
-  <div class="appendix-head">
-    <div class="appendix-title">
-      <div class="appendix-eyebrow">SolarSense Site Pack</div>
-      <div class="appendix-name">${esc(args.site.siteName)} &mdash; Photo Appendix</div>
-    </div>
-    <div class="appendix-logo-wrap"><img class="appendix-logo" src="${brandLogo}" alt="Sustainability Wise" /></div>
-  </div>
-  <div class="sec-bar">Photographic Evidence Appendix</div>
-  <div class="appendix-note">Photo appendix part ${args.partIndex} of ${args.totalParts}, covering photos ${photoStart}-${photoEnd} of ${args.totalPhotos}. Large reports are split internally for reliable server-side rendering, then merged into this single PDF.</div>
-  ${photoGrid(cells)}
-  <div class="footer-note">Generated by SolarSense &nbsp;&middot;&nbsp; ${new Date().toLocaleDateString('en-AU')}</div>
+`}
 </body>
 </html>`;
 }
@@ -633,31 +591,31 @@ async function renderSolarSensePdf(args: {
     }));
   }
 
-  console.info('[pdf] Using chunked SolarSense photo appendix render', {
+  console.info('[pdf] Using chunked SolarSense inline render', {
     siteId: args.site.id,
     photoCount: args.photos.length,
     rawBytes: totalPhotoBytes(args.photos),
-    chunkSize: PDF_PHOTO_APPENDIX_CHUNK_SIZE,
+    chunkSize: PDF_INLINE_CHUNK_PHOTO_TARGET,
   });
 
-  const photoChunks = chunkArray(args.photos, PDF_PHOTO_APPENDIX_CHUNK_SIZE);
-  const pdfParts: Buffer[] = [
-    await renderPdf(await buildHtml({
-      site: args.site,
-      assessments: args.assessments,
-      photos: [],
-      options: args.options,
-    })),
-  ];
+  const assessmentChunks = splitByPhotoTarget(args.assessments, (assessment) =>
+    args.photos.filter((photo) => photo.entityId === assessment.id && photo.remoteUrl).length,
+  );
+  const chunks = assessmentChunks.length > 0 ? assessmentChunks : [args.assessments];
+  const pdfParts: Buffer[] = [];
 
-  for (let index = 0; index < photoChunks.length; index += 1) {
-    const compressedPhotos = await prepareCompressedPdfPhotos(photoChunks[index]);
-    pdfParts.push(await renderPdf(await buildPhotoAppendixHtml({
+  for (let index = 0; index < chunks.length; index += 1) {
+    const assessmentIds = new Set(chunks[index].map((assessment) => assessment.id));
+    const chunkPhotos = args.photos.filter((photo) => assessmentIds.has(photo.entityId));
+    const compressedPhotos = await prepareCompressedPdfPhotos(chunkPhotos);
+    pdfParts.push(await renderPdf(await buildHtml({
       site: args.site,
+      assessments: chunks[index],
       photos: compressedPhotos,
-      partIndex: index + 1,
-      totalParts: photoChunks.length,
-      totalPhotos: args.photos.length,
+      options: args.options,
+    }, {
+      includeIntro: index === 0,
+      includeEnd: index === chunks.length - 1,
     })));
   }
 
@@ -708,9 +666,11 @@ export async function runSolarSensePdfJob(
   const pdf = await renderSolarSensePdf({ site, assessments, photos: scopedPhotos, options });
 
   if (pdf.byteLength > MAX_PDF_BYTES) {
-    throw new Error(
-      `PDF too large (${(pdf.byteLength / 1024 / 1024).toFixed(1)} MB). Reduce the number of selected assessments or photos.`,
-    );
+    console.warn('[pdf] SolarSense PDF exceeded preferred size limit; saving generated PDF anyway', {
+      siteId,
+      actualSizeBytes: pdf.byteLength,
+      preferredMaxSizeBytes: MAX_PDF_BYTES,
+    });
   }
 
   await onPhase?.('Saving PDF…');
@@ -726,6 +686,12 @@ export async function runSolarSensePdfJob(
   });
   await writeLocalFile(storageKey, pdf);
   const remoteUrl = publicFileUrl(storageKey);
+  await mirrorPdfToOneDrive({
+    app: 'solarsense',
+    parentId: siteId,
+    filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+    body: pdf,
+  });
 
   await db
     .update(ssSites)
@@ -899,11 +865,10 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       options,
     });
     if (pdf.byteLength > MAX_PDF_BYTES) {
-      return reply.status(413).send({
-        error: 'PDF too large to generate server-side',
+      console.warn('[pdf] SolarSense PDF exceeded preferred size limit; returning generated PDF anyway', {
+        siteId,
         actualSizeBytes: pdf.byteLength,
-        maxSizeBytes: MAX_PDF_BYTES,
-        suggestion: 'Reduce the number of selected assessments or photos',
+        preferredMaxSizeBytes: MAX_PDF_BYTES,
       });
     }
 
@@ -918,6 +883,13 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
     });
     await writeLocalFile(storageKey, pdf);
     const remoteUrl = publicFileUrl(storageKey);
+    await mirrorPdfToOneDrive({
+      app: 'solarsense',
+      parentId: siteId,
+      filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+      body: pdf,
+      logger: request.log,
+    });
 
     await db
       .update(ssSites)

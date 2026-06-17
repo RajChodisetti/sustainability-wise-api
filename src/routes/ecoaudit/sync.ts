@@ -14,6 +14,7 @@ import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, 
 import { badRequest } from '../../utils/errors.js';
 import { deleteLocalFile, localFileExists, makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { saveRecordVersion } from '../recordVersions.js';
+import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 
 function uploadUrl(sessionId: string): string {
   return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
@@ -156,8 +157,29 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     if (found.status !== 'uploaded') throw badRequest(`Upload session is ${found.status}`);
     if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from configured storage');
     const remoteUrl = publicFileUrl(found.storageKey);
-    await db.update(photoRegistry).set({ status: 'confirmed', remoteUrl, uploadedAt: new Date() }).where(eq(photoRegistry.id, sessionId));
-    return reply.send({ remoteUrl });
+    const oneDriveBackup = found.onedriveItemId
+      ? null
+      : await mirrorStoredPhotoToOneDrive({
+          storageKey: found.storageKey,
+          contentType: found.contentType,
+          logger: request.log,
+        });
+    await db.update(photoRegistry).set({
+      status: 'confirmed',
+      remoteUrl,
+      onedriveItemId: oneDriveBackup?.itemId ?? found.onedriveItemId,
+      uploadedAt: new Date(),
+    }).where(eq(photoRegistry.id, sessionId));
+    return reply.send({
+      remoteUrl,
+      oneDriveBackup: oneDriveBackup
+        ? {
+            itemId: oneDriveBackup.itemId,
+            path: oneDriveBackup.drivePath,
+            webUrl: oneDriveBackup.webUrl,
+          }
+        : undefined,
+    });
   });
 
   // POST /push — push audit with all its data
@@ -216,6 +238,11 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Upsert zones
+    const photoDescs = (item: JsonRecord) =>
+      item.photoDescs && typeof item.photoDescs === 'object' && !Array.isArray(item.photoDescs)
+        ? item.photoDescs
+        : {};
+
     for (const zone of (body.zones ?? [])) {
       const zoneId = requiredString(zone, 'id');
       const [existing] = await db.select().from(eaZones).where(eq(eaZones.id, zoneId));
@@ -225,7 +252,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         deletedAt: zone.deletedAt ? dateOrNow(zone.deletedAt) : null,
         auditId: localAuditId, zoneName: requiredString(zone, 'zoneName'),
         zoneDescription: str(zone.zoneDescription),
-        photos: arr(zone.photos), createdAt: dateOrNow(zone.createdAt),
+        photos: arr(zone.photos), photoDescs: photoDescs(zone), createdAt: dateOrNow(zone.createdAt),
       };
       const { id: _zid, ...zoneUpdate } = vals;
       await db.insert(eaZones).values(vals as any).onConflictDoUpdate({ target: eaZones.id, set: zoneUpdate as any });
@@ -260,6 +287,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       zoneId: requiredString(item, 'zoneId'), auditId: localAuditId,
       createdAt: dateOrNow(item.createdAt),
       extraNotes: str(item.extraNotes), extraPhotos: arr(item.extraPhotos),
+      photoDescs: photoDescs(item),
       ...extra,
     });
 

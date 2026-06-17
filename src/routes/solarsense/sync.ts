@@ -23,6 +23,7 @@ import {
   publicFileUrl,
   writeLocalFile,
 } from '../../storage/localFiles.js';
+import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -382,16 +383,33 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     if (!(await localFileExists(found.storageKey))) throw badRequest('Uploaded file is missing from configured storage');
 
     const remoteUrl = publicFileUrl(found.storageKey);
+    const oneDriveBackup = found.onedriveItemId
+      ? null
+      : await mirrorStoredPhotoToOneDrive({
+          storageKey: found.storageKey,
+          contentType: found.contentType,
+          logger: request.log,
+        });
     await db
       .update(photoRegistry)
       .set({
         status: 'confirmed',
         remoteUrl,
+        onedriveItemId: oneDriveBackup?.itemId ?? found.onedriveItemId,
         uploadedAt: new Date(),
       })
       .where(eq(photoRegistry.id, sessionId));
 
-    return reply.send({ remoteUrl });
+    return reply.send({
+      remoteUrl,
+      oneDriveBackup: oneDriveBackup
+        ? {
+            itemId: oneDriveBackup.itemId,
+            path: oneDriveBackup.drivePath,
+            webUrl: oneDriveBackup.webUrl,
+          }
+        : undefined,
+    });
   });
 
   app.post('/push', {

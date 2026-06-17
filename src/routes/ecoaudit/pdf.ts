@@ -23,12 +23,13 @@ import { renderPdf } from '../../pdf/renderer.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { makeLocalStorageKey, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
 const LARGE_PDF_RAW_BYTES_THRESHOLD = 120 * 1024 * 1024;
-const PDF_PHOTO_APPENDIX_CHUNK_SIZE = 60;
+const PDF_INLINE_CHUNK_PHOTO_TARGET = 50;
 const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
 
 type EquipmentItem = {
@@ -40,6 +41,9 @@ type EquipmentItem = {
 
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type PhotoEntry = { src: string; label: string; largeInPdf: boolean };
+type PhotoMetadata = { name?: string; largeInPdf?: boolean };
+type PhotoMetadataValue = string | PhotoMetadata | null | undefined;
+type PhotoMetadataMap = Record<string, PhotoMetadataValue>;
 
 // ── Brand logo (cached after first load) ─────────────────────────────────────────
 let _brandLogoDataUri: string | null = null;
@@ -77,22 +81,41 @@ const FIELD_LABELS: Record<string, string> = {
   photos: 'Photo',
 };
 
-function photosForEntity(photos: PhotoRow[], entityId: string): PhotoEntry[] {
-  return photos
-    .filter((p) => p.entityId === entityId && p.remoteUrl)
-    .map((p) => ({
-      src: p.remoteUrl!,
-      label: FIELD_LABELS[p.fieldName ?? ''] ?? (p.originalFilename ?? p.fieldName ?? 'Photo'),
-      largeInPdf: false,
-    }));
+function normalizePhotoMetadata(value: PhotoMetadataValue): PhotoMetadata {
+  if (!value) return {};
+  if (typeof value === 'string') return value ? { name: value } : {};
+  return {
+    ...(typeof value.name === 'string' ? { name: value.name } : {}),
+    ...(value.largeInPdf ? { largeInPdf: true } : {}),
+  };
 }
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-  return chunks;
+function normalizePhotoMetadataMap(value: unknown): PhotoMetadataMap {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as PhotoMetadataMap
+    : {};
+}
+
+function photoMetadataKey(fieldName: string | null): string {
+  if (!fieldName) return '';
+  const arrayMatch = /^([A-Za-z][A-Za-z0-9_]*)\[(\d+)\]$/.exec(fieldName);
+  if (arrayMatch) return `${arrayMatch[1]}.${arrayMatch[2]}`;
+  return fieldName;
+}
+
+function photosForEntity(photos: PhotoRow[], entityId: string, metadata?: unknown): PhotoEntry[] {
+  const photoMetadata = normalizePhotoMetadataMap(metadata);
+  return photos
+    .filter((p) => p.entityId === entityId && p.remoteUrl)
+    .map((p) => {
+      const defaultLabel = FIELD_LABELS[p.fieldName ?? ''] ?? (p.originalFilename ?? p.fieldName ?? 'Photo');
+      const meta = normalizePhotoMetadata(photoMetadata[photoMetadataKey(p.fieldName)]);
+      return {
+        src: p.remoteUrl!,
+        label: meta.name?.trim() || defaultLabel,
+        largeInPdf: meta.largeInPdf === true,
+      };
+    });
 }
 
 function totalPhotoBytes(photos: PhotoRow[]): number {
@@ -102,23 +125,6 @@ function totalPhotoBytes(photos: PhotoRow[]): number {
 function shouldUsePhotoAppendix(photos: PhotoRow[]): boolean {
   return photos.length > LARGE_PDF_PHOTO_COUNT_THRESHOLD
     || totalPhotoBytes(photos) > LARGE_PDF_RAW_BYTES_THRESHOLD;
-}
-
-function humanEntityType(value: string | null | undefined): string {
-  if (!value) return 'Photo';
-  return value
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function appendixPhotoLabel(photo: PhotoRow): string {
-  const field = FIELD_LABELS[photo.fieldName ?? '']
-    ?? photo.originalFilename
-    ?? photo.fieldName
-    ?? 'Photo';
-  return `${humanEntityType(photo.entityType)} · ${field}`;
 }
 
 // ── HTML helpers ──────────────────────────────────────────────────────────────────
@@ -604,7 +610,7 @@ function observationsBody(
 
 function zonePhotosBody(zones: Array<typeof eaZones.$inferSelect>, photos: PhotoRow[]): string {
   const blocks = zones.map((zone) => {
-    const zPhotos = photosForEntity(photos, zone.id);
+    const zPhotos = photosForEntity(photos, zone.id, zone.photoDescs);
     if (zPhotos.length === 0) return '';
     return `<div class="item">
       <div class="item-head"><span class="iico">&#128247;</span><div class="item-title">
@@ -623,19 +629,19 @@ function byEquipmentBody(args: BodyArgs): string {
   const consolidatedObservations = defaultConsolidatedObservations(hvacList, lightList, solarList, forkliftList, hotWaterList);
 
   const elecParts = [
-    msList.length ? `<div class="subsec-title">1.1 &nbsp;Main Switchboard</div>${msList.map((m) => renderMs(m, photosForEntity(photos, m.id), zoneMap)).join('')}` : '',
-    addlSbList.length ? `<div class="subsec-title" style="margin-top:16px;">1.2 &nbsp;Additional Switchboards</div>${addlSbList.map((a) => renderAddlSb(a, photosForEntity(photos, a.id), zoneMap)).join('')}` : '',
+    msList.length ? `<div class="subsec-title">1.1 &nbsp;Main Switchboard</div>${msList.map((m) => renderMs(m, photosForEntity(photos, m.id, m.photoDescs), zoneMap)).join('')}` : '',
+    addlSbList.length ? `<div class="subsec-title" style="margin-top:16px;">1.2 &nbsp;Additional Switchboards</div>${addlSbList.map((a) => renderAddlSb(a, photosForEntity(photos, a.id, a.photoDescs), zoneMap)).join('')}` : '',
   ].filter(Boolean).join('');
 
   return zonePhotosBody(args.zones, photos)
     + (elecParts ? `${secHeader('1', 'Electrical Infrastructure')}${elecParts}` : '')
-    + (hvacList.length ? `${secHeader('2', 'HVAC Systems')}${hvacList.map((h) => renderHvac(h, photosForEntity(photos, h.id), zoneMap)).join('')}` : '')
-    + (lightList.length ? `${secHeader('3', 'Lighting Systems')}${lightList.map((l) => renderLight(l, photosForEntity(photos, l.id), zoneMap)).join('')}` : '')
-    + (solarList.length ? `${secHeader('4', 'Solar PV Infrastructure')}${solarList.map((s) => renderSolar(s, photosForEntity(photos, s.id), zoneMap)).join('')}` : '')
-    + (forkliftList.length ? `${secHeader('5', 'Forklift Charging')}${forkliftList.map((f) => renderForklift(f, photosForEntity(photos, f.id), zoneMap)).join('')}` : '')
-    + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id), zoneMap)).join('')}` : '')
-    + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
-    + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap)).join('')}` : '')
+    + (hvacList.length ? `${secHeader('2', 'HVAC Systems')}${hvacList.map((h) => renderHvac(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap)).join('')}` : '')
+    + (lightList.length ? `${secHeader('3', 'Lighting Systems')}${lightList.map((l) => renderLight(l, photosForEntity(photos, l.id, l.photoDescs), zoneMap)).join('')}` : '')
+    + (solarList.length ? `${secHeader('4', 'Solar PV Infrastructure')}${solarList.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap)).join('')}` : '')
+    + (forkliftList.length ? `${secHeader('5', 'Forklift Charging')}${forkliftList.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap)).join('')}` : '')
+    + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap)).join('')}` : '')
+    + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
+    + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
     + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations);
 }
 
@@ -663,7 +669,7 @@ function byZoneBody(args: BodyArgs): string {
     const zGw = genWaterList.filter((x) => x.zoneId === zone.id);
     const zGe = genElecList.filter((x) => x.zoneId === zone.id);
     const total = zMs.length + zAddl.length + zHvac.length + zLight.length + zSolar.length + zFork.length + zHw.length + zGw.length + zGe.length;
-    const zPhotos = photosForEntity(photos, zone.id);
+    const zPhotos = photosForEntity(photos, zone.id, zone.photoDescs);
     return { id: zone.id, title: zone.zoneName, description: zone.zoneDescription, zMs, zAddl, zHvac, zLight, zSolar, zFork, zHw, zGw, zGe, total, zPhotos, photoCount: zonePhotoCount(zone.id, photos, allEquipment) };
   }).filter((z) => z.total > 0 || z.photoCount > 0);
 
@@ -697,15 +703,15 @@ function byZoneBody(args: BodyArgs): string {
         </div>
       </div>
       ${zone.zPhotos.length ? renderPhotoBlocks(zone.zPhotos, 'Zone Photos', zone.zPhotos.length, 'photos-lead') : ''}
-      ${zone.zMs.length ? `<div class="zone-type-label">Main Switchboard</div>${zone.zMs.map((m) => renderMs(m, photosForEntity(photos, m.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zAddl.length ? `<div class="zone-type-label">Additional Switchboards</div>${zone.zAddl.map((a) => renderAddlSb(a, photosForEntity(photos, a.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zHvac.length ? `<div class="zone-type-label">HVAC Systems</div>${zone.zHvac.map((h) => renderHvac(h, photosForEntity(photos, h.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zLight.length ? `<div class="zone-type-label">Lighting Systems</div>${zone.zLight.map((l) => renderLight(l, photosForEntity(photos, l.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zSolar.length ? `<div class="zone-type-label">Solar PV</div>${zone.zSolar.map((s) => renderSolar(s, photosForEntity(photos, s.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zFork.length ? `<div class="zone-type-label">Forklift Charging</div>${zone.zFork.map((f) => renderForklift(f, photosForEntity(photos, f.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zHw.length ? `<div class="zone-type-label">Hot Water</div>${zone.zHw.map((h) => renderHotWater(h, photosForEntity(photos, h.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
-      ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id), zoneMap, false)).join('')}` : ''}
+      ${zone.zMs.length ? `<div class="zone-type-label">Main Switchboard</div>${zone.zMs.map((m) => renderMs(m, photosForEntity(photos, m.id, m.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zAddl.length ? `<div class="zone-type-label">Additional Switchboards</div>${zone.zAddl.map((a) => renderAddlSb(a, photosForEntity(photos, a.id, a.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zHvac.length ? `<div class="zone-type-label">HVAC Systems</div>${zone.zHvac.map((h) => renderHvac(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zLight.length ? `<div class="zone-type-label">Lighting Systems</div>${zone.zLight.map((l) => renderLight(l, photosForEntity(photos, l.id, l.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zSolar.length ? `<div class="zone-type-label">Solar PV</div>${zone.zSolar.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zFork.length ? `<div class="zone-type-label">Forklift Charging</div>${zone.zFork.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zHw.length ? `<div class="zone-type-label">Hot Water</div>${zone.zHw.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
     </div>`;
   }).join('');
 }
@@ -724,6 +730,7 @@ function buildAuditEndBlock(args: Pick<BodyArgs, 'audit' | 'brandLogo' | 'genDat
 
 type BuildAuditHtmlOptions = {
   includeEnd?: boolean;
+  includeIntro?: boolean;
   introNoticeHtml?: string;
 };
 
@@ -739,7 +746,7 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
   const knownZoneIds = new Set(zones.map((zone) => zone.id));
   const representedZones = new Set<string>();
   [
-    ...zones.filter((zone) => photosForEntity(photos, zone.id).length > 0).map((zone) => zone.id),
+    ...zones.filter((zone) => photosForEntity(photos, zone.id, zone.photoDescs).length > 0).map((zone) => zone.id),
     ...msList.map((item) => item.zoneId),
     ...addlSbList.map((item) => item.zoneId),
     ...hvacList.map((item) => item.zoneId),
@@ -792,6 +799,7 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
   <tbody>
     <tr><td class="content-cell">
 
+      ${options.includeIntro === false ? '' : `
       <div class="cover">
         <div class="cover-eyebrow">Energy Audit Report &nbsp;·&nbsp; ${modeLabel}</div>
         <div class="cover-brand">
@@ -819,6 +827,7 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
       ${executiveSummary ? `<div class="exec-copy">${formatText(executiveSummary)}</div>` : ''}
       <div class="stats"><div class="stats-row">${statCells}</div></div>
       ${options.introNoticeHtml ?? ''}
+      `}
 
       ${mode === 'by-zone'
         ? byZoneBody(args) + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations)
@@ -832,55 +841,186 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
 </body></html>`;
 }
 
-function buildAuditPhotoAppendixHtml(
-  args: BodyArgs,
-  partIndex: number,
-  totalParts: number,
-  totalPhotos: number,
-  includeEnd: boolean,
-): string {
-  const modeLabel = args.mode === 'by-zone' ? 'Report by Zone' : 'Report by Equipment';
-  const entries = args.photos
-    .filter((photo) => photo.remoteUrl)
-    .map((photo) => ({
-      src: photo.remoteUrl!,
-      label: appendixPhotoLabel(photo),
-      largeInPdf: false,
-    }));
-  const photoStart = ((partIndex - 1) * PDF_PHOTO_APPENDIX_CHUNK_SIZE) + 1;
-  const photoEnd = Math.min(partIndex * PDF_PHOTO_APPENDIX_CHUNK_SIZE, totalPhotos);
+function photoCountForEntities(photos: PhotoRow[], entityIds: Set<string>): number {
+  return photos.filter((photo) => entityIds.has(photo.entityId) && photo.remoteUrl).length;
+}
 
-  return `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>${buildCss()}</style></head>
-<body>
-<table class="doc-table">
-  <thead>
-    <tr><td class="hdr-cell">
-      <div class="hdr-inner">
-        <div class="hdr-brand"><span class="hdr-brand-title">Energy Audit Report</span></div>
-        <div class="hdr-sep"><div class="hdr-sep-line"></div></div>
-        <div class="hdr-report">${esc(args.audit.siteName)} &mdash; Photo Appendix</div>
-      </div>
-    </td></tr>
-  </thead>
-  <tfoot>
-    <tr><td class="ftr-cell">
-      <div class="ftr-inner">
-        <div class="ftr-left">Confidential</div>
-        <div class="ftr-right">${modeLabel} &nbsp;·&nbsp; Generated ${args.genDate}</div>
-      </div>
-    </td></tr>
-  </tfoot>
-  <tbody>
-    <tr><td class="content-cell">
-      ${secHeaderLabel('PH', 'Photographic Evidence Appendix')}
-      <p class="sec-desc">Photo appendix part ${partIndex} of ${totalParts}, covering photos ${photoStart}-${photoEnd} of ${totalPhotos}. Large reports are split internally for reliable server-side rendering, then merged into this single PDF.</p>
-      ${renderPhotoBlocks(entries, 'Photographic Evidence', entries.length, 'photos-lead')}
-      ${includeEnd ? buildAuditEndBlock(args) : ''}
-    </td></tr>
-  </tbody>
-</table>
-</body></html>`;
+function photosForEntities(photos: PhotoRow[], entityIds: Set<string>): PhotoRow[] {
+  return photos.filter((photo) => entityIds.has(photo.entityId));
+}
+
+function emptyBodyArgs(args: BodyArgs): BodyArgs {
+  return {
+    ...args,
+    zones: [],
+    photos: [],
+    msList: [],
+    addlSbList: [],
+    hvacList: [],
+    lightList: [],
+    solarList: [],
+    forkliftList: [],
+    hotWaterList: [],
+    genWaterList: [],
+    genElecList: [],
+  };
+}
+
+function splitByPhotoTarget<T>(
+  items: T[],
+  countPhotos: (item: T) => number,
+  target = PDF_INLINE_CHUNK_PHOTO_TARGET,
+): T[][] {
+  const chunks: T[][] = [];
+  let current: T[] = [];
+  let currentPhotos = 0;
+  for (const item of items) {
+    const itemPhotos = Math.max(1, countPhotos(item));
+    if (current.length > 0 && currentPhotos + itemPhotos > target) {
+      chunks.push(current);
+      current = [];
+      currentPhotos = 0;
+    }
+    current.push(item);
+    currentPhotos += itemPhotos;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+function buildZoneChunk(args: BodyArgs, scopedPhotos: PhotoRow[], zones: Array<typeof eaZones.$inferSelect>): BodyArgs {
+  const zoneIds = new Set(zones.map((zone) => zone.id));
+  const entityIds = new Set<string>(zones.map((zone) => zone.id));
+  const byZone = <T extends EquipmentItem>(items: T[]) => items.filter((item) => {
+    if (!zoneIds.has(item.zoneId)) return false;
+    entityIds.add(item.id);
+    return true;
+  });
+  const msList = byZone(args.msList);
+  const addlSbList = byZone(args.addlSbList);
+  const hvacList = byZone(args.hvacList);
+  const lightList = byZone(args.lightList);
+  const solarList = byZone(args.solarList);
+  const forkliftList = byZone(args.forkliftList);
+  const hotWaterList = byZone(args.hotWaterList);
+  const genWaterList = byZone(args.genWaterList);
+  const genElecList = byZone(args.genElecList);
+  return {
+    ...emptyBodyArgs(args),
+    zones,
+    photos: photosForEntities(scopedPhotos, entityIds),
+    msList,
+    addlSbList,
+    hvacList,
+    lightList,
+    solarList,
+    forkliftList,
+    hotWaterList,
+    genWaterList,
+    genElecList,
+  };
+}
+
+function buildEquipmentChunk<T extends EquipmentItem>(
+  args: BodyArgs,
+  scopedPhotos: PhotoRow[],
+  key: 'msList' | 'addlSbList' | 'hvacList' | 'lightList' | 'solarList' | 'forkliftList' | 'hotWaterList' | 'genWaterList' | 'genElecList',
+  items: T[],
+): BodyArgs {
+  const entityIds = new Set(items.map((item) => item.id));
+  return {
+    ...emptyBodyArgs(args),
+    zones: args.zones,
+    photos: photosForEntities(scopedPhotos, entityIds),
+    [key]: items,
+  } as BodyArgs;
+}
+
+function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow[]): BodyArgs[] {
+  if (args.mode === 'by-zone') {
+    const knownZoneIds = new Set(args.zones.map((zone) => zone.id));
+    const zoneChunks = splitByPhotoTarget(args.zones, (zone) => {
+      const entityIds = new Set<string>([
+        zone.id,
+        ...args.msList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.addlSbList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.hvacList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.lightList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.solarList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.forkliftList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.hotWaterList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.genWaterList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.genElecList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+      ]);
+      return photoCountForEntities(scopedPhotos, entityIds);
+    });
+    const chunks = zoneChunks.map((zones) => buildZoneChunk(args, scopedPhotos, zones));
+    const unzonedMs = args.msList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedAddl = args.addlSbList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedHvac = args.hvacList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedLight = args.lightList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedSolar = args.solarList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedForklift = args.forkliftList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedHotWater = args.hotWaterList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedGenWater = args.genWaterList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedGenElec = args.genElecList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedEntityIds = new Set([
+      ...unzonedMs,
+      ...unzonedAddl,
+      ...unzonedHvac,
+      ...unzonedLight,
+      ...unzonedSolar,
+      ...unzonedForklift,
+      ...unzonedHotWater,
+      ...unzonedGenWater,
+      ...unzonedGenElec,
+    ].map((item) => item.id));
+    if (unzonedEntityIds.size > 0) {
+      chunks.push({
+        ...emptyBodyArgs(args),
+        zones: [],
+        photos: photosForEntities(scopedPhotos, unzonedEntityIds),
+        msList: unzonedMs,
+        addlSbList: unzonedAddl,
+        hvacList: unzonedHvac,
+        lightList: unzonedLight,
+        solarList: unzonedSolar,
+        forkliftList: unzonedForklift,
+        hotWaterList: unzonedHotWater,
+        genWaterList: unzonedGenWater,
+        genElecList: unzonedGenElec,
+      });
+    }
+    return chunks;
+  }
+
+  const chunks: BodyArgs[] = [];
+  const zonePhotoZones = args.zones.filter((zone) => photosForEntity(scopedPhotos, zone.id, zone.photoDescs).length > 0);
+  for (const zones of splitByPhotoTarget(zonePhotoZones, (zone) => photosForEntity(scopedPhotos, zone.id, zone.photoDescs).length)) {
+    const entityIds = new Set(zones.map((zone) => zone.id));
+    chunks.push({ ...emptyBodyArgs(args), zones, photos: photosForEntities(scopedPhotos, entityIds) });
+  }
+
+  const addEquipmentChunks = <T extends EquipmentItem>(
+    key: Parameters<typeof buildEquipmentChunk<T>>[2],
+    items: T[],
+  ) => {
+    for (const part of splitByPhotoTarget(items, (item) => photoCountForEntities(scopedPhotos, new Set([item.id])))) {
+      chunks.push(buildEquipmentChunk(args, scopedPhotos, key, part));
+    }
+  };
+
+  addEquipmentChunks('msList', args.msList);
+  addEquipmentChunks('addlSbList', args.addlSbList);
+  addEquipmentChunks('hvacList', args.hvacList);
+  addEquipmentChunks('lightList', args.lightList);
+  addEquipmentChunks('solarList', args.solarList);
+  addEquipmentChunks('forkliftList', args.forkliftList);
+  addEquipmentChunks('hotWaterList', args.hotWaterList);
+  addEquipmentChunks('genWaterList', args.genWaterList);
+  addEquipmentChunks('genElecList', args.genElecList);
+
+  return chunks.length > 0 ? chunks : [emptyBodyArgs(args)];
 }
 
 async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Promise<Buffer> {
@@ -889,31 +1029,24 @@ async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Prom
     return renderPdf(buildAuditHtml({ ...args, photos: compressedPhotos }));
   }
 
-  console.info('[pdf] Using chunked EcoAudit photo appendix render', {
+  console.info('[pdf] Using chunked EcoAudit inline render', {
     auditId: args.audit.id,
     photoCount: scopedPhotos.length,
     rawBytes: totalPhotoBytes(scopedPhotos),
-    chunkSize: PDF_PHOTO_APPENDIX_CHUNK_SIZE,
+    chunkSize: PDF_INLINE_CHUNK_PHOTO_TARGET,
   });
 
-  const noPhotoArgs = { ...args, photos: [] };
-  const photoChunks = chunkArray(scopedPhotos, PDF_PHOTO_APPENDIX_CHUNK_SIZE);
-  const pdfParts: Buffer[] = [
-    await renderPdf(buildAuditHtml(noPhotoArgs, {
-      includeEnd: false,
-      introNoticeHtml: `<div class="obs-block obs-summary"><div class="obs-title">Photographic Evidence Appendix</div><div class="obs-text">This report contains ${scopedPhotos.length} synced photo${scopedPhotos.length === 1 ? '' : 's'}. To keep server-side generation reliable for large photo-heavy reports, photos are included after the report body in a merged appendix.</div></div>`,
-    })),
-  ];
-
-  for (let index = 0; index < photoChunks.length; index += 1) {
-    const compressedPhotos = await prepareCompressedPdfPhotos(photoChunks[index]);
-    const appendixArgs = { ...args, photos: compressedPhotos };
-    pdfParts.push(await renderPdf(buildAuditPhotoAppendixHtml(
-      appendixArgs,
-      index + 1,
-      photoChunks.length,
-      scopedPhotos.length,
-      index === photoChunks.length - 1,
+  const chunks = buildInlineEcoAuditChunks(args, scopedPhotos);
+  const pdfParts: Buffer[] = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const compressedPhotos = await prepareCompressedPdfPhotos(chunk.photos);
+    pdfParts.push(await renderPdf(buildAuditHtml(
+      { ...chunk, photos: compressedPhotos },
+      {
+        includeIntro: index === 0,
+        includeEnd: index === chunks.length - 1,
+      },
     )));
   }
 
@@ -1030,11 +1163,10 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     genElecList: generalElectricity as unknown as EquipmentItem[],
   }, scopedPhotos);
   if (pdf.byteLength > MAX_PDF_BYTES) {
-    return reply.status(413).send({
-      error: 'PDF too large to generate server-side',
+    console.warn('[pdf] EcoAudit PDF exceeded preferred size limit; returning generated PDF anyway', {
+      auditId,
       actualSizeBytes: pdf.byteLength,
-      maxSizeBytes: MAX_PDF_BYTES,
-      suggestion: 'Reduce the number of selected zones, sections, or photos',
+      preferredMaxSizeBytes: MAX_PDF_BYTES,
     });
   }
 
@@ -1049,6 +1181,13 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   });
   await writeLocalFile(storageKey, pdf);
   const remoteUrl = publicFileUrl(storageKey);
+  await mirrorPdfToOneDrive({
+    app: 'ecoaudit',
+    parentId: auditId,
+    filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    body: pdf,
+    logger: request.log,
+  });
 
   await db
     .update(eaAudits)
@@ -1155,9 +1294,11 @@ export async function runEcoAuditPdfJob(
   }, scopedPhotos);
 
   if (pdf.byteLength > MAX_PDF_BYTES) {
-    throw new Error(
-      `PDF too large (${(pdf.byteLength / 1024 / 1024).toFixed(1)} MB). Reduce the number of selected zones or photos.`,
-    );
+    console.warn('[pdf] EcoAudit PDF exceeded preferred size limit; saving generated PDF anyway', {
+      auditId,
+      actualSizeBytes: pdf.byteLength,
+      preferredMaxSizeBytes: MAX_PDF_BYTES,
+    });
   }
 
   await onPhase?.('Saving PDF…');
@@ -1173,6 +1314,12 @@ export async function runEcoAuditPdfJob(
   });
   await writeLocalFile(storageKey, pdf);
   const remoteUrl = publicFileUrl(storageKey);
+  await mirrorPdfToOneDrive({
+    app: 'ecoaudit',
+    parentId: auditId,
+    filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    body: pdf,
+  });
 
   await db
     .update(eaAudits)

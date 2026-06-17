@@ -17,6 +17,7 @@ Unified REST API serving both **EcoAudit Pro** and **SolarSense** mobile applica
 - [API Reference](docs/API_REFERENCE.md) — full endpoint list (also served live at `/v1/docs/`)
 - [Infrastructure](docs/INFRASTRUCTURE.md) — server setup, deployment, backup
 - [Mobile Integration](docs/MOBILE_INTEGRATION.md) — API contract for EcoAudit Pro and SolarSense
+- [OneDrive Photo Backup](docs/ONEDRIVE_PHOTO_BACKUP.md) — optional Microsoft Graph photo mirror
 - [Deployment Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md) — step-by-step DigitalOcean setup
 
 ## Project Structure
@@ -26,7 +27,7 @@ src/
   auth/           JWT + API key auth
   db/             Drizzle ORM schema + migrations
   storage/        Local/Spaces file storage helpers
-  onedrive/       Microsoft Graph API client + upload sessions (deferred)
+  onedrive/       Microsoft Graph API client + photo backup mirror
   pdf/            Puppeteer renderer + HTML templates
   routes/
     auth.ts

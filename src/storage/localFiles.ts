@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { access, mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
@@ -254,6 +254,19 @@ export async function localFileStream(storageKey: string): Promise<NodeJS.Readab
   }
 
   return createReadStream(storageKeyToPath(storageKey));
+}
+
+export async function localFileBuffer(storageKey: string): Promise<Buffer> {
+  if (config.storage.provider !== 'spaces') {
+    return readFile(storageKeyToPath(storageKey));
+  }
+
+  const chunks: Buffer[] = [];
+  const stream = await localFileStream(storageKey);
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 export async function deleteLocalFile(storageKey: string | null | undefined): Promise<void> {

@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "node --import tsx/esm src/index.ts",
     "admin:create": "node --import tsx/esm scripts/create-admin.ts",
+    "onedrive:smoke": "node --import tsx/esm scripts/onedrive-photo-smoke.ts",
     "smoke:option3": "node --import tsx/esm scripts/option3-smoke.ts",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",

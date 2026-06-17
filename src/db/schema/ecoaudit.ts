@@ -1,4 +1,4 @@
-import { pgTable, text, real, boolean, timestamp, integer } from 'drizzle-orm/pg-core';
+import { pgTable, text, real, boolean, timestamp, integer, jsonb } from 'drizzle-orm/pg-core';
 
 const syncCols = {
   serverId: text('server_id'),
@@ -40,6 +40,7 @@ export const eaZones = pgTable('ea_zones', {
   zoneName: text('zone_name').notNull(),
   zoneDescription: text('zone_description'),
   photos: text('photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -57,6 +58,7 @@ export const eaMainSwitchboards = pgTable('ea_main_switchboards', {
   comments: text('comments'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -74,6 +76,7 @@ export const eaAdditionalSwitchboards = pgTable('ea_additional_switchboards', {
   comments: text('comments'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -104,6 +107,7 @@ export const eaHvacUnits = pgTable('ea_hvac_units', {
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -131,6 +135,7 @@ export const eaLightingSystems = pgTable('ea_lighting_systems', {
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -157,6 +162,7 @@ export const eaSolarPv = pgTable('ea_solar_pv', {
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -186,6 +192,7 @@ export const eaForkliftChargers = pgTable('ea_forklift_chargers', {
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -209,6 +216,7 @@ export const eaHotWaterSystems = pgTable('ea_hot_water_systems', {
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -222,6 +230,7 @@ export const eaGeneralWater = pgTable('ea_general_water', {
   photos: text('photos').array().notNull().default([]),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -235,5 +244,6 @@ export const eaGeneralElectricity = pgTable('ea_general_electricity', {
   photos: text('photos').array().notNull().default([]),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
