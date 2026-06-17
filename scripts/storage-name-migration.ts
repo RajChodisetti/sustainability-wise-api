@@ -261,13 +261,17 @@ function oldOneDriveDrivePath(item: PlanItem, target: OneDriveTarget): string {
   );
 }
 
-async function readMigrationBody(item: PlanItem, target: OneDriveTarget | null): Promise<Buffer> {
+async function readMigrationBody(item: PlanItem, target: OneDriveTarget | null): Promise<Buffer | null> {
   if (await localFileExists(item.oldKey)) return localFileBuffer(item.oldKey);
   if (await localFileExists(item.newKey)) return localFileBuffer(item.newKey);
   if (target && (item.kind === 'pdf' || item.status === 'confirmed')) {
     const drivePath = oldOneDriveDrivePath(item, target);
     console.warn(`local source missing; downloading old OneDrive copy: ${drivePath}`);
     return downloadBufferFromOneDrivePath({ target, drivePath });
+  }
+  if (item.kind === 'photo' && item.status !== 'confirmed') {
+    console.warn(`local source missing for non-confirmed photo; updating DB path only: ${item.oldKey}`);
+    return null;
   }
   throw new Error(`Neither old nor new storage object exists for ${item.oldKey}`);
 }
@@ -346,14 +350,14 @@ async function migrateItems(items: PlanItem[], options: Options, target: OneDriv
 
     try {
       const body = await readMigrationBody(item, target);
-      await ensureNewStorageObject(item, body);
-      const oneDriveItemId = await uploadToOneDrive(item, body, target);
+      if (body) await ensureNewStorageObject(item, body);
+      const oneDriveItemId = body ? await uploadToOneDrive(item, body, target) : null;
       await updateDatabase(item, oneDriveItemId);
-      if (!options.keepOldStorage && item.oldKey !== item.newKey) {
+      if (body && !options.keepOldStorage && item.oldKey !== item.newKey) {
         await deleteLocalFile(item.oldKey);
       }
       summary.changed += 1;
-      summary.bytesCopied += body.length;
+      summary.bytesCopied += body?.length ?? 0;
       if (current <= 5 || current % 25 === 0 || current === items.length) {
         console.log(`${item.kind} ${current}/${items.length}: migrated ${item.oldKey} -> ${item.newKey}`);
       }
