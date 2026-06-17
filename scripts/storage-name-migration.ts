@@ -7,6 +7,7 @@ import { ssSites } from '../src/db/schema/solarsense.js';
 import { oneDrivePathForStorageKey } from '../src/onedrive/paths.js';
 import {
   deleteOneDrivePath,
+  downloadBufferFromOneDrivePath,
   requireOneDriveTarget,
   uploadBufferToOneDrivePath,
   uploadPhotoBackupToOneDrive,
@@ -250,9 +251,24 @@ async function buildPdfPlan(maps: StorageNameMaps): Promise<PdfPlan[]> {
   return plan;
 }
 
-async function readMigrationBody(item: PlanItem): Promise<Buffer> {
+function oldOneDriveDrivePath(item: PlanItem, target: OneDriveTarget): string {
+  if (item.kind === 'photo') {
+    return oneDrivePathForStorageKey(target.photosFolder, item.oldKey);
+  }
+  return oneDrivePathForStorageKey(
+    target.photosFolder,
+    `${item.app}/${item.parentId}/pdfs/${item.oldKey.split('/').pop() ?? 'report.pdf'}`,
+  );
+}
+
+async function readMigrationBody(item: PlanItem, target: OneDriveTarget | null): Promise<Buffer> {
   if (await localFileExists(item.oldKey)) return localFileBuffer(item.oldKey);
   if (await localFileExists(item.newKey)) return localFileBuffer(item.newKey);
+  if (target && (item.kind === 'pdf' || item.status === 'confirmed')) {
+    const drivePath = oldOneDriveDrivePath(item, target);
+    console.warn(`local source missing; downloading old OneDrive copy: ${drivePath}`);
+    return downloadBufferFromOneDrivePath({ target, drivePath });
+  }
   throw new Error(`Neither old nor new storage object exists for ${item.oldKey}`);
 }
 
@@ -329,7 +345,7 @@ async function migrateItems(items: PlanItem[], options: Options, target: OneDriv
     }
 
     try {
-      const body = await readMigrationBody(item);
+      const body = await readMigrationBody(item, target);
       await ensureNewStorageObject(item, body);
       const oneDriveItemId = await uploadToOneDrive(item, body, target);
       await updateDatabase(item, oneDriveItemId);
