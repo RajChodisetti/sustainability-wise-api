@@ -62,6 +62,8 @@ type PdfPlan = {
   parentId: string;
   oldKey: string;
   newKey: string;
+  remoteUrl: string | null;
+  deletedAt: Date | null;
 };
 
 type PlanItem = PhotoPlan | PdfPlan;
@@ -214,11 +216,23 @@ async function buildPhotoPlan(maps: StorageNameMaps): Promise<PhotoPlan[]> {
 async function buildPdfPlan(maps: StorageNameMaps): Promise<PdfPlan[]> {
   const [sites, audits] = await Promise.all([
     db
-      .select({ id: ssSites.id, siteName: ssSites.siteName, storageKey: ssSites.reportPdfLocalPath })
+      .select({
+        id: ssSites.id,
+        siteName: ssSites.siteName,
+        storageKey: ssSites.reportPdfLocalPath,
+        remoteUrl: ssSites.reportPdfRemoteUrl,
+        deletedAt: ssSites.deletedAt,
+      })
       .from(ssSites)
       .where(isNotNull(ssSites.reportPdfLocalPath)),
     db
-      .select({ id: eaAudits.id, siteName: eaAudits.siteName, storageKey: eaAudits.reportPdfLocalPath })
+      .select({
+        id: eaAudits.id,
+        siteName: eaAudits.siteName,
+        storageKey: eaAudits.reportPdfLocalPath,
+        remoteUrl: eaAudits.reportPdfRemoteUrl,
+        deletedAt: eaAudits.deletedAt,
+      })
       .from(eaAudits)
       .where(isNotNull(eaAudits.reportPdfLocalPath)),
   ]);
@@ -233,7 +247,15 @@ async function buildPdfPlan(maps: StorageNameMaps): Promise<PdfPlan[]> {
       currentStorageKey: site.storageKey,
     });
     if (newKey !== site.storageKey) {
-      plan.push({ kind: 'pdf', app: 'solarsense', parentId: site.id, oldKey: site.storageKey, newKey });
+      plan.push({
+        kind: 'pdf',
+        app: 'solarsense',
+        parentId: site.id,
+        oldKey: site.storageKey,
+        newKey,
+        remoteUrl: site.remoteUrl,
+        deletedAt: site.deletedAt,
+      });
     }
   }
   for (const audit of audits) {
@@ -245,10 +267,22 @@ async function buildPdfPlan(maps: StorageNameMaps): Promise<PdfPlan[]> {
       currentStorageKey: audit.storageKey,
     });
     if (newKey !== audit.storageKey) {
-      plan.push({ kind: 'pdf', app: 'ecoaudit', parentId: audit.id, oldKey: audit.storageKey, newKey });
+      plan.push({
+        kind: 'pdf',
+        app: 'ecoaudit',
+        parentId: audit.id,
+        oldKey: audit.storageKey,
+        newKey,
+        remoteUrl: audit.remoteUrl,
+        deletedAt: audit.deletedAt,
+      });
     }
   }
   return plan;
+}
+
+function isDeletedPdfWithoutRemote(item: PlanItem): item is PdfPlan {
+  return item.kind === 'pdf' && Boolean(item.deletedAt) && !item.remoteUrl;
 }
 
 function oldOneDriveDrivePath(item: PlanItem, target: OneDriveTarget): string {
@@ -267,10 +301,22 @@ async function readMigrationBody(item: PlanItem, target: OneDriveTarget | null):
   if (target && (item.kind === 'pdf' || item.status === 'confirmed')) {
     const drivePath = oldOneDriveDrivePath(item, target);
     console.warn(`local source missing; downloading old OneDrive copy: ${drivePath}`);
-    return downloadBufferFromOneDrivePath({ target, drivePath });
+    try {
+      return await downloadBufferFromOneDrivePath({ target, drivePath });
+    } catch (error) {
+      if (isDeletedPdfWithoutRemote(item)) {
+        console.warn(`old OneDrive PDF missing for deleted parent; clearing broken DB pointer: ${item.oldKey}`);
+        return null;
+      }
+      throw error;
+    }
   }
   if (item.kind === 'photo' && item.status !== 'confirmed') {
     console.warn(`local source missing for non-confirmed photo; updating DB path only: ${item.oldKey}`);
+    return null;
+  }
+  if (isDeletedPdfWithoutRemote(item)) {
+    console.warn(`local source missing for deleted parent PDF; clearing broken DB pointer: ${item.oldKey}`);
     return null;
   }
   throw new Error(`Neither old nor new storage object exists for ${item.oldKey}`);
@@ -335,6 +381,20 @@ async function updateDatabase(item: PlanItem, oneDriveItemId: string | null): Pr
     .where(eq(pdfJobs.storageKey, item.oldKey));
 }
 
+async function clearBrokenPdfMetadata(item: PdfPlan): Promise<void> {
+  if (item.app === 'solarsense') {
+    await db
+      .update(ssSites)
+      .set({ reportPdfLocalPath: null, reportPdfRemoteUrl: null, updatedAt: new Date() })
+      .where(eq(ssSites.id, item.parentId));
+  } else {
+    await db
+      .update(eaAudits)
+      .set({ reportPdfLocalPath: null, reportPdfRemoteUrl: null, updatedAt: new Date() })
+      .where(eq(eaAudits.id, item.parentId));
+  }
+}
+
 async function migrateItems(items: PlanItem[], options: Options, target: OneDriveTarget | null): Promise<Summary> {
   const summary: Summary = { planned: items.length, changed: 0, skipped: 0, failed: 0, bytesCopied: 0 };
   for (let index = 0; index < items.length; index += 1) {
@@ -352,7 +412,11 @@ async function migrateItems(items: PlanItem[], options: Options, target: OneDriv
       const body = await readMigrationBody(item, target);
       if (body) await ensureNewStorageObject(item, body);
       const oneDriveItemId = body ? await uploadToOneDrive(item, body, target) : null;
-      await updateDatabase(item, oneDriveItemId);
+      if (!body && isDeletedPdfWithoutRemote(item)) {
+        await clearBrokenPdfMetadata(item);
+      } else {
+        await updateDatabase(item, oneDriveItemId);
+      }
       if (body && !options.keepOldStorage && item.oldKey !== item.newKey) {
         await deleteLocalFile(item.oldKey);
       }
