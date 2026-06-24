@@ -19,5 +19,20 @@ module.exports = {
         NODE_ENV: 'production',
       },
     },
+    {
+      name: 'ww-fleet-monitor',
+      script: 'monitor.py',
+      interpreter: '/opt/ww-monitor/.venv/bin/python3',
+      cwd: '/opt/ww-monitor',
+      instances: 1,
+      exec_mode: 'fork',
+      // Run once at 07:00 AEST (21:00 UTC) daily; do not autorestart after exit
+      cron_restart: '0 21 * * *',
+      autorestart: false,
+      watch: false,
+      error_file: '/var/log/ww-monitor/error.log',
+      out_file: '/var/log/ww-monitor/out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    },
   ],
 };
