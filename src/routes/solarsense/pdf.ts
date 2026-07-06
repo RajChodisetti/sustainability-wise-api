@@ -688,7 +688,8 @@ export async function runSolarSensePdfJob(
   await mirrorPdfToOneDrive({
     app: 'solarsense',
     parentId: siteId,
-    filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+    parentName: site.siteName,
+    filename: `${site.siteName} - Site Pack.pdf`,
     storageKey,
     body: pdf,
   });
@@ -884,7 +885,8 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
     await mirrorPdfToOneDrive({
       app: 'solarsense',
       parentId: siteId,
-      filename: storageKey.split('/').pop() ?? 'site-pack.pdf',
+      parentName: foundSite.siteName,
+      filename: `${foundSite.siteName} - Site Pack.pdf`,
       storageKey,
       body: pdf,
       logger: request.log,

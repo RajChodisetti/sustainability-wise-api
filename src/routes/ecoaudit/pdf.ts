@@ -1183,7 +1183,8 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   await mirrorPdfToOneDrive({
     app: 'ecoaudit',
     parentId: auditId,
-    filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    parentName: foundAudit.siteName,
+    filename: `${foundAudit.siteName} - Audit Report.pdf`,
     storageKey,
     body: pdf,
     logger: request.log,
@@ -1315,7 +1316,8 @@ export async function runEcoAuditPdfJob(
   await mirrorPdfToOneDrive({
     app: 'ecoaudit',
     parentId: auditId,
-    filename: storageKey.split('/').pop() ?? 'audit-report.pdf',
+    parentName: audit.siteName,
+    filename: `${audit.siteName} - Audit Report.pdf`,
     storageKey,
     body: pdf,
   });

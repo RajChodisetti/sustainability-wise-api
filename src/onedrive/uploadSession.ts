@@ -82,6 +82,42 @@ async function getDriveItem(target: OneDriveTarget, drivePath: string): Promise<
   return graphJson<DriveItem>(target, itemByPathPath(target.userEmail, drivePath));
 }
 
+async function oneDrivePathExists(target: OneDriveTarget, drivePath: string): Promise<boolean> {
+  try {
+    await getDriveItem(target, drivePath);
+    return true;
+  } catch (error) {
+    if (error instanceof GraphRequestError && error.status === 404) return false;
+    throw error;
+  }
+}
+
+function splitFilename(filename: string): { stem: string; extension: string } {
+  const lastDot = filename.lastIndexOf('.');
+  if (lastDot <= 0 || lastDot === filename.length - 1) {
+    return { stem: filename, extension: '' };
+  }
+  return {
+    stem: filename.slice(0, lastDot),
+    extension: filename.slice(lastDot),
+  };
+}
+
+async function nextAvailableOneDrivePath(target: OneDriveTarget, drivePath: string): Promise<string> {
+  const normalized = normalizeOneDrivePath(drivePath);
+  if (!(await oneDrivePathExists(target, normalized))) return normalized;
+
+  const parentPath = parentOneDriveFolder(normalized);
+  const filename = normalized.split('/').filter(Boolean).pop() ?? 'file';
+  const { stem, extension } = splitFilename(filename);
+  for (let index = 1; index < 10_000; index += 1) {
+    const candidate = joinOneDrivePath(parentPath, `${stem} (${index})${extension}`);
+    if (!(await oneDrivePathExists(target, candidate))) return candidate;
+  }
+
+  throw new Error(`Could not find an available OneDrive filename for: ${normalized}`);
+}
+
 async function createFolder(target: OneDriveTarget, parentPath: string, name: string): Promise<DriveItem> {
   return graphJson<DriveItem>(target, childrenByPathPath(target.userEmail, parentPath), {
     method: 'POST',
@@ -162,6 +198,19 @@ export async function uploadBufferToOneDrivePath(args: {
     webUrl: item.webUrl ?? null,
     sizeBytes: typeof item.size === 'number' ? item.size : null,
   };
+}
+
+export async function uploadBufferToAvailableOneDrivePath(args: {
+  target: OneDriveTarget;
+  drivePath: string;
+  body: Buffer;
+  contentType?: string | null;
+}): Promise<OneDriveUploadResult> {
+  const drivePath = await nextAvailableOneDrivePath(args.target, args.drivePath);
+  return uploadBufferToOneDrivePath({
+    ...args,
+    drivePath,
+  });
 }
 
 export async function downloadBufferFromOneDrivePath(args: {
