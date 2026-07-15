@@ -1,7 +1,14 @@
+const path = require('node:path');
+
+const apiRoot = process.env.SW_API_ROOT
+  ? path.resolve(process.env.SW_API_ROOT)
+  : path.resolve(__dirname, '..');
+
 module.exports = {
   apps: [
     {
       name: 'sw-api',
+      cwd: apiRoot,
       script: 'src/index.ts',
       interpreter: 'node',
       interpreter_args: '--import tsx/esm',
