@@ -11,6 +11,7 @@ import { solarsenseRoutes } from './routes/solarsense/index.js';
 import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
+import { thumbnailRoutes } from './routes/thumbnails.js';
 import { AppError } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
 import { config } from './config.js';
@@ -303,6 +304,7 @@ export async function buildApp() {
   await app.register(authRoutes,   { prefix: '/v1/auth' });
   await app.register(apiKeyRoutes, { prefix: '/v1/api-keys' });
   await app.register(storageBrowserRoutes);
+  await app.register(thumbnailRoutes);
 
   await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });

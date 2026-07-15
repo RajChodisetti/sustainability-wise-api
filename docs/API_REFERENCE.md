@@ -32,6 +32,15 @@ where the token is either a JWT access token or a service account API key. Publi
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/v1/files/:storageKey` | public URL | Download stored file referenced by `remoteUrl` |
+| GET | `/v1/thumbnails/:storageKey` | inspector/service/admin | Return a cached JPEG preview, at most 400px wide, for an authorized photo |
+
+Derive a preview URL by replacing `/v1/files/` in the stored original `remoteUrl`
+with `/v1/thumbnails/`. Send the normal `Authorization: Bearer <token>` header.
+The original URL and checksum remain the canonical references for PDF generation;
+the thumbnail URL is display/cache-only. Successful responses include an `ETag`
+and are safe to resume or retry. A storage key is accepted only when it belongs to
+a confirmed photo in the caller's application and the caller can access its audit
+or site.
 
 ---
 

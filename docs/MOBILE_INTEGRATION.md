@@ -110,6 +110,20 @@ pending
                                          (attempts >= 5: stays failed, shown in UI)
 ```
 
+## Imported-copy thumbnail contract
+
+Imported copies keep each original `remoteUrl` (and its checksum/hash) as the
+canonical photo reference. They must not replace it with a downloaded local path.
+For preview caching, replace `/v1/files/` with `/v1/thumbnails/` and download that
+URL with the current Bearer token. The endpoint returns a cached JPEG no wider
+than 400px and never sends the original photo bytes to the mobile client.
+
+Thumbnail work is durable background work: persist one job per original reference,
+retry with backoff, and resume after process/network interruption. Do not surface
+individual download failures as import errors. An imported copy becomes openable
+only after every required preview job is complete. PDF requests continue to use
+the original URL/checksum, not the preview cache file.
+
 ## Photo Fields Covered Per App
 
 ### SolarSense (`rooftop_assessments`)
