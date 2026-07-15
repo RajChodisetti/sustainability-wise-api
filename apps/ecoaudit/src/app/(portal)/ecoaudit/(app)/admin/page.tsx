@@ -60,23 +60,24 @@ function AdminDashboardContent() {
       </div>
 
       <section>
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
           <h2 className="text-lg font-semibold">Time spent on audits</h2>
           <p className="text-xs text-[var(--text-sub)]">Start → complete duration</p>
         </div>
         {timedAudits.length === 0 ? (
           <EmptyState title="No audits yet" />
         ) : (
-          <Card className="overflow-x-auto !p-0">
+          <Card className="overflow-x-auto !p-0" role="region" aria-label="Audit timing table" tabIndex={0}>
             <table className="w-full min-w-[720px] text-left text-sm">
+              <caption className="sr-only">Audit timing, status, inspector, and duration</caption>
               <thead className="border-b border-[var(--border)] bg-[var(--bg)] text-[var(--text-sub)]">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Site</th>
-                  <th className="px-4 py-3 font-medium">Inspector</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Started</th>
-                  <th className="px-4 py-3 font-medium">Completed</th>
-                  <th className="px-4 py-3 font-medium">Time spent</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Site</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Inspector</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Status</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Started</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Completed</th>
+                  <th scope="col" className="px-4 py-3 font-bold">Time spent</th>
                 </tr>
               </thead>
               <tbody>
@@ -84,9 +85,9 @@ function AdminDashboardContent() {
                   const durationMs = getAuditDurationMs(audit);
                   const inProgress = audit.status !== 'Completed' && Boolean(getAuditStartedAt(audit));
                   return (
-                    <tr key={audit.id} className="border-b border-[var(--border)] last:border-0">
+                    <tr key={audit.id} className="border-b border-[var(--border)] hover:bg-[var(--surface2)] last:border-0">
                       <td className="px-4 py-3">
-                        <Link href={`/ecoaudit/audits/${audit.id}`} className="font-medium text-[var(--primary)] hover:underline">
+                        <Link href={`/ecoaudit/audits/${audit.id}`} className="inline-flex min-h-11 items-center font-medium text-[var(--primary)] hover:underline">
                           {audit.siteName}
                         </Link>
                         <p className="text-xs text-[var(--text-sub)]">{audit.siteAddress}</p>
@@ -115,10 +116,10 @@ function AdminDashboardContent() {
         ) : (
           <div className="space-y-2">
             {users.map((u) => (
-              <Link key={u.id} href={`/ecoaudit/admin/users/${u.id}`}>
+              <Link key={u.id} href={`/ecoaudit/admin/users/${u.id}`} className="block rounded-[var(--radius-md)]">
                 <Card className="hover:border-[var(--primary)]">
-                  <p className="font-medium">{u.fullName || u.email}</p>
-                  <p className="text-sm text-[var(--text-sub)]">{u.email} · {u.role}</p>
+                  <p className="break-words font-medium">{u.fullName || u.email}</p>
+                  <p className="break-all text-sm text-[var(--text-sub)]">{u.email} · {u.role}</p>
                 </Card>
               </Link>
             ))}

@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { checkHealth, getStoredJwt } from '@solar/api/client';
 import { useAuth } from '@solar/contexts/AuthContext';
@@ -8,7 +7,7 @@ import { pullSync } from '@solar/api/sync';
 import { useSites, useAllAssessments } from '@solar/hooks/useSites';
 import { useToast } from '@/contexts/ToastContext';
 import { SettingsDivider, SettingsInfoRow, SettingsSection } from '@solar/components/settings/SettingsParts';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { PageHeader, Spinner } from '@solar/components/ui/Card';
 import { API_DISPLAY_URL } from '@solar/lib/config';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
@@ -40,7 +39,7 @@ export default function DiagnosticsPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Diagnostics" actions={<Link href="/solar/settings" className="text-sm text-[var(--primary)]">‹ Settings</Link>} />
+      <PageHeader title="Diagnostics" actions={<LinkButton href="/solar/settings" variant="secondary">Settings</LinkButton>} />
 
       <div className="space-y-4">
         <SettingsSection title="Database">

@@ -1,13 +1,12 @@
 'use client';
 
-import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { checkHealth } from '@/api/client';
 import { pullSync } from '@/api/sync';
 import { SettingsInfoRow, SettingsSection } from '@/components/settings/SettingsParts';
 import { PageHeader, Spinner } from '@/components/ui/Card';
 import { API_DISPLAY_URL } from '@/lib/config';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { useToast } from '@/contexts/ToastContext';
 
 export default function DiagnosticsPage() {
@@ -26,7 +25,7 @@ export default function DiagnosticsPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Diagnostics" actions={<Link href="/ecoaudit/settings" className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Diagnostics" actions={<LinkButton href="/ecoaudit/settings" variant="secondary">Back</LinkButton>} />
       {health.isLoading ? <Spinner /> : (
         <div className="space-y-4">
           <SettingsSection title="API">

@@ -1,13 +1,13 @@
 import { useState } from 'react';
-import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deleteSite } from '@solar/api/sites';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
 import { listRemoteSites, pullSync, type RemoteSiteSummary } from '@solar/api/sync';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { StatusBadge } from '@solar/components/ui/Badges';
 import { Card } from '@solar/components/ui/Card';
+import { Icon } from '@/components/ui/Icon';
 
 export function RemoteSitesPanel({ compact = false }: { compact?: boolean }) {
   const queryClient = useQueryClient();
@@ -70,24 +70,26 @@ export function RemoteSitesPanel({ compact = false }: { compact?: boolean }) {
   if (!remoteSites?.length) return null;
 
   return (
-    <Card className={compact ? '!p-0 overflow-hidden' : '!p-0 overflow-hidden'}>
+    <Card className="overflow-hidden !p-0">
       <button
         type="button"
-        className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-[var(--surface2)]"
+        className="flex min-h-14 w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-[var(--surface2)]"
         onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        aria-controls="remote-sites-list"
       >
         <div className="flex items-center gap-2">
-          <span className="text-[var(--primary)]">☁</span>
-          <span className="text-sm font-bold text-[var(--text)]">Available on Server</span>
+          <Icon name="cloud" size={19} className="text-[var(--primary)]" />
+          <span className="text-sm font-extrabold text-[var(--text)]">Available on server</span>
           <span className="rounded-full bg-[var(--primary)] px-2 py-0.5 text-xs font-bold text-[var(--primary-fg)]">
             {remoteSites.length}
           </span>
         </div>
-        <span className="text-[var(--muted)]">{expanded ? '▲' : '▼'}</span>
+        <Icon name="chevron-down" size={18} className={`shrink-0 text-[var(--muted)] ${expanded ? 'rotate-180' : ''}`} />
       </button>
 
       {expanded ? (
-        <div className="border-t border-[var(--border)]">
+        <div id="remote-sites-list" className="border-t border-[var(--border)]">
           {remoteSites.map((site) => {
             const busy = importingId === site.id || deletingId === site.id;
             return (
@@ -101,12 +103,10 @@ export function RemoteSitesPanel({ compact = false }: { compact?: boolean }) {
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Link href={`/solar/sites/${site.id}`}>
-                    <Button variant="secondary" className="!px-3 !py-1.5 !text-xs">Open</Button>
-                  </Link>
+                  <LinkButton href={`/solar/sites/${site.id}`} variant="secondary" className="!px-3 !text-xs">Open</LinkButton>
                   <Button
                     variant="primary"
-                    className="!px-3 !py-1.5 !text-xs"
+                    className="!px-3 !text-xs"
                     disabled={busy}
                     onClick={() => void handleImport(site)}
                   >
@@ -114,7 +114,7 @@ export function RemoteSitesPanel({ compact = false }: { compact?: boolean }) {
                   </Button>
                   <Button
                     variant="danger"
-                    className="!px-3 !py-1.5 !text-xs"
+                    className="!px-3 !text-xs"
                     disabled={busy}
                     onClick={() => void handleDelete(site)}
                   >

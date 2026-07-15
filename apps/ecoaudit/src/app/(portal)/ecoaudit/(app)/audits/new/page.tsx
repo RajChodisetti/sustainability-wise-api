@@ -1,12 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { createAudit } from '@/api/audits';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 
@@ -19,6 +18,10 @@ export default function NewAuditPage() {
   const [auditDate, setAuditDate] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const siteNameId = useId();
+  const siteAddressId = useId();
+  const inspectorId = useId();
+  const auditDateId = useId();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,21 +42,21 @@ export default function NewAuditPage() {
 
   return (
     <div>
-      <PageHeader title="New audit" actions={<Link href="/ecoaudit/audits" className="text-sm text-[var(--primary)]">Back</Link>} />
-      <Card className="max-w-xl">
+      <PageHeader title="New audit" subtitle="Set up the core site and inspection details." actions={<LinkButton href="/ecoaudit/audits" variant="secondary">Back</LinkButton>} />
+      <Card className="max-w-2xl">
         <form onSubmit={handleSubmit}>
-          <FieldLabel>Site name *</FieldLabel>
-          <Input value={siteName} onChange={(e) => setSiteName(e.target.value)} required />
-          <FieldLabel>Site address *</FieldLabel>
-          <Textarea value={siteAddress} onChange={(e) => setSiteAddress(e.target.value)} required />
-          <FieldLabel>Inspector name *</FieldLabel>
-          <Input value={inspectorName} onChange={(e) => setInspectorName(e.target.value)} required />
-          <FieldLabel>Audit date</FieldLabel>
-          <Input type="date" value={auditDate} onChange={(e) => setAuditDate(e.target.value)} />
+          <FieldLabel htmlFor={siteNameId}>Site name *</FieldLabel>
+          <Input id={siteNameId} value={siteName} onChange={(e) => setSiteName(e.target.value)} required />
+          <FieldLabel htmlFor={siteAddressId}>Site address *</FieldLabel>
+          <Textarea id={siteAddressId} value={siteAddress} onChange={(e) => setSiteAddress(e.target.value)} required />
+          <FieldLabel htmlFor={inspectorId}>Inspector name *</FieldLabel>
+          <Input id={inspectorId} value={inspectorName} onChange={(e) => setInspectorName(e.target.value)} required />
+          <FieldLabel htmlFor={auditDateId}>Audit date</FieldLabel>
+          <Input id={auditDateId} type="date" value={auditDate} onChange={(e) => setAuditDate(e.target.value)} />
           {error ? <div className="mt-3"><ErrorBanner message={error} /></div> : null}
-          <div className="mt-4 flex gap-2">
+          <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Create audit'}</Button>
-            <Link href="/ecoaudit/audits"><Button type="button" variant="secondary">Cancel</Button></Link>
+            <LinkButton href="/ecoaudit/audits" variant="secondary">Cancel</LinkButton>
           </div>
         </form>
       </Card>

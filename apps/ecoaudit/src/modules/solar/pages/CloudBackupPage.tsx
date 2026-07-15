@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { me } from '@solar/api/auth';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
@@ -9,9 +8,11 @@ import { pullSync, testCloudConnection } from '@solar/api/sync';
 import { localUsernameFromCloudEmail } from '@solar/api/auth';
 import { useToast } from '@/contexts/ToastContext';
 import { RemoteSitesPanel } from '@solar/components/cloud/RemoteSitesPanel';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { Card, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { API_DISPLAY_URL } from '@solar/lib/config';
+import { Input } from '@solar/components/ui/FormFields';
+import { Icon } from '@/components/ui/Icon';
 
 export default function CloudBackupPage() {
   const toast = useToast();
@@ -75,7 +76,8 @@ export default function CloudBackupPage() {
     <div>
       <PageHeader
         title="Cloud Backup"
-        actions={<Link href="/solar/settings" className="text-sm font-semibold text-[var(--primary)]">‹ Settings</Link>}
+        subtitle="Check connectivity and import the latest Solar Sense site records."
+        actions={<LinkButton href="/solar/settings" variant="secondary">Settings</LinkButton>}
       />
 
       <div className="grid max-w-3xl gap-4">
@@ -88,11 +90,12 @@ export default function CloudBackupPage() {
         </Card>
 
         <Card>
-          <label className="text-xs font-semibold uppercase text-[var(--text-sub)]">API Server URL</label>
-          <input
+          <label htmlFor="cloud-api-url" className="text-sm font-bold text-[var(--text)]">API Server URL</label>
+          <Input
+            id="cloud-api-url"
             readOnly
             value={API_DISPLAY_URL}
-            className="mt-1.5 w-full rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-sm text-[var(--text)] opacity-80"
+            className="mt-2 bg-[var(--surface2)]"
           />
         </Card>
 
@@ -124,6 +127,7 @@ export default function CloudBackupPage() {
             {refreshing ? 'Refreshing…' : 'Refresh Connection'}
           </Button>
           <Button onClick={() => void handlePullAll()} disabled={pulling}>
+            <Icon name="cloud" size={18} />
             {pulling ? 'Importing…' : 'Import All from Cloud'}
           </Button>
         </div>

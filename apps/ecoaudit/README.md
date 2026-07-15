@@ -15,6 +15,8 @@ cp .env.example .env.local
   rewrites. It can use a private network address in production.
 - `NEXT_PUBLIC_API_URL` is the non-secret API origin displayed by the UI and
   used by the development rewrites.
+- `ECOSENSE_PORTAL_PORT` configures the dedicated PM2 listener and defaults to
+  `3210`; the local npm scripts use that same port.
 - `PORTAL_REGISTRATION_ENABLED=true` enables portal self-registration.
 - `REGISTRATION_SECRET` is read only by the registration Route Handler. Never
   prefix it with `NEXT_PUBLIC_`; public variables are embedded in browser code.
@@ -28,12 +30,10 @@ npm ci
 npm run dev
 ```
 
-The portal defaults to <http://localhost:3000>. Run it on a different port when
-the API is also local, because the API commonly uses port 3000.
-
-```bash
-npm run dev -- --port 3001
-```
+The portal has its own dedicated local address at <http://127.0.0.1:3210>. The
+API commonly uses port 3000, so the two services do not compete for a port.
+The development server also listens on the machine's LAN address for testing
+from a connected phone; the production process remains loopback-only.
 
 ## Production
 
@@ -42,7 +42,7 @@ npm ci
 # Load INTERNAL_API_URL before building; rewrites are resolved at build time.
 npm run lint
 npm run build
-npm run start -- --port 3001
+npm run start
 ```
 
 Deploy this directory as its own service and route browser traffic to its port.

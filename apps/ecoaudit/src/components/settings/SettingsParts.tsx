@@ -1,22 +1,27 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
+import { Icon } from '@/components/ui/Icon';
 
 export function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section>
-      <h2 className="mb-2 ml-1 text-[11px] font-bold uppercase tracking-wider text-[var(--text-sub)]">{title}</h2>
-      <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface)]">{children}</div>
+    <section aria-label={title}>
+      <h2 className="mb-2.5 text-sm font-extrabold tracking-[-0.01em] text-[var(--text)]">{title}</h2>
+      <div className="overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)]">
+        {children}
+      </div>
     </section>
   );
 }
 
 export function SettingsMenuItem({
+  to,
   href,
   onClick,
   icon,
   label,
   trailing,
 }: {
+  to?: string;
   href?: string;
   onClick?: () => void;
   icon?: ReactNode;
@@ -24,15 +29,20 @@ export function SettingsMenuItem({
   trailing?: ReactNode;
 }) {
   const className =
-    'flex w-full items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--text)] transition hover:bg-[var(--surface2)]';
+    'group flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left text-sm font-semibold text-[var(--text)] hover:bg-[var(--surface2)] sm:px-5';
   const inner = (
     <>
-      {icon ? <span className="text-[var(--text-sub)]">{icon}</span> : null}
-      <span className="flex-1">{label}</span>
-      {trailing ?? <span className="text-[var(--muted)]">›</span>}
+      {icon ? (
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]">
+          {icon}
+        </span>
+      ) : null}
+      <span className="min-w-0 flex-1">{label}</span>
+      {trailing ?? <Icon name="chevron-right" size={18} className="shrink-0 text-[var(--muted)] group-hover:text-[var(--primary)]" />}
     </>
   );
-  if (href) return <Link href={href} className={className}>{inner}</Link>;
+  const link = to ?? href;
+  if (link) return <Link href={link} className={className}>{inner}</Link>;
   return (
     <button type="button" className={className} onClick={onClick}>
       {inner}
@@ -41,14 +51,14 @@ export function SettingsMenuItem({
 }
 
 export function SettingsDivider() {
-  return <div className="h-px bg-[var(--border)]" />;
+  return <div className="mx-4 h-px bg-[var(--border)] sm:mx-5" aria-hidden="true" />;
 }
 
 export function SettingsInfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
-      <span className="text-[var(--text-sub)]">{label}</span>
-      <span className="font-medium text-[var(--text)]">{value}</span>
+    <div className="flex min-h-12 flex-col justify-center gap-1 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:px-5">
+      <span className="font-medium text-[var(--text-sub)]">{label}</span>
+      <span className="min-w-0 break-words font-semibold text-[var(--text)] sm:max-w-[65%] sm:text-right">{value}</span>
     </div>
   );
 }

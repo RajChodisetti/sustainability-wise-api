@@ -3,10 +3,10 @@
 import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSites } from '@solar/hooks/useSites';
-import { Button } from '@solar/components/ui/Button';
+import { LinkButton } from '@solar/components/ui/Button';
 import { StatusBadge } from '@solar/components/ui/Badges';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
-import { Input } from '@solar/components/ui/FormFields';
+import { Input, Select } from '@solar/components/ui/FormFields';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
 
 export default function SitesPage() {
@@ -34,24 +34,28 @@ export default function SitesPage() {
       <PageHeader
         title="Sites"
         subtitle="Manage solar assessment sites"
-        actions={<Link href="/solar/sites/new"><Button>New site</Button></Link>}
+        actions={<LinkButton href="/solar/sites/new">New site</LinkButton>}
       />
-      <div className="mb-4 flex flex-wrap gap-3">
+      <div className="mb-5 flex flex-col gap-3 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 sm:flex-row">
+        <label className="sr-only" htmlFor="site-search">Search sites</label>
         <Input
+          id="site-search"
           placeholder="Search sites…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="max-w-sm"
         />
-        <select
+        <label className="sr-only" htmlFor="site-status-filter">Filter by status</label>
+        <Select
+          id="site-status-filter"
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-          className="rounded-lg border border-[var(--border)] bg-[var(--bg)] px-3 py-2 text-sm"
+          className="sm:max-w-48"
         >
           <option value="all">All statuses</option>
           <option value="Draft">Draft</option>
           <option value="Completed">Completed</option>
-        </select>
+        </Select>
       </div>
 
       {filtered.length === 0 ? (
@@ -59,12 +63,12 @@ export default function SitesPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map((site) => (
-            <Link key={site.id} href={`/solar/sites/${site.id}`}>
-              <Card className="transition hover:border-[var(--primary)]">
+            <Link key={site.id} href={`/solar/sites/${site.id}`} className="block rounded-[var(--radius-md)]">
+              <Card className="interactive-card">
                 <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="font-semibold text-[var(--text)]">{site.siteName}</p>
-                    <p className="text-sm text-[var(--text-sub)]">{site.location || 'No location'}</p>
+                  <div className="min-w-0">
+                    <p className="break-words font-semibold text-[var(--text)]">{site.siteName}</p>
+                    <p className="break-words text-sm text-[var(--text-sub)]">{site.location || 'No location'}</p>
                     {site.dateOfAssessment ? (
                       <p className="mt-1 text-xs text-[var(--muted)]">{site.dateOfAssessment}</p>
                     ) : null}

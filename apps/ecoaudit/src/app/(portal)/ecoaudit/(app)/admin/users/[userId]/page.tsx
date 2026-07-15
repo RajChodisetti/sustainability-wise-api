@@ -1,14 +1,13 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getUser, updateUser, deactivateUser } from '@/api/users';
 import { AdminLayout } from '@/components/layout/ProtectedLayout';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import type { CloudUser } from '@/types/domain';
@@ -57,7 +56,7 @@ function UserEditForm({ userId, user }: { userId: string; user: CloudUser }) {
 
   return (
     <div>
-      <PageHeader title="Edit user" actions={<Link href="/ecoaudit/admin" className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Edit user" actions={<LinkButton href="/ecoaudit/admin" variant="secondary">Back</LinkButton>} />
       <Card className="max-w-md">
         <form onSubmit={handleSave}>
           <FieldLabel>Email</FieldLabel>

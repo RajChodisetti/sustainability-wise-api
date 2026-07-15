@@ -6,6 +6,7 @@ const portalRoot = process.env.ECOSENSE_PORTAL_ROOT
 
 const registrationEnabled =
   process.env.PORTAL_REGISTRATION_ENABLED?.toLowerCase() === 'true' ? 'true' : 'false';
+const portalPort = process.env.ECOSENSE_PORTAL_PORT ?? '3210';
 
 module.exports = {
   apps: [
@@ -14,7 +15,7 @@ module.exports = {
       cwd: portalRoot,
       script: 'node_modules/next/dist/bin/next',
       interpreter: 'node',
-      args: 'start --hostname 127.0.0.1 --port 3001',
+      args: `start --hostname 127.0.0.1 --port ${portalPort}`,
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
@@ -26,7 +27,7 @@ module.exports = {
       env_production: {
         NODE_ENV: 'production',
         HOSTNAME: '127.0.0.1',
-        PORT: '3001',
+        PORT: portalPort,
         INTERNAL_API_URL: process.env.INTERNAL_API_URL ?? 'http://127.0.0.1:3000',
         PORTAL_REGISTRATION_ENABLED: registrationEnabled,
         ...(process.env.REGISTRATION_SECRET

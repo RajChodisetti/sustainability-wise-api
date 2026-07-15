@@ -1,12 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { createZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 
@@ -38,7 +37,7 @@ export default function NewZonePage() {
 
   return (
     <div>
-      <PageHeader title="New zone" actions={<Link href={`/ecoaudit/audits/${auditId}`} className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="New zone" actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
       <Card className="max-w-xl">
         <form onSubmit={handleSubmit}>
           <FieldLabel>Zone name *</FieldLabel>

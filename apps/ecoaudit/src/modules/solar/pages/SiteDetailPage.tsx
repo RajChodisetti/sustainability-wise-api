@@ -11,7 +11,7 @@ import { useAssessmentsForSite } from '@solar/hooks/useAssessments';
 import { SitePackReportModal } from '@solar/components/reports/SitePackReportModal';
 import type { SitePackReportOptions } from '@solar/lib/reportConfig';
 import { downloadBlob, slugify } from '@solar/lib/download';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { DealBreakerFlag, RAGBadge, StatusBadge, ViabilityBadge } from '@solar/components/ui/Badges';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
@@ -128,7 +128,7 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
         actions={
           <>
             <StatusBadge status={site.status} />
-            <Link href={`/solar/sites/${siteId}/edit`}><Button variant="secondary">Edit</Button></Link>
+            <LinkButton href={`/solar/sites/${siteId}/edit`} variant="secondary">Edit</LinkButton>
             {site.status !== 'Completed' ? <Button variant="secondary" onClick={() => void handleComplete()}>Mark complete</Button> : null}
             <Button variant="secondary" onClick={() => setReportOpen(true)}>Generate PDF</Button>
             <Button variant="secondary" onClick={() => void handleExportZip()}>Export photos ZIP</Button>
@@ -161,16 +161,16 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
         </Card>
 
         <Card>
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="font-semibold text-[var(--text)]">Building assessments</h2>
-            <Link href={`/solar/sites/${siteId}/assessments/new`}><Button className="!px-3 !py-1.5 !text-xs">Add building</Button></Link>
+            <LinkButton href={`/solar/sites/${siteId}/assessments/new`} className="!px-3 !text-xs">Add building</LinkButton>
           </div>
           {assessments.length === 0 ? (
             <p className="text-sm text-[var(--text-sub)]">No assessments yet.</p>
           ) : (
             <div className="space-y-2">
               {assessments.map((a) => (
-                <Link key={a.id} href={`/solar/sites/${siteId}/assessments/${a.id}`} className="block rounded-lg border border-[var(--border)] p-3 hover:border-[var(--primary)]">
+                <Link key={a.id} href={`/solar/sites/${siteId}/assessments/${a.id}`} className="interactive-card block rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-medium text-[var(--text)]">{a.buildingIdName}</p>
                     <StatusBadge status={a.status} />

@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listZones } from '@/api/zones';
@@ -10,7 +9,7 @@ import { getEquipmentConfig } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { EquipmentFormFields } from '@/components/equipment/EquipmentFormFields';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Select } from '@/components/ui/FormFields';
 
@@ -50,7 +49,7 @@ export default function NewEquipmentPage() {
 
   return (
     <div>
-      <PageHeader title={`New ${config.label.slice(0, -1)}`} actions={<Link href={`/ecoaudit/audits/${auditId}/equipment/${type}`} className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title={`New ${config.label.slice(0, -1)}`} actions={<LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}`} variant="secondary">Back</LinkButton>} />
       <Card>
         <form onSubmit={handleSubmit}>
           <FieldLabel>Zone *</FieldLabel>

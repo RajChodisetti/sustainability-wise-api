@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getAudit } from '@/api/audits';
@@ -9,7 +8,7 @@ import { deleteZone, getZone, updateZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { PhotoGridField } from '@/components/photos/PhotoField';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import type { Zone } from '@/types/domain';
@@ -79,7 +78,7 @@ function ZoneEditForm({
 
   return (
     <div>
-      <PageHeader title="Edit zone" actions={<Link href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Edit zone" actions={<LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} variant="secondary">Back</LinkButton>} />
       <Card className="max-w-2xl">
         <form onSubmit={handleSave}>
           <FieldLabel>Zone name</FieldLabel>

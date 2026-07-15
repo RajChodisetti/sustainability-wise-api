@@ -44,7 +44,7 @@ function LoginForm() {
     }
   }, [isTargetLoading, isTargetAuthenticated, router, next]);
 
-  if (isTargetLoading || isTargetAuthenticated) return <Spinner />;
+  if (isTargetLoading || isTargetAuthenticated) return <Spinner fullPage label="Preparing your workspace…" />;
 
   async function handleSubmit(username: string, password: string) {
     setBusy(true);
@@ -75,7 +75,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<Spinner />}>
+    <Suspense fallback={<Spinner fullPage label="Preparing sign in…" />}>
       <LoginForm />
     </Suspense>
   );

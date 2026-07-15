@@ -1,12 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { createUser, deactivateUser, listUsers, updateUser } from '@solar/api/users';
 import { cloudEmailForUsername, localUsernameFromCloudEmail } from '@solar/api/auth';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { FieldLabel, Input, Select } from '@solar/components/ui/FormFields';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
@@ -93,7 +92,7 @@ function UserEditor({
 
   return (
     <div>
-      <PageHeader title={isNew ? 'Add user' : 'Edit user'} actions={<Link href="/solar/admin" className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title={isNew ? 'Add user' : 'Edit user'} actions={<LinkButton href="/solar/admin" variant="secondary">Back</LinkButton>} />
       <Card className="max-w-md">
         <form onSubmit={handleSave}>
           <FieldLabel>Username</FieldLabel>

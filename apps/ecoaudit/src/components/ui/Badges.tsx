@@ -1,5 +1,9 @@
 function badgeClass(extra: string): string {
-  return `inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-semibold leading-none ${extra}`;
+  return `inline-flex min-h-7 items-center justify-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-bold leading-none ${extra}`;
+}
+
+function Dot() {
+  return <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden="true" />;
 }
 
 export function StatusBadge({ status }: { status: string }) {
@@ -8,10 +12,11 @@ export function StatusBadge({ status }: { status: string }) {
     <span
       className={badgeClass(
         isCompleted
-          ? 'border border-[var(--green)]/30 bg-[var(--green)]/15 text-[var(--green)]'
-          : 'border border-[var(--border)] bg-[var(--surface2)] text-[var(--text-sub)]',
+          ? 'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]'
+          : 'border-[var(--border-strong)] bg-[var(--surface2)] text-[var(--text-sub)]',
       )}
     >
+      <Dot />
       {status}
     </span>
   );
@@ -19,25 +24,26 @@ export function StatusBadge({ status }: { status: string }) {
 
 export function ViabilityBadge({ value }: { value?: string | null }) {
   const color =
-    value === 'Yes' ? 'border border-[var(--green)]/30 text-[var(--green)] bg-[var(--green)]/15' :
-    value === 'No' ? 'border border-[var(--red)]/30 text-[var(--red)] bg-[var(--red)]/15' :
-    'border border-[var(--border)] text-[var(--text-sub)] bg-[var(--surface2)]';
-  return <span className={badgeClass(color)}>{value || 'TBD'}</span>;
+    value === 'Yes' ? 'border-[var(--green)]/25 text-[var(--green)] bg-[var(--green-soft)]' :
+    value === 'No' ? 'border-[var(--red)]/25 text-[var(--red)] bg-[var(--red-soft)]' :
+    'border-[var(--amber)]/25 text-[var(--amber)] bg-[var(--amber-soft)]';
+  return <span className={badgeClass(color)}><Dot />{value || 'TBD'}</span>;
 }
 
 export function RAGBadge({ value }: { value?: string | null }) {
   const color =
-    value === 'Green' ? 'border border-emerald-500/30 bg-emerald-500/15 text-emerald-600' :
-    value === 'Amber' ? 'border border-amber-500/30 bg-amber-500/15 text-amber-600' :
-    value === 'Red' ? 'border border-red-500/30 bg-red-500/15 text-red-600' :
-    'border border-[var(--border)] bg-[var(--surface2)] text-[var(--text-sub)]';
-  return <span className={badgeClass(color)}>{value || '—'}</span>;
+    value === 'Green' ? 'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]' :
+    value === 'Amber' ? 'border-[var(--amber)]/25 bg-[var(--amber-soft)] text-[var(--amber)]' :
+    value === 'Red' ? 'border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]' :
+    'border-[var(--border-strong)] bg-[var(--surface2)] text-[var(--text-sub)]';
+  return <span className={badgeClass(color)}><Dot />{value || '—'}</span>;
 }
 
 export function DealBreakerFlag({ active, label = 'Deal breaker' }: { active: boolean; label?: string }) {
   if (!active) return null;
   return (
-    <span className={badgeClass('border border-[var(--red)]/30 bg-[var(--red)]/15 text-[var(--red)]')}>
+    <span className={badgeClass('border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]')}>
+      <Dot />
       {label}
     </span>
   );

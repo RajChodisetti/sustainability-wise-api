@@ -27,7 +27,7 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
   }, [isLoading, isAuthenticated, isPublic, pathname, router]);
 
   if (isPublic) return <>{children}</>;
-  if (isLoading) return <Spinner />;
-  if (!isAuthenticated) return <Spinner />;
+  if (isLoading) return <Spinner fullPage label="Preparing your workspace…" />;
+  if (!isAuthenticated) return <Spinner fullPage label="Redirecting to sign in…" />;
   return <>{children}</>;
 }

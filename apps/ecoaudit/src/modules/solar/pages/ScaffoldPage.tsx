@@ -5,6 +5,7 @@ import { useAuth } from '@solar/contexts/AuthContext';
 import { localUsernameFromCloudEmail } from '@solar/api/auth';
 import { SettingsDivider, SettingsInfoRow, SettingsSection } from '@solar/components/settings/SettingsParts';
 import { PageHeader } from '@solar/components/ui/Card';
+import { LinkButton } from '@solar/components/ui/Button';
 import { API_DISPLAY_URL } from '@solar/lib/config';
 
 export default function ScaffoldPage() {
@@ -13,7 +14,7 @@ export default function ScaffoldPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Scaffold Info" actions={<Link href="/solar/settings" className="text-sm text-[var(--primary)]">‹ Settings</Link>} />
+      <PageHeader title="Scaffold Info" actions={<LinkButton href="/solar/settings" variant="secondary">Settings</LinkButton>} />
 
       <div className="mb-6 text-center">
         <p className="text-3xl font-black text-[var(--primary)]">SolarSense</p>

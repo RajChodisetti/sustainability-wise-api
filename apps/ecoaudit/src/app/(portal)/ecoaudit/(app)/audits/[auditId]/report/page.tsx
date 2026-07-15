@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listZones } from '@/api/zones';
@@ -10,9 +9,10 @@ import { generateReportPdfSync, pollPdfJob, startReportPdfJob, downloadPdfJob } 
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { downloadBlob, slugify } from '@/lib/download';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Select } from '@/components/ui/FormFields';
+import { Icon } from '@/components/ui/Icon';
 
 export default function ReportPage() {
   const { auditId } = useParams<{ auditId: string }>();
@@ -70,24 +70,24 @@ export default function ReportPage() {
 
   return (
     <div>
-      <PageHeader title="Generate report" actions={<Link href={`/ecoaudit/audits/${auditId}`} className="text-sm text-[var(--primary)]">Back</Link>} />
-      <Card className="max-w-lg">
-        <FieldLabel>Report mode</FieldLabel>
-        <Select value={mode} onChange={(e) => setMode(e.target.value as 'by-equipment' | 'by-zone')}>
+      <PageHeader title="Generate report" subtitle="Choose the report structure, then use either the immediate or background PDF workflow." actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
+      <Card className="max-w-2xl">
+        <FieldLabel htmlFor="report-mode">Report mode</FieldLabel>
+        <Select id="report-mode" value={mode} onChange={(e) => setMode(e.target.value as 'by-equipment' | 'by-zone')}>
           <option value="by-equipment">By equipment</option>
           <option value="by-zone">By zone</option>
         </Select>
         {mode === 'by-zone' ? (
           <>
-            <FieldLabel>Zone filter (optional)</FieldLabel>
-            <Select value={zoneId} onChange={(e) => setZoneId(e.target.value)}>
+            <FieldLabel htmlFor="report-zone">Zone filter (optional)</FieldLabel>
+            <Select id="report-zone" value={zoneId} onChange={(e) => setZoneId(e.target.value)}>
               <option value="">All zones</option>
               {zones.map((z) => <option key={z.id} value={z.id}>{z.zoneName}</option>)}
             </Select>
           </>
         ) : null}
-        {progress ? <p className="mt-3 text-sm text-[var(--text-sub)]">{progress}</p> : null}
-        <div className="mt-4 flex flex-wrap gap-2">
+        {progress ? <p className="mt-4 rounded-lg bg-[var(--primary-soft)] px-3 py-2 text-sm font-semibold text-[var(--primary)]" role="status">{progress}</p> : null}
+        <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
           <Button onClick={() => void handleSyncPdf()} disabled={busy != null}>
             {busy === 'sync' ? (
               <>
@@ -95,7 +95,7 @@ export default function ReportPage() {
                 Downloading PDF…
               </>
             ) : (
-              'Download PDF (sync)'
+              <><Icon name="file-text" size={18} />Download PDF (sync)</>
             )}
           </Button>
           <Button variant="secondary" onClick={() => void handleAsyncPdf()} disabled={busy != null}>
@@ -105,7 +105,7 @@ export default function ReportPage() {
                 Generating PDF…
               </>
             ) : (
-              'Generate PDF (async)'
+              <><Icon name="cloud" size={18} />Generate PDF (async)</>
             )}
           </Button>
         </div>

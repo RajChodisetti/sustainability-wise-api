@@ -2,6 +2,7 @@
 
 import Image from 'next/image';
 import { useEffect, useState } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import { isLocalDeviceUri } from '@/api/photos';
 import { getStoredJwt as getEcoJwt, tryRefreshToken as refreshEcoToken } from '@/api/client';
 import {
@@ -248,24 +249,27 @@ function PhotoThumbLoader({
 
   if (status === 'local') {
     return (
-      <div className="flex h-40 items-center justify-center rounded-lg bg-[var(--surface2)] px-3 text-center text-xs text-[var(--text-sub)]">
-        Local mobile photo — sync it to view the preview on the web.
+      <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface2)] px-4 text-center text-xs leading-5 text-[var(--text-sub)]">
+        <Icon name="camera" size={22} className="text-[var(--muted)]" />
+        <span>Local mobile photo — sync it to view the preview on the web.</span>
       </div>
     );
   }
 
   if (status === 'loading') {
     return (
-      <div className="flex h-40 items-center justify-center rounded-lg bg-[var(--surface2)] text-xs text-[var(--muted)]">
-        Loading photo…
+      <div className="flex h-40 animate-pulse flex-col items-center justify-center gap-2 rounded-xl bg-[var(--surface2)] text-xs font-semibold text-[var(--muted)]" aria-busy="true" aria-label={`Loading ${label}`}>
+        <Icon name="camera" size={22} />
+        <span>Loading photo…</span>
       </div>
     );
   }
 
   if (status === 'missing' || !src) {
     return (
-      <div className="flex h-40 items-center justify-center rounded-lg border border-dashed border-[var(--border)] bg-[var(--surface2)] px-3 text-center text-xs text-[var(--text-sub)]">
-        Photo preview unavailable. The original reference is preserved.
+      <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface2)] px-4 text-center text-xs leading-5 text-[var(--text-sub)]">
+        <Icon name="camera" size={22} className="text-[var(--muted)]" />
+        <span>Photo preview unavailable. The original reference is preserved.</span>
       </div>
     );
   }

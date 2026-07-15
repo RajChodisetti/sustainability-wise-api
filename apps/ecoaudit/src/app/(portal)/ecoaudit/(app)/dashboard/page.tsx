@@ -1,12 +1,13 @@
 'use client';
 
-import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { listAudits } from '@/api/audits';
-import { Card, PageHeader, Spinner } from '@/components/ui/Card';
+import { Card, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { ErrorBanner } from '@/components/ui/Card';
+import { LinkButton } from '@/components/ui/Button';
+import { EquipmentIcon, Icon } from '@/components/ui/Icon';
 
 export default function DashboardPage() {
   const auditsQuery = useQuery({ queryKey: ['audits'], queryFn: listAudits });
@@ -20,19 +21,28 @@ export default function DashboardPage() {
 
   return (
     <div>
-      <PageHeader title="Dashboard" subtitle="EcoAudit Pro overview" actions={<Link href="/ecoaudit/audits/new" className="rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-[var(--primary-fg)]">New audit</Link>} />
-      <div className="mb-6 grid gap-4 sm:grid-cols-3">
-        <Card><p className="text-sm text-[var(--text-sub)]">Total audits</p><p className="text-3xl font-bold">{audits.length}</p></Card>
-        <Card><p className="text-sm text-[var(--text-sub)]">Draft</p><p className="text-3xl font-bold">{draft}</p></Card>
-        <Card><p className="text-sm text-[var(--text-sub)]">Completed</p><p className="text-3xl font-bold text-[var(--green)]">{completed}</p></Card>
+      <PageHeader
+        title="Eco Audit dashboard"
+        subtitle="Track audit progress and the equipment categories captured across your sites."
+        actions={<LinkButton href="/ecoaudit/audits/new"><Icon name="plus" size={18} />New audit</LinkButton>}
+      />
+      <div className="mb-7 grid gap-4 sm:grid-cols-3">
+        <StatCard label="Total audits" value={audits.length} icon="clipboard" />
+        <StatCard label="Draft" value={draft} icon="file-text" tone="warning" />
+        <StatCard label="Completed" value={completed} icon="check" tone="success" />
       </div>
       <Card>
-        <h2 className="mb-3 font-semibold">Equipment types</h2>
-        <p className="mb-4 text-sm text-[var(--text-sub)]">Open an audit to add zones and equipment records.</p>
-        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mb-5">
+          <h2 className="text-lg font-extrabold tracking-[-0.02em] text-[var(--text)]">Equipment types</h2>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">Open an audit to add zones and equipment records.</p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {EQUIPMENT_TYPES.map((t) => (
-            <div key={t.slug} className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm">
-              <span className="mr-2">{t.icon}</span>{t.label}
+            <div key={t.slug} className="flex min-h-14 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-4 py-3 text-sm font-semibold text-[var(--text)]">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]">
+                <EquipmentIcon slug={t.slug} />
+              </span>
+              {t.label}
             </div>
           ))}
         </div>

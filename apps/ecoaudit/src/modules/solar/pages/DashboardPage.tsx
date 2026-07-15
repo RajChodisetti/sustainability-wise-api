@@ -10,7 +10,8 @@ import { cloudConnectionErrorMessage } from '@solar/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { RemoteSitesPanel } from '@solar/components/cloud/RemoteSitesPanel';
 import { Button } from '@solar/components/ui/Button';
-import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
+import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@solar/components/ui/Card';
+import { Icon, type IconName } from '@/components/ui/Icon';
 
 export default function DashboardPage() {
   const queryClient = useQueryClient();
@@ -45,37 +46,35 @@ export default function DashboardPage() {
   if (error) return <ErrorBanner message={cloudConnectionErrorMessage(error)} />;
   if (!metrics) return <EmptyState title="No data" />;
 
-  const statCards = [
-    { label: 'Sites', value: metrics.siteCount },
-    { label: 'Assessments', value: metrics.assessmentCount },
-    { label: 'Viable', value: metrics.viableCount },
-    { label: 'TBD', value: metrics.tbdCount },
-    { label: 'Excluded', value: metrics.excludedCount },
-    { label: 'Total AC kW', value: metrics.totalAcKw.toFixed(1) },
-    { label: 'Potential AC kW', value: metrics.totalPotentialAcKw.toFixed(1) },
-    { label: 'RAG Green', value: metrics.ragGreen },
-    { label: 'RAG Amber', value: metrics.ragAmber },
-    { label: 'RAG Red', value: metrics.ragRed },
+  const statCards: Array<{ label: string; value: string | number; icon: IconName; tone?: 'primary' | 'success' | 'warning' | 'danger' }> = [
+    { label: 'Sites', value: metrics.siteCount, icon: 'building' },
+    { label: 'Assessments', value: metrics.assessmentCount, icon: 'clipboard' },
+    { label: 'Viable', value: metrics.viableCount, icon: 'check', tone: 'success' },
+    { label: 'TBD', value: metrics.tbdCount, icon: 'activity', tone: 'warning' },
+    { label: 'Excluded', value: metrics.excludedCount, icon: 'close', tone: 'danger' },
+    { label: 'Total AC kW', value: metrics.totalAcKw.toFixed(1), icon: 'zap' },
+    { label: 'Potential AC kW', value: metrics.totalPotentialAcKw.toFixed(1), icon: 'sun' },
+    { label: 'RAG Green', value: metrics.ragGreen, icon: 'check', tone: 'success' },
+    { label: 'RAG Amber', value: metrics.ragAmber, icon: 'activity', tone: 'warning' },
+    { label: 'RAG Red', value: metrics.ragRed, icon: 'activity', tone: 'danger' },
   ];
 
   return (
     <div>
       <PageHeader
-        title="Dashboard"
-        subtitle="Solar assessment overview"
+        title="Solar Sense dashboard"
+        subtitle="Review site viability, generation capacity, and cloud assessment activity."
         actions={
           <Button variant="secondary" onClick={() => void handleImportAll()} disabled={importing}>
+            <Icon name="cloud" size={18} />
             {importing ? 'Importing…' : 'Import from Cloud'}
           </Button>
         }
       />
 
-      <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div className="mb-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {statCards.map((s) => (
-          <Card key={s.label}>
-            <p className="text-xs font-semibold uppercase tracking-wide text-[var(--text-sub)]">{s.label}</p>
-            <p className="mt-2 text-2xl font-bold text-[var(--text)]">{s.value}</p>
-          </Card>
+          <StatCard key={s.label} label={s.label} value={s.value} icon={s.icon} tone={s.tone} />
         ))}
       </div>
 
@@ -84,21 +83,24 @@ export default function DashboardPage() {
       </div>
 
       <div>
-        <h2 className="mb-3 text-lg font-semibold text-[var(--text)]">Site capacity</h2>
+        <div className="mb-3">
+          <h2 className="text-lg font-extrabold tracking-[-0.02em] text-[var(--text)]">Site capacity</h2>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">Viable capacity by assessed site.</p>
+        </div>
         {metrics.siteCapacity.length === 0 ? (
           <EmptyState title="No site capacity data" description="Create sites and assessments to see capacity breakdown." />
         ) : (
           <div className="space-y-2">
             {metrics.siteCapacity.map((s) => (
-              <Card key={`${s.siteId}-${s.siteName}`} className="flex items-center justify-between !py-3">
-                <div>
-                  <p className="font-medium text-[var(--text)]">{s.siteName}</p>
+              <Card key={`${s.siteId}-${s.siteName}`} className="interactive-card flex items-center justify-between gap-4 !p-4">
+                <div className="min-w-0">
+                  <p className="break-words font-medium text-[var(--text)]">{s.siteName}</p>
                   <p className="text-xs text-[var(--text-sub)]">{s.buildingCount} building(s)</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold text-[var(--green)]">{s.viableKw.toFixed(1)} kW</p>
+                  <p className="font-extrabold text-[var(--green)]">{s.viableKw.toFixed(1)} kW</p>
                   {s.siteId ? (
-                    <Link href={`/solar/sites/${s.siteId}`} className="text-xs text-[var(--primary)] hover:underline">
+                    <Link href={`/solar/sites/${s.siteId}`} className="inline-flex min-h-11 items-center text-xs font-bold text-[var(--primary)] hover:underline">
                       View site
                     </Link>
                   ) : null}

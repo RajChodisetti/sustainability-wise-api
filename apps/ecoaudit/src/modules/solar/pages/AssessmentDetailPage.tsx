@@ -1,12 +1,11 @@
 'use client';
 
-import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { completeAssessment, deleteAssessment } from '@solar/api/assessments';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { useAssessment } from '@solar/hooks/useAssessments';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { DealBreakerFlag, RAGBadge, StatusBadge, ViabilityBadge } from '@solar/components/ui/Badges';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
@@ -77,7 +76,7 @@ export default function AssessmentDetailPage() {
             <StatusBadge status={assessment.status} />
             <ViabilityBadge value={assessment.viabilityStatus} />
             <RAGBadge value={assessment.ragPriority} />
-            <Link href={`/solar/sites/${siteId}/assessments/${assessmentId}/edit`}><Button>Edit</Button></Link>
+            <LinkButton href={`/solar/sites/${siteId}/assessments/${assessmentId}/edit`}>Edit</LinkButton>
             {assessment.status !== 'Completed' ? (
               <Button variant="secondary" onClick={() => void handleComplete()}>Mark complete</Button>
             ) : null}

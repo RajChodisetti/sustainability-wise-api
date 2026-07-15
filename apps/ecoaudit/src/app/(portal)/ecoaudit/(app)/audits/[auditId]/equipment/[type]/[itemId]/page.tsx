@@ -1,13 +1,12 @@
 'use client';
 
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getEquipment } from '@/api/equipment';
 import { getEquipmentConfig, equipmentDisplayName } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
-import { Button } from '@/components/ui/Button';
+import { LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 
 export default function EquipmentDetailPage() {
@@ -37,8 +36,8 @@ export default function EquipmentDetailPage() {
         title={equipmentDisplayName(item, config)}
         actions={
           <>
-            <Link href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}/edit`}><Button>Edit</Button></Link>
-            <Link href={`/ecoaudit/audits/${auditId}/equipment/${type}`} className="text-sm text-[var(--primary)]">Back</Link>
+            <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}/edit`}>Edit</LinkButton>
+            <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}`} variant="secondary">Back</LinkButton>
           </>
         }
       />

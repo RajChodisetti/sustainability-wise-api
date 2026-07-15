@@ -12,6 +12,8 @@ import {
 } from '@solar/components/settings/SettingsParts';
 import { PageHeader } from '@solar/components/ui/Card';
 import { API_DISPLAY_URL } from '@solar/lib/config';
+import { Icon } from '@/components/ui/Icon';
+import { Button } from '@solar/components/ui/Button';
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -44,7 +46,7 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Settings" />
+      <PageHeader title="Solar Sense settings" subtitle="Manage your account, appearance, cloud tools, and administration." />
 
       <div className="space-y-5">
         <SettingsSection title="Account">
@@ -52,13 +54,13 @@ export default function SettingsPage() {
             <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--primary)] text-lg font-bold text-[var(--primary-fg)]">
               {initial}
             </div>
-            <div>
-              <p className="font-semibold text-[var(--text)]">{displayName}</p>
+            <div className="min-w-0">
+              <p className="break-words font-semibold text-[var(--text)]">{displayName}</p>
               <p className="text-sm capitalize text-[var(--text-sub)]">{user?.role}</p>
             </div>
           </div>
           <SettingsDivider />
-          <SettingsMenuItem href="/solar/settings/password" label="Change Password" icon="🔑" />
+          <SettingsMenuItem href="/solar/settings/password" label="Change Password" icon={<Icon name="lock" size={19} />} />
         </SettingsSection>
 
         <SettingsSection title="Appearance">
@@ -73,7 +75,8 @@ export default function SettingsPage() {
                     setMode(key);
                     toast.success(`Theme set to ${label}.`);
                   }}
-                  className={`rounded-lg border-2 px-3 py-2.5 text-sm font-semibold transition ${
+                  aria-pressed={mode === key}
+                  className={`min-h-11 rounded-lg border-2 px-3 py-2.5 text-sm font-bold transition ${
                     mode === key
                       ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]'
                       : 'border-transparent bg-[var(--surface2)] text-[var(--text-sub)] hover:border-[var(--border)]'
@@ -98,23 +101,23 @@ export default function SettingsPage() {
 
         <SettingsSection title="Administration">
           {isAdmin ? (
-            <SettingsMenuItem href="/solar/admin" label="User Management" icon="👥" />
+            <SettingsMenuItem href="/solar/admin" label="User Management" icon={<Icon name="users" size={19} />} />
           ) : (
             <SettingsMenuItem
               label="User Management"
-              icon="👥"
+              icon={<Icon name="users" size={19} />}
               onClick={() => toast.info('Admin access required. Contact your administrator.')}
             />
           )}
           <SettingsDivider />
-          <SettingsMenuItem href="/solar/settings/cloud-backup" label="Cloud Backup" icon="☁" />
+          <SettingsMenuItem href="/solar/settings/cloud-backup" label="Cloud Backup" icon={<Icon name="cloud" size={19} />} />
         </SettingsSection>
 
         {isAdmin ? (
           <SettingsSection title="Developer">
-            <SettingsMenuItem href="/solar/settings/diagnostics" label="Database Diagnostics" icon="🐛" />
+            <SettingsMenuItem href="/solar/settings/diagnostics" label="Database Diagnostics" icon={<Icon name="activity" size={19} />} />
             <SettingsDivider />
-            <SettingsMenuItem href="/solar/settings/scaffold" label="Scaffold Info" icon="📋" />
+            <SettingsMenuItem href="/solar/settings/scaffold" label="Scaffold Info" icon={<Icon name="clipboard" size={19} />} />
           </SettingsSection>
         ) : null}
 
@@ -126,13 +129,14 @@ export default function SettingsPage() {
           <SettingsInfoRow label="API" value={API_DISPLAY_URL.replace(/^https?:\/\//, '')} />
         </SettingsSection>
 
-        <button
+        <Button
           type="button"
+          variant="danger"
           onClick={() => void handleLogout()}
-          className="flex w-full items-center justify-center gap-2 rounded-xl border-2 border-[var(--red)] py-3.5 text-[15px] font-bold text-[var(--red)] transition hover:bg-[var(--red)]/10"
+          className="w-full"
         >
-          Log Out
-        </button>
+          <Icon name="log-out" size={18} />Log Out
+        </Button>
       </div>
     </div>
   );

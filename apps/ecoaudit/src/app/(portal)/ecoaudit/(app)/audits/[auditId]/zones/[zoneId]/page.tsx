@@ -1,13 +1,12 @@
 'use client';
 
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
+import { LinkButton } from '@/components/ui/Button';
 
 export default function ZoneDetailPage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
@@ -23,8 +22,8 @@ export default function ZoneDetailPage() {
         title={zone.zoneName}
         actions={
           <>
-            <Link href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}><Button>Edit</Button></Link>
-            <Link href={`/ecoaudit/audits/${auditId}`} className="text-sm text-[var(--primary)]">Back to audit</Link>
+            <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}>Edit</LinkButton>
+            <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back to audit</LinkButton>
           </>
         }
       />

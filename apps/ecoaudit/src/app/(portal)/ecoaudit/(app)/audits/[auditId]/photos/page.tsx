@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listAuditPhotos, exportPhotosZip } from '@/api/photos';
@@ -9,8 +8,9 @@ import { useToast } from '@/contexts/ToastContext';
 import { downloadBlob, slugify } from '@/lib/download';
 import { getAudit } from '@/api/audits';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
+import { Icon } from '@/components/ui/Icon';
 
 export default function AuditPhotosPage() {
   const { auditId } = useParams<{ auditId: string }>();
@@ -36,10 +36,11 @@ export default function AuditPhotosPage() {
     <div>
       <PageHeader
         title="Audit photos"
+        subtitle={`${photos.length} photo${photos.length === 1 ? '' : 's'} registered for this audit.`}
         actions={
           <>
-            <Button variant="secondary" onClick={() => void handleExport()}>Export ZIP</Button>
-            <Link href={`/ecoaudit/audits/${auditId}`} className="text-sm text-[var(--primary)]">Back</Link>
+            <Button variant="secondary" onClick={() => void handleExport()}><Icon name="file-text" size={17} />Export ZIP</Button>
+            <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>
           </>
         }
       />
@@ -50,10 +51,10 @@ export default function AuditPhotosPage() {
           {photos.map((p) => {
             const uri = p.remoteUrl || p.id;
             return (
-              <Card key={p.id}>
+              <Card key={p.id} className="overflow-hidden !p-3">
                 <PhotoThumb uri={uri} label={p.fieldName ?? 'Photo'} className="mb-2 w-full rounded-lg object-cover" />
-                <p className="text-xs text-[var(--text-sub)]">{p.fieldName}</p>
-                <p className="text-xs text-[var(--muted)]">{p.originalFilename}</p>
+                <p className="mt-2 text-xs font-bold text-[var(--text-sub)]">{p.fieldName}</p>
+                <p className="mt-0.5 break-all text-xs text-[var(--muted)]">{p.originalFilename}</p>
               </Card>
             );
           })}

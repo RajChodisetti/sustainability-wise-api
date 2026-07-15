@@ -7,6 +7,8 @@ import { useToast } from '@/contexts/ToastContext';
 import { SettingsDivider, SettingsInfoRow, SettingsMenuItem, SettingsSection } from '@/components/settings/SettingsParts';
 import { PageHeader } from '@/components/ui/Card';
 import { API_DISPLAY_URL } from '@/lib/config';
+import { Icon } from '@/components/ui/Icon';
+import { Button } from '@/components/ui/Button';
 
 export default function SettingsPage() {
   const { user, logout } = useAuth();
@@ -24,14 +26,14 @@ export default function SettingsPage() {
 
   return (
     <div className="max-w-2xl">
-      <PageHeader title="Settings" />
+      <PageHeader title="Eco Audit settings" subtitle="Manage your account, appearance, access, and diagnostics." />
       <div className="space-y-5">
         <SettingsSection title="Account">
           <SettingsInfoRow label="Name" value={user?.fullName || username} />
           <SettingsDivider />
           <SettingsInfoRow label="Role" value={user?.role ?? '—'} />
           <SettingsDivider />
-          <SettingsMenuItem href="/ecoaudit/settings/password" label="Change Password" icon="🔑" />
+          <SettingsMenuItem href="/ecoaudit/settings/password" label="Change Password" icon={<Icon name="lock" size={19} />} />
         </SettingsSection>
 
         <SettingsSection title="Appearance">
@@ -43,7 +45,8 @@ export default function SettingsPage() {
                   key={key}
                   type="button"
                   onClick={() => { setMode(key); toast.success(`Theme: ${key}`); }}
-                  className={`rounded-lg border-2 px-3 py-2.5 text-sm font-semibold capitalize ${mode === key ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]' : 'border-transparent bg-[var(--surface2)]'}`}
+                  aria-pressed={mode === key}
+                  className={`min-h-11 rounded-lg border-2 px-3 py-2.5 text-sm font-bold capitalize ${mode === key ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]' : 'border-transparent bg-[var(--surface2)] text-[var(--text-sub)] hover:border-[var(--border-strong)]'}`}
                 >
                   {key}
                 </button>
@@ -54,12 +57,12 @@ export default function SettingsPage() {
 
         {isAdmin ? (
           <SettingsSection title="Administration">
-            <SettingsMenuItem href="/ecoaudit/admin" label="User Management" icon="👥" />
+            <SettingsMenuItem href="/ecoaudit/admin" label="User Management" icon={<Icon name="users" size={19} />} />
           </SettingsSection>
         ) : null}
 
         <SettingsSection title="Developer">
-          <SettingsMenuItem href="/ecoaudit/settings/diagnostics" label="Diagnostics" icon="🐛" />
+          <SettingsMenuItem href="/ecoaudit/settings/diagnostics" label="Diagnostics" icon={<Icon name="activity" size={19} />} />
         </SettingsSection>
 
         <SettingsSection title="About">
@@ -68,9 +71,9 @@ export default function SettingsPage() {
           <SettingsInfoRow label="API" value={API_DISPLAY_URL.replace(/^https?:\/\//, '')} />
         </SettingsSection>
 
-        <button type="button" onClick={() => void handleLogout()} className="w-full rounded-xl border-2 border-[var(--red)] py-3.5 font-bold text-[var(--red)]">
-          Log Out
-        </button>
+        <Button type="button" variant="danger" onClick={() => void handleLogout()} className="w-full">
+          <Icon name="log-out" size={18} />Log Out
+        </Button>
       </div>
     </div>
   );

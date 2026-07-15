@@ -1,11 +1,10 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@solar/contexts/AuthContext';
 import { changePassword } from '@solar/api/users';
-import { Button } from '@solar/components/ui/Button';
+import { Button, LinkButton } from '@solar/components/ui/Button';
 import { Card, ErrorBanner, PageHeader } from '@solar/components/ui/Card';
 import { FieldLabel, Input } from '@solar/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
@@ -54,7 +53,7 @@ export default function ChangePasswordPage() {
 
   return (
     <div>
-      <PageHeader title="Change password" actions={<Link href="/solar/settings" className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Change password" actions={<LinkButton href="/solar/settings" variant="secondary">Back</LinkButton>} />
       <Card className="max-w-md">
         <form onSubmit={handleSubmit}>
           <FieldLabel>Current password</FieldLabel>

@@ -2,14 +2,14 @@
 
 The combined Next.js portal is deployed as an optional process, separate from
 the existing Fastify API and its Vite UI. The existing `sw-api` PM2 process and
-port `3000` remain unchanged. The portal listens only on `127.0.0.1:3001` and
+port `3000` remain unchanged. The portal listens only on `127.0.0.1:3210` and
 is not started by the existing `deploy/ecosystem.config.cjs`.
 
 ## Deployment boundary
 
 - API and existing Vite UI: existing process on `127.0.0.1:3000`
 - Combined Next.js portal: optional `ecosense-portal` process on
-  `127.0.0.1:3001`
+  `127.0.0.1:3210`
 - Public entry point: a dedicated hostname such as
   `portal.sustainabilitywise.com.au`
 
@@ -57,6 +57,7 @@ Configure these values:
   the existing local API without a public network round trip. It must be
   present during both `npm run build` (for rewrites) and `next start` (for
   Route Handlers).
+- `ECOSENSE_PORTAL_PORT=3210` keeps the portal on its dedicated loopback port.
 - `REGISTRATION_SECRET` must match the API registration secret. It is a
   server-only credential and must never use a `NEXT_PUBLIC_` prefix.
 - `PORTAL_REGISTRATION_ENABLED=false` keeps public registration disabled. Set
@@ -87,7 +88,7 @@ sudo -u swapi -H bash -lc '
 Verify the loopback service before exposing it:
 
 ```bash
-curl --fail --head http://127.0.0.1:3001/login
+curl --fail --head http://127.0.0.1:3210/login
 sudo -u swapi -H pm2 logs ecosense-portal --lines 100
 ```
 

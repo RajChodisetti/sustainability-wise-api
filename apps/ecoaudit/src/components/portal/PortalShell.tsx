@@ -7,62 +7,46 @@ import { useQuery } from '@tanstack/react-query';
 import { checkHealth } from '@/api/client';
 import { API_DISPLAY_URL } from '@/lib/config';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
+import { useTheme } from '@/contexts/ThemeContext';
+import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
 
 function isActive(pathname: string, href: string, exact = false) {
   if (exact) return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function ExpandToggle({
-  open,
-  onClick,
-  label,
-}: {
-  open: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={open ? `Collapse ${label}` : `Expand ${label}`}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClick();
-      }}
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-[var(--border)] text-sm font-semibold leading-none text-[var(--text-sub)] hover:bg-[var(--surface2)]"
-    >
-      {open ? '−' : '+'}
-    </button>
-  );
-}
-
 function NavLink({
   href,
   label,
+  icon,
   exact,
   nested = false,
+  onNavigate,
 }: {
   href: string;
   label: string;
+  icon: IconName;
   exact?: boolean;
   nested?: boolean;
+  onNavigate?: () => void;
 }) {
   const pathname = usePathname();
   const active = isActive(pathname, href, exact);
   return (
     <Link
       href={href}
-      className={`block rounded-lg px-3 py-1.5 text-sm font-medium transition ${
-        nested ? 'py-1.5 text-[13px]' : 'py-2'
+      onClick={onNavigate}
+      aria-current={active ? 'page' : undefined}
+      className={`group relative flex min-h-11 items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm font-semibold ${
+        nested ? 'ml-3 pl-3' : ''
       } ${
         active
-          ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
-          : 'text-[var(--text-sub)] hover:bg-[var(--surface2)]'
+          ? 'bg-white/14 text-white shadow-[inset_3px_0_0_var(--accent)]'
+          : 'text-[var(--sidebar-muted)] hover:bg-white/[0.07] hover:text-white'
       }`}
     >
-      {label}
+      <Icon name={icon} size={18} className="shrink-0" />
+      <span className="truncate">{label}</span>
     </Link>
   );
 }
@@ -80,39 +64,59 @@ function ProfileMenu({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const initial = (displayName[0] ?? 'U').toUpperCase();
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     }
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        buttonRef.current?.focus();
+      }
+    }
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, []);
 
   return (
     <div className="relative" ref={ref}>
       <button
+        ref={buttonRef}
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-sm hover:bg-[var(--surface2)]"
+        onClick={() => setOpen((value) => !value)}
+        aria-label={`Open profile menu for ${displayName}`}
+        aria-haspopup="true"
+        aria-expanded={open}
+        className="flex min-h-11 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 text-sm shadow-[var(--shadow-xs)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)]"
       >
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--primary)] text-xs font-bold text-[var(--primary-fg)]">
+        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)] text-xs font-extrabold text-[var(--primary-fg)]">
           {initial}
         </span>
-        <span className="hidden max-w-[140px] truncate font-medium text-[var(--text)] sm:inline">{displayName}</span>
+        <span className="hidden max-w-[150px] truncate font-bold text-[var(--text)] sm:inline">{displayName}</span>
+        <Icon name="chevron-down" size={16} className="hidden text-[var(--muted)] sm:block" />
       </button>
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-56 overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface)] shadow-lg">
-          <div className="border-b border-[var(--border)] px-3 py-2.5">
-            <p className="truncate text-sm font-semibold text-[var(--text)]">{displayName}</p>
-            {role ? <p className="truncate text-xs capitalize text-[var(--text-sub)]">{role}</p> : null}
+        <div
+          className="absolute right-0 z-50 mt-2 w-60 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]"
+          aria-label="Profile options"
+        >
+          <div className="mb-1 border-b border-[var(--border)] px-3 py-2.5">
+            <p className="truncate text-sm font-bold text-[var(--text)]">{displayName}</p>
+            {role ? <p className="mt-0.5 truncate text-xs capitalize text-[var(--text-sub)]">{role}</p> : null}
           </div>
           <Link
             href={profileHref}
             onClick={() => setOpen(false)}
-            className="block px-3 py-2 text-sm text-[var(--text)] hover:bg-[var(--surface2)]"
+            className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-semibold text-[var(--text)] hover:bg-[var(--surface2)]"
           >
+            <Icon name="user" size={18} className="text-[var(--text-sub)]" />
             Profile
           </Link>
           <button
@@ -121,8 +125,9 @@ function ProfileMenu({
               setOpen(false);
               onLogout();
             }}
-            className="block w-full px-3 py-2 text-left text-sm text-[var(--red)] hover:bg-[var(--surface2)]"
+            className="flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-semibold text-[var(--red)] hover:bg-[var(--red-soft)]"
           >
+            <Icon name="log-out" size={18} />
             Sign out
           </button>
         </div>
@@ -131,31 +136,261 @@ function ProfileMenu({
   );
 }
 
+type ChildNavItem = { href: string; label: string; icon: IconName; exact?: boolean };
+
+function AppNavigationSection({
+  label,
+  href,
+  icon,
+  open,
+  onToggle,
+  items,
+  regionId,
+  active,
+  onNavigate,
+}: {
+  label: string;
+  href: string;
+  icon: IconName;
+  open: boolean;
+  onToggle: () => void;
+  items: ChildNavItem[];
+  regionId: string;
+  active: boolean;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div>
+      <div className={`flex items-center rounded-[var(--radius-sm)] ${active ? 'bg-white/[0.05]' : ''}`}>
+        <Link
+          href={href}
+          onClick={onNavigate}
+          className={`flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-l-[var(--radius-sm)] px-3 text-sm font-bold ${
+            active ? 'text-white' : 'text-[var(--sidebar-muted)] hover:text-white'
+          }`}
+        >
+          <Icon name={icon} size={19} className="shrink-0" />
+          <span className="truncate">{label}</span>
+        </Link>
+        <button
+          type="button"
+          onClick={onToggle}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-r-[var(--radius-sm)] text-[var(--sidebar-muted)] hover:bg-white/[0.08] hover:text-white"
+          aria-label={`${open ? 'Collapse' : 'Expand'} ${label} navigation`}
+          aria-expanded={open}
+          aria-controls={regionId}
+        >
+          <Icon name="chevron-down" size={17} className={open ? 'rotate-180' : ''} />
+        </button>
+      </div>
+      {open ? (
+        <div id={regionId} className="mt-1 space-y-1 border-l border-[var(--sidebar-border)] pl-1">
+          {items.map((item) => (
+            <NavLink key={item.href} {...item} nested onNavigate={onNavigate} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SidebarNavigation({
+  pathname,
+  idPrefix,
+  appsOpen,
+  setAppsOpen,
+  ecoOpen,
+  setEcoOpen,
+  solarOpen,
+  setSolarOpen,
+  ecoChildren,
+  solarChildren,
+  healthState,
+  onNavigate,
+}: {
+  pathname: string;
+  idPrefix: string;
+  appsOpen: boolean;
+  setAppsOpen: (value: boolean) => void;
+  ecoOpen: boolean;
+  setEcoOpen: (value: boolean) => void;
+  solarOpen: boolean;
+  setSolarOpen: (value: boolean) => void;
+  ecoChildren: ChildNavItem[];
+  solarChildren: ChildNavItem[];
+  healthState: 'checking' | 'connected' | 'offline';
+  onNavigate?: () => void;
+}) {
+  const appsRegionId = `${idPrefix}-apps-navigation`;
+  return (
+    <div className="flex h-full flex-col">
+      <Link href="/" onClick={onNavigate} className="mb-7 flex items-center gap-3 rounded-xl text-white">
+        <BrandMark />
+        <span className="min-w-0">
+          <span className="block truncate text-base font-extrabold tracking-[-0.025em]">EcoSense Portal</span>
+          <span className="block truncate text-[11px] font-semibold tracking-wide text-[var(--sidebar-muted)]">SUSTAINABILITY WISE</span>
+        </span>
+      </Link>
+
+      <nav className="subtle-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto pr-1" aria-label="Primary navigation">
+        <NavLink href="/scheduler" label="Scheduler" icon="calendar" onNavigate={onNavigate} />
+
+        <div className="pt-4">
+          <button
+            type="button"
+            onClick={() => setAppsOpen(!appsOpen)}
+            className="mb-2 flex min-h-11 w-full items-center gap-3 rounded-[var(--radius-sm)] px-3 text-left text-xs font-extrabold uppercase tracking-[0.12em] text-[var(--sidebar-muted)] hover:bg-white/[0.06] hover:text-white"
+            aria-expanded={appsOpen}
+            aria-controls={appsRegionId}
+          >
+            <Icon name="apps" size={18} />
+            <span className="flex-1">Applications</span>
+            <Icon name="chevron-down" size={16} className={appsOpen ? 'rotate-180' : ''} />
+          </button>
+
+          {appsOpen ? (
+            <div id={appsRegionId} className="space-y-2">
+              <AppNavigationSection
+                label="Eco Audit"
+                href="/ecoaudit/dashboard"
+                icon="leaf"
+                open={ecoOpen}
+                onToggle={() => setEcoOpen(!ecoOpen)}
+                items={ecoChildren}
+                regionId={`${idPrefix}-eco-navigation`}
+                active={pathname.startsWith('/ecoaudit')}
+                onNavigate={onNavigate}
+              />
+              <AppNavigationSection
+                label="Solar Sense"
+                href="/solar/dashboard"
+                icon="sun"
+                open={solarOpen}
+                onToggle={() => setSolarOpen(!solarOpen)}
+                items={solarChildren}
+                regionId={`${idPrefix}-solar-navigation`}
+                active={pathname.startsWith('/solar')}
+                onNavigate={onNavigate}
+              />
+              <Link
+                href="/field"
+                onClick={onNavigate}
+                aria-current={isActive(pathname, '/field') ? 'page' : undefined}
+                className={`flex min-h-11 items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm font-semibold ${
+                  isActive(pathname, '/field')
+                    ? 'bg-white/14 text-white shadow-[inset_3px_0_0_var(--accent)]'
+                    : 'text-[var(--sidebar-muted)] hover:bg-white/[0.07] hover:text-white'
+                }`}
+              >
+                <Icon name="clipboard" size={19} />
+                <span className="flex-1">Field App</span>
+                <span className="rounded-full border border-[var(--sidebar-border)] bg-white/[0.06] px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
+                  Soon
+                </span>
+              </Link>
+            </div>
+          ) : null}
+        </div>
+      </nav>
+
+      <div className="mt-5 border-t border-[var(--sidebar-border)] pt-4 text-xs text-[var(--sidebar-muted)]">
+        <div className="flex items-center gap-2 font-semibold" role="status">
+          <Icon
+            name={healthState === 'offline' ? 'wifi-off' : 'wifi'}
+            size={16}
+            className={healthState === 'connected' ? 'text-emerald-300' : healthState === 'offline' ? 'text-red-300' : ''}
+          />
+          {healthState === 'connected' ? 'API connected' : healthState === 'offline' ? 'API offline' : 'Checking connection'}
+        </div>
+        <p className="mt-2 truncate text-[10px]" title={API_DISPLAY_URL}>{API_DISPLAY_URL}</p>
+      </div>
+    </div>
+  );
+}
+
+function workspaceFor(pathname: string) {
+  if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
+  if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
+  if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
+  if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
+  return { name: 'Portal overview', icon: 'grid' as IconName };
+}
+
 export function PortalShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const { user, logout, eaUser, ssUser } = usePortalAuth();
+  const { isDark, setMode } = useTheme();
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
+  const navigationScope = pathname.startsWith('/ecoaudit')
+    ? 'ecoaudit'
+    : pathname.startsWith('/solar')
+      ? 'solar'
+      : pathname.startsWith('/field')
+        ? 'field'
+        : 'portal';
+  const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [solarChoice, setSolarChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const appsOpen = appsChoice?.scope === navigationScope
+    ? appsChoice.value
+    : navigationScope !== 'portal';
+  const ecoOpen = ecoChoice?.scope === navigationScope
+    ? ecoChoice.value
+    : navigationScope === 'ecoaudit';
+  const solarOpen = solarChoice?.scope === navigationScope
+    ? solarChoice.value
+    : navigationScope === 'solar';
+  const setAppsOpen = (value: boolean) => setAppsChoice({ scope: navigationScope, value });
+  const setEcoOpen = (value: boolean) => setEcoChoice({ scope: navigationScope, value });
+  const setSolarOpen = (value: boolean) => setSolarChoice({ scope: navigationScope, value });
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const mobileCloseRef = useRef<HTMLButtonElement>(null);
+  const mobileDrawerRef = useRef<HTMLElement>(null);
+  const mobileMenuButtonRef = useRef<HTMLButtonElement>(null);
 
-  const [appsOpen, setAppsOpen] = useState(
-    () => pathname.startsWith('/ecoaudit') || pathname.startsWith('/solar') || pathname.startsWith('/field'),
-  );
-  const [ecoOpen, setEcoOpen] = useState(() => pathname.startsWith('/ecoaudit'));
-  const [solarOpen, setSolarOpen] = useState(() => pathname.startsWith('/solar'));
-  const [renderedPathname, setRenderedPathname] = useState(pathname);
-
-  // Adjust navigation state during render when the route changes. React discards
-  // this pass and immediately retries, so children never render stale nav state.
-  if (renderedPathname !== pathname) {
-    setRenderedPathname(pathname);
-    if (pathname.startsWith('/ecoaudit') || pathname.startsWith('/solar') || pathname.startsWith('/field')) {
-      setAppsOpen(true);
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const menuButton = mobileMenuButtonRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    mobileCloseRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setMobileOpen(false);
+        return;
+      }
+      if (event.key !== 'Tab' || !mobileDrawerRef.current) return;
+      const focusable = Array.from(
+        mobileDrawerRef.current.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
-    if (pathname.startsWith('/ecoaudit')) setEcoOpen(true);
-    if (pathname.startsWith('/solar')) setSolarOpen(true);
-  }
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+      menuButton?.focus();
+    };
+  }, [mobileOpen]);
 
   const health = useQuery({ queryKey: ['health'], queryFn: checkHealth, refetchInterval: 60_000 });
+  const healthState: 'checking' | 'connected' | 'offline' = health.isLoading
+    ? 'checking'
+    : health.data
+      ? 'connected'
+      : 'offline';
 
   const hideChrome =
     pathname === '/login' ||
@@ -172,182 +407,120 @@ export function PortalShell({ children }: { children: ReactNode }) {
 
   if (hideChrome) return <>{children}</>;
 
-  const ecoChildren = [
-    { href: '/ecoaudit/dashboard', label: 'Dashboard', exact: true },
-    { href: '/ecoaudit/audits', label: 'Audits' },
-    { href: '/ecoaudit/settings', label: 'Settings' },
-    ...(eaAdmin ? [{ href: '/ecoaudit/admin', label: 'Admin' }] : []),
+  const ecoChildren: ChildNavItem[] = [
+    { href: '/ecoaudit/dashboard', label: 'Dashboard', icon: 'grid', exact: true },
+    { href: '/ecoaudit/audits', label: 'Audits', icon: 'clipboard' },
+    { href: '/ecoaudit/settings', label: 'Settings', icon: 'settings' },
+    ...(eaAdmin ? [{ href: '/ecoaudit/admin', label: 'Admin', icon: 'shield' as IconName }] : []),
   ];
-
-  const solarChildren = [
-    { href: '/solar/dashboard', label: 'Dashboard', exact: true },
-    { href: '/solar/sites', label: 'Sites' },
-    { href: '/solar/assessments', label: 'Assessments' },
-    { href: '/solar/settings', label: 'Settings' },
-    ...(ssAdmin ? [{ href: '/solar/admin', label: 'Admin' }] : []),
+  const solarChildren: ChildNavItem[] = [
+    { href: '/solar/dashboard', label: 'Dashboard', icon: 'grid', exact: true },
+    { href: '/solar/sites', label: 'Sites', icon: 'building' },
+    { href: '/solar/assessments', label: 'Assessments', icon: 'clipboard' },
+    { href: '/solar/settings', label: 'Settings', icon: 'settings' },
+    ...(ssAdmin ? [{ href: '/solar/admin', label: 'Admin', icon: 'shield' as IconName }] : []),
   ];
-
+  const navigationProps = {
+    pathname,
+    appsOpen,
+    setAppsOpen,
+    ecoOpen,
+    setEcoOpen,
+    solarOpen,
+    setSolarOpen,
+    ecoChildren,
+    solarChildren,
+    healthState,
+  };
   const displayName = user?.fullName || user?.email || 'User';
   const profileHref = pathname.startsWith('/solar') ? '/solar/settings' : '/ecoaudit/settings';
+  const workspace = workspaceFor(pathname);
 
   return (
-    <div className="flex min-h-screen bg-[var(--bg)]">
-      <aside className="hidden w-64 shrink-0 border-r border-[var(--border)] bg-[var(--surface)] p-4 md:flex md:flex-col">
-        <div className="mb-8">
-          <Link href="/" className="text-lg font-bold text-[var(--primary)]">
-            EcoSense Portal
-          </Link>
-          <p className="text-xs text-[var(--text-sub)]">Sustainability Wise</p>
-        </div>
+    <div className="min-h-screen bg-[var(--bg)]">
+      <a href="#main-content" className="skip-link">Skip to content</a>
 
-        <nav className="flex flex-1 flex-col gap-1">
-          <NavLink href="/scheduler" label="Scheduler" />
-
-          <div className="mt-2">
-            <div className="flex items-center gap-1 rounded-lg px-1 py-1 text-sm font-medium text-[var(--text-sub)]">
-              <ExpandToggle open={appsOpen} onClick={() => setAppsOpen((v) => !v)} label="Apps" />
-              <button
-                type="button"
-                onClick={() => setAppsOpen((v) => !v)}
-                className="flex-1 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--surface2)]"
-              >
-                Apps
-              </button>
-            </div>
-
-            {appsOpen ? (
-              <div className="ml-3 space-y-1 border-l border-[var(--border)] pl-2">
-                <div>
-                  <div className="flex items-center gap-1">
-                    <ExpandToggle open={ecoOpen} onClick={() => setEcoOpen((v) => !v)} label="Eco Audit" />
-                    <Link
-                      href="/ecoaudit/dashboard"
-                      className={`flex-1 rounded-lg px-2 py-1.5 text-sm font-medium ${
-                        isActive(pathname, '/ecoaudit')
-                          ? 'text-[var(--primary)]'
-                          : 'text-[var(--text-sub)] hover:bg-[var(--surface2)]'
-                      }`}
-                    >
-                      Eco Audit
-                    </Link>
-                  </div>
-                  {ecoOpen ? (
-                    <div className="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--border)] pl-2">
-                      {ecoChildren.map((item) => (
-                        <NavLink key={item.href} href={item.href} label={item.label} exact={item.exact} nested />
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div>
-                  <div className="flex items-center gap-1">
-                    <ExpandToggle open={solarOpen} onClick={() => setSolarOpen((v) => !v)} label="Solar Sense" />
-                    <Link
-                      href="/solar/dashboard"
-                      className={`flex-1 rounded-lg px-2 py-1.5 text-sm font-medium ${
-                        isActive(pathname, '/solar')
-                          ? 'text-[var(--primary)]'
-                          : 'text-[var(--text-sub)] hover:bg-[var(--surface2)]'
-                      }`}
-                    >
-                      Solar Sense
-                    </Link>
-                  </div>
-                  {solarOpen ? (
-                    <div className="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--border)] pl-2">
-                      {solarChildren.map((item) => (
-                        <NavLink key={item.href} href={item.href} label={item.label} exact={item.exact} nested />
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-
-                <Link
-                  href="/field"
-                  className={`flex items-center justify-between rounded-lg px-2 py-1.5 text-sm font-medium ${
-                    isActive(pathname, '/field')
-                      ? 'bg-[var(--primary)] text-[var(--primary-fg)]'
-                      : 'text-[var(--text-sub)] hover:bg-[var(--surface2)]'
-                  }`}
-                >
-                  <span>Field App</span>
-                  <span className="rounded bg-[var(--surface2)] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-[var(--text-sub)]">
-                    Soon
-                  </span>
-                </Link>
-              </div>
-            ) : null}
-          </div>
-        </nav>
-
-        <div className="mt-auto space-y-2 border-t border-[var(--border)] pt-4 text-xs text-[var(--text-sub)]">
-          <div className="flex items-center gap-2">
-            <span className={`h-2 w-2 rounded-full ${health.data ? 'bg-[var(--green)]' : 'bg-[var(--red)]'}`} />
-            {health.data ? 'API connected' : 'API offline'}
-          </div>
-          <p className="truncate">{API_DISPLAY_URL}</p>
-        </div>
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-[280px] border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] p-5 lg:block">
+        <SidebarNavigation {...navigationProps} idPrefix="desktop" />
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface)] px-4 py-3 md:px-6">
-          <Link href="/" className="font-bold text-[var(--primary)] md:hidden">
-            EcoSense Portal
-          </Link>
-          <div className="hidden text-xs text-[var(--text-sub)] md:block">{API_DISPLAY_URL}</div>
-          <ProfileMenu
-            displayName={displayName}
-            role={user?.role}
-            profileHref={profileHref}
-            onLogout={() => void handleLogout()}
+      {mobileOpen ? (
+        <div className="fixed inset-0 z-[80] lg:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 h-full w-full bg-[var(--overlay)]"
+            onClick={() => setMobileOpen(false)}
+            aria-label="Close navigation"
+            tabIndex={-1}
           />
+          <aside
+            ref={mobileDrawerRef}
+            className="relative h-full w-[min(88vw,320px)] border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] p-5 shadow-[var(--shadow-md)]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Mobile navigation"
+          >
+            <button
+              ref={mobileCloseRef}
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-lg text-[var(--sidebar-muted)] hover:bg-white/[0.08] hover:text-white"
+              aria-label="Close navigation menu"
+            >
+              <Icon name="close" size={21} />
+            </button>
+            <SidebarNavigation
+              {...navigationProps}
+              idPrefix="mobile"
+              onNavigate={() => setMobileOpen(false)}
+            />
+          </aside>
+        </div>
+      ) : null}
+
+      <div className="min-h-screen lg:pl-[280px]">
+        <header className="sticky top-0 z-30 flex min-h-16 items-center justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface)]/95 px-4 shadow-[var(--shadow-xs)] backdrop-blur-md sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              ref={mobileMenuButtonRef}
+              type="button"
+              onClick={() => setMobileOpen(true)}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] hover:bg-[var(--surface2)] lg:hidden"
+              aria-label="Open navigation menu"
+              aria-expanded={mobileOpen}
+            >
+              <Icon name="menu" size={22} />
+            </button>
+            <span className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)] sm:flex">
+              <Icon name={workspace.icon} size={19} />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-extrabold text-[var(--text)]">{workspace.name}</p>
+              <p className="hidden truncate text-xs text-[var(--text-sub)] sm:block">Sustainability operations workspace</p>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMode(isDark ? 'light' : 'dark')}
+              className="flex h-11 w-11 items-center justify-center rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] text-[var(--text-sub)] hover:bg-[var(--surface2)] hover:text-[var(--primary)]"
+              aria-label={isDark ? 'Use light theme' : 'Use dark theme'}
+            >
+              <Icon name={isDark ? 'sun' : 'moon'} size={19} />
+            </button>
+            <ProfileMenu
+              displayName={displayName}
+              role={user?.role}
+              profileHref={profileHref}
+              onLogout={() => void handleLogout()}
+            />
+          </div>
         </header>
 
-        <nav className="border-b border-[var(--border)] bg-[var(--surface)] px-3 py-2 md:hidden">
-          <div className="mb-1">
-            <NavLink href="/scheduler" label="Scheduler" />
-          </div>
-          <div className="flex items-center gap-1">
-            <ExpandToggle open={appsOpen} onClick={() => setAppsOpen((v) => !v)} label="Apps" />
-            <span className="text-sm font-medium text-[var(--text-sub)]">Apps</span>
-          </div>
-          {appsOpen ? (
-            <div className="mt-1 space-y-1 pl-2">
-              <div className="flex items-center gap-1">
-                <ExpandToggle open={ecoOpen} onClick={() => setEcoOpen((v) => !v)} label="Eco Audit" />
-                <Link href="/ecoaudit/dashboard" className="text-sm text-[var(--text-sub)]">
-                  Eco Audit
-                </Link>
-              </div>
-              {ecoOpen
-                ? ecoChildren.map((item) => (
-                    <div key={item.href} className="pl-6">
-                      <NavLink href={item.href} label={item.label} exact={item.exact} nested />
-                    </div>
-                  ))
-                : null}
-              <div className="flex items-center gap-1">
-                <ExpandToggle open={solarOpen} onClick={() => setSolarOpen((v) => !v)} label="Solar Sense" />
-                <Link href="/solar/dashboard" className="text-sm text-[var(--text-sub)]">
-                  Solar Sense
-                </Link>
-              </div>
-              {solarOpen
-                ? solarChildren.map((item) => (
-                    <div key={item.href} className="pl-6">
-                      <NavLink href={item.href} label={item.label} exact={item.exact} nested />
-                    </div>
-                  ))
-                : null}
-              <Link href="/field" className="block pl-7 text-sm text-[var(--text-sub)]">
-                Field App
-              </Link>
-            </div>
-          ) : null}
-        </nav>
-
-        <main className="flex-1 p-4 md:p-6">{children}</main>
+        <main id="main-content" tabIndex={-1} className="px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+          <div className="mx-auto w-full max-w-[1600px]">{children}</div>
+        </main>
       </div>
     </div>
   );

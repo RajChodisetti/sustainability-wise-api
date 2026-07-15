@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getAudit } from '@/api/audits';
@@ -10,7 +9,7 @@ import { getEquipmentConfig } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { EquipmentFormFields } from '@/components/equipment/EquipmentFormFields';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 
 export default function EditEquipmentPage() {
@@ -90,7 +89,7 @@ function EquipmentEditForm({
 
   return (
     <div>
-      <PageHeader title={`Edit ${config.label.slice(0, -1)}`} actions={<Link href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}`} className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title={`Edit ${config.label.slice(0, -1)}`} actions={<LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}`} variant="secondary">Back</LinkButton>} />
       <Card>
         <form onSubmit={handleSave}>
           <EquipmentFormFields config={config} values={values} onChange={onChange} auditId={auditId!} entityId={itemId} disabled={isCompleted} />

@@ -1,9 +1,10 @@
 import { useToast } from '@/contexts/ToastContext';
+import { Icon } from '@/components/ui/Icon';
 
 const styles: Record<string, string> = {
-  success: 'border-[var(--green)]/40 bg-[var(--green)]/10 text-[var(--green)]',
-  error: 'border-[var(--red)]/40 bg-[var(--red)]/10 text-[var(--red)]',
-  info: 'border-[var(--primary)]/40 bg-[var(--primary)]/10 text-[var(--text)]',
+  success: 'border-[var(--green)]/30 bg-[var(--green-soft)] text-[var(--green)]',
+  error: 'border-[var(--red)]/30 bg-[var(--red-soft)] text-[var(--red)]',
+  info: 'border-[var(--primary)]/30 bg-[var(--primary-soft)] text-[var(--text)]',
 };
 
 export function ToastViewport() {
@@ -12,22 +13,26 @@ export function ToastViewport() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex max-w-sm flex-col gap-2">
+    <div
+      className="pointer-events-none fixed inset-x-3 bottom-3 z-[100] flex flex-col items-stretch gap-2 sm:left-auto sm:right-4 sm:max-w-sm"
+      aria-label="Notifications"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className={`pointer-events-auto rounded-lg border px-4 py-3 text-sm font-medium shadow-lg ${styles[toast.type]}`}
-          role="status"
+          className={`pointer-events-auto rounded-[var(--radius-sm)] border px-4 py-3 text-sm font-semibold shadow-[var(--shadow-md)] ${styles[toast.type]}`}
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-atomic="true"
         >
-          <div className="flex items-start justify-between gap-3">
-            <span>{toast.message}</span>
+          <div className="flex items-center justify-between gap-3">
+            <span className="leading-5">{toast.message}</span>
             <button
               type="button"
-              className="shrink-0 opacity-60 hover:opacity-100"
+              className="-mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg opacity-70 hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10"
               onClick={() => dismiss(toast.id)}
-              aria-label="Dismiss"
+              aria-label="Dismiss notification"
             >
-              ×
+              <Icon name="close" size={18} />
             </button>
           </div>
         </div>

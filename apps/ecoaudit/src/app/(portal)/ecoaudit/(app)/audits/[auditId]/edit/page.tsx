@@ -1,13 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getAudit, updateAudit } from '@/api/audits';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import type { Audit } from '@/types/domain';
@@ -54,7 +53,7 @@ function EditAuditForm({ auditId, audit }: { auditId: string; audit: Audit }) {
 
   return (
     <div>
-      <PageHeader title="Edit audit" actions={<Link href={`/ecoaudit/audits/${auditId}`} className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Edit audit" actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
       <Card className="max-w-xl">
         <form onSubmit={handleSubmit}>
           <FieldLabel>Site name</FieldLabel>

@@ -1,13 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { changePassword } from '@/api/users';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
-import { Button } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader } from '@/components/ui/Card';
 import { FieldLabel, Input } from '@/components/ui/FormFields';
 
@@ -42,7 +41,7 @@ export default function ChangePasswordPage() {
 
   return (
     <div>
-      <PageHeader title="Change password" actions={<Link href="/ecoaudit/settings" className="text-sm text-[var(--primary)]">Back</Link>} />
+      <PageHeader title="Change password" actions={<LinkButton href="/ecoaudit/settings" variant="secondary">Back</LinkButton>} />
       <Card className="max-w-md">
         <form onSubmit={handleSubmit}>
           <FieldLabel>Current password</FieldLabel>

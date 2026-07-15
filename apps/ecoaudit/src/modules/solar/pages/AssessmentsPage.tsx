@@ -1,9 +1,8 @@
 'use client';
 
 import { useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useAllAssessments, useSites } from '@solar/hooks/useSites';
-import { Button } from '@solar/components/ui/Button';
+import { LinkButton } from '@solar/components/ui/Button';
 import { DealBreakerFlag, RAGBadge, StatusBadge, ViabilityBadge } from '@solar/components/ui/Badges';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { Input } from '@solar/components/ui/FormFields';
@@ -33,8 +32,9 @@ export default function AssessmentsPage() {
   return (
     <div>
       <PageHeader title="Assessments" subtitle="All building assessments across sites" />
-      <div className="mb-4">
-        <Input placeholder="Search assessments…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-sm" />
+      <div className="mb-5 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3">
+        <label className="sr-only" htmlFor="assessment-search">Search assessments</label>
+        <Input id="assessment-search" placeholder="Search assessments…" value={search} onChange={(e) => setSearch(e.target.value)} className="max-w-sm" />
       </div>
       {filtered.length === 0 ? (
         <EmptyState title="No assessments" description="Add a building assessment from a site detail page." />
@@ -57,8 +57,8 @@ export default function AssessmentsPage() {
                 <div className="flex gap-2">
                   {a.siteId ? (
                     <>
-                      <Link href={`/solar/sites/${a.siteId}/assessments/${a.id}`}><Button variant="secondary">View</Button></Link>
-                      <Link href={`/solar/sites/${a.siteId}/assessments/${a.id}/edit`}><Button>Edit</Button></Link>
+                      <LinkButton href={`/solar/sites/${a.siteId}/assessments/${a.id}`} variant="secondary">View</LinkButton>
+                      <LinkButton href={`/solar/sites/${a.siteId}/assessments/${a.id}/edit`}>Edit</LinkButton>
                     </>
                   ) : null}
                 </div>
