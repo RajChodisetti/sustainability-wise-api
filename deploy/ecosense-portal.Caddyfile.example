@@ -1,0 +1,7 @@
+# Optional dedicated virtual host for the EcoSense portal.
+# Add this block to the active Caddy configuration only after DNS for the
+# chosen portal hostname points to the server.
+portal.sustainabilitywise.com.au {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3001
+}

@@ -4,6 +4,11 @@ import { db } from '../../db/client.js';
 import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { photoRegistry, recordVersions } from '../../db/schema/shared.js';
 import { deleteLocalFile } from '../../storage/localFiles.js';
+import {
+  deleteOwnedPhotosUnlessReferenced,
+  releaseCopyReferencesForEntity,
+  releaseCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 import { forbidden, notFound, badRequest } from '../../utils/errors.js';
 
 export type JsonRecord = Record<string, unknown>;
@@ -88,6 +93,12 @@ export function requireCompleted(records: Array<{ id?: string; status?: unknown 
   }
 }
 
+export function assertDraftMutable(record: { status?: unknown }, label: string): void {
+  if (record.status === 'Completed') {
+    throw badRequest(`${label} is completed. Copy the top-level site to make changes.`);
+  }
+}
+
 export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
   const value = query?.purge;
   if (typeof value === 'boolean') return value;
@@ -96,22 +107,14 @@ export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
 }
 
 export async function purgeSolarsenseAssessment(assessmentId: string): Promise<void> {
-  const photoWhere = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.entityId, assessmentId));
-  const photos = await db.select().from(photoRegistry).where(photoWhere);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(photoWhere);
+  await releaseCopyReferencesForEntity('solarsense', assessmentId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', entityId: assessmentId });
   await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.id, assessmentId));
 }
 
 export async function purgeSolarsenseSiteTree(siteId: string, reportPdfStorageKey?: string | null): Promise<void> {
-  const photoWhere = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.parentId, siteId));
-  const photos = await db.select().from(photoRegistry).where(photoWhere);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(photoWhere);
+  await releaseCopyReferencesForParent('solarsense', siteId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', parentId: siteId });
 
   await deleteLocalFile(reportPdfStorageKey);
 

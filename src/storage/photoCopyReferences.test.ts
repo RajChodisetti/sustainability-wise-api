@@ -1,0 +1,304 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import type { PhotoRow } from './photoCopyReferences.js';
+
+process.env.DATABASE_URL ??= 'postgres://test:test@127.0.0.1:5432/test';
+process.env.JWT_SECRET ??= 'photo-copy-reference-test-secret';
+process.env.JWT_REFRESH_SECRET ??= 'photo-copy-reference-refresh-test-secret';
+
+const {
+  buildPhotoCopyReferenceRows,
+  collectImmutablePhotoIds,
+  ecoPhotoValues,
+  actorCanAccessPhotoParent,
+  genericPhotoCandidateIsAuthorized,
+  planPhotoCopyReferenceReconciliation,
+  solarAssessmentPhotoValues,
+  solarAssessmentPhotoFieldReferences,
+  solarSitePhotoFieldReferences,
+} = await import('./photoCopyReferences.js');
+
+const PHOTO_A = '11111111-1111-4111-8111-111111111111';
+const PHOTO_B = '22222222-2222-4222-8222-222222222222';
+const PHOTO_C = '33333333-3333-4333-8333-333333333333';
+
+function photo(overrides: Partial<PhotoRow> & Pick<PhotoRow, 'id'>): PhotoRow {
+  const { id, ...rest } = overrides;
+  return {
+    id,
+    checksum: 'abc',
+    remoteUrl: `https://api.test/v1/files/ecoaudit/source/photo-${overrides.id}.jpg`,
+    onedriveItemId: null,
+    storageKey: `ecoaudit/source/photo-${overrides.id}.jpg`,
+    contentType: 'image/jpeg',
+    originalFilename: 'photo.jpg',
+    app: 'ecoaudit',
+    parentId: 'source-parent',
+    entityType: 'zone',
+    entityId: 'source-entity',
+    fieldName: 'photos_0',
+    fileSizeBytes: 100,
+    status: 'confirmed',
+    uploadedAt: new Date('2026-01-01T00:00:00Z'),
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    ...rest,
+  };
+}
+
+test('collectImmutablePhotoIds finds nested immutable ids case-insensitively', () => {
+  const ids = collectImmutablePhotoIds({
+    direct: `/v1/files/ecoaudit/source/photo-${PHOTO_A.toUpperCase()}.jpg`,
+    nested: [{ photoUri: `solarsense/source/photo-${PHOTO_B}.webp` }],
+  });
+  assert.deepEqual([...ids].sort(), [PHOTO_A, PHOTO_B]);
+});
+
+test('photo field extractors include actual Eco and nested Solar fields but not notes', () => {
+  const ecoIds = collectImmutablePhotoIds(ecoPhotoValues({
+    photo: `/v1/files/photo-${PHOTO_A}.jpg`,
+    extraPhotos: [`/v1/files/photo-${PHOTO_B}.jpg`],
+    comments: `unrelated ${PHOTO_C}`,
+  }));
+  assert.deepEqual([...ecoIds].sort(), [PHOTO_A, PHOTO_B]);
+
+  const solarIds = collectImmutablePhotoIds(solarAssessmentPhotoValues({
+    switchboards: [{ photoUri: `/v1/files/photo-${PHOTO_A}.jpg` }],
+    otherConsiderations: [{ photoUris: [`/v1/files/photo-${PHOTO_B}.jpg`] }],
+    additionalPhotos: [`/v1/files/photo-${PHOTO_C}.jpg`],
+    keyAssumptionsGaps: `unrelated ${PHOTO_C}`,
+  }));
+  assert.deepEqual([...solarIds].sort(), [PHOTO_A, PHOTO_B, PHOTO_C]);
+});
+
+test('copy links only confirmed stored photos actually present in copied photo fields', () => {
+  const rows = buildPhotoCopyReferenceRows({
+    app: 'ecoaudit',
+    targetParentId: 'target-parent',
+    entities: [{
+      sourceEntityId: 'source-entity',
+      targetEntityId: 'target-entity',
+      targetEntityType: 'zone',
+      photoValues: [
+        `/v1/files/ecoaudit/source/photo-${PHOTO_A}.jpg`,
+        `/v1/files/ecoaudit/source/photo-${PHOTO_B}.jpg`,
+        `/v1/files/ecoaudit/source/photo-${PHOTO_C}.jpg`,
+      ],
+      photoReferences: [
+        { photoId: PHOTO_A, targetFieldName: 'photos[0]' },
+        { photoId: PHOTO_B, targetFieldName: 'photos[1]' },
+        { photoId: PHOTO_C, targetFieldName: 'photos[2]' },
+      ],
+    }],
+    photos: [
+      photo({ id: PHOTO_A }),
+      photo({ id: PHOTO_B, status: 'uploaded' }),
+      photo({ id: PHOTO_C, storageKey: null }),
+    ],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].photoId, PHOTO_A);
+  assert.equal(rows[0].targetParentId, 'target-parent');
+  assert.equal(rows[0].targetEntityId, 'target-entity');
+  assert.equal(rows[0].targetFieldName, 'photos[0]');
+});
+
+test('an inherited virtual photo can be linked again for a copy-of-copy', () => {
+  const inherited = photo({
+    id: PHOTO_A,
+    parentId: 'first-copy',
+    entityId: 'first-copy-entity',
+  });
+  const rows = buildPhotoCopyReferenceRows({
+    app: 'ecoaudit',
+    targetParentId: 'second-copy',
+    entities: [{
+      sourceEntityId: 'first-copy-entity',
+      targetEntityId: 'second-copy-entity',
+      targetEntityType: 'zone',
+      photoValues: `/v1/files/ecoaudit/original/photo-${PHOTO_A}.jpg`,
+    }],
+    photos: [inherited],
+  });
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].photoId, PHOTO_A);
+  assert.equal(rows[0].targetParentId, 'second-copy');
+  assert.equal(rows[0].targetEntityId, 'second-copy-entity');
+});
+
+test('secure pre-confirm reconciliation can link pending/uploaded rows but never failed rows', () => {
+  const entity = {
+    sourceEntityId: 'source-entity',
+    targetEntityId: 'target-entity',
+    targetEntityType: 'zone',
+    photoValues: [],
+    photoReferences: [
+      { photoId: PHOTO_A, targetFieldName: 'photos[0]' },
+      { photoId: PHOTO_B, targetFieldName: 'photos[1]' },
+      { photoId: PHOTO_C, targetFieldName: 'photos[2]' },
+    ],
+  };
+  const rows = buildPhotoCopyReferenceRows({
+    app: 'ecoaudit',
+    targetParentId: 'target-parent',
+    entities: [entity],
+    photos: [
+      photo({ id: PHOTO_A, status: 'pending' }),
+      photo({ id: PHOTO_B, status: 'uploaded' }),
+      photo({ id: PHOTO_C, status: 'failed' }),
+    ],
+    allowUnconfirmed: true,
+  });
+  assert.deepEqual(rows.map((row) => row.photoId), [PHOTO_A, PHOTO_B]);
+});
+
+test('Solar reconciliation derives current PDF field paths after array reorder', () => {
+  const references = solarAssessmentPhotoFieldReferences({
+    switchboards: [
+      { photoUri: `/v1/files/photo-${PHOTO_B}.jpg` },
+      { photoUri: `/v1/files/photo-${PHOTO_A}.jpg` },
+    ],
+    otherConsiderations: [{ photoUris: [`/v1/files/photo-${PHOTO_C}.jpg`] }],
+    additionalPhotos: [
+      `/v1/files/photo-${PHOTO_A}.jpg`,
+      `/v1/files/photo-${PHOTO_B}.jpg`,
+    ],
+  });
+
+  assert.deepEqual(references, [
+    { photoId: PHOTO_A, targetFieldName: 'additional_photos[0]' },
+    { photoId: PHOTO_B, targetFieldName: 'additional_photos[1]' },
+    { photoId: PHOTO_B, targetFieldName: 'switchboards[0].photoUri' },
+    { photoId: PHOTO_A, targetFieldName: 'switchboards[1].photoUri' },
+    { photoId: PHOTO_C, targetFieldName: 'other_considerations[0].photoUris[0]' },
+  ]);
+});
+
+test('reconciliation is idempotent and replaces a stale target path', () => {
+  const existing = [{
+    id: 'old-link',
+    app: 'solarsense',
+    photoId: PHOTO_A,
+    targetParentId: 'copy',
+    targetEntityType: 'rooftop_assessment',
+    targetEntityId: 'assessment-copy',
+    targetFieldName: 'additional_photos[1]',
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+  }];
+  const desired = [{
+    id: 'new-link',
+    app: 'solarsense',
+    photoId: PHOTO_A,
+    targetParentId: 'copy',
+    targetEntityType: 'rooftop_assessment',
+    targetEntityId: 'assessment-copy',
+    targetFieldName: 'additional_photos[0]',
+  }];
+
+  const changed = planPhotoCopyReferenceReconciliation(existing, desired);
+  assert.deepEqual(changed.remove.map((row) => row.id), ['old-link']);
+  assert.deepEqual(changed.add.map((row) => row.id), ['new-link']);
+
+  const settled = planPhotoCopyReferenceReconciliation([
+    { ...existing[0], id: 'new-link', targetFieldName: 'additional_photos[0]' },
+  ], desired);
+  assert.equal(settled.add.length, 0);
+  assert.equal(settled.remove.length, 0);
+});
+
+test('generic grants require one authenticated actor to access both parents', () => {
+  const ecoActor = {
+    userId: 'shared-inspector',
+    app: 'ecoaudit' as const,
+    role: 'inspector' as const,
+    authType: 'jwt' as const,
+  };
+  const target = {
+    id: 'target',
+    createdByUserId: 'target-owner',
+    assignedInspectorUserId: 'shared-inspector',
+  };
+  const accessibleSource = {
+    id: 'source',
+    createdByUserId: 'source-owner',
+    assignedInspectorUserId: 'shared-inspector',
+  };
+  assert.equal(actorCanAccessPhotoParent('ecoaudit', ecoActor, target), true);
+  assert.equal(actorCanAccessPhotoParent('ecoaudit', ecoActor, accessibleSource), true);
+
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'ecoaudit',
+    photoId: PHOTO_A,
+    sourceParent: accessibleSource,
+    targetParent: target,
+    alreadyLinked: false,
+  }), false, 'no actor may never create a generic grant');
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'ecoaudit',
+    photoId: PHOTO_A,
+    actor: ecoActor,
+    sourceParent: { ...accessibleSource, assignedInspectorUserId: 'someone-else' },
+    targetParent: target,
+    alreadyLinked: false,
+  }), false, 'the actor must access the source as well as the target');
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'ecoaudit',
+    photoId: PHOTO_A,
+    actor: ecoActor,
+    sourceParent: accessibleSource,
+    targetParent: { ...target, assignedInspectorUserId: 'someone-else' },
+    alreadyLinked: false,
+  }), false, 'the actor must access the target as well as the source');
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'ecoaudit',
+    photoId: PHOTO_A,
+    actor: ecoActor,
+    sourceParent: accessibleSource,
+    targetParent: target,
+    alreadyLinked: false,
+  }), true);
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'ecoaudit',
+    photoId: PHOTO_A,
+    targetParent: target,
+    alreadyLinked: true,
+  }), true, 'an explicit existing copy grant may be remapped without an actor');
+});
+
+test('elevated actors can create grants in their own app but cross-app actors cannot', () => {
+  const source = { id: 'source', createdByUserId: 'source-owner' };
+  const target = { id: 'target', createdByUserId: 'target-owner' };
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'solarsense',
+    photoId: PHOTO_A,
+    sourceParent: source,
+    targetParent: target,
+    alreadyLinked: false,
+    actor: {
+      userId: 'admin', app: 'solarsense', role: 'admin', authType: 'jwt',
+    },
+  }), true);
+  assert.equal(genericPhotoCandidateIsAuthorized({
+    app: 'solarsense',
+    photoId: PHOTO_A,
+    sourceParent: source,
+    targetParent: target,
+    alreadyLinked: false,
+    actor: {
+      userId: 'admin', app: 'ecoaudit', role: 'admin', authType: 'jwt',
+    },
+  }), false);
+});
+
+test('Solar appendix grants require explicit image type', () => {
+  assert.deepEqual(solarSitePhotoFieldReferences({
+    appendixItems: [
+      { type: 'image', uri: `/v1/files/photo-${PHOTO_A}.jpg`, name: 'Roof' },
+      { type: 'document', uri: `/v1/files/photo-${PHOTO_B}.pdf`, name: 'Plan' },
+      { uri: `/v1/files/photo-${PHOTO_C}.jpg`, name: 'Legacy unknown' },
+    ],
+  }), [
+    { photoId: PHOTO_A, targetFieldName: 'appendix_items[0].uri' },
+  ]);
+});

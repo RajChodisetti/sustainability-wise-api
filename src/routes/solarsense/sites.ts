@@ -2,10 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { ssSites } from '../../db/schema/solarsense.js';
+import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import {
   assertFound,
+  assertDraftMutable,
   assertSiteAccess,
   dateOrNow,
   isElevated,
@@ -18,6 +19,16 @@ import {
   type JsonRecord,
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
+import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
+import {
+  reconcilePhotoCopyReferencesForParent,
+  linkCopiedPhotoReferences,
+  solarAssessmentPhotoValues,
+  solarAssessmentPhotoFieldReferences,
+  solarSitePhotoValues,
+  solarSitePhotoFieldReferences,
+  type CopiedPhotoEntity,
+} from '../../storage/photoCopyReferences.js';
 
 type SiteChanges = Partial<typeof ssSites.$inferInsert>;
 
@@ -112,6 +123,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
       })
       .returning();
 
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: created.id, actor: request.user });
     return reply.status(201).send(created);
   });
 
@@ -131,6 +143,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
 
     const found = assertFound(site, 'Site');
     assertSiteAccess(found, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: found.id, actor: request.user });
     return reply.send(found);
   });
 
@@ -153,6 +166,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
 
     const found = assertFound(site, 'Site');
     assertSiteAccess(found, request.user);
+    assertDraftMutable(found, 'Site');
 
     const [updated] = await db
       .update(ssSites)
@@ -160,6 +174,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
       .where(eq(ssSites.id, id))
       .returning();
 
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: id, actor: request.user });
     return reply.send(assertFound(updated, 'Site'));
   });
 
@@ -217,5 +232,92 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
       .returning();
 
     return reply.send(assertFound(updated, 'Site'));
+  });
+
+  app.post('/:id/copy', {
+    schema: {
+      tags: ['SolarSense Sites'],
+      summary: 'Copy SolarSense site with assessments',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as JsonRecord;
+    const [site] = await db
+      .select()
+      .from(ssSites)
+      .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
+
+    const found = assertFound(site, 'Site');
+    assertSiteAccess(found, request.user);
+
+    const includeAssessments = body.includeAssessments !== false;
+    const created = await db.transaction(async (tx) => {
+      const overrides = copyableBodyOverrides(found, body, ['status', 'siteName']);
+      const [copiedSite] = await tx
+        .insert(ssSites)
+        .values(cloneRecordForInsert(found, {
+          ...overrides,
+          siteName: copyNameWithSuffix(found.siteName),
+          status: 'Draft',
+          createdByUserId: request.user.userId,
+          reportPdfLocalPath: null,
+          reportPdfRemoteUrl: null,
+        }) as typeof ssSites.$inferInsert)
+        .returning();
+
+      const targetSite = assertFound(copiedSite, 'Copied site');
+      const copiedEntities: CopiedPhotoEntity[] = [{
+        sourceEntityId: found.id,
+        targetEntityId: targetSite.id,
+        targetEntityType: 'site',
+        photoValues: solarSitePhotoValues(found),
+        photoReferences: solarSitePhotoFieldReferences(found),
+      }];
+      if (includeAssessments) {
+        const assessments = await tx
+          .select()
+          .from(ssRooftopAssessments)
+          .where(and(eq(ssRooftopAssessments.siteId, id), isNull(ssRooftopAssessments.deletedAt)));
+
+        if (assessments.length > 0) {
+          const copiedAssessments = assessments.map((assessment) => cloneRecordForInsert(assessment, {
+              siteId: targetSite.id,
+              siteName: targetSite.siteName,
+              status: 'Draft',
+              createdByUserId: request.user.userId,
+            }) as typeof ssRooftopAssessments.$inferInsert);
+          await tx.insert(ssRooftopAssessments).values(copiedAssessments);
+          assessments.forEach((assessment, index) => {
+            copiedEntities.push({
+              sourceEntityId: assessment.id,
+              targetEntityId: String(copiedAssessments[index].id),
+              targetEntityType: 'rooftop_assessment',
+              photoValues: solarAssessmentPhotoValues(assessment),
+              photoReferences: solarAssessmentPhotoFieldReferences(assessment),
+            });
+          });
+        }
+      }
+
+      await linkCopiedPhotoReferences({
+        app: 'solarsense',
+        sourceParentId: id,
+        targetParentId: targetSite.id,
+        entities: copiedEntities,
+        executor: tx as unknown as typeof db,
+      });
+      await reconcilePhotoCopyReferencesForParent({
+        app: 'solarsense',
+        parentId: targetSite.id,
+        executor: tx as unknown as typeof db,
+        actor: request.user,
+      });
+
+      return targetSite;
+    });
+
+    return reply.status(201).send(created);
   });
 }

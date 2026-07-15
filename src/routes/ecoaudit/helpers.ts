@@ -16,6 +16,10 @@ import {
 } from '../../db/schema/ecoaudit.js';
 import { photoRegistry, recordVersions } from '../../db/schema/shared.js';
 import { deleteLocalFile } from '../../storage/localFiles.js';
+import {
+  deleteOwnedPhotosUnlessReferenced,
+  releaseCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 import { forbidden, notFound, badRequest } from '../../utils/errors.js';
 
 export type JsonRecord = Record<string, unknown>;
@@ -101,6 +105,12 @@ export function requireCompleted(records: Array<{ id?: string; status?: unknown 
   if (bad) throw badRequest(`${label} ${bad.id ?? ''} must be Completed before sync`);
 }
 
+export function assertDraftMutable(record: { status?: unknown }, label: string): void {
+  if (record.status === 'Completed') {
+    throw badRequest(`${label} is completed. Copy the top-level audit to make changes.`);
+  }
+}
+
 export function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
@@ -124,12 +134,8 @@ export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
 }
 
 export async function purgeEcoauditAuditTree(auditId: string, reportPdfStorageKey?: string | null): Promise<void> {
-  const photoWhere = and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.parentId, auditId));
-  const photos = await db.select().from(photoRegistry).where(photoWhere);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(photoWhere);
+  await releaseCopyReferencesForParent('ecoaudit', auditId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'ecoaudit', parentId: auditId });
 
   await deleteLocalFile(reportPdfStorageKey);
 

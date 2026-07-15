@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, timestamp, integer } from 'drizzle-orm/pg-core';
+import { index, jsonb, pgTable, text, timestamp, integer, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const apiKeys = pgTable('api_keys', {
   id: text('id').primaryKey(),
@@ -42,6 +42,33 @@ export const photoRegistry = pgTable('photo_registry', {
   uploadedAt: timestamp('uploaded_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+/**
+ * Grants a copied parent durable use of an existing immutable photo. The
+ * registry row and stored original remain single-instance; entity/field are
+ * remapped so copied reports can use the same bytes with their cloned rows.
+ */
+export const photoCopyReferences = pgTable('photo_copy_references', {
+  id: text('id').primaryKey(),
+  app: text('app').notNull(),
+  photoId: text('photo_id').notNull().references(() => photoRegistry.id),
+  targetParentId: text('target_parent_id').notNull(),
+  targetEntityType: text('target_entity_type').notNull(),
+  targetEntityId: text('target_entity_id').notNull(),
+  targetFieldName: text('target_field_name').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('photo_copy_references_target_unique').on(
+    table.app,
+    table.photoId,
+    table.targetParentId,
+    table.targetEntityId,
+    table.targetFieldName,
+  ),
+  index('photo_copy_references_photo_idx').on(table.app, table.photoId),
+  index('photo_copy_references_parent_idx').on(table.app, table.targetParentId),
+  index('photo_copy_references_entity_idx').on(table.app, table.targetEntityId),
+]);
 
 export const recordVersions = pgTable('record_versions', {
   id: text('id').primaryKey(),

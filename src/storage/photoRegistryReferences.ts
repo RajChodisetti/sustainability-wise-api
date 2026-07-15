@@ -9,6 +9,25 @@ import {
 
 export type ConfirmedPhotoReference = typeof photoRegistry.$inferSelect & { storageKey: string };
 
+export async function findConfirmedPhotoById(
+  photoId: string,
+  expectedApp: PhotoApp,
+): Promise<ConfirmedPhotoReference | null> {
+  const [photo] = await db
+    .select()
+    .from(photoRegistry)
+    .where(and(
+      eq(photoRegistry.id, photoId.toLowerCase()),
+      eq(photoRegistry.app, expectedApp),
+      eq(photoRegistry.status, 'confirmed'),
+    ))
+    .limit(1);
+
+  return photo?.storageKey
+    ? { ...photo, storageKey: photo.storageKey }
+    : null;
+}
+
 async function findByStorageKey(input: {
   app: PhotoApp;
   storageKey: string;

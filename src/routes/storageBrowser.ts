@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, isNull } from 'drizzle-orm';
-import { authenticate, requireApp, requireRole } from '../auth/middleware.js';
+import { authenticate, requireApp, requireRole, type AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
@@ -23,6 +23,10 @@ import {
   loadSolarsenseAssessmentByIdOrName,
   loadSolarsenseSiteByIdOrName,
 } from '../services/storageNaming.js';
+import {
+  loadPhotosForParent,
+  reconcilePhotoCopyReferencesForParent,
+} from '../storage/photoCopyReferences.js';
 
 type AppName = 'ecoaudit' | 'solarsense';
 type EntityType = 'audit' | 'site';
@@ -79,26 +83,27 @@ async function listFilesForRecords(input: {
   parentId: string;
   entityId?: string;
   reportPdfLocalPath?: string | null;
+  actor: AuthUser;
 }) {
-  const registryRows = await db
-    .select()
-    .from(photoRegistry)
-    .where(and(
-      eq(photoRegistry.app, input.app),
-      eq(photoRegistry.parentId, input.parentId),
-      eq(photoRegistry.status, 'confirmed'),
-      ...(input.entityId ? [eq(photoRegistry.entityId, input.entityId)] : []),
-    ));
+  await reconcilePhotoCopyReferencesForParent({
+    app: input.app,
+    parentId: input.parentId,
+    actor: input.actor,
+  });
+  const registryRows = (await loadPhotosForParent({
+    app: input.app,
+    parentId: input.parentId,
+  })).filter((row) => !input.entityId || row.entityId === input.entityId);
   const metadataByKey = new Map(
     registryRows
       .filter((row) => row.storageKey)
       .map((row) => [row.storageKey as string, row]),
   );
   const reportPdfKeys = new Set(input.reportPdfLocalPath ? [input.reportPdfLocalPath] : []);
-  const keys = [
+  const keys = [...new Set([
     ...registryRows.map((row) => row.storageKey).filter((key): key is string => Boolean(key)),
     ...reportPdfKeys,
-  ];
+  ])];
   const files = (await Promise.all(keys.map(storageListingForKey)))
     .filter((file): file is StoredFileListing => Boolean(file));
   return files.map((file) => fileResponse(file, metadataByKey, reportPdfKeys));
@@ -159,6 +164,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
       app: 'solarsense',
       parentId: site.id,
       reportPdfLocalPath: site.reportPdfLocalPath,
+      actor: request.user,
     });
     return reply.send({ app: 'solarsense', entityType: 'site', siteRef, siteId: site.id, siteName: site.siteName, prefix, files });
   });
@@ -180,6 +186,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
       app: 'solarsense',
       parentId: assessment.siteId,
       entityId: assessment.id,
+      actor: request.user,
     });
     return reply.send({
       app: 'solarsense',
@@ -209,6 +216,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
       app: 'ecoaudit',
       parentId: audit.id,
       reportPdfLocalPath: audit.reportPdfLocalPath,
+      actor: request.user,
     });
     return reply.send({ app: 'ecoaudit', entityType: 'audit', auditRef, auditId: audit.id, auditName: audit.siteName, prefix, files });
   });

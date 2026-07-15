@@ -4,7 +4,11 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaAudits, eaZones } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, type JsonRecord } from './helpers.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, type JsonRecord } from './helpers.js';
+import {
+  reconcilePhotoCopyReferencesForParent,
+  releaseCopyReferencesForEntity,
+} from '../../storage/photoCopyReferences.js';
 
 export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
   app.get('/audits/:auditId/zones', {
@@ -27,7 +31,9 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const { auditId } = request.params as { auditId: string };
     const body = request.body as JsonRecord;
     const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const foundAudit = assertFound(audit, 'Audit');
+    assertAuditAccess(foundAudit, request.user);
+    assertDraftMutable(foundAudit, 'Audit');
     const id = randomUUID();
     const [created] = await db.insert(eaZones).values({
       id, serverId: randomUUID(), syncStatus: 'synced',
@@ -38,6 +44,7 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
       photos: Array.isArray(body.photos) ? body.photos.map(String) : [],
       createdAt: dateOrNow(body.createdAt),
     }).returning();
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: request.user });
     return reply.status(201).send(created);
   });
 
@@ -49,7 +56,8 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const [zone] = await db.select().from(eaZones).where(and(eq(eaZones.id, id), isNull(eaZones.deletedAt)));
     const found = assertFound(zone, 'Zone');
     const [audit] = await db.select().from(eaAudits).where(eq(eaAudits.id, found.auditId));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const foundAudit = assertFound(audit, 'Audit');
+    assertAuditAccess(foundAudit, request.user);
     return reply.send(found);
   });
 
@@ -62,12 +70,15 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const [zone] = await db.select().from(eaZones).where(and(eq(eaZones.id, id), isNull(eaZones.deletedAt)));
     const found = assertFound(zone, 'Zone');
     const [audit] = await db.select().from(eaAudits).where(eq(eaAudits.id, found.auditId));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const foundAudit = assertFound(audit, 'Audit');
+    assertAuditAccess(foundAudit, request.user);
+    assertDraftMutable(foundAudit, 'Audit');
     const changes: Partial<typeof eaZones.$inferInsert> = { updatedAt: new Date(), syncStatus: 'local' };
     const zn = optionalString(body, 'zoneName'); if (zn !== undefined) changes.zoneName = zn ?? found.zoneName;
     if ('zoneDescription' in body) changes.zoneDescription = optionalString(body, 'zoneDescription') ?? null;
     const photos = optionalStringArray(body, 'photos'); if (photos !== undefined) changes.photos = photos;
     const [updated] = await db.update(eaZones).set(changes).where(eq(eaZones.id, id)).returning();
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: request.user });
     return reply.send(assertFound(updated, 'Zone'));
   });
 
@@ -79,8 +90,12 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const [zone] = await db.select().from(eaZones).where(and(eq(eaZones.id, id), isNull(eaZones.deletedAt)));
     const found = assertFound(zone, 'Zone');
     const [audit] = await db.select().from(eaAudits).where(eq(eaAudits.id, found.auditId));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    const foundAudit = assertFound(audit, 'Audit');
+    assertAuditAccess(foundAudit, request.user);
+    assertDraftMutable(foundAudit, 'Audit');
     await db.update(eaZones).set({ deletedAt: new Date(), updatedAt: new Date() }).where(eq(eaZones.id, id));
+    await releaseCopyReferencesForEntity('ecoaudit', id);
     return reply.status(204).send();
   });
+
 }

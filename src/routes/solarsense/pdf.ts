@@ -14,6 +14,10 @@ import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
 import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
+import {
+  loadPhotosForParent,
+  reconcilePhotoCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
@@ -637,6 +641,9 @@ export async function runSolarSensePdfJob(
     .from(ssSites)
     .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
   if (!site) throw new Error('Site not found');
+  // Background jobs have no authenticated actor. They may remap an existing
+  // trusted grant, but reconciliation cannot create a new generic grant here.
+  await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId });
 
   const assessmentConditions: ReturnType<typeof eq>[] = [
     eq(ssRooftopAssessments.siteId, siteId),
@@ -651,14 +658,7 @@ export async function runSolarSensePdfJob(
     .where(and(...assessmentConditions))
     .orderBy(asc(ssRooftopAssessments.createdAt));
 
-  const photos = await db
-    .select()
-    .from(photoRegistry)
-    .where(and(
-      eq(photoRegistry.app, 'solarsense'),
-      eq(photoRegistry.parentId, siteId),
-      eq(photoRegistry.status, 'confirmed'),
-    ));
+  const photos = await loadPhotosForParent({ app: 'solarsense', parentId: siteId });
   const selectedPhotoEntityIds = new Set([siteId, ...assessments.map((a) => a.id)]);
   const scopedPhotos = photos.filter((p) => selectedPhotoEntityIds.has(p.entityId));
 
@@ -764,6 +764,7 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
     const foundSite = assertFound(site, 'Site');
     assertSiteAccess(foundSite, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
 
     const assessmentIds = Array.isArray(body.assessmentIds) ? body.assessmentIds.filter(Boolean) : [];
     const rawOptions = (body.options && typeof body.options === 'object' ? body.options : {}) as Record<string, unknown>;
@@ -839,14 +840,7 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       .where(and(...assessmentConditions))
       .orderBy(asc(ssRooftopAssessments.createdAt));
 
-    const photos = await db
-      .select()
-      .from(photoRegistry)
-      .where(and(
-        eq(photoRegistry.app, 'solarsense'),
-        eq(photoRegistry.parentId, siteId),
-        eq(photoRegistry.status, 'confirmed'),
-      ));
+    const photos = await loadPhotosForParent({ app: 'solarsense', parentId: siteId });
     const selectedPhotoEntityIds = new Set([
       siteId,
       ...assessments.map((assessment) => assessment.id),

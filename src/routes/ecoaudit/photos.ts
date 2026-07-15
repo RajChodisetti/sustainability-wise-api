@@ -5,8 +5,16 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess } from './helpers.js';
-import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { localFileExists, localFileStream } from '../../storage/localFiles.js';
 import { loadEcoAuditByIdOrName, loadPhotoByIdOrName } from '../../services/storageNaming.js';
+import {
+  deletePhotoUnlessReferenced,
+  hasAccessibleCopyReference,
+  loadPhotosForParent,
+  reconcilePhotoCopyReferencesForParent,
+  type PhotoRow,
+} from '../../storage/photoCopyReferences.js';
+import { conflict, notFound } from '../../utils/errors.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
@@ -21,6 +29,36 @@ async function createZipArchive(): Promise<ZipArchiveInstance> {
   return new mod.ZipArchive({ zlib: { level: 9 } });
 }
 
+function photoMetadata(photo: PhotoRow) {
+  return {
+    id: photo.id, checksum: photo.checksum, remoteUrl: photo.remoteUrl,
+    contentType: photo.contentType, originalFilename: photo.originalFilename,
+    app: photo.app, parentId: photo.parentId, entityType: photo.entityType,
+    entityId: photo.entityId, fieldName: photo.fieldName,
+    fileSizeBytes: photo.fileSizeBytes, status: photo.status,
+    uploadedAt: photo.uploadedAt, createdAt: photo.createdAt,
+  };
+}
+
+async function assertPhotoAccess(photo: PhotoRow, user: Parameters<typeof assertAuditAccess>[1]): Promise<void> {
+  const [audit] = await db.select().from(eaAudits).where(and(
+    eq(eaAudits.id, photo.parentId),
+    isNull(eaAudits.deletedAt),
+  ));
+  let directError: unknown;
+  if (audit) {
+    try {
+      assertAuditAccess(audit, user);
+      return;
+    } catch (error) {
+      directError = error;
+    }
+  }
+  if (await hasAccessibleCopyReference(photo.id, user)) return;
+  if (directError) throw directError;
+  throw notFound('Photo');
+}
+
 export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   app.get('/audits/:auditId/photos', {
     schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
@@ -29,18 +67,8 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     const { auditId: auditRef } = request.params as { auditId: string };
     const audit = await loadEcoAuditByIdOrName(auditRef);
     assertAuditAccess(audit, request.user);
-    const photos = await db.select({
-      id: photoRegistry.id, checksum: photoRegistry.checksum, remoteUrl: photoRegistry.remoteUrl,
-      contentType: photoRegistry.contentType, originalFilename: photoRegistry.originalFilename,
-      app: photoRegistry.app, parentId: photoRegistry.parentId, entityType: photoRegistry.entityType,
-      entityId: photoRegistry.entityId, fieldName: photoRegistry.fieldName,
-      fileSizeBytes: photoRegistry.fileSizeBytes, status: photoRegistry.status,
-      uploadedAt: photoRegistry.uploadedAt, createdAt: photoRegistry.createdAt,
-    }).from(photoRegistry).where(and(
-      eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, audit.id),
-      eq(photoRegistry.status, 'confirmed'),
-    ));
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
+    const photos = (await loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id })).map(photoMetadata);
     return reply.send({ auditRef, auditId: audit.id, auditName: audit.siteName, data: photos });
   });
 
@@ -51,11 +79,8 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     const { auditId: auditRef } = request.params as { auditId: string };
     const audit = await loadEcoAuditByIdOrName(auditRef);
     assertAuditAccess(audit, request.user);
-    const photos = await db.select().from(photoRegistry).where(and(
-      eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, audit.id),
-      eq(photoRegistry.status, 'confirmed'),
-    ));
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
+    const photos = await loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id });
     const archive = await createZipArchive();
     for (const photo of photos) {
       if (photo.storageKey && await localFileExists(photo.storageKey)) {
@@ -76,8 +101,7 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
     const photo = await loadPhotoByIdOrName('ecoaudit', photoId);
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, photo.parentId), isNull(eaAudits.deletedAt)));
-    assertAuditAccess(assertFound(audit, 'Audit'), request.user);
+    await assertPhotoAccess(photo, request.user);
     return reply.send(photo);
   });
 
@@ -87,8 +111,9 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
     const found = await loadPhotoByIdOrName('ecoaudit', photoId);
-    await deleteLocalFile(found.storageKey);
-    await db.delete(photoRegistry).where(eq(photoRegistry.id, found.id));
+    if (!(await deletePhotoUnlessReferenced(found))) {
+      throw conflict('Photo is still referenced by one or more copied audits');
+    }
     return reply.status(204).send();
   });
 }

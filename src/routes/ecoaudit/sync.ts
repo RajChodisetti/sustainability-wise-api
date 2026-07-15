@@ -16,6 +16,14 @@ import { deleteLocalFile, localFileExists, publicFileUrl, writeLocalFile } from 
 import { saveRecordVersion } from '../recordVersions.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 import { loadEcoEntityName, makePhotoStorageKeyFromNames } from '../../services/storageNaming.js';
+import { resolveSyncedAuditTiming } from './auditTiming.js';
+import { resolveSyncCreatedByUserId } from '../syncOwnership.js';
+import {
+  deleteOwnedPhotosUnlessReferenced,
+  reconcilePhotoCopyReferencesForParent,
+  releaseCopyReferencesForEntity,
+  releaseCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 
 function uploadUrl(sessionId: string): string {
   return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
@@ -26,21 +34,13 @@ function assertUploadSessionFresh(createdAt: Date): void {
 }
 
 async function deletePhotosForAudit(auditId: string): Promise<void> {
-  const where = and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.parentId, auditId));
-  const photos = await db.select().from(photoRegistry).where(where);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(where);
+  await releaseCopyReferencesForParent('ecoaudit', auditId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'ecoaudit', parentId: auditId });
 }
 
 async function deletePhotosForEntity(entityId: string): Promise<void> {
-  const where = and(eq(photoRegistry.app, 'ecoaudit'), eq(photoRegistry.entityId, entityId));
-  const photos = await db.select().from(photoRegistry).where(where);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(where);
+  await releaseCopyReferencesForEntity('ecoaudit', entityId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'ecoaudit', entityId });
 }
 
 export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
@@ -218,19 +218,40 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     if (existingAudit) assertAuditAccess(existingAudit, request.user);
 
     const auditServerId = existingAudit?.serverId ?? (typeof auditPayload.serverId === 'string' && auditPayload.serverId.trim() ? auditPayload.serverId : randomUUID());
+    const status = str(auditPayload.status) ?? existingAudit?.status ?? 'Draft';
+    const receivedAt = new Date();
+    const updatedAt = auditPayload.updatedAt ? dateOrNow(auditPayload.updatedAt) : receivedAt;
+    const createdAt = auditPayload.createdAt
+      ? dateOrNow(auditPayload.createdAt)
+      : (existingAudit?.createdAt ?? receivedAt);
+    const timing = resolveSyncedAuditTiming({
+      status,
+      incomingStartedAt: auditPayload.startedAt ? dateOrNow(auditPayload.startedAt) : null,
+      incomingCompletedAt: auditPayload.completedAt ? dateOrNow(auditPayload.completedAt) : null,
+      existingStartedAt: existingAudit?.startedAt,
+      existingCompletedAt: existingAudit?.completedAt,
+      createdAt,
+      updatedAt,
+    });
 
     const auditValues = {
       id: localAuditId, serverId: auditServerId, syncStatus: 'synced',
-      updatedAt: dateOrNow(auditPayload.updatedAt),
+      updatedAt,
       deletedAt: auditPayload.deletedAt ? dateOrNow(auditPayload.deletedAt) : null,
       siteName: requiredString(auditPayload, 'siteName'),
       siteAddress: requiredString(auditPayload, 'siteAddress'),
       inspectorName: requiredString(auditPayload, 'inspectorName'),
       auditDate: typeof auditPayload.auditDate === 'string' ? auditPayload.auditDate : null,
-      status: str(auditPayload.status) ?? existingAudit?.status ?? 'Draft',
-      createdByUserId: existingAudit?.createdByUserId ?? (str(auditPayload.createdByUserId) ?? request.user.userId),
+      status,
+      createdByUserId: resolveSyncCreatedByUserId({
+        existingRecord: Boolean(existingAudit),
+        existingCreatedByUserId: existingAudit?.createdByUserId,
+        incomingCreatedByUserId: auditPayload.createdByUserId,
+        actor: request.user,
+      }),
       assignedInspectorUserId: str(auditPayload.assignedInspectorUserId),
-      createdAt: dateOrNow(auditPayload.createdAt),
+      ...timing,
+      createdAt,
     };
     const { id: _aid, ...auditUpdateValues } = auditValues;
     await db.insert(eaAudits).values(auditValues as any).onConflictDoUpdate({ target: eaAudits.id, set: auditUpdateValues as any });
@@ -365,6 +386,8 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     await upsertEquipment(eaGeneralElectricity, body.generalElectricity ?? [], (item, ex) => baseCols(item, ex, {
       question: str(item.question), answer: str(item.answer), photos: arr(item.photos),
     }));
+
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: localAuditId, actor: request.user });
 
     const versionNumber = await saveRecordVersion({
       app: 'ecoaudit',

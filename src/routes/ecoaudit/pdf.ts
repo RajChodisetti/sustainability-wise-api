@@ -26,6 +26,10 @@ import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
+import {
+  loadPhotosForParent,
+  reconcilePhotoCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
@@ -1088,6 +1092,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
   const foundAudit = assertFound(audit, 'Audit');
   assertAuditAccess(foundAudit, request.user);
+  await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: request.user });
 
   const zoneConditions = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
   if (requestedZoneIds.length > 0) {
@@ -1119,11 +1124,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(photoRegistry).where(and(
-      eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, auditId),
-      eq(photoRegistry.status, 'confirmed'),
-    )).orderBy(asc(photoRegistry.createdAt)),
+    loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
   ]);
 
   const allowedPhotoEntityIds = new Set([
@@ -1216,6 +1217,9 @@ export async function runEcoAuditPdfJob(
     .from(eaAudits)
     .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
   if (!audit) throw new Error('Audit not found');
+  // Background jobs have no authenticated actor. They may remap an existing
+  // trusted grant, but reconciliation cannot create a new generic grant here.
+  await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId });
 
   const requestedZoneIds = zoneIds.filter(Boolean);
   const zoneConditions: ReturnType<typeof eq>[] = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
@@ -1247,11 +1251,7 @@ export async function runEcoAuditPdfJob(
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(photoRegistry).where(and(
-      eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.parentId, auditId),
-      eq(photoRegistry.status, 'confirmed'),
-    )).orderBy(asc(photoRegistry.createdAt)),
+    loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
   ]);
 
   const allowedPhotoEntityIds = new Set([
@@ -1364,6 +1364,11 @@ async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: Fastif
     .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
   const foundAudit = assertFound(audit, 'Audit');
   assertAuditAccess(foundAudit, request.user);
+  await reconcilePhotoCopyReferencesForParent({
+    app: 'ecoaudit',
+    parentId: auditId,
+    actor: request.user,
+  });
 
   const jobId = randomUUID();
   await db.insert(pdfJobs).values({

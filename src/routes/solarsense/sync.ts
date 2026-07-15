@@ -24,6 +24,13 @@ import {
 } from '../../storage/localFiles.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePhotoStorageKeyFromNames } from '../../services/storageNaming.js';
+import { resolveSyncCreatedByUserId, type SyncActor } from '../syncOwnership.js';
+import {
+  deleteOwnedPhotosUnlessReferenced,
+  reconcilePhotoCopyReferencesForParent,
+  releaseCopyReferencesForEntity,
+  releaseCopyReferencesForParent,
+} from '../../storage/photoCopyReferences.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -46,21 +53,13 @@ async function loadAnyAccessibleSite(siteId: string, request: { user: Parameters
 }
 
 async function deletePhotosForSite(siteId: string): Promise<void> {
-  const where = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.parentId, siteId));
-  const photos = await db.select().from(photoRegistry).where(where);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(where);
+  await releaseCopyReferencesForParent('solarsense', siteId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', parentId: siteId });
 }
 
 async function deletePhotosForAssessment(assessmentId: string): Promise<void> {
-  const where = and(eq(photoRegistry.app, 'solarsense'), eq(photoRegistry.entityId, assessmentId));
-  const photos = await db.select().from(photoRegistry).where(where);
-  for (const photo of photos) {
-    await deleteLocalFile(photo.storageKey);
-  }
-  await db.delete(photoRegistry).where(where);
+  await releaseCopyReferencesForEntity('solarsense', assessmentId);
+  await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', entityId: assessmentId });
 }
 
 function uploadUrl(sessionId: string): string {
@@ -74,7 +73,7 @@ function assertUploadSessionFresh(createdAt: Date): void {
   }
 }
 
-function siteValuesFromPayload(site: JsonRecord, userId: string, existing?: typeof ssSites.$inferSelect) {
+function siteValuesFromPayload(site: JsonRecord, actor: SyncActor, existing?: typeof ssSites.$inferSelect) {
   const id = requiredString(site, 'id');
   const serverId =
     existing?.serverId ??
@@ -97,7 +96,12 @@ function siteValuesFromPayload(site: JsonRecord, userId: string, existing?: type
     appendixItems: Array.isArray(site.appendixItems) ? site.appendixItems : [],
     reportPdfLocalPath: typeof site.reportPdfLocalPath === 'string' ? site.reportPdfLocalPath : null,
     reportPdfRemoteUrl: typeof site.reportPdfRemoteUrl === 'string' ? site.reportPdfRemoteUrl : null,
-    createdByUserId: existing?.createdByUserId ?? (typeof site.createdByUserId === 'string' ? site.createdByUserId : userId),
+    createdByUserId: resolveSyncCreatedByUserId({
+      existingRecord: Boolean(existing),
+      existingCreatedByUserId: existing?.createdByUserId,
+      incomingCreatedByUserId: site.createdByUserId,
+      actor,
+    }),
     createdAt: dateOrNow(site.createdAt),
     status: typeof site.status === 'string' ? site.status : (existing?.status ?? 'Draft'),
   };
@@ -105,7 +109,7 @@ function siteValuesFromPayload(site: JsonRecord, userId: string, existing?: type
 
 function assessmentValuesFromPayload(
   assessment: JsonRecord,
-  userId: string,
+  actor: SyncActor,
   existing?: typeof ssRooftopAssessments.$inferSelect,
 ) {
   const id = requiredString(assessment, 'id');
@@ -171,7 +175,12 @@ function assessmentValuesFromPayload(
     keyAssumptionsGaps: str('keyAssumptionsGaps'),
     additionalPhotos: Array.isArray(assessment.additionalPhotos) ? assessment.additionalPhotos : [],
     photoMetadata: assessment.photoMetadata && typeof assessment.photoMetadata === 'object' ? assessment.photoMetadata : {},
-    createdByUserId: existing?.createdByUserId ?? (typeof assessment.createdByUserId === 'string' ? assessment.createdByUserId : userId),
+    createdByUserId: resolveSyncCreatedByUserId({
+      existingRecord: Boolean(existing),
+      existingCreatedByUserId: existing?.createdByUserId,
+      incomingCreatedByUserId: assessment.createdByUserId,
+      actor,
+    }),
     createdAt: dateOrNow(assessment.createdAt),
     status: typeof assessment.status === 'string' ? assessment.status : (existing?.status ?? 'Draft'),
   };
@@ -433,7 +442,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       const localId = requiredString(site, 'id');
       const [existing] = await db.select().from(ssSites).where(eq(ssSites.id, localId));
       if (existing) assertSiteAccess(existing, request.user);
-      const values = siteValuesFromPayload(site, request.user.userId, existing);
+      const values = siteValuesFromPayload(site, request.user, existing);
       const { id: _id, ...updateValues } = values;
       await db
         .insert(ssSites)
@@ -457,7 +466,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
         .select()
         .from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, localId));
-      const values = assessmentValuesFromPayload(assessment, request.user.userId, existing);
+      const values = assessmentValuesFromPayload(assessment, request.user, existing);
       const { id: _id, ...updateValues } = values;
       await db
         .insert(ssRooftopAssessments)
@@ -479,6 +488,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
         .filter(Boolean),
     ]);
     for (const siteId of touchedSiteIds) {
+      await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
       versionNumbers[siteId] = await saveRecordVersion({
         app: 'solarsense',
         entityType: 'site',

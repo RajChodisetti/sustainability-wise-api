@@ -6,6 +6,7 @@ import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import {
   assertFound,
+  assertDraftMutable,
   assertSiteAccess,
   dateOrNow,
   optionalBoolean,
@@ -19,6 +20,10 @@ import {
   type JsonRecord,
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
+import {
+  reconcilePhotoCopyReferencesForParent,
+  releaseCopyReferencesForEntity,
+} from '../../storage/photoCopyReferences.js';
 
 type AssessmentChanges = Partial<typeof ssRooftopAssessments.$inferInsert>;
 
@@ -113,6 +118,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId } = request.params as { siteId: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
 
     const assessments = await db
       .select()
@@ -134,6 +140,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId } = request.params as { siteId: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    assertDraftMutable(site, 'Site');
 
     const body = request.body as JsonRecord;
     const id = randomUUID();
@@ -195,6 +202,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
       })
       .returning();
 
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
     return reply.status(201).send(created);
   });
 
@@ -209,6 +217,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
 
     const [assessment] = await db
       .select()
@@ -236,6 +245,17 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
 
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    assertDraftMutable(site, 'Site');
+
+    const [assessment] = await db
+      .select()
+      .from(ssRooftopAssessments)
+      .where(and(
+        eq(ssRooftopAssessments.id, id),
+        eq(ssRooftopAssessments.siteId, siteId),
+        isNull(ssRooftopAssessments.deletedAt),
+      ));
+    assertDraftMutable(assertFound(assessment, 'Assessment'), 'Assessment');
 
     const [updated] = await db
       .update(ssRooftopAssessments)
@@ -247,6 +267,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
       ))
       .returning();
 
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
     return reply.send(assertFound(updated, 'Assessment'));
   });
 
@@ -261,19 +282,31 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    assertDraftMutable(site, 'Site');
     const purge = shouldPurgeQuery(request.query as Record<string, unknown> | undefined);
     if (purge) {
       const [assessment] = await db
-        .select({ id: ssRooftopAssessments.id })
+        .select()
         .from(ssRooftopAssessments)
         .where(and(
           eq(ssRooftopAssessments.id, id),
           eq(ssRooftopAssessments.siteId, siteId),
         ));
       assertFound(assessment, 'Assessment');
+      assertDraftMutable(assessment, 'Assessment');
       await purgeSolarsenseAssessment(id);
       return reply.status(204).send();
     }
+
+    const [assessment] = await db
+      .select()
+      .from(ssRooftopAssessments)
+      .where(and(
+        eq(ssRooftopAssessments.id, id),
+        eq(ssRooftopAssessments.siteId, siteId),
+        isNull(ssRooftopAssessments.deletedAt),
+      ));
+    assertDraftMutable(assertFound(assessment, 'Assessment'), 'Assessment');
 
     const [updated] = await db
       .update(ssRooftopAssessments)
@@ -286,6 +319,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
       .returning({ id: ssRooftopAssessments.id });
 
     assertFound(updated, 'Assessment');
+    await releaseCopyReferencesForEntity('solarsense', id);
     return reply.status(204).send();
   });
 
@@ -300,6 +334,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
     assertSiteAccess(site, request.user);
+    assertDraftMutable(site, 'Site');
 
     const [updated] = await db
       .update(ssRooftopAssessments)
@@ -313,4 +348,5 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
 
     return reply.send(assertFound(updated, 'Assessment'));
   });
+
 }

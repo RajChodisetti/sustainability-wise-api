@@ -4,11 +4,21 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../../db/client.js';
 import { eaAudits, eaHvacUnits } from '../../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../../auth/middleware.js';
-import { assertFound, assertAuditAccess, dateOrNow, requiredString, str, num, arr, type JsonRecord } from '../helpers.js';
+import {
+  reconcilePhotoCopyReferencesForParent,
+  releaseCopyReferencesForEntity,
+} from '../../../storage/photoCopyReferences.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, str, num, arr, type JsonRecord } from '../helpers.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
   return a;
+}
+
+async function assertMutableAudit(id: string, user: Parameters<typeof assertAuditAccess>[1]) {
+  const audit = assertFound(await loadAudit(id), 'Audit');
+  assertAuditAccess(audit, user);
+  assertDraftMutable(audit, 'Audit');
 }
 
 export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
@@ -26,7 +36,7 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { auditId } = req.params as { auditId: string };
       const body = req.body as JsonRecord;
-      assertAuditAccess(assertFound(await loadAudit(auditId), 'Audit'), req.user);
+      await assertMutableAudit(auditId, req.user);
       const zoneId = typeof body.zoneId === 'string' ? body.zoneId : assertFound(null, 'zoneId');
       const [row] = await db.insert(T).values({
         id: randomUUID(), serverId: randomUUID(), syncStatus: 'synced', updatedAt: dateOrNow(body.updatedAt), zoneId, auditId, createdAt: dateOrNow(body.createdAt),
@@ -38,6 +48,7 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
         temperatureSensorType: str(body.temperatureSensorType), systemCoverage: str(body.systemCoverage),
         energyImprovementObservations: str(body.energyImprovementObservations), extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
       } as any).returning();
+      await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: req.user });
       return reply.status(201).send(row);
     });
 
@@ -54,7 +65,8 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { id } = req.params as { id: string };
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
-      assertAuditAccess(assertFound(await loadAudit(assertFound(row, label).auditId), 'Audit'), req.user);
+      const found = assertFound(row, label);
+      await assertMutableAudit(found.auditId, req.user);
       const body = req.body as JsonRecord;
       const c: Record<string, unknown> = { updatedAt: new Date(), syncStatus: 'local' };
       if ('unitName' in body) c.unitName = requiredString(body, 'unitName');
@@ -62,6 +74,7 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
       for (const k of ['heatingCapacityKw','coolingCapacityKw']) if (k in body) c[k] = num(body[k]);
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);
       const [updated] = await db.update(T).set(c as any).where(eq(T.id, id)).returning();
+      await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: req.user });
       return reply.send(assertFound(updated, label));
     });
 
@@ -69,8 +82,10 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const { id } = req.params as { id: string };
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
-      assertAuditAccess(assertFound(await loadAudit(assertFound(row, label).auditId), 'Audit'), req.user);
+      const found = assertFound(row, label);
+      await assertMutableAudit(found.auditId, req.user);
       await db.update(T).set({ deletedAt: new Date(), updatedAt: new Date() }).where(eq(T.id, id));
+      await releaseCopyReferencesForEntity('ecoaudit', id);
       return reply.status(204).send();
     });
 }

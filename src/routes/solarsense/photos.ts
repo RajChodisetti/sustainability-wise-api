@@ -5,8 +5,16 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import { ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
-import { deleteLocalFile, localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { localFileExists, localFileStream } from '../../storage/localFiles.js';
 import { loadPhotoByIdOrName, loadSolarsenseSiteByIdOrName } from '../../services/storageNaming.js';
+import {
+  deletePhotoUnlessReferenced,
+  hasAccessibleCopyReference,
+  loadPhotosForParent,
+  reconcilePhotoCopyReferencesForParent,
+  type PhotoRow,
+} from '../../storage/photoCopyReferences.js';
+import { conflict, notFound } from '../../utils/errors.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
@@ -23,6 +31,44 @@ async function createZipArchive(): Promise<ZipArchiveInstance> {
 
 async function loadSite(siteId: string) {
   return loadSolarsenseSiteByIdOrName(siteId);
+}
+
+function photoMetadata(photo: PhotoRow) {
+  return {
+    id: photo.id,
+    checksum: photo.checksum,
+    remoteUrl: photo.remoteUrl,
+    contentType: photo.contentType,
+    originalFilename: photo.originalFilename,
+    app: photo.app,
+    parentId: photo.parentId,
+    entityType: photo.entityType,
+    entityId: photo.entityId,
+    fieldName: photo.fieldName,
+    fileSizeBytes: photo.fileSizeBytes,
+    status: photo.status,
+    uploadedAt: photo.uploadedAt,
+    createdAt: photo.createdAt,
+  };
+}
+
+async function assertPhotoAccess(photo: PhotoRow, user: Parameters<typeof assertSiteAccess>[1]): Promise<void> {
+  const [site] = await db
+    .select()
+    .from(ssSites)
+    .where(and(eq(ssSites.id, photo.parentId), isNull(ssSites.deletedAt)));
+  let directError: unknown;
+  if (site) {
+    try {
+      assertSiteAccess(site, user);
+      return;
+    } catch (error) {
+      directError = error;
+    }
+  }
+  if (await hasAccessibleCopyReference(photo.id, user)) return;
+  if (directError) throw directError;
+  throw notFound('Photo');
 }
 
 function zipEntryName(photo: typeof photoRegistry.$inferSelect): string {
@@ -47,30 +93,9 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     const { siteId: siteRef } = request.params as { siteId: string };
     const site = await loadSite(siteRef);
     assertSiteAccess(site, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
 
-    const photos = await db
-      .select({
-        id: photoRegistry.id,
-        checksum: photoRegistry.checksum,
-        remoteUrl: photoRegistry.remoteUrl,
-        contentType: photoRegistry.contentType,
-        originalFilename: photoRegistry.originalFilename,
-        app: photoRegistry.app,
-        parentId: photoRegistry.parentId,
-        entityType: photoRegistry.entityType,
-        entityId: photoRegistry.entityId,
-        fieldName: photoRegistry.fieldName,
-        fileSizeBytes: photoRegistry.fileSizeBytes,
-        status: photoRegistry.status,
-        uploadedAt: photoRegistry.uploadedAt,
-        createdAt: photoRegistry.createdAt,
-      })
-      .from(photoRegistry)
-      .where(and(
-        eq(photoRegistry.app, 'solarsense'),
-        eq(photoRegistry.parentId, site.id),
-        eq(photoRegistry.status, 'confirmed'),
-      ));
+    const photos = (await loadPhotosForParent({ app: 'solarsense', parentId: site.id })).map(photoMetadata);
 
     return reply.send({ siteRef, siteId: site.id, siteName: site.siteName, data: photos });
   });
@@ -86,15 +111,9 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     const { siteId: siteRef } = request.params as { siteId: string };
     const site = await loadSite(siteRef);
     assertSiteAccess(site, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
 
-    const photos = await db
-      .select()
-      .from(photoRegistry)
-      .where(and(
-        eq(photoRegistry.app, 'solarsense'),
-        eq(photoRegistry.parentId, site.id),
-        eq(photoRegistry.status, 'confirmed'),
-      ));
+    const photos = await loadPhotosForParent({ app: 'solarsense', parentId: site.id });
 
     const archive = await createZipArchive();
     for (const photo of photos) {
@@ -120,12 +139,7 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
     const photo = await loadPhotoByIdOrName('solarsense', photoId);
-    const [site] = await db
-      .select()
-      .from(ssSites)
-      .where(and(eq(ssSites.id, photo.parentId), isNull(ssSites.deletedAt)));
-    const foundSite = assertFound(site, 'Site');
-    assertSiteAccess(foundSite, request.user);
+    await assertPhotoAccess(photo, request.user);
     return reply.send(photo);
   });
 
@@ -140,8 +154,9 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
     const { photoId } = request.params as { photoId: string };
     const found = await loadPhotoByIdOrName('solarsense', photoId);
 
-    await deleteLocalFile(found.storageKey);
-    await db.delete(photoRegistry).where(eq(photoRegistry.id, found.id));
+    if (!(await deletePhotoUnlessReferenced(found))) {
+      throw conflict('Photo is still referenced by one or more copied sites');
+    }
 
     return reply.status(204).send();
   });
