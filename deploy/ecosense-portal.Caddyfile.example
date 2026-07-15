@@ -1,7 +1,20 @@
-# Optional dedicated virtual host for the EcoSense portal.
-# Add this block to the active Caddy configuration only after DNS for the
-# chosen portal hostname points to the server.
-portal.sustainabilitywise.com.au {
+# Replace the existing api.sustainabilitywise.com.au block with this shared-host
+# configuration. /portal is the stable entry endpoint; the existing /v1 and
+# /health API traffic continues to the API through the explicit API handler.
+api.sustainabilitywise.com.au {
     encode zstd gzip
-    reverse_proxy 127.0.0.1:3210
+
+    @portal_entry path /portal /portal/
+    handle @portal_entry {
+        redir / 308
+    }
+
+    @api path /health /v1 /v1/*
+    handle @api {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3210
+    }
 }
