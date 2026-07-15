@@ -43,6 +43,13 @@
       "when": 1780993000000,
       "tag": "0005_ecoaudit_photo_descs",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1781400000000,
+      "tag": "0006_ea_audit_timing",
+      "breakpoints": true
     }
   ]
 }

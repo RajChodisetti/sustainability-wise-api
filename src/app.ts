@@ -11,8 +11,9 @@ import { solarsenseRoutes } from './routes/solarsense/index.js';
 import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
-import { AppError } from './utils/errors.js';
+import { AppError, notFound } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
+import { resolveExistingStorageKey } from './storage/resolveStorageKey.js';
 import { config } from './config.js';
 
 const tagMap: Record<string, string> = {
@@ -289,7 +290,9 @@ export async function buildApp() {
       summary: 'Download a locally stored file by storage key',
     },
   }, async (request, reply) => {
-    const storageKey = (request.params as { '*': string })['*'];
+    const rawKey = (request.params as { '*': string })['*'];
+    const storageKey = await resolveExistingStorageKey(rawKey);
+    if (!storageKey) throw notFound('File');
     const size = await localFileSize(storageKey);
     const stream = await localFileStream(storageKey);
     return reply

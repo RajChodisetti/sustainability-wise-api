@@ -30,6 +30,8 @@ export const eaAudits = pgTable('ea_audits', {
   reportPdfRemoteUrl: text('report_pdf_remote_url'),
   createdByUserId: text('created_by_user_id'),
   assignedInspectorUserId: text('assigned_inspector_user_id'),
+  startedAt: timestamp('started_at'),
+  completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 

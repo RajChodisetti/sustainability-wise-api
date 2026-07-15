@@ -219,6 +219,16 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
 
     const auditServerId = existingAudit?.serverId ?? (typeof auditPayload.serverId === 'string' && auditPayload.serverId.trim() ? auditPayload.serverId : randomUUID());
 
+    const status = str(auditPayload.status) ?? existingAudit?.status ?? 'Draft';
+    const createdAt = dateOrNow(auditPayload.createdAt);
+    const startedAt = auditPayload.startedAt
+      ? dateOrNow(auditPayload.startedAt)
+      : (existingAudit?.startedAt ?? null);
+    const completedAt = auditPayload.completedAt
+      ? dateOrNow(auditPayload.completedAt)
+      : (status === 'Completed'
+        ? (existingAudit?.completedAt ?? dateOrNow(auditPayload.updatedAt) ?? new Date())
+        : (existingAudit?.completedAt ?? null));
     const auditValues = {
       id: localAuditId, serverId: auditServerId, syncStatus: 'synced',
       updatedAt: dateOrNow(auditPayload.updatedAt),
@@ -227,10 +237,12 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       siteAddress: requiredString(auditPayload, 'siteAddress'),
       inspectorName: requiredString(auditPayload, 'inspectorName'),
       auditDate: typeof auditPayload.auditDate === 'string' ? auditPayload.auditDate : null,
-      status: str(auditPayload.status) ?? existingAudit?.status ?? 'Draft',
+      status,
       createdByUserId: existingAudit?.createdByUserId ?? (str(auditPayload.createdByUserId) ?? request.user.userId),
       assignedInspectorUserId: str(auditPayload.assignedInspectorUserId),
-      createdAt: dateOrNow(auditPayload.createdAt),
+      startedAt,
+      completedAt: status === 'Completed' ? completedAt : null,
+      createdAt,
     };
     const { id: _aid, ...auditUpdateValues } = auditValues;
     await db.insert(eaAudits).values(auditValues as any).onConflictDoUpdate({ target: eaAudits.id, set: auditUpdateValues as any });

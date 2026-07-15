@@ -39,6 +39,7 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const body = request.body as JsonRecord;
     const id = randomUUID();
+    const createdAt = dateOrNow(body.createdAt);
     const [created] = await db.insert(eaAudits).values({
       id,
       serverId: randomUUID(),
@@ -51,7 +52,9 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       status: typeof body.status === 'string' ? body.status : 'Draft',
       createdByUserId: request.user.userId,
       assignedInspectorUserId: typeof body.assignedInspectorUserId === 'string' ? body.assignedInspectorUserId : null,
-      createdAt: dateOrNow(body.createdAt),
+      startedAt: body.startedAt ? dateOrNow(body.startedAt) : null,
+      completedAt: body.completedAt ? dateOrNow(body.completedAt) : null,
+      createdAt,
     }).returning();
     return reply.status(201).send(created);
   });
@@ -107,6 +110,24 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(204).send();
   });
 
+  app.patch('/:id/start', {
+    schema: { tags: ['EcoAudit Audits'], security: [{ bearerAuth: [] }] },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
+    const found = assertFound(audit, 'Audit');
+    assertAuditAccess(found, request.user);
+    if (found.status === 'Completed') throw badRequest('Cannot start a completed audit');
+    const now = new Date();
+    const [updated] = await db.update(eaAudits).set({
+      startedAt: now,
+      updatedAt: now,
+      syncStatus: 'local',
+    }).where(eq(eaAudits.id, id)).returning();
+    return reply.send(assertFound(updated, 'Audit'));
+  });
+
   app.patch('/:id/complete', {
     schema: { tags: ['EcoAudit Audits'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
@@ -115,7 +136,14 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
     const found = assertFound(audit, 'Audit');
     assertAuditAccess(found, request.user);
-    const [updated] = await db.update(eaAudits).set({ status: 'Completed', updatedAt: new Date(), syncStatus: 'local' }).where(eq(eaAudits.id, id)).returning();
+    const now = new Date();
+    const [updated] = await db.update(eaAudits).set({
+      status: 'Completed',
+      startedAt: found.startedAt ?? found.createdAt ?? now,
+      completedAt: now,
+      updatedAt: now,
+      syncStatus: 'local',
+    }).where(eq(eaAudits.id, id)).returning();
     return reply.send(assertFound(updated, 'Audit'));
   });
 }
