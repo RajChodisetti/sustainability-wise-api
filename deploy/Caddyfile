@@ -11,7 +11,7 @@ api.sustainabilitywise.com.au {
     # Stable public entry point for the combined EcoSense portal.
     @portal_entry path /portal /portal/
     handle @portal_entry {
-        redir / 308
+        redir * / 308
     }
 
     # Preserve the existing API surface exactly; all remaining routes belong to

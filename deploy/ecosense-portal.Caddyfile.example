@@ -6,7 +6,7 @@ api.sustainabilitywise.com.au {
 
     @portal_entry path /portal /portal/
     handle @portal_entry {
-        redir / 308
+        redir * / 308
     }
 
     @api path /health /v1 /v1/*
