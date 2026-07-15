@@ -14,6 +14,7 @@ import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { thumbnailRoutes } from './routes/thumbnails.js';
 import { AppError } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
+import { resolveConfirmedPhotoReference } from './storage/photoRegistryReferences.js';
 import { config } from './config.js';
 
 const tagMap: Record<string, string> = {
@@ -285,18 +286,32 @@ export async function buildApp() {
 
   // Public-by-URL file serving for local disk or Spaces-backed storage.
   app.get('/v1/files/*', {
+    config: {
+      // Local PDF generation can resolve every original in a large audit.
+      rateLimit: { max: 2_000, timeWindow: '1 minute' },
+    },
     schema: {
       tags: ['Files'],
       summary: 'Download a locally stored file by storage key',
     },
   }, async (request, reply) => {
     const storageKey = (request.params as { '*': string })['*'];
-    const size = await localFileSize(storageKey);
-    const stream = await localFileStream(storageKey);
+    let resolvedStorageKey = storageKey;
+    let size: number;
+    try {
+      size = await localFileSize(resolvedStorageKey);
+    } catch (error) {
+      if (!(error instanceof AppError) || error.statusCode !== 404) throw error;
+      const photo = await resolveConfirmedPhotoReference(storageKey);
+      if (!photo) throw error;
+      resolvedStorageKey = photo.storageKey;
+      size = await localFileSize(resolvedStorageKey);
+    }
+    const stream = await localFileStream(resolvedStorageKey);
     return reply
       .header('Content-Length', String(size))
       .header('Cache-Control', 'private, max-age=86400')
-      .type(contentTypeForStorageKey(storageKey))
+      .type(contentTypeForStorageKey(resolvedStorageKey))
       .send(stream);
   });
 

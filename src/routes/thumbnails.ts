@@ -3,29 +3,24 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { authenticate, requireRole, type AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
-import { photoRegistry } from '../db/schema/shared.js';
 import { ssSites } from '../db/schema/solarsense.js';
 import { assertAuditAccess } from './ecoaudit/helpers.js';
 import { assertSiteAccess } from './solarsense/helpers.js';
 import { localFileStream } from '../storage/localFiles.js';
+import {
+  resolveConfirmedPhotoReference,
+  type ConfirmedPhotoReference,
+} from '../storage/photoRegistryReferences.js';
 import { ensurePhotoThumbnail } from '../storage/thumbnails.js';
 import { thumbnailEtagForChecksum } from '../storage/thumbnailReference.js';
 import { notFound } from '../utils/errors.js';
 
-type ConfirmedPhoto = typeof photoRegistry.$inferSelect & { storageKey: string };
-
-async function loadAuthorizedPhoto(storageKey: string, user: AuthUser): Promise<ConfirmedPhoto> {
-  const [photo] = await db
-    .select()
-    .from(photoRegistry)
-    .where(and(
-      eq(photoRegistry.storageKey, storageKey),
-      eq(photoRegistry.app, user.app),
-      eq(photoRegistry.status, 'confirmed'),
-    ))
-    .limit(1);
-
-  if (!photo?.storageKey) throw notFound('Photo');
+async function loadAuthorizedPhoto(
+  storageKey: string,
+  user: AuthUser,
+): Promise<ConfirmedPhotoReference> {
+  const photo = await resolveConfirmedPhotoReference(storageKey, user.app);
+  if (!photo) throw notFound('Photo');
 
   if (user.app === 'ecoaudit') {
     const [audit] = await db
@@ -45,7 +40,7 @@ async function loadAuthorizedPhoto(storageKey: string, user: AuthUser): Promise<
     assertSiteAccess(site, user);
   }
 
-  return photo as ConfirmedPhoto;
+  return photo;
 }
 
 function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
@@ -58,6 +53,11 @@ function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
 
 export async function thumbnailRoutes(app: FastifyInstance): Promise<void> {
   app.get('/v1/thumbnails/*', {
+    config: {
+      // A single imported audit can legitimately enqueue hundreds of previews.
+      // Keep abuse protection while avoiding the much lower global API limit.
+      rateLimit: { max: 5_000, timeWindow: '1 minute' },
+    },
     schema: {
       tags: ['Files'],
       summary: 'Download a cached 400px thumbnail for an authenticated photo reference',
