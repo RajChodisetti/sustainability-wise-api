@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   eaAdditionalSwitchboards,
@@ -30,7 +30,6 @@ import {
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
 import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
-import { resolveCompletionTiming, resolveSyncedAuditTiming } from './auditTiming.js';
 import {
   ecoPhotoValues,
   ecoPhotoFieldReferences,
@@ -151,13 +150,6 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const receivedAt = new Date();
     const createdAt = body.createdAt ? dateOrNow(body.createdAt) : receivedAt;
     const updatedAt = body.updatedAt ? dateOrNow(body.updatedAt) : receivedAt;
-    const timing = resolveSyncedAuditTiming({
-      status,
-      incomingStartedAt: body.startedAt ? dateOrNow(body.startedAt) : null,
-      incomingCompletedAt: body.completedAt ? dateOrNow(body.completedAt) : null,
-      createdAt,
-      updatedAt,
-    });
     const [created] = await db.insert(eaAudits).values({
       id,
       serverId: randomUUID(),
@@ -170,7 +162,6 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       status,
       createdByUserId: request.user.userId,
       assignedInspectorUserId: typeof body.assignedInspectorUserId === 'string' ? body.assignedInspectorUserId : null,
-      ...timing,
       createdAt,
     }).returning();
     return reply.status(201).send(created);
@@ -230,7 +221,11 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.patch('/:id/start', {
-    schema: { tags: ['EcoAudit Audits'], security: [{ bearerAuth: [] }] },
+    schema: {
+      tags: ['EcoAudit Audits'],
+      security: [{ bearerAuth: [] }],
+      summary: 'Compatibility no-op; audit timing is no longer tracked',
+    },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
@@ -238,18 +233,7 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const found = assertFound(audit, 'Audit');
     assertAuditAccess(found, request.user);
     if (found.status === 'Completed') throw badRequest('Cannot start a completed audit');
-    if (found.startedAt) return reply.send(found);
-
-    const now = new Date();
-    const [updated] = await db.update(eaAudits).set({
-      startedAt: now,
-      updatedAt: now,
-      syncStatus: 'local',
-    }).where(and(eq(eaAudits.id, id), isNull(eaAudits.startedAt))).returning();
-
-    if (updated) return reply.send(updated);
-    const [concurrentlyStarted] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
-    return reply.send(assertFound(concurrentlyStarted, 'Audit'));
+    return reply.send(found);
   });
 
   app.patch('/:id/complete', {
@@ -261,11 +245,8 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const found = assertFound(audit, 'Audit');
     assertAuditAccess(found, request.user);
     const now = new Date();
-    const timing = resolveCompletionTiming(found, now);
     const [updated] = await db.update(eaAudits).set({
       status: 'Completed',
-      startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${timing.startedAt})`,
-      completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${timing.completedAt})`,
       updatedAt: now,
       syncStatus: 'local',
     }).where(eq(eaAudits.id, id)).returning();
@@ -292,8 +273,6 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
         createdByUserId: request.user.userId,
         reportPdfLocalPath: null,
         reportPdfRemoteUrl: null,
-        startedAt: null,
-        completedAt: null,
       }) as typeof eaAudits.$inferInsert).returning();
       const targetAudit = assertFound(copiedAudit, 'Copied audit');
 

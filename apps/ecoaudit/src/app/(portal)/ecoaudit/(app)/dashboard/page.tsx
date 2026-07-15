@@ -1,13 +1,13 @@
 'use client';
 
+import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { listAudits } from '@/api/audits';
-import { Card, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
-import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
+import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@/api/client';
-import { ErrorBanner } from '@/components/ui/Card';
 import { LinkButton } from '@/components/ui/Button';
-import { EquipmentIcon, Icon } from '@/components/ui/Icon';
+import { StatusBadge } from '@/components/ui/Badges';
+import { Icon } from '@/components/ui/Icon';
 
 export default function DashboardPage() {
   const auditsQuery = useQuery({ queryKey: ['audits'], queryFn: listAudits });
@@ -23,7 +23,7 @@ export default function DashboardPage() {
     <div>
       <PageHeader
         title="Eco Audit dashboard"
-        subtitle="Track audit progress and the equipment categories captured across your sites."
+        subtitle="Track audit progress and open any site audit from one place."
         actions={<LinkButton href="/ecoaudit/audits/new"><Icon name="plus" size={18} />New audit</LinkButton>}
       />
       <div className="mb-7 grid gap-4 sm:grid-cols-3">
@@ -31,22 +31,38 @@ export default function DashboardPage() {
         <StatCard label="Draft" value={draft} icon="file-text" tone="warning" />
         <StatCard label="Completed" value={completed} icon="check" tone="success" />
       </div>
-      <Card>
-        <div className="mb-5">
-          <h2 className="text-lg font-extrabold tracking-[-0.02em] text-[var(--text)]">Equipment types</h2>
-          <p className="mt-1 text-sm text-[var(--text-sub)]">Open an audit to add zones and equipment records.</p>
+      <section aria-labelledby="dashboard-audits-heading">
+        <div className="mb-4">
+          <h2 id="dashboard-audits-heading" className="text-lg font-extrabold tracking-[-0.02em] text-[var(--text)]">
+            Audits
+          </h2>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">Open an audit to review its site, zones, equipment, photos, and report.</p>
         </div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {EQUIPMENT_TYPES.map((t) => (
-            <div key={t.slug} className="flex min-h-14 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] px-4 py-3 text-sm font-semibold text-[var(--text)]">
-              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]">
-                <EquipmentIcon slug={t.slug} />
-              </span>
-              {t.label}
-            </div>
-          ))}
-        </div>
-      </Card>
+        {audits.length === 0 ? (
+          <EmptyState
+            title="No audits yet"
+            description="Create your first energy audit."
+            actions={<LinkButton href="/ecoaudit/audits/new"><Icon name="plus" size={18} />New audit</LinkButton>}
+          />
+        ) : (
+          <div className="space-y-3">
+            {audits.map((audit) => (
+              <Link key={audit.id} href={`/ecoaudit/audits/${audit.id}`} className="block">
+                <Card className="interactive-card">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="break-words font-extrabold text-[var(--text)]">{audit.siteName}</p>
+                      <p className="mt-1 break-words text-sm text-[var(--text-sub)]">{audit.siteAddress}</p>
+                      <p className="mt-2 text-xs font-medium text-[var(--muted)]">Inspector: {audit.inspectorName}</p>
+                    </div>
+                    <StatusBadge status={audit.status} />
+                  </div>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   );
 }

@@ -17,8 +17,6 @@ export type Audit = {
   reportPdfRemoteUrl?: string | null;
   createdByUserId?: string | null;
   assignedInspectorUserId?: string | null;
-  startedAt?: string | null;
-  completedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
   syncStatus?: string;

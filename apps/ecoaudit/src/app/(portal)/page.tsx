@@ -1,6 +1,10 @@
+'use client';
+
 import Link from 'next/link';
 import { Card } from '@/components/ui/Card';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { usePortalAuth } from '@/contexts/PortalAuthContext';
+import { PORTAL_FEATURES } from '@/lib/portalFeatures';
 
 const apps: Array<{
   href: string;
@@ -9,6 +13,7 @@ const apps: Array<{
   description: string;
   icon: IconName;
   tone: string;
+  access?: 'ecoaudit' | 'solarsense';
   soon?: boolean;
 }> = [
   {
@@ -18,6 +23,7 @@ const apps: Array<{
     description: 'Site energy audits, zones, equipment, photos, and PDF reports.',
     icon: 'leaf',
     tone: 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300',
+    access: 'ecoaudit',
   },
   {
     href: '/solar/dashboard',
@@ -26,6 +32,7 @@ const apps: Array<{
     description: 'Solar sites, assessments, photo packs, and cloud backup.',
     icon: 'sun',
     tone: 'bg-amber-500/12 text-amber-700 dark:text-amber-300',
+    access: 'solarsense',
   },
   {
     href: '/field',
@@ -39,6 +46,15 @@ const apps: Array<{
 ];
 
 export default function PortalHomePage() {
+  const { eaUser, ssUser } = usePortalAuth();
+  const visibleApps = apps.filter((app) => {
+    if (app.access === 'ecoaudit') return Boolean(eaUser);
+    if (app.access === 'solarsense') {
+      return PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
+    }
+    return true;
+  });
+
   return (
     <div>
       <section className="relative mb-8 overflow-hidden rounded-[var(--radius-lg)] border border-[var(--border)] bg-[var(--surface)] px-5 py-8 shadow-[var(--shadow-xs)] sm:px-8 sm:py-10 lg:px-10">
@@ -49,7 +65,7 @@ export default function PortalHomePage() {
             Welcome to EcoSense Portal
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--text-sub)] sm:text-base">
-            Choose a workspace to continue your sustainability audits, solar assessments, scheduling, and field operations.
+            Choose a workspace to continue your sustainability audits, scheduling, and field operations.
           </p>
         </div>
       </section>
@@ -62,7 +78,7 @@ export default function PortalHomePage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {apps.map((app) => (
+        {visibleApps.map((app) => (
           <Link key={app.href} href={app.href} className="group block rounded-[var(--radius-md)]">
             <Card className="interactive-card h-full !p-5 sm:!p-6">
               <div className="flex h-full min-h-44 flex-col">

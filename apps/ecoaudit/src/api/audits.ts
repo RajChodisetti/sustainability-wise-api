@@ -17,10 +17,6 @@ export function updateAudit(id: string, body: Partial<Audit>): Promise<Audit> {
   return request<Audit>('PATCH', `/v1/ecoaudit/audits/${encodeURIComponent(id)}`, body);
 }
 
-export function startAudit(id: string): Promise<Audit> {
-  return request<Audit>('PATCH', `/v1/ecoaudit/audits/${encodeURIComponent(id)}/start`);
-}
-
 export function completeAudit(id: string): Promise<Audit> {
   return request<Audit>('PATCH', `/v1/ecoaudit/audits/${encodeURIComponent(id)}/complete`);
 }

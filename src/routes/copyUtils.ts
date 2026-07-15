@@ -12,8 +12,6 @@ const defaultBlockedCopyKeys = new Set([
   'createdByUserId',
   'reportPdfLocalPath',
   'reportPdfRemoteUrl',
-  'startedAt',
-  'completedAt',
 ]);
 
 function hasOwn(record: DbRecord, key: string): boolean {

@@ -16,7 +16,7 @@ import { deleteLocalFile, localFileExists, publicFileUrl, writeLocalFile } from 
 import { saveRecordVersion } from '../recordVersions.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 import { loadEcoEntityName, makePhotoStorageKeyFromNames } from '../../services/storageNaming.js';
-import { resolveSyncedAuditTiming } from './auditTiming.js';
+import { sanitizeEcoAuditSnapshot } from './auditSnapshot.js';
 import { resolveSyncCreatedByUserId } from '../syncOwnership.js';
 import {
   deleteOwnedPhotosUnlessReferenced,
@@ -224,15 +224,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const createdAt = auditPayload.createdAt
       ? dateOrNow(auditPayload.createdAt)
       : (existingAudit?.createdAt ?? receivedAt);
-    const timing = resolveSyncedAuditTiming({
-      status,
-      incomingStartedAt: auditPayload.startedAt ? dateOrNow(auditPayload.startedAt) : null,
-      incomingCompletedAt: auditPayload.completedAt ? dateOrNow(auditPayload.completedAt) : null,
-      existingStartedAt: existingAudit?.startedAt,
-      existingCompletedAt: existingAudit?.completedAt,
-      createdAt,
-      updatedAt,
-    });
+    const versionSnapshot = sanitizeEcoAuditSnapshot(body);
 
     const auditValues = {
       id: localAuditId, serverId: auditServerId, syncStatus: 'synced',
@@ -250,7 +242,6 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         actor: request.user,
       }),
       assignedInspectorUserId: str(auditPayload.assignedInspectorUserId),
-      ...timing,
       createdAt,
     };
     const { id: _aid, ...auditUpdateValues } = auditValues;
@@ -261,7 +252,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         app: 'ecoaudit',
         entityType: 'audit',
         entityId: localAuditId,
-        snapshot: body,
+        snapshot: versionSnapshot,
         userId: request.user.userId,
       });
       return reply.send({ auditId: localAuditId, serverId: auditServerId, versionNumber });
@@ -393,7 +384,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       app: 'ecoaudit',
       entityType: 'audit',
       entityId: localAuditId,
-      snapshot: body,
+      snapshot: versionSnapshot,
       userId: request.user.userId,
     });
 

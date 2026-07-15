@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { completeAudit, deleteAudit, getAudit, startAudit } from '@/api/audits';
+import { completeAudit, deleteAudit, getAudit } from '@/api/audits';
 import { listZones } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
@@ -11,13 +11,6 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
-import {
-  formatDateTime,
-  formatDuration,
-  getAuditCompletedAt,
-  getAuditDurationMs,
-  getAuditStartedAt,
-} from '@/lib/auditTiming';
 import { EquipmentIcon, Icon } from '@/components/ui/Icon';
 
 export default function AuditDetailPage() {
@@ -35,10 +28,6 @@ export default function AuditDetailPage() {
   const audit = auditQuery.data!;
   const zones = zonesQuery.data?.data ?? [];
   const isCompleted = audit.status === 'Completed';
-  const startedAt = getAuditStartedAt(audit);
-  const completedAt = getAuditCompletedAt(audit);
-  const durationMs = getAuditDurationMs(audit);
-  const needsStart = !isCompleted && !audit.startedAt;
 
   async function refresh() {
     await Promise.all([
@@ -46,16 +35,6 @@ export default function AuditDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['zones', auditId] }),
       queryClient.invalidateQueries({ queryKey: ['audits'] }),
     ]);
-  }
-
-  async function handleStart() {
-    try {
-      await startAudit(auditId);
-      await refresh();
-      toast.success('Audit started. Timer is running.');
-    } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
-    }
   }
 
   async function handleComplete() {
@@ -90,7 +69,6 @@ export default function AuditDetailPage() {
             {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/edit`} variant="secondary">Edit</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}/photos`} variant="secondary"><Icon name="camera" size={17} />Photos</LinkButton>
             <LinkButton href={`/ecoaudit/audits/${auditId}/report`} variant="secondary"><Icon name="file-text" size={17} />Report PDF</LinkButton>
-            {needsStart ? <Button variant="secondary" onClick={() => void handleStart()}>Start</Button> : null}
             {!isCompleted ? <Button onClick={() => void handleComplete()}>Complete</Button> : null}
             <Button variant="danger" onClick={() => void handleDelete()}>Delete</Button>
           </>
@@ -102,9 +80,6 @@ export default function AuditDetailPage() {
           <h2 className="mb-2 font-semibold">Audit details</h2>
           <p className="text-sm"><span className="text-[var(--text-sub)]">Inspector:</span> {audit.inspectorName}</p>
           <p className="text-sm"><span className="text-[var(--text-sub)]">Date:</span> {audit.auditDate ?? '—'}</p>
-          <p className="mt-2 text-sm"><span className="text-[var(--text-sub)]">Started:</span> {formatDateTime(startedAt)}</p>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Completed:</span> {formatDateTime(completedAt)}</p>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Time spent:</span> {formatDuration(durationMs)}{!isCompleted && startedAt ? ' (in progress)' : ''}</p>
         </Card>
         <Card>
           <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
