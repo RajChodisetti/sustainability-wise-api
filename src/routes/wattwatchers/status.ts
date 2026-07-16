@@ -38,7 +38,7 @@ export function classifyFleetObservation(input: {
   if (input.fetchStatus !== 'ok') {
     return { status: 'unknown', reportOffline: false, communicationAgeSeconds: null };
   }
-  if (input.uninitialised || !input.lastHeardAt) {
+  if (!input.lastHeardAt) {
     return { status: 'inactive', reportOffline: false, communicationAgeSeconds: null };
   }
 
@@ -50,11 +50,17 @@ export function classifyFleetObservation(input: {
   const offlineSeconds = input.thresholds.offlineThresholdMinutes * 60;
   const reportOfflineSeconds = input.thresholds.reportOfflineThresholdHours * 60 * 60;
 
-  const status: FleetStatus = communicationAgeSeconds >= offlineSeconds
-    ? 'offline'
-    : communicationAgeSeconds >= delayedSeconds
-      ? 'delayed'
-      : 'communicating';
+  // Live connectivity keeps uninitialised devices in the inactive cohort, but
+  // the daily report flag deliberately follows the legacy email definition:
+  // any usable heartbeat older than the report threshold belongs to that
+  // cohort, independently of its live-status label.
+  const status: FleetStatus = input.uninitialised
+    ? 'inactive'
+    : communicationAgeSeconds >= offlineSeconds
+      ? 'offline'
+      : communicationAgeSeconds >= delayedSeconds
+        ? 'delayed'
+        : 'communicating';
 
   return {
     status,

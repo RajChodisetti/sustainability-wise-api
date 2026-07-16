@@ -37,10 +37,20 @@ test('connectivity uses lastHeardAt thresholds and a distinct report cohort', ()
   assert.equal(offline.reportOffline, true);
 });
 
-test('uninitialised is inactive while failed fetch is unknown', () => {
-  assert.equal(classifyFleetObservation({
+test('uninitialised stays inactive while retaining the legacy email cohort rule', () => {
+  const neverHeard = classifyFleetObservation({
     fetchStatus: 'ok', uninitialised: true, observedAt, lastHeardAt: null, thresholds,
-  }).status, 'inactive');
+  });
+  assert.equal(neverHeard.status, 'inactive');
+  assert.equal(neverHeard.reportOffline, false);
+
+  const oldHeartbeat = classifyFleetObservation({
+    fetchStatus: 'ok', uninitialised: true, observedAt,
+    lastHeardAt: new Date(observedAt.getTime() - 25 * 60 * 60_000), thresholds,
+  });
+  assert.equal(oldHeartbeat.status, 'inactive');
+  assert.equal(oldHeartbeat.reportOffline, true);
+
   assert.equal(classifyFleetObservation({
     fetchStatus: 'error', uninitialised: false, observedAt, lastHeardAt: null, thresholds,
   }).status, 'unknown');
