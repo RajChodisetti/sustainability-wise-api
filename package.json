@@ -1,7 +1,7 @@
 {
   "name": "sustainability-wise-api",
   "version": "1.0.0",
-  "description": "Unified API server for EcoAudit Pro and SolarSense",
+  "description": "Unified API server for EcoAudit Pro, SolarSense, and Wattwatchers Fleet",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -11,6 +11,7 @@
     "onedrive:smoke": "node --import tsx/esm scripts/onedrive-photo-smoke.ts",
     "storage:rename-to-names": "node --import tsx/esm scripts/storage-name-migration.ts",
     "smoke:option3": "node --import tsx/esm scripts/option3-smoke.ts",
+    "smoke:wattwatchers": "node --import tsx/esm scripts/wattwatchers-smoke.ts",
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

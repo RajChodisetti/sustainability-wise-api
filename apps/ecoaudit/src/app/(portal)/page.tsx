@@ -13,7 +13,7 @@ const apps: Array<{
   description: string;
   icon: IconName;
   tone: string;
-  access?: 'ecoaudit' | 'solarsense';
+  access?: 'ecoaudit' | 'solarsense' | 'wattwatchers';
   soon?: boolean;
 }> = [
   {
@@ -35,6 +35,15 @@ const apps: Array<{
     access: 'solarsense',
   },
   {
+    href: '/fleet/dashboard',
+    title: 'Wattwatchers Fleet',
+    eyebrow: 'Device operations',
+    description: 'Fleet connectivity, offline devices, client performance, reports, and collection health.',
+    icon: 'activity',
+    tone: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
+    access: 'wattwatchers',
+  },
+  {
     href: '/field',
     title: 'Field App',
     eyebrow: 'Mobile operations',
@@ -46,12 +55,13 @@ const apps: Array<{
 ];
 
 export default function PortalHomePage() {
-  const { eaUser, ssUser } = usePortalAuth();
+  const { eaUser, ssUser, wwUser } = usePortalAuth();
   const visibleApps = apps.filter((app) => {
     if (app.access === 'ecoaudit') return Boolean(eaUser);
     if (app.access === 'solarsense') {
       return PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
     }
+    if (app.access === 'wattwatchers') return Boolean(wwUser);
     return true;
   });
 
@@ -65,7 +75,7 @@ export default function PortalHomePage() {
             Welcome to EcoSense Portal
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--text-sub)] sm:text-base">
-            Choose a workspace to continue your sustainability audits, scheduling, and field operations.
+            Choose a workspace to continue your audits, fleet monitoring, scheduling, and field operations.
           </p>
         </div>
       </section>

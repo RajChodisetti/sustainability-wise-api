@@ -1,6 +1,6 @@
 import type { FastifyRequest, FastifyReply, FastifyPluginCallback } from 'fastify';
 import fp from 'fastify-plugin';
-import { eq, and, isNull, gt } from 'drizzle-orm';
+import { eq, and, isNull, gt, or } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { apiKeys } from '../db/schema/shared.js';
 import { verifyAccessToken, type App, type Role } from './jwt.js';
@@ -13,6 +13,13 @@ export interface AuthUser {
   role: Role;
   authType: 'jwt' | 'apikey';
   keyName?: string;
+}
+
+export function apiKeyIsCurrent(
+  key: { revokedAt: Date | null; expiresAt: Date | null },
+  now = new Date(),
+): boolean {
+  return key.revokedAt === null && (key.expiresAt === null || key.expiresAt > now);
 }
 
 declare module 'fastify' {
@@ -36,11 +43,14 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply): Promi
   }
 
   // --- Fall back to API key ---
-  // Find all non-revoked keys where the token starts with the stored prefix
+  // Find all current keys where the token starts with the stored prefix.
   const allKeys = await db
     .select()
     .from(apiKeys)
-    .where(and(isNull(apiKeys.revokedAt)));
+    .where(and(
+      isNull(apiKeys.revokedAt),
+      or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, new Date())),
+    ));
 
   for (const key of allKeys) {
     if (token.startsWith(key.prefix)) {
@@ -68,7 +78,9 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply): Promi
 }
 
 export function requireRole(minimum: Role) {
-  const hierarchy: Role[] = ['inspector', 'service_account', 'admin'];
+  // Viewer is intentionally below inspector so adding the read-only
+  // Wattwatchers role cannot grant access to either field application.
+  const hierarchy: Role[] = ['viewer', 'inspector', 'service_account', 'admin'];
   return async function (request: FastifyRequest, _reply: FastifyReply): Promise<void> {
     if (!request.user) throw unauthorized();
     const userIdx = hierarchy.indexOf(request.user.role);

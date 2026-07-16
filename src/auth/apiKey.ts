@@ -5,9 +5,13 @@ import type { App, Role } from './jwt.js';
 const SALT_ROUNDS = 10;
 
 export function generateKey(app: App): { raw: string; prefix: string; hashed: Promise<string> } {
-  const appCode = app === 'ecoaudit' ? 'ea' : 'ss';
+  const appCode: Record<App, string> = {
+    ecoaudit: 'ea',
+    solarsense: 'ss',
+    wattwatchers: 'ww',
+  };
   const secret = randomBytes(24).toString('hex');
-  const prefix = `sk_${appCode}_live_`;
+  const prefix = `sk_${appCode[app]}_live_`;
   const raw = `${prefix}${secret}`;
   return { raw, prefix, hashed: bcrypt.hash(raw, SALT_ROUNDS) };
 }

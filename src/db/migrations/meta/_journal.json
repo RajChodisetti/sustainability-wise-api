@@ -64,6 +64,13 @@
       "when": 1784102400000,
       "tag": "0008_remove_ea_audit_timing",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784188800000,
+      "tag": "0009_wattwatchers_fleet",
+      "breakpoints": true
     }
   ]
 }

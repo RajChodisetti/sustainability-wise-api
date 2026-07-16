@@ -1,8 +1,8 @@
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 
-export type App = 'ecoaudit' | 'solarsense';
-export type Role = 'admin' | 'inspector' | 'service_account';
+export type App = 'ecoaudit' | 'solarsense' | 'wattwatchers';
+export type Role = 'admin' | 'inspector' | 'viewer' | 'service_account';
 
 export interface AccessPayload {
   userId: string;

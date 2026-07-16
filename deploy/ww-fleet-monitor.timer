@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Wattwatchers Fleet at 07:00 Australia/Melbourne
+
+[Timer]
+# systemd evaluates this IANA timezone across AEST/AEDT changes, so there is a
+# single daily trigger and no cron restart that can interrupt a slow scan.
+OnCalendar=*-*-* 07:00:00 Australia/Melbourne
+Persistent=true
+AccuracySec=1min
+Unit=ww-fleet-monitor.service
+
+[Install]
+WantedBy=timers.target
