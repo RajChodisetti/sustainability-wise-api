@@ -126,6 +126,31 @@ export function arr(v: unknown): string[] {
   return v.map(String);
 }
 
+export function photoMetadata(v: unknown): Record<string, { name?: string; largeInPdf?: boolean }> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+
+  const output: Record<string, { name?: string; largeInPdf?: boolean }> = {};
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    if (!key || key.length > 160) continue;
+
+    const value = typeof raw === 'string'
+      ? { name: raw }
+      : raw && typeof raw === 'object' && !Array.isArray(raw)
+        ? raw as Record<string, unknown>
+        : null;
+    if (!value) continue;
+
+    const name = typeof value.name === 'string' ? value.name.trim().slice(0, 120) : '';
+    const largeInPdf = value.largeInPdf === true;
+    if (!name && !largeInPdf) continue;
+    output[key] = {
+      ...(name ? { name } : {}),
+      ...(largeInPdf ? { largeInPdf: true } : {}),
+    };
+  }
+  return output;
+}
+
 export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
   const value = query?.purge;
   if (typeof value === 'boolean') return value;

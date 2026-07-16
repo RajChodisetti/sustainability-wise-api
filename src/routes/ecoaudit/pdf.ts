@@ -103,8 +103,8 @@ function normalizePhotoMetadataMap(value: unknown): PhotoMetadataMap {
 
 function photoMetadataKey(fieldName: string | null): string {
   if (!fieldName) return '';
-  const arrayMatch = /^([A-Za-z][A-Za-z0-9_]*)\[(\d+)\]$/.exec(fieldName);
-  if (arrayMatch) return `${arrayMatch[1]}.${arrayMatch[2]}`;
+  const arrayMatch = /^([A-Za-z][A-Za-z0-9_]*?)(?:\[(\d+)\]|_(\d+)|\.(\d+))$/.exec(fieldName);
+  if (arrayMatch) return `${arrayMatch[1]}.${arrayMatch[2] ?? arrayMatch[3] ?? arrayMatch[4]}`;
   return fieldName;
 }
 
@@ -113,8 +113,10 @@ function photosForEntity(photos: PhotoRow[], entityId: string, metadata?: unknow
   return photos
     .filter((p) => p.entityId === entityId && p.remoteUrl)
     .map((p) => {
-      const defaultLabel = FIELD_LABELS[p.fieldName ?? ''] ?? (p.originalFilename ?? p.fieldName ?? 'Photo');
-      const meta = normalizePhotoMetadata(photoMetadata[photoMetadataKey(p.fieldName)]);
+      const metadataKey = photoMetadataKey(p.fieldName);
+      const baseFieldName = metadataKey.replace(/\.\d+$/, '');
+      const defaultLabel = FIELD_LABELS[baseFieldName] ?? (p.originalFilename ?? p.fieldName ?? 'Photo');
+      const meta = normalizePhotoMetadata(photoMetadata[metadataKey]);
       return {
         src: p.remoteUrl!,
         label: meta.name?.trim() || defaultLabel,
@@ -422,13 +424,16 @@ function renderGenElec(g: EquipmentItem, idx: number, photos: PhotoEntry[], zone
   return renderItem(header, details, photos);
 }
 
-// ── CSS (matches mobile generateAuditPdf.ts exactly) ─────────────────────────────
+// ── Shared report-body CSS; server page framing follows ECOAUDIT_PDF_RULES.md ────
 function buildCss(): string {
   return `
+@page{size:A4;background:#FFFFFF;}
 *{box-sizing:border-box;margin:0;padding:0;}
+html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5pt;color:#1E293B;background:#fff;line-height:1.55;}
 
 .doc-table{width:100%;border-collapse:collapse;border-spacing:0;}
+.doc-table thead,.doc-table tfoot{display:none;}
 
 .hdr-cell{background:#142F70;padding:0;height:56px;border-bottom:8px solid #FFFFFF;}
 .hdr-inner{width:100%;height:56px;display:table;}
@@ -458,7 +463,7 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 
 .exec-title{font-size:13pt;font-weight:800;color:#0F172A;margin-bottom:8px;padding-bottom:7px;border-bottom:2px solid #1E3A8A;}
 .exec-mode{font-size:8pt;font-weight:700;color:#1E3A8A;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:12px;}
-.exec-copy{font-size:10pt;line-height:1.6;color:#334155;background:#F8FAFC;border-left:3px solid #1E3A8A;padding:11px 14px 18px;margin-bottom:18px;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;overflow-wrap:anywhere;orphans:3;widows:3;}
+.exec-copy{font-size:10pt;line-height:1.6;color:#334155;background:#F8FAFC;border-left:3px solid #1E3A8A;padding:11px 14px 18px;margin-bottom:18px;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;overflow-wrap:anywhere;orphans:3;widows:3;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .stats{display:table;width:100%;border-collapse:separate;border-spacing:6px;margin-bottom:24px;}
 .stats-row{display:table-row;}
 .sp{display:table-cell;text-align:center;background:#F8FAFC;border:1px solid #DBEAFE;border-radius:8px;padding:10px 6px;border-top:3px solid #1E3A8A;}
@@ -482,8 +487,8 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 .zone-section{margin-bottom:4px;}
 .zone-type-label{display:block;background:#EFF6FF;border-left:4px solid #1E3A8A;color:#1E3A8A;font-size:9.5pt;font-weight:800;padding:8px 14px;margin:10px 0 4px;letter-spacing:0.04em;text-transform:uppercase;page-break-after:avoid;break-after:avoid;}
 
-.item{background:#FFFFFF;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 8px 8px 0;padding:11px 14px 18px;margin-bottom:14px;page-break-inside:auto;break-inside:auto;}
-.item-lead{page-break-inside:auto;break-inside:auto;}
+.item{background:#FFFFFF;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 8px 8px 0;padding:11px 14px 18px;margin-bottom:14px;page-break-inside:auto;break-inside:auto;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
+.item-lead{page-break-inside:auto;break-inside:auto;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .item-head{display:table;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0;page-break-after:avoid;break-after:avoid;}
 .iico{display:table-cell;vertical-align:top;font-size:15px;width:24px;padding-top:2px;}
 .item-title{display:table-cell;vertical-align:top;}
@@ -500,8 +505,8 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 .fl{display:block;font-size:7pt;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;}
 .fv{display:block;font-size:10pt;color:#1E293B;font-weight:600;overflow-wrap:anywhere;padding-bottom:3px;orphans:3;widows:3;}
 
-.note-green{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#F0FDF4;border:1px solid #BBF7D0;border-left:3px solid #86EFAC;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
-.note-amber{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#FEFCE8;border:1px solid #FEF08A;border-left:3px solid #FDE047;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
+.note-green{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#F0FDF4;border:1px solid #BBF7D0;border-left:3px solid #86EFAC;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
+.note-amber{margin-top:8px;margin-bottom:8px;padding:9px 12px 18px;background:#FEFCE8;border:1px solid #FEF08A;border-left:3px solid #FDE047;border-radius:0 6px 6px 0;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .note-label{font-size:7.5pt;font-weight:700;color:#334155;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.06em;page-break-after:avoid;break-after:avoid;}
 .note-text{font-size:9.5pt;color:#334155;line-height:1.65;overflow-wrap:anywhere;padding-bottom:5px;}
 
@@ -512,21 +517,21 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 .photos-title span{display:table-cell;}
 .photos-title b{display:table-cell;text-align:right;color:#1E3A8A;font-size:8pt;}
 .photo-grid{display:table;width:100%;border-collapse:separate;border-spacing:8px 9px;}
-.photo-row-pair{display:table-row;}
+.photo-row-pair{display:table-row;page-break-inside:avoid;break-inside:avoid;}
 .photo-cell{display:table-cell;width:33.33%;vertical-align:top;text-align:center;page-break-inside:avoid;break-inside:avoid;}
 .photos-cols-2 .photo-cell{width:50%;}
 .photos-cols-3 .photo-cell{width:33.33%;}
 .photo-empty{visibility:hidden;}
-.photo-img{max-width:100%;max-height:172px;width:auto;height:auto;display:inline-block;border:0;border-radius:3px;background:transparent;}
+.photo-img{max-width:100%;max-height:172px;width:auto;height:auto;display:inline-block;border:1px solid #CBD5E1;border-radius:4px;background:#FFFFFF;padding:2px;}
 .photo-lbl{font-size:7pt;color:#64748B;margin-top:4px;text-align:center;word-break:break-word;line-height:1.25;}
 .photos-large{page-break-inside:avoid;break-inside:avoid;}
 .photo-large-cell{width:100%;text-align:center;page-break-inside:avoid;break-inside:avoid;}
-.photo-large-img{max-width:100%;max-height:370px;width:auto;height:auto;display:inline-block;border:0;border-radius:4px;background:transparent;}
+.photo-large-img{max-width:100%;max-height:370px;width:auto;height:auto;display:inline-block;border:1px solid #CBD5E1;border-radius:5px;background:#FFFFFF;padding:3px;}
 .photo-large-lbl{font-size:7.5pt;font-weight:700;margin-top:5px;}
 .fmt-list{margin:4px 0 4px 16px;padding:0;}
 .fmt-list li{margin-bottom:2px;}
 
-.obs-block{border-radius:0 8px 8px 0;border-left:3px solid #1E3A8A;padding:12px 16px 20px;background:#FEFCE8;margin-bottom:16px;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;}
+.obs-block{border-radius:0 8px 8px 0;border-left:3px solid #1E3A8A;padding:12px 16px 20px;background:#FEFCE8;margin-bottom:16px;page-break-inside:auto;break-inside:auto;orphans:3;widows:3;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .obs-summary{background:#F8FAFC;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;}
 .obs-num{font-size:7.5pt;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px;page-break-after:avoid;break-after:avoid;}
 .obs-title{font-size:10.5pt;font-weight:700;color:#1E3A8A;margin-bottom:5px;page-break-after:avoid;break-after:avoid;}
@@ -695,8 +700,7 @@ function byZoneBody(args: BodyArgs): string {
   if (zoneBlocks.length === 0) return '<p class="empty-note">No selected zone items in this report.</p>';
 
   return zoneBlocks.map((zone, zIdx) => {
-    const pb = zIdx > 0 ? ' style="page-break-before:auto;break-before:auto;"' : '';
-    return `<div class="zone-section"${pb}>
+    return `<div class="zone-section">
       <div class="zone-hdr">
         <div class="zone-hdr-inner">
           <div class="zh-left">
@@ -783,6 +787,8 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>${buildCss()}</style></head>
 <body>
+<template data-pdf-header data-brand="ENERGY AUDIT REPORT" data-title="${esc(audit.siteName)} &#8212; ${modeLabel}"></template>
+<template data-pdf-footer data-left="CONFIDENTIAL" data-right="${modeLabel} &#183; Generated ${genDate}"></template>
 <table class="doc-table">
   <thead>
     <tr><td class="hdr-cell">

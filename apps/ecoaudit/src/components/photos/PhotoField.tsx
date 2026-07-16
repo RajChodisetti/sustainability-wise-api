@@ -2,11 +2,20 @@
 
 import { useId } from 'react';
 import { Button } from '@/components/ui/Button';
-import { FieldError } from '@/components/ui/FormFields';
+import { Checkbox, FieldError, FieldHint, FieldLabel, Input } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { useToast } from '@/contexts/ToastContext';
 import { usePhotoUpload } from '@/hooks/usePhotoUpload';
+import {
+  normalizePhotoMetadata,
+  photoMetadataKey,
+  photoUploadFieldName,
+  removePhotoMetadataIndex,
+  setPhotoMetadata,
+  type PhotoMetadataMap,
+  type PhotoMetadataValue,
+} from '@/lib/photoMetadata';
 
 export function PhotoField({
   label,
@@ -16,6 +25,8 @@ export function PhotoField({
   entityType,
   fieldName,
   onChange,
+  photoMetadata,
+  onPhotoMetadataChange,
   disabled,
 }: {
   label: string;
@@ -25,11 +36,15 @@ export function PhotoField({
   entityType?: string;
   fieldName: string;
   onChange: (uri: string | null) => void;
+  photoMetadata?: PhotoMetadataValue;
+  onPhotoMetadataChange?: (metadata: PhotoMetadataValue) => void;
   disabled?: boolean;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
   const toast = useToast();
   const inputId = useId();
+  const captionId = `${inputId}-caption`;
+  const metadata = normalizePhotoMetadata(photoMetadata);
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
@@ -46,8 +61,28 @@ export function PhotoField({
     <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
       <p className="mb-3 text-sm font-bold text-[var(--text)]">{label}</p>
       {uri ? (
-        <div className="mb-2">
-          <PhotoThumb key={uri} uri={uri} label={label} className="mb-0 max-h-48 w-full rounded-lg object-cover" />
+        <div className="mb-3 space-y-3">
+          <PhotoThumb key={uri} uri={uri} label={metadata.name?.trim() || label} className="mb-0 max-h-48 w-full rounded-lg border border-[var(--border)] object-cover" />
+          {onPhotoMetadataChange ? (
+            <div className="rounded-lg border border-[var(--border)] bg-[var(--surface2)] p-3">
+              <FieldLabel htmlFor={captionId} className="!mt-0">Photo label in PDF</FieldLabel>
+              <Input
+                id={captionId}
+                value={metadata.name ?? ''}
+                maxLength={120}
+                placeholder={label}
+                disabled={disabled}
+                onChange={(event) => onPhotoMetadataChange({ ...metadata, name: event.target.value })}
+              />
+              <Checkbox
+                label="Use large photo in PDF"
+                checked={metadata.largeInPdf === true}
+                disabled={disabled}
+                onChange={(largeInPdf) => onPhotoMetadataChange({ ...metadata, largeInPdf })}
+              />
+              <FieldHint>Off uses the smaller multi-photo grid.</FieldHint>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="mb-3 flex h-32 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface2)] text-sm text-[var(--muted)]">
@@ -67,7 +102,16 @@ export function PhotoField({
           </span>
         </label>
         {uri && !disabled ? (
-          <Button variant="ghost" aria-label={`Remove ${label}`} onClick={() => onChange(null)}>Remove</Button>
+          <Button
+            variant="ghost"
+            aria-label={`Remove ${label}`}
+            onClick={() => {
+              onChange(null);
+              onPhotoMetadataChange?.({});
+            }}
+          >
+            Remove
+          </Button>
         ) : null}
       </div>
       <FieldError message={error ?? undefined} />
@@ -83,6 +127,8 @@ export function PhotoGridField({
   entityType,
   fieldPrefix,
   onChange,
+  photoMetadata = {},
+  onPhotoMetadataChange,
   disabled,
 }: {
   label: string;
@@ -92,6 +138,8 @@ export function PhotoGridField({
   entityType?: string;
   fieldPrefix: string;
   onChange: (uris: string[]) => void;
+  photoMetadata?: PhotoMetadataMap;
+  onPhotoMetadataChange?: (metadata: PhotoMetadataMap) => void;
   disabled?: boolean;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
@@ -103,7 +151,7 @@ export function PhotoGridField({
     const result = await upload({
       file,
       auditId,
-      fieldName: `${fieldPrefix}_${uris.length}`,
+      fieldName: photoUploadFieldName(fieldPrefix, uris.length),
       entityId,
       entityType,
     });
@@ -115,22 +163,47 @@ export function PhotoGridField({
     }
   }
 
+  function handleRemove(index: number) {
+    const nextUris = uris.filter((_, itemIndex) => itemIndex !== index);
+    onChange(nextUris);
+    onPhotoMetadataChange?.(
+      removePhotoMetadataIndex(photoMetadata, fieldPrefix, index, nextUris.length),
+    );
+  }
+
   return (
     <div>
       <p className="mb-3 text-sm font-bold text-[var(--text)]">{label}</p>
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3" aria-busy={uploading}>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3" aria-busy={uploading}>
         {uris.map((uri, i) => (
-          <div key={`${uri}-${i}`} className="relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface2)]">
-            <PhotoThumb uri={uri} label={label} className="aspect-square w-full object-cover" />
-            {!disabled ? (
-              <button
-                type="button"
-                className="absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-lg bg-black/65 text-white shadow-lg hover:bg-black/80"
-                onClick={() => onChange(uris.filter((_, idx) => idx !== i))}
-                aria-label={`Remove ${label} photo ${i + 1}`}
-              >
-                <Icon name="close" size={18} />
-              </button>
+          <div key={`${uri}-${i}`} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface2)]">
+            <div className="relative">
+              <PhotoThumb
+                uri={uri}
+                label={normalizePhotoMetadata(photoMetadata[photoMetadataKey(fieldPrefix, i)]).name?.trim() || `${label} ${i + 1}`}
+                className="aspect-square w-full object-cover"
+              />
+              {!disabled ? (
+                <button
+                  type="button"
+                  className="absolute right-1.5 top-1.5 flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg bg-black/65 text-white shadow-lg transition-colors duration-200 hover:bg-black/80 focus-visible:outline focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--focus)]"
+                  onClick={() => handleRemove(i)}
+                  aria-label={`Remove ${label} photo ${i + 1}`}
+                >
+                  <Icon name="close" size={18} />
+                </button>
+              ) : null}
+            </div>
+            {onPhotoMetadataChange ? (
+              <PhotoMetadataControls
+                id={`${inputId}-photo-${i}`}
+                defaultLabel={`${label} ${i + 1}`}
+                value={photoMetadata[photoMetadataKey(fieldPrefix, i)]}
+                disabled={disabled}
+                onChange={(value) => onPhotoMetadataChange(
+                  setPhotoMetadata(photoMetadata, photoMetadataKey(fieldPrefix, i), value),
+                )}
+              />
             ) : null}
           </div>
         ))}
@@ -143,6 +216,42 @@ export function PhotoGridField({
         ) : null}
       </div>
       <FieldError message={error ?? undefined} />
+    </div>
+  );
+}
+
+function PhotoMetadataControls({
+  id,
+  defaultLabel,
+  value,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  defaultLabel: string;
+  value: PhotoMetadataValue;
+  disabled?: boolean;
+  onChange: (value: PhotoMetadataValue) => void;
+}) {
+  const metadata = normalizePhotoMetadata(value);
+  return (
+    <div className="space-y-1 border-t border-[var(--border)] p-3">
+      <FieldLabel htmlFor={id} className="!mt-0">Photo label in PDF</FieldLabel>
+      <Input
+        id={id}
+        value={metadata.name ?? ''}
+        maxLength={120}
+        placeholder={defaultLabel}
+        disabled={disabled}
+        onChange={(event) => onChange({ ...metadata, name: event.target.value })}
+      />
+      <Checkbox
+        label="Use large photo in PDF"
+        checked={metadata.largeInPdf === true}
+        disabled={disabled}
+        onChange={(largeInPdf) => onChange({ ...metadata, largeInPdf })}
+      />
+      <FieldHint>Off uses the smaller multi-photo grid.</FieldHint>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import puppeteer, { type Browser } from 'puppeteer-core';
 import { config } from '../config.js';
+import { stampPdfPageFrame, type PdfPageFrame } from './pageFrame.js';
 
 let browser: Browser | null = null;
 
@@ -38,12 +39,27 @@ export async function renderPdf(html: string): Promise<Buffer> {
           })),
       );
     });
+    const pageFrame: PdfPageFrame = await page.evaluate(() => {
+      const header = document.querySelector('template[data-pdf-header]');
+      const footer = document.querySelector('template[data-pdf-footer]');
+      return {
+        headerBrand: header?.getAttribute('data-brand') ?? '',
+        headerTitle: header?.getAttribute('data-title') ?? '',
+        footerLeft: footer?.getAttribute('data-left') ?? '',
+        footerRight: footer?.getAttribute('data-right') ?? '',
+      };
+    });
+    const hasPageFrame = Boolean(pageFrame.headerBrand || pageFrame.headerTitle || pageFrame.footerLeft || pageFrame.footerRight);
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
-      margin: { top: '0', right: '0', bottom: '0', left: '0' },
+      displayHeaderFooter: false,
+      margin: hasPageFrame
+        ? { top: '56px', right: '0', bottom: '30px', left: '0' }
+        : { top: '0', right: '0', bottom: '0', left: '0' },
     });
-    renderedPdf = Buffer.from(pdf);
+    const browserPdf = Buffer.from(pdf);
+    renderedPdf = hasPageFrame ? await stampPdfPageFrame(browserPdf, pageFrame) : browserPdf;
     return renderedPdf;
   } finally {
     try {

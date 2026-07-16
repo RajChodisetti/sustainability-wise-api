@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listZones } from '@/api/zones';
 import { getAudit } from '@/api/audits';
-import { generateReportPdfSync, pollPdfJob, startReportPdfJob, downloadPdfJob } from '@/api/pdf';
+import { pollPdfJob, startReportPdfJob, downloadPdfJob } from '@/api/pdf';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { downloadBlob, slugify } from '@/lib/download';
@@ -19,37 +19,21 @@ export default function ReportPage() {
   const toast = useToast();
   const [mode, setMode] = useState<'by-equipment' | 'by-zone'>('by-equipment');
   const [zoneId, setZoneId] = useState('');
-  const [busy, setBusy] = useState<'sync' | 'async' | null>(null);
+  const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
 
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
 
-  if (auditQuery.isLoading) return <Spinner />;
+  if (auditQuery.isLoading || zonesQuery.isLoading) return <Spinner />;
   if (auditQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(auditQuery.error)} />;
+  if (zonesQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zonesQuery.error)} />;
   const audit = auditQuery.data!;
   const zones = zonesQuery.data?.data ?? [];
 
-  async function handleSyncPdf() {
-    setBusy('sync');
-    setProgress(null);
-    try {
-      const options = {
-        mode,
-        zoneIds: mode === 'by-zone' && zoneId ? [zoneId] : undefined,
-      };
-      const blob = await generateReportPdfSync(auditId!, options);
-      downloadBlob(blob, `${slugify(audit.siteName)}-report.pdf`);
-      toast.success('PDF downloaded.');
-    } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleAsyncPdf() {
-    setBusy('async');
+  async function handleGeneratePdf() {
+    setBusy(true);
+    setProgress('Starting PDF job…');
     try {
       const options = {
         mode,
@@ -63,14 +47,14 @@ export default function ReportPage() {
     } catch (e) {
       toast.error(cloudConnectionErrorMessage(e));
     } finally {
-      setBusy(null);
+      setBusy(false);
       setProgress(null);
     }
   }
 
   return (
     <div>
-      <PageHeader title="Generate report" subtitle="Choose the report structure, then use either the immediate or background PDF workflow." actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
+      <PageHeader title="Generate report" subtitle="Choose the report structure. Every portal report uses the established background PDF job." actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
       <Card className="max-w-2xl">
         <FieldLabel htmlFor="report-mode">Report mode</FieldLabel>
         <Select id="report-mode" value={mode} onChange={(e) => setMode(e.target.value as 'by-equipment' | 'by-zone')}>
@@ -88,24 +72,14 @@ export default function ReportPage() {
         ) : null}
         {progress ? <p className="mt-4 rounded-lg bg-[var(--primary-soft)] px-3 py-2 text-sm font-semibold text-[var(--primary)]" role="status">{progress}</p> : null}
         <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
-          <Button onClick={() => void handleSyncPdf()} disabled={busy != null}>
-            {busy === 'sync' ? (
-              <>
-                <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden />
-                Downloading PDF…
-              </>
-            ) : (
-              <><Icon name="file-text" size={18} />Download PDF (sync)</>
-            )}
-          </Button>
-          <Button variant="secondary" onClick={() => void handleAsyncPdf()} disabled={busy != null}>
-            {busy === 'async' ? (
+          <Button onClick={() => void handleGeneratePdf()} disabled={busy}>
+            {busy ? (
               <>
                 <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden />
                 Generating PDF…
               </>
             ) : (
-              <><Icon name="cloud" size={18} />Generate PDF (async)</>
+              <><Icon name="file-text" size={18} />Generate &amp; download PDF</>
             )}
           </Button>
         </div>

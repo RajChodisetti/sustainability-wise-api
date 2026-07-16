@@ -8,7 +8,7 @@ import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, str, arr, type JsonRecord } from '../helpers.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, str, arr, photoMetadata, type JsonRecord } from '../helpers.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
@@ -42,6 +42,7 @@ export async function eaGeneralWaterRoutes(app: FastifyInstance): Promise<void> 
         id: randomUUID(), serverId: randomUUID(), syncStatus: 'synced', updatedAt: dateOrNow(body.updatedAt), zoneId, auditId, createdAt: dateOrNow(body.createdAt),
         question: str(body.question), answer: str(body.answer),
         photos: arr(body.photos), extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
+        photoDescs: photoMetadata(body.photoDescs),
       } as any).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: req.user });
       return reply.status(201).send(row);
@@ -67,6 +68,7 @@ export async function eaGeneralWaterRoutes(app: FastifyInstance): Promise<void> 
       for (const k of ['question','answer','extraNotes']) if (k in body) c[k] = str(body[k]);
       if ('photos' in body) c.photos = arr(body.photos);
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);
+      if ('photoDescs' in body) c.photoDescs = photoMetadata(body.photoDescs);
       const [updated] = await db.update(T).set(c as any).where(eq(T.id, id)).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: req.user });
       return reply.send(assertFound(updated, label));

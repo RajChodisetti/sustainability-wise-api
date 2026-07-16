@@ -4,7 +4,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaAudits, eaZones } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, type JsonRecord } from './helpers.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, photoMetadata, type JsonRecord } from './helpers.js';
 import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
@@ -42,6 +42,7 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
       zoneName: requiredString(body, 'zoneName'),
       zoneDescription: typeof body.zoneDescription === 'string' ? body.zoneDescription : null,
       photos: Array.isArray(body.photos) ? body.photos.map(String) : [],
+      photoDescs: photoMetadata(body.photoDescs),
       createdAt: dateOrNow(body.createdAt),
     }).returning();
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: request.user });
@@ -77,6 +78,7 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const zn = optionalString(body, 'zoneName'); if (zn !== undefined) changes.zoneName = zn ?? found.zoneName;
     if ('zoneDescription' in body) changes.zoneDescription = optionalString(body, 'zoneDescription') ?? null;
     const photos = optionalStringArray(body, 'photos'); if (photos !== undefined) changes.photos = photos;
+    if ('photoDescs' in body) changes.photoDescs = photoMetadata(body.photoDescs);
     const [updated] = await db.update(eaZones).set(changes).where(eq(eaZones.id, id)).returning();
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: request.user });
     return reply.send(assertFound(updated, 'Zone'));

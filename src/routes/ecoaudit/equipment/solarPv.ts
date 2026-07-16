@@ -8,7 +8,7 @@ import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, str, num, arr, type JsonRecord } from '../helpers.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, str, num, arr, photoMetadata, type JsonRecord } from '../helpers.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
@@ -48,6 +48,7 @@ export async function eaSolarPvRoutes(app: FastifyInstance): Promise<void> {
         switchboardPhoto: str(body.switchboardPhoto), switchboardLocation: str(body.switchboardLocation),
         cableDistance: str(body.cableDistance), cableRouteDescription: str(body.cableRouteDescription),
         energyImprovementObservations: str(body.energyImprovementObservations), extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
+        photoDescs: photoMetadata(body.photoDescs),
       } as any).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: req.user });
       return reply.status(201).send(row);
@@ -73,6 +74,7 @@ export async function eaSolarPvRoutes(app: FastifyInstance): Promise<void> {
       for (const k of ['roofPhoto','inverterBrandModel','inverterLocation','inverterLabelPhoto','powerSupplyToPv','electricityMeterPhoto','availableRoofSpace','roofSpaceAmount','additionalSolarSpacePhoto','suitableSwitchboard','switchboardPhoto','switchboardLocation','cableDistance','cableRouteDescription','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
       if ('systemSizeKw' in body) c.systemSizeKw = num(body.systemSizeKw);
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);
+      if ('photoDescs' in body) c.photoDescs = photoMetadata(body.photoDescs);
       const [updated] = await db.update(T).set(c as any).where(eq(T.id, id)).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: req.user });
       return reply.send(assertFound(updated, label));

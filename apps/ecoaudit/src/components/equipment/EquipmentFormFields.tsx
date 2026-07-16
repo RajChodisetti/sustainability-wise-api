@@ -3,6 +3,10 @@
 import type { EquipmentTypeConfig, FieldDef } from '@/lib/equipmentConfig';
 import { PhotoField, PhotoGridField } from '@/components/photos/PhotoField';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
+import {
+  normalizePhotoMetadataMap,
+  setPhotoMetadata,
+} from '@/lib/photoMetadata';
 
 export function EquipmentFormFields({
   config,
@@ -19,6 +23,8 @@ export function EquipmentFormFields({
   entityId?: string;
   disabled?: boolean;
 }) {
+  const photoMetadata = normalizePhotoMetadataMap(values.photoDescs);
+
   function renderField(field: FieldDef) {
     const val = values[field.key];
 
@@ -33,6 +39,11 @@ export function EquipmentFormFields({
           entityType={config.entityType}
           fieldName={field.key}
           onChange={(uri) => onChange(field.key, uri)}
+          photoMetadata={photoMetadata[field.key]}
+          onPhotoMetadataChange={(metadata) => onChange(
+            'photoDescs',
+            setPhotoMetadata(photoMetadata, field.key, metadata),
+          )}
           disabled={disabled}
         />
       );
@@ -50,6 +61,8 @@ export function EquipmentFormFields({
           entityType={config.entityType}
           fieldPrefix={field.key}
           onChange={(next) => onChange(field.key, next)}
+          photoMetadata={photoMetadata}
+          onPhotoMetadataChange={(metadata) => onChange('photoDescs', metadata)}
           disabled={disabled}
         />
       );

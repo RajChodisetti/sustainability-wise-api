@@ -8,7 +8,7 @@ import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, str, num, arr, type JsonRecord } from '../helpers.js';
+import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, str, num, arr, photoMetadata, type JsonRecord } from '../helpers.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
@@ -47,6 +47,7 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
         controllerType: str(body.controllerType), controllerModel: str(body.controllerModel), controllerPhoto: str(body.controllerPhoto),
         temperatureSensorType: str(body.temperatureSensorType), systemCoverage: str(body.systemCoverage),
         energyImprovementObservations: str(body.energyImprovementObservations), extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
+        photoDescs: photoMetadata(body.photoDescs),
       } as any).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: req.user });
       return reply.status(201).send(row);
@@ -73,6 +74,7 @@ export async function eaHvacUnitRoutes(app: FastifyInstance): Promise<void> {
       for (const k of ['make','photo','location','type','model','serialNumber','powerSupplyPhase','nameplatePhotos','indoorUnitModel','indoorUnitSerial','indoorUnitNameplatePhoto','controllerType','controllerModel','controllerPhoto','temperatureSensorType','systemCoverage','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
       for (const k of ['heatingCapacityKw','coolingCapacityKw']) if (k in body) c[k] = num(body[k]);
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);
+      if ('photoDescs' in body) c.photoDescs = photoMetadata(body.photoDescs);
       const [updated] = await db.update(T).set(c as any).where(eq(T.id, id)).returning();
       await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: req.user });
       return reply.send(assertFound(updated, label));
