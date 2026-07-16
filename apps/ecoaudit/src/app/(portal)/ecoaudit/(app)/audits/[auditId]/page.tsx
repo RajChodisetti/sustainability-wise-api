@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -27,6 +28,7 @@ export default function AuditDetailPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const [workspaceView, setWorkspaceView] = useState<'zones' | 'equipment'>('zones');
 
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
@@ -118,92 +120,113 @@ export default function AuditDetailPage() {
         }
       />
 
-      <div className="mb-6 grid gap-4 md:grid-cols-2">
-        <Card>
-          <h2 className="mb-2 font-semibold">Audit details</h2>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Inspector:</span> {audit.inspectorName}</p>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Date:</span> {audit.auditDate ?? '—'}</p>
-          <p className="mt-2 text-sm"><span className="text-[var(--text-sub)]">Started:</span> {formatDateTime(startedAt)}</p>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Completed:</span> {formatDateTime(completedAt)}</p>
-          <p className="text-sm"><span className="text-[var(--text-sub)]">Time spent:</span> {formatDuration(durationMs)}{!isCompleted && startedAt ? ' (in progress)' : ''}</p>
-        </Card>
-        <Card>
-          <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <h2 className="font-semibold">Zones ({zones.length})</h2>
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`} className="!px-3 !text-xs">Add zone</LinkButton> : null}
-          </div>
-          {zones.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No zones yet.</p> : (
-            <ul className="space-y-2">
-              {zones.map((z) => (
-                <li key={z.id}>
-                  <Link href={`/ecoaudit/audits/${auditId}/zones/${z.id}`} className="inline-flex min-h-11 items-center break-words text-sm font-medium text-[var(--primary)] hover:underline">{z.zoneName}</Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </div>
-
       <Card className="mb-6">
-        <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 className="font-semibold">Equipment by zone</h2>
-            <p className="mt-1 text-sm text-[var(--text-sub)]">See every captured asset under the zone where it belongs.</p>
+          <h2 className="mb-2 font-semibold">Audit details</h2>
+          <div className="grid gap-x-8 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
+            <p className="text-sm"><span className="text-[var(--text-sub)]">Inspector:</span> {audit.inspectorName}</p>
+            <p className="text-sm"><span className="text-[var(--text-sub)]">Date:</span> {audit.auditDate ?? '—'}</p>
+            <p className="text-sm"><span className="text-[var(--text-sub)]">Started:</span> {formatDateTime(startedAt)}</p>
+            <p className="text-sm"><span className="text-[var(--text-sub)]">Completed:</span> {formatDateTime(completedAt)}</p>
+            <p className="text-sm"><span className="text-[var(--text-sub)]">Time spent:</span> {formatDuration(durationMs)}{!isCompleted && startedAt ? ' (in progress)' : ''}</p>
           </div>
-          <span className="text-xs font-bold uppercase tracking-[0.08em] text-[var(--muted)]">
-            {equipmentByType.reduce((total, group) => total + group.items.length, 0)} total items
-          </span>
-        </div>
-
-        {equipmentLoading ? <Spinner label="Loading zone equipment…" /> : null}
-        {equipmentError ? <ErrorBanner message={cloudConnectionErrorMessage(equipmentError)} /> : null}
-        {!equipmentLoading && !equipmentError ? (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {zones.map((zone) => (
-              <ZoneEquipmentCard
-                key={zone.id}
-                auditId={auditId}
-                zone={zone}
-                equipmentByType={equipmentByType}
-              />
-            ))}
-            {unzonedEquipment.length > 0 ? (
-              <section className="rounded-xl border border-[var(--amber)]/35 bg-[var(--amber-soft)] p-4 sm:p-5">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <h3 className="font-bold text-[var(--text)]">Unzoned or missing zone</h3>
-                    <p className="text-xs text-[var(--text-sub)]">These records point to a zone that is no longer available.</p>
-                  </div>
-                  <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-bold text-[var(--amber)]">{unzonedEquipment.length}</span>
-                </div>
-                <div className="space-y-2">
-                  {unzonedEquipment.map(({ equipmentType, item }) => (
-                    <EquipmentItemLink key={`${equipmentType.slug}-${item.id}`} auditId={auditId} equipmentType={equipmentType} item={item} />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {zones.length === 0 && unzonedEquipment.length === 0 ? (
-              <p className="text-sm text-[var(--text-sub)]">Add a zone first, then assign equipment to it.</p>
-            ) : null}
-          </div>
-        ) : null}
       </Card>
 
-      <Card>
-        <h2 className="mb-1 font-semibold">Equipment categories</h2>
-        <p className="mb-4 text-sm text-[var(--text-sub)]">Open a category to add or manage equipment across all zones.</p>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {equipmentByType.map(({ equipmentType: t, items }) => (
-            <Link key={t.slug} href={`/ecoaudit/audits/${auditId}/equipment/${t.slug}`} className="interactive-card flex min-h-20 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]"><EquipmentIcon slug={t.slug} /></span>
-              <span className="min-w-0">
-                <span className="block font-bold text-[var(--text)]">{t.label}</span>
-                <span className="block text-xs text-[var(--text-sub)]">{items.length} item{items.length === 1 ? '' : 's'} · View &amp; manage</span>
-              </span>
-            </Link>
-          ))}
+      <Card className="mb-6">
+        <div className="mb-5 flex flex-col gap-4 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="font-semibold">Audit workspace</h2>
+            <p className="mt-1 text-sm text-[var(--text-sub)]">Switch between the zone workspace and equipment categories.</p>
+          </div>
+          <div className="inline-flex w-full rounded-xl border border-[var(--border-strong)] bg-[var(--surface2)] p-1 sm:w-auto" role="tablist" aria-label="Audit workspace view">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === 'zones'}
+              onClick={() => setWorkspaceView('zones')}
+              className={`min-h-11 flex-1 rounded-lg px-4 text-sm font-bold transition sm:flex-none ${workspaceView === 'zones' ? 'bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-xs)]' : 'text-[var(--text-sub)] hover:bg-[var(--surface)] hover:text-[var(--text)]'}`}
+            >
+              Zones ({zones.length})
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceView === 'equipment'}
+              onClick={() => setWorkspaceView('equipment')}
+              className={`min-h-11 flex-1 rounded-lg px-4 text-sm font-bold transition sm:flex-none ${workspaceView === 'equipment' ? 'bg-[var(--primary)] text-[var(--primary-fg)] shadow-[var(--shadow-xs)]' : 'text-[var(--text-sub)] hover:bg-[var(--surface)] hover:text-[var(--text)]'}`}
+            >
+              Equipment
+            </button>
+          </div>
         </div>
+
+        {workspaceView === 'zones' ? (
+          <div role="tabpanel">
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h3 className="font-bold">Zones and their equipment</h3>
+                <p className="mt-1 text-sm text-[var(--text-sub)]">Open a zone to manage its photos and every equipment record assigned to it.</p>
+              </div>
+              {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`}><Icon name="plus" size={17} />Add zone</LinkButton> : null}
+            </div>
+            {equipmentLoading ? <Spinner label="Loading zone equipment…" /> : null}
+            {equipmentError ? <ErrorBanner message={cloudConnectionErrorMessage(equipmentError)} /> : null}
+            {!equipmentLoading && !equipmentError ? (
+              <div className="grid gap-4 xl:grid-cols-2">
+                {zones.map((zone) => (
+                  <ZoneEquipmentCard
+                    key={zone.id}
+                    auditId={auditId}
+                    zone={zone}
+                    equipmentByType={equipmentByType}
+                  />
+                ))}
+                {unzonedEquipment.length > 0 ? (
+                  <section className="rounded-xl border border-[var(--amber)]/35 bg-[var(--amber-soft)] p-4 sm:p-5">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-bold text-[var(--text)]">Unzoned or missing zone</h3>
+                        <p className="text-xs text-[var(--text-sub)]">These records point to a zone that is no longer available.</p>
+                      </div>
+                      <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-bold text-[var(--amber)]">{unzonedEquipment.length}</span>
+                    </div>
+                    <div className="space-y-2">
+                      {unzonedEquipment.map(({ equipmentType, item }) => (
+                        <EquipmentItemLink key={`${equipmentType.slug}-${item.id}`} auditId={auditId} equipmentType={equipmentType} item={item} />
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {zones.length === 0 && unzonedEquipment.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-[var(--border-strong)] p-8 text-center xl:col-span-2">
+                    <p className="font-bold">No zones yet</p>
+                    <p className="mt-1 text-sm text-[var(--text-sub)]">Add a zone first, then add equipment from its workspace.</p>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div role="tabpanel">
+            <div className="mb-4">
+              <h3 className="font-bold">Equipment categories</h3>
+              <p className="mt-1 text-sm text-[var(--text-sub)]">Open a category to view its equipment grouped under the correct zones.</p>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {equipmentByType.map(({ equipmentType: t, items }) => {
+                const zoneCount = new Set(items.map((item) => item.zoneId).filter((zoneId) => knownZoneIds.has(zoneId))).size;
+                return (
+                  <Link key={t.slug} href={`/ecoaudit/audits/${auditId}/equipment/${t.slug}`} className="interactive-card flex min-h-20 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3">
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]"><EquipmentIcon slug={t.slug} /></span>
+                    <span className="min-w-0">
+                      <span className="block font-bold text-[var(--text)]">{t.label}</span>
+                      <span className="block text-xs text-[var(--text-sub)]">{items.length} item{items.length === 1 ? '' : 's'} across {zoneCount} zone{zoneCount === 1 ? '' : 's'}</span>
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </Card>
     </div>
   );

@@ -65,7 +65,7 @@ export function PhotoField({
           <PhotoThumb key={uri} uri={uri} label={metadata.name?.trim() || label} className="mb-0 max-h-48 w-full rounded-lg border border-[var(--border)] object-cover" />
           {onPhotoMetadataChange ? (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--surface2)] p-3">
-              <FieldLabel htmlFor={captionId} className="!mt-0">Photo label in PDF</FieldLabel>
+              <FieldLabel htmlFor={captionId} className="!mt-0">Photo name / caption in PDF</FieldLabel>
               <Input
                 id={captionId}
                 value={metadata.name ?? ''}
@@ -220,7 +220,7 @@ export function PhotoGridField({
   );
 }
 
-function PhotoMetadataControls({
+export function PhotoMetadataControls({
   id,
   defaultLabel,
   value,
@@ -236,7 +236,7 @@ function PhotoMetadataControls({
   const metadata = normalizePhotoMetadata(value);
   return (
     <div className="space-y-1 border-t border-[var(--border)] p-3">
-      <FieldLabel htmlFor={id} className="!mt-0">Photo label in PDF</FieldLabel>
+      <FieldLabel htmlFor={id} className="!mt-0">Photo name / caption in PDF</FieldLabel>
       <Input
         id={id}
         value={metadata.name ?? ''}

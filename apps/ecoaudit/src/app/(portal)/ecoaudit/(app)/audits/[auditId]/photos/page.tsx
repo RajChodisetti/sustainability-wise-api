@@ -11,6 +11,7 @@ import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
+import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
 
 export default function AuditPhotosPage() {
   const { auditId } = useParams<{ auditId: string }>();
@@ -36,7 +37,7 @@ export default function AuditPhotosPage() {
     <div>
       <PageHeader
         title="Audit photos"
-        subtitle={`${photos.length} photo${photos.length === 1 ? '' : 's'} registered for this audit.`}
+        subtitle={`${photos.length} photo${photos.length === 1 ? '' : 's'} registered. Open the owning zone or equipment record to edit its PDF caption and large/compact size.`}
         actions={
           <>
             <Button variant="secondary" onClick={() => void handleExport()}><Icon name="file-text" size={17} />Export ZIP</Button>
@@ -50,11 +51,24 @@ export default function AuditPhotosPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {photos.map((p) => {
             const uri = p.remoteUrl || p.id;
+            const equipmentType = EQUIPMENT_TYPES.find((candidate) => candidate.entityType === p.entityType);
+            const settingsHref = p.entityId
+              ? p.entityType === 'zone'
+                ? `/ecoaudit/audits/${auditId}/zones/${p.entityId}`
+                : equipmentType
+                  ? `/ecoaudit/audits/${auditId}/equipment/${equipmentType.slug}/${p.entityId}`
+                  : null
+              : null;
             return (
               <Card key={p.id} className="overflow-hidden !p-3">
                 <PhotoThumb uri={uri} label={p.fieldName ?? 'Photo'} className="mb-2 w-full rounded-lg object-cover" />
                 <p className="mt-2 text-xs font-bold text-[var(--text-sub)]">{p.fieldName}</p>
                 <p className="mt-0.5 break-all text-xs text-[var(--muted)]">{p.originalFilename}</p>
+                {settingsHref ? (
+                  <LinkButton href={settingsHref} variant="secondary" className="mt-3 w-full !px-3 !text-xs">
+                    Edit PDF caption &amp; size
+                  </LinkButton>
+                ) : null}
               </Card>
             );
           })}

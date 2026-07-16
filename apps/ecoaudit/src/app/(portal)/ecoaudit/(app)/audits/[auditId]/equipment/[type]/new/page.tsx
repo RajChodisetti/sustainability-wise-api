@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listZones } from '@/api/zones';
 import { createEquipment } from '@/api/equipment';
@@ -16,17 +16,19 @@ import { FieldLabel, Select } from '@/components/ui/FormFields';
 export default function NewEquipmentPage() {
   const { auditId, type } = useParams<{ auditId: string; type: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const toast = useToast();
   const config = getEquipmentConfig(type!);
   const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
 
-  const [zoneId, setZoneId] = useState('');
+  const [zoneId, setZoneId] = useState(() => searchParams.get('zoneId') ?? '');
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
 
   if (!config) return <ErrorBanner message="Unknown equipment type." />;
   if (zonesQuery.isLoading) return <Spinner />;
   const zones = zonesQuery.data?.data ?? [];
+  const selectedZone = zones.find((zone) => zone.id === zoneId);
 
   function onChange(key: string, value: unknown) {
     setValues((p) => ({ ...p, [key]: value }));
@@ -49,7 +51,11 @@ export default function NewEquipmentPage() {
 
   return (
     <div>
-      <PageHeader title={`New ${config.label.slice(0, -1)}`} actions={<LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}`} variant="secondary">Back</LinkButton>} />
+      <PageHeader
+        title={`New ${config.label}`}
+        subtitle={selectedZone ? `This record will be added to ${selectedZone.zoneName}.` : 'Select the zone this equipment belongs to.'}
+        actions={<LinkButton href={selectedZone ? `/ecoaudit/audits/${auditId}/zones/${selectedZone.id}` : `/ecoaudit/audits/${auditId}/equipment/${type}`} variant="secondary">Back</LinkButton>}
+      />
       <Card>
         <form onSubmit={handleSubmit}>
           <FieldLabel>Zone *</FieldLabel>

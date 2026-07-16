@@ -1,49 +1,151 @@
 'use client';
 
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
-import { getZone } from '@/api/zones';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { getAudit } from '@/api/audits';
+import { listEquipment } from '@/api/equipment';
+import { getZone, updateZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
-import { PhotoThumb } from '@/components/photos/PhotoThumb';
+import { PhotoMetadataManager } from '@/components/photos/PhotoMetadataManager';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { LinkButton } from '@/components/ui/Button';
-import { normalizePhotoMetadataMap, photoDisplayName, photoMetadataKey } from '@/lib/photoMetadata';
+import { EquipmentIcon, Icon } from '@/components/ui/Icon';
+import { useToast } from '@/contexts/ToastContext';
+import { EQUIPMENT_TYPES, equipmentDisplayName } from '@/lib/equipmentConfig';
+import { photoMetadataKey, type PhotoMetadataMap } from '@/lib/photoMetadata';
 
 export default function ZoneDetailPage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
-  const query = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId) });
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const zoneQuery = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId) });
+  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
+  const equipmentQueries = useQueries({
+    queries: EQUIPMENT_TYPES.map((equipmentType) => ({
+      queryKey: ['equipment', equipmentType.slug, auditId],
+      queryFn: () => listEquipment(equipmentType.slug, auditId!),
+      enabled: Boolean(auditId),
+    })),
+  });
 
-  if (query.isLoading) return <Spinner />;
-  if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
-  const zone = query.data!;
-  const photoMetadata = normalizePhotoMetadataMap(zone.photoDescs);
+  if (zoneQuery.isLoading || auditQuery.isLoading) return <Spinner />;
+  if (zoneQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zoneQuery.error)} />;
+  const zone = zoneQuery.data!;
+  const isCompleted = auditQuery.data?.status === 'Completed';
+  const equipmentLoading = equipmentQueries.some((equipmentQuery) => equipmentQuery.isLoading);
+  const equipmentError = equipmentQueries.find((equipmentQuery) => equipmentQuery.error)?.error;
+  const equipmentByType = EQUIPMENT_TYPES.map((equipmentType, index) => ({
+    equipmentType,
+    items: (equipmentQueries[index].data?.data ?? []).filter((item) => item.zoneId === zoneId),
+  }));
+  const equipmentCount = equipmentByType.reduce((total, group) => total + group.items.length, 0);
+  const photoEntries = (zone.photos ?? []).map((uri, index) => ({
+    key: photoMetadataKey('photos', index),
+    uri,
+    defaultLabel: `Zone photo ${index + 1}`,
+  }));
+
+  async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
+    try {
+      await updateZone(zoneId!, { photoDescs });
+      await queryClient.invalidateQueries({ queryKey: ['zone', zoneId] });
+      toast.success('Zone PDF photo settings saved.');
+    } catch (error) {
+      toast.error(cloudConnectionErrorMessage(error));
+    }
+  }
 
   return (
     <div>
       <PageHeader
         title={zone.zoneName}
+        subtitle="Zone workspace: zone photos and all equipment assigned to this zone."
         actions={
           <>
-            <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}>Edit</LinkButton>
+            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}>Edit zone &amp; photos</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back to audit</LinkButton>
           </>
         }
       />
+
+      <Card className="mb-5">
+        <h2 className="font-semibold">Zone details</h2>
+        <p className="mt-2 text-sm text-[var(--text-sub)]">{zone.zoneDescription || 'No description.'}</p>
+      </Card>
+
+      {photoEntries.length > 0 ? (
+        <Card className="mb-5">
+          <PhotoMetadataManager
+            photos={photoEntries}
+            initialMetadata={zone.photoDescs}
+            disabled={isCompleted}
+            onSave={savePhotoMetadata}
+          />
+        </Card>
+      ) : (
+        <Card className="mb-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold">Zone photos</h2>
+              <p className="mt-1 text-sm text-[var(--text-sub)]">No zone photos have been added.</p>
+            </div>
+            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`} variant="secondary"><Icon name="camera" size={17} />Add photos</LinkButton> : null}
+          </div>
+        </Card>
+      )}
+
       <Card>
-        <p className="text-sm text-[var(--text-sub)]">{zone.zoneDescription || 'No description.'}</p>
-        {zone.photos?.length ? (
-          <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3">
-            {zone.photos.map((uri, i) => (
-              <div key={`${uri}-${i}`}>
-                <p className="mb-1 text-xs font-semibold text-[var(--text-sub)]">
-                  {photoDisplayName(`Zone photo ${i + 1}`, photoMetadata[photoMetadataKey('photos', i)])}
-                </p>
-                <PhotoThumb
-                  uri={uri}
-                  label={photoDisplayName(`Zone photo ${i + 1}`, photoMetadata[photoMetadataKey('photos', i)])}
-                  className="rounded-lg border border-[var(--border)] object-cover"
-                />
-              </div>
+        <div className="mb-5 flex flex-col gap-3 border-b border-[var(--border)] pb-5 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 className="font-semibold">Equipment in {zone.zoneName}</h2>
+            <p className="mt-1 text-sm text-[var(--text-sub)]">{equipmentCount} equipment record{equipmentCount === 1 ? '' : 's'} assigned to this zone.</p>
+          </div>
+          <span className="rounded-full bg-[var(--primary-soft)] px-3 py-1.5 text-xs font-bold text-[var(--primary)]">{equipmentCount} total</span>
+        </div>
+
+        {equipmentLoading ? <Spinner label="Loading equipment…" /> : null}
+        {equipmentError ? <ErrorBanner message={cloudConnectionErrorMessage(equipmentError)} /> : null}
+        {!equipmentLoading && !equipmentError ? (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {equipmentByType.map(({ equipmentType, items }) => (
+              <section key={equipmentType.slug} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4" aria-labelledby={`zone-${zoneId}-${equipmentType.slug}`}>
+                <div className="mb-3 flex items-start justify-between gap-3 border-b border-[var(--border)] pb-3">
+                  <div className="flex min-h-11 items-center gap-2">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--primary-soft)] text-[var(--primary)]"><EquipmentIcon slug={equipmentType.slug} /></span>
+                    <div>
+                      <h3 id={`zone-${zoneId}-${equipmentType.slug}`} className="font-bold">{equipmentType.label}</h3>
+                      <p className="text-xs text-[var(--text-sub)]">{items.length} item{items.length === 1 ? '' : 's'}</p>
+                    </div>
+                  </div>
+                  {!isCompleted ? (
+                    <LinkButton
+                      href={`/ecoaudit/audits/${auditId}/equipment/${equipmentType.slug}/new?zoneId=${encodeURIComponent(zoneId)}`}
+                      variant="secondary"
+                      className="!px-3"
+                    >
+                      <Icon name="plus" size={16} />Add
+                    </LinkButton>
+                  ) : null}
+                </div>
+
+                {items.length === 0 ? (
+                  <p className="text-sm text-[var(--text-sub)]">Nothing recorded in this category.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {items.map((item) => (
+                      <Link
+                        key={item.id}
+                        href={`/ecoaudit/audits/${auditId}/equipment/${equipmentType.slug}/${item.id}`}
+                        className="flex min-h-11 items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-sm font-semibold transition hover:border-[var(--primary)] hover:text-[var(--primary)]"
+                      >
+                        <span className="min-w-0 break-words">{equipmentDisplayName(item, equipmentType)}</span>
+                        <Icon name="chevron-right" size={17} className="shrink-0 text-[var(--muted)]" />
+                      </Link>
+                    ))}
+                  </div>
+                )}
+              </section>
             ))}
           </div>
         ) : null}
