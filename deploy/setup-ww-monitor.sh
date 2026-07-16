@@ -72,6 +72,13 @@ install -m 0644 "$DEPLOY_DIR/ww-fleet-monitor.service" /etc/systemd/system/ww-fl
 install -m 0644 "$DEPLOY_DIR/ww-fleet-monitor.timer" /etc/systemd/system/ww-fleet-monitor.timer
 systemctl daemon-reload
 
+# Remove the legacy PM2 cron before the baseline so it cannot interrupt a long
+# scan or send a second email while the systemd handoff is in progress. If the
+# baseline fails, leave collection paused and investigate instead of restoring
+# an email-capable scheduler automatically.
+sudo -u "$RUN_USER" pm2 delete ww-fleet-monitor >/dev/null 2>&1 || true
+sudo -u "$RUN_USER" pm2 save
+
 echo "==> Collecting the first scheduled-labelled baseline without sending email..."
 # This creates today's durable schedule checkpoint before enabling the
 # Persistent timer, preventing a first-install catch-up from emailing twice.
@@ -81,12 +88,6 @@ sudo -u "$RUN_USER" "$MONITOR_DIR/.venv/bin/python3" "$MONITOR_DIR/monitor.py" \
 systemctl enable --now ww-fleet-monitor.timer
 systemctl is-active --quiet ww-fleet-monitor.timer
 systemctl list-timers ww-fleet-monitor.timer --no-pager
-
-# Remove the legacy PM2 cron only after the new baseline and timer both pass.
-# A PM2 cron restart can terminate a slow scan; systemd leaves an active
-# oneshot alone.
-sudo -u "$RUN_USER" pm2 delete ww-fleet-monitor >/dev/null 2>&1 || true
-sudo -u "$RUN_USER" pm2 save
 
 echo ""
 echo "Done. Useful commands:"
