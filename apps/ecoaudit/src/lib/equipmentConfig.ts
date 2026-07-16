@@ -112,7 +112,7 @@ export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
       { key: 'circuitGrouping', label: 'Circuit grouping', kind: 'text' },
       { key: 'sensorsPhoto', label: 'Sensors photo', kind: 'photo' },
       { key: 'accessLimitations', label: 'Access limitations', kind: 'textarea' },
-      { key: 'switchboardPhotoNotes', label: 'Switchboard photo notes', kind: 'textarea' },
+      { key: 'switchboardControlsPhoto', label: 'Switchboard / Lighting Controls Photo', kind: 'photo' },
       { key: 'energyImprovementObservations', label: 'Energy improvement observations', kind: 'textarea' },
       ...sharedTail,
     ],

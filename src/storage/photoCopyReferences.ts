@@ -46,6 +46,7 @@ const ECO_PHOTO_FIELDS = [
   'fixturesPhoto',
   'mountingConstraintsPhoto',
   'sensorsPhoto',
+  'switchboardControlsPhoto',
   'roofPhoto',
   'inverterLabelPhoto',
   'electricityMeterPhoto',

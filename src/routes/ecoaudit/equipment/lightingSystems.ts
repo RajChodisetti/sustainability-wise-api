@@ -9,6 +9,7 @@ import {
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
 import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, str, num, arr, photoMetadata, type JsonRecord } from '../helpers.js';
+import { canonicalizeLightingSystemPayload } from '../lightingPhotoField.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
@@ -35,7 +36,7 @@ export async function eaLightingSystemRoutes(app: FastifyInstance): Promise<void
   app.post('/audits/:auditId/lighting-systems', { schema: { tags: ['EcoAudit Equipment'] }, preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')] },
     async (req, reply) => {
       const { auditId } = req.params as { auditId: string };
-      const body = req.body as JsonRecord;
+      const body = canonicalizeLightingSystemPayload(req.body as JsonRecord);
       await assertMutableAudit(auditId, req.user);
       const zoneId = typeof body.zoneId === 'string' ? body.zoneId : assertFound(null, 'zoneId');
       const [row] = await db.insert(T).values({
@@ -46,7 +47,7 @@ export async function eaLightingSystemRoutes(app: FastifyInstance): Promise<void
         controlsType: str(body.controlsType), operatingHours: str(body.operatingHours), mountingHeight: str(body.mountingHeight),
         mountingConstraintsPhoto: str(body.mountingConstraintsPhoto), circuitGrouping: str(body.circuitGrouping),
         sensorsPhoto: str(body.sensorsPhoto), accessLimitations: str(body.accessLimitations),
-        switchboardPhotoNotes: str(body.switchboardPhotoNotes), energyImprovementObservations: str(body.energyImprovementObservations),
+        switchboardControlsPhoto: str(body.switchboardControlsPhoto), energyImprovementObservations: str(body.energyImprovementObservations),
         extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
         photoDescs: photoMetadata(body.photoDescs),
       } as any).returning();
@@ -69,10 +70,10 @@ export async function eaLightingSystemRoutes(app: FastifyInstance): Promise<void
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
       const found = assertFound(row, label);
       await assertMutableAudit(found.auditId, req.user);
-      const body = req.body as JsonRecord;
+      const body = canonicalizeLightingSystemPayload(req.body as JsonRecord);
       const c: Record<string, unknown> = { updatedAt: new Date(), syncStatus: 'local' };
       if ('lightType' in body) c.lightType = requiredString(body, 'lightType');
-      for (const k of ['brandModel','photo','fixturesInstalled','fixturesPhoto','areaLocation','controlsType','operatingHours','mountingHeight','mountingConstraintsPhoto','circuitGrouping','sensorsPhoto','accessLimitations','switchboardPhotoNotes','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
+      for (const k of ['brandModel','photo','fixturesInstalled','fixturesPhoto','areaLocation','controlsType','operatingHours','mountingHeight','mountingConstraintsPhoto','circuitGrouping','sensorsPhoto','accessLimitations','switchboardControlsPhoto','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
       if ('ratedWattage' in body) c.ratedWattage = num(body.ratedWattage);
       if ('quantity' in body) c.quantity = typeof body.quantity === 'number' ? Math.round(body.quantity) : null;
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);

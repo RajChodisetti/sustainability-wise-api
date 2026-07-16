@@ -133,7 +133,9 @@ export const eaLightingSystems = pgTable('ea_lighting_systems', {
   circuitGrouping: text('circuit_grouping'),
   sensorsPhoto: text('sensors_photo'),
   accessLimitations: text('access_limitations'),
-  switchboardPhotoNotes: text('switchboard_photo_notes'),
+  // Keep the legacy physical column for compatibility with existing data, but
+  // expose the same field name used by the mobile domain model and PDF metadata.
+  switchboardControlsPhoto: text('switchboard_photo_notes'),
   energyImprovementObservations: text('energy_improvement_observations'),
   extraNotes: text('extra_notes'),
   extraPhotos: text('extra_photos').array().notNull().default([]),

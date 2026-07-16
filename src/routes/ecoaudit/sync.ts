@@ -24,6 +24,12 @@ import {
   releaseCopyReferencesForEntity,
   releaseCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
+import {
+  canonicalEcoAuditPhotoFieldName,
+  canonicalizeLightingSystemPayload,
+  ecoAuditPhotoFieldAliases,
+  withLegacyLightingPhotoSyncAlias,
+} from './lightingPhotoField.js';
 
 function uploadUrl(sessionId: string): string {
   return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
@@ -52,7 +58,8 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
     const auditId = requiredString(body, 'auditId');
-    const fieldName = requiredString(body, 'fieldName');
+    const fieldName = canonicalEcoAuditPhotoFieldName(requiredString(body, 'fieldName'));
+    const fieldNames = ecoAuditPhotoFieldAliases(fieldName);
     const entityId = typeof body.entityId === 'string' && body.entityId.trim() ? body.entityId.trim() : auditId;
     const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
     assertAuditAccess(assertFound(audit, 'Audit'), request.user);
@@ -61,7 +68,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       eq(photoRegistry.checksum, checksum),
       eq(photoRegistry.parentId, auditId),
       eq(photoRegistry.entityId, entityId),
-      eq(photoRegistry.fieldName, fieldName),
+      inArray(photoRegistry.fieldName, fieldNames),
       eq(photoRegistry.status, 'confirmed'),
     ));
     return reply.send({
@@ -80,7 +87,8 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
     const auditId = requiredString(body, 'auditId');
-    const fieldName = requiredString(body, 'fieldName');
+    const fieldName = canonicalEcoAuditPhotoFieldName(requiredString(body, 'fieldName'));
+    const fieldNames = ecoAuditPhotoFieldAliases(fieldName);
     const filename = requiredString(body, 'filename');
     const fileSizeBytes = Number(body.fileSizeBytes ?? 0);
     if (!Number.isFinite(fileSizeBytes) || fileSizeBytes <= 0) throw badRequest('fileSizeBytes must be a positive number');
@@ -99,7 +107,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       eq(photoRegistry.checksum, checksum),
       eq(photoRegistry.parentId, auditId),
       eq(photoRegistry.entityId, entityId),
-      eq(photoRegistry.fieldName, fieldName),
+      inArray(photoRegistry.fieldName, fieldNames),
       eq(photoRegistry.status, 'confirmed'),
     ));
     if (duplicate?.remoteUrl) {
@@ -196,7 +204,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['EcoAudit Sync'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
-    const body = request.body as {
+    const rawBody = request.body as {
       audit?: JsonRecord;
       zones?: JsonRecord[];
       mainSwitchboards?: JsonRecord[];
@@ -208,6 +216,10 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       hotWaterSystems?: JsonRecord[];
       generalWater?: JsonRecord[];
       generalElectricity?: JsonRecord[];
+    };
+    const body = {
+      ...rawBody,
+      lightingSystems: rawBody.lightingSystems?.map(canonicalizeLightingSystemPayload),
     };
 
     if (!body.audit) throw badRequest('audit is required');
@@ -347,7 +359,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       controlsType: str(item.controlsType), operatingHours: str(item.operatingHours), mountingHeight: str(item.mountingHeight),
       mountingConstraintsPhoto: str(item.mountingConstraintsPhoto), circuitGrouping: str(item.circuitGrouping),
       sensorsPhoto: str(item.sensorsPhoto), accessLimitations: str(item.accessLimitations),
-      switchboardPhotoNotes: str(item.switchboardPhotoNotes), energyImprovementObservations: str(item.energyImprovementObservations),
+      switchboardControlsPhoto: str(item.switchboardControlsPhoto), energyImprovementObservations: str(item.energyImprovementObservations),
     }));
 
     await upsertEquipment(eaSolarPv, body.solarPv ?? [], (item, ex) => baseCols(item, ex, {
@@ -445,6 +457,13 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
           generalWater: [],
           generalElectricity: [],
         };
-    return reply.send({ audits, ...byAudit, pulledAt: new Date().toISOString() });
+    return reply.send({
+      audits,
+      ...byAudit,
+      // Old installed app versions import the legacy property into their
+      // existing SQLite column. The canonical property remains authoritative.
+      lightingSystems: byAudit.lightingSystems.map(withLegacyLightingPhotoSyncAlias),
+      pulledAt: new Date().toISOString(),
+    });
   });
 }

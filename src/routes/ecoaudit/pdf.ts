@@ -30,6 +30,7 @@ import {
   loadPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
+import { canonicalEcoAuditPhotoFieldName } from './lightingPhotoField.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
@@ -77,7 +78,6 @@ const FIELD_LABELS: Record<string, string> = {
   mountingConstraintsPhoto: 'Mounting / Access',
   sensorsPhoto: 'Switches / Sensors',
   switchboardControlsPhoto: 'Switchboard / Controls',
-  switchboardPhotoNotes: 'Switchboard / Controls',
   nameplatePhotos: 'Nameplate',
   controllerPhoto: 'Controller',
   indoorUnitNameplatePhoto: 'Indoor Unit Nameplate',
@@ -104,8 +104,10 @@ function normalizePhotoMetadataMap(value: unknown): PhotoMetadataMap {
 function photoMetadataKey(fieldName: string | null): string {
   if (!fieldName) return '';
   const arrayMatch = /^([A-Za-z][A-Za-z0-9_]*?)(?:\[(\d+)\]|_(\d+)|\.(\d+))$/.exec(fieldName);
-  if (arrayMatch) return `${arrayMatch[1]}.${arrayMatch[2] ?? arrayMatch[3] ?? arrayMatch[4]}`;
-  return fieldName;
+  if (arrayMatch) {
+    return `${canonicalEcoAuditPhotoFieldName(arrayMatch[1])}.${arrayMatch[2] ?? arrayMatch[3] ?? arrayMatch[4]}`;
+  }
+  return canonicalEcoAuditPhotoFieldName(fieldName);
 }
 
 function photosForEntity(photos: PhotoRow[], entityId: string, metadata?: unknown): PhotoEntry[] {

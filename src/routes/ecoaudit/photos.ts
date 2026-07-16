@@ -15,6 +15,7 @@ import {
   type PhotoRow,
 } from '../../storage/photoCopyReferences.js';
 import { conflict, notFound } from '../../utils/errors.js';
+import { canonicalEcoAuditPhotoFieldName } from './lightingPhotoField.js';
 
 type ZipArchiveInstance = NodeJS.ReadableStream & {
   append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
@@ -34,7 +35,7 @@ function photoMetadata(photo: PhotoRow) {
     id: photo.id, checksum: photo.checksum, remoteUrl: photo.remoteUrl,
     contentType: photo.contentType, originalFilename: photo.originalFilename,
     app: photo.app, parentId: photo.parentId, entityType: photo.entityType,
-    entityId: photo.entityId, fieldName: photo.fieldName,
+    entityId: photo.entityId, fieldName: canonicalEcoAuditPhotoFieldName(photo.fieldName),
     fileSizeBytes: photo.fileSizeBytes, status: photo.status,
     uploadedAt: photo.uploadedAt, createdAt: photo.createdAt,
   };

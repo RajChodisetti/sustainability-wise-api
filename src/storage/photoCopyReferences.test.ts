@@ -9,6 +9,7 @@ process.env.JWT_REFRESH_SECRET ??= 'photo-copy-reference-refresh-test-secret';
 const {
   buildPhotoCopyReferenceRows,
   collectImmutablePhotoIds,
+  ecoPhotoFieldReferences,
   ecoPhotoValues,
   actorCanAccessPhotoParent,
   genericPhotoCandidateIsAuthorized,
@@ -21,6 +22,7 @@ const {
 const PHOTO_A = '11111111-1111-4111-8111-111111111111';
 const PHOTO_B = '22222222-2222-4222-8222-222222222222';
 const PHOTO_C = '33333333-3333-4333-8333-333333333333';
+const PHOTO_D = '44444444-4444-4444-8444-444444444444';
 
 function photo(overrides: Partial<PhotoRow> & Pick<PhotoRow, 'id'>): PhotoRow {
   const { id, ...rest } = overrides;
@@ -53,13 +55,19 @@ test('collectImmutablePhotoIds finds nested immutable ids case-insensitively', (
   assert.deepEqual([...ids].sort(), [PHOTO_A, PHOTO_B]);
 });
 
-test('photo field extractors include actual Eco and nested Solar fields but not notes', () => {
-  const ecoIds = collectImmutablePhotoIds(ecoPhotoValues({
+test('photo field extractors include the canonical lighting controls photo but not notes', () => {
+  const ecoRecord = {
     photo: `/v1/files/photo-${PHOTO_A}.jpg`,
     extraPhotos: [`/v1/files/photo-${PHOTO_B}.jpg`],
-    comments: `unrelated ${PHOTO_C}`,
-  }));
-  assert.deepEqual([...ecoIds].sort(), [PHOTO_A, PHOTO_B]);
+    switchboardControlsPhoto: `/v1/files/photo-${PHOTO_C}.jpg`,
+    comments: `unrelated ${PHOTO_D}`,
+  };
+  const ecoIds = collectImmutablePhotoIds(ecoPhotoValues(ecoRecord));
+  assert.deepEqual([...ecoIds].sort(), [PHOTO_A, PHOTO_B, PHOTO_C]);
+  assert.deepEqual(
+    ecoPhotoFieldReferences(ecoRecord).filter((reference) => reference.photoId === PHOTO_C),
+    [{ photoId: PHOTO_C, targetFieldName: 'switchboardControlsPhoto' }],
+  );
 
   const solarIds = collectImmutablePhotoIds(solarAssessmentPhotoValues({
     switchboards: [{ photoUri: `/v1/files/photo-${PHOTO_A}.jpg` }],

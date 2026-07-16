@@ -64,6 +64,13 @@
       "when": 1784234800000,
       "tag": "0010_restore_ea_audit_timing",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784235900000,
+      "tag": "0011_canonicalize_lighting_controls_photo",
+      "breakpoints": true
     }
   ]
 }
