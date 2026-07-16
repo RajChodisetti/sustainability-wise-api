@@ -20,8 +20,8 @@ install -d -o "$RUN_USER" -g "$RUN_USER" -m 0700 "$DATA_DIR/spool"
 
 echo ""
 echo "==> Copy fleet monitor files to the droplet before continuing:"
-echo "    From your local machine run:"
-echo "    scp -r sustainability-wise-api/wattwatchers-fleet-monitor/* root@170.64.154.143:$MONITOR_DIR/"
+echo "    From the wattwatchers-fleet-monitor checkout on your local machine run:"
+echo "    scp monitor.py requirements.txt .env.example DEPLOYMENT.md root@170.64.154.143:$MONITOR_DIR/"
 echo ""
 read -rp "Press Enter once files are copied..."
 
@@ -72,11 +72,6 @@ install -m 0644 "$DEPLOY_DIR/ww-fleet-monitor.service" /etc/systemd/system/ww-fl
 install -m 0644 "$DEPLOY_DIR/ww-fleet-monitor.timer" /etc/systemd/system/ww-fleet-monitor.timer
 systemctl daemon-reload
 
-# Remove the legacy PM2 cron if this host was upgraded in place. A PM2 cron
-# restart can terminate a slow scan; systemd leaves an active oneshot alone.
-sudo -u "$RUN_USER" pm2 delete ww-fleet-monitor >/dev/null 2>&1 || true
-sudo -u "$RUN_USER" pm2 save
-
 echo "==> Collecting the first scheduled-labelled baseline without sending email..."
 # This creates today's durable schedule checkpoint before enabling the
 # Persistent timer, preventing a first-install catch-up from emailing twice.
@@ -84,6 +79,14 @@ sudo -u "$RUN_USER" "$MONITOR_DIR/.venv/bin/python3" "$MONITOR_DIR/monitor.py" \
   --scheduled --no-email
 
 systemctl enable --now ww-fleet-monitor.timer
+systemctl is-active --quiet ww-fleet-monitor.timer
+systemctl list-timers ww-fleet-monitor.timer --no-pager
+
+# Remove the legacy PM2 cron only after the new baseline and timer both pass.
+# A PM2 cron restart can terminate a slow scan; systemd leaves an active
+# oneshot alone.
+sudo -u "$RUN_USER" pm2 delete ww-fleet-monitor >/dev/null 2>&1 || true
+sudo -u "$RUN_USER" pm2 save
 
 echo ""
 echo "Done. Useful commands:"
