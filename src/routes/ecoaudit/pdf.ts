@@ -20,6 +20,7 @@ import {
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { renderPdf } from '../../pdf/renderer.js';
+import { renderPdfEquipmentIcon } from '../../pdf/equipmentIcons.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
 import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
@@ -282,7 +283,7 @@ function nf(key: string, item: EquipmentItem): number | null {
 
 // ── Item renderers ────────────────────────────────────────────────────────────────
 function renderMs(m: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
-  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('switchboard')}<div class="item-title">
       <div class="iname">${esc(sf('name', m))}</div>
       <div class="isub">Main Switchboard${sf('location', m) ? ` &middot; ${esc(sf('location', m))}` : ''}${sf('siteNmi', m) ? ` &middot; NMI: ${esc(sf('siteNmi', m))}` : ''}</div>
       ${showZone ? zoneBadge(zoneMap.get(m.zoneId)) : ''}
@@ -293,7 +294,7 @@ function renderMs(m: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, s
 }
 
 function renderAddlSb(a: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
-  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('switchboard')}<div class="item-title">
       <div class="iname">${esc(sf('name', a))}${sf('type', a) ? ` <span class="type-chip">(${esc(sf('type', a))})</span>` : ''}</div>
       <div class="isub">Additional Switchboard${sf('location', a) ? ` &middot; ${esc(sf('location', a))}` : ''}</div>
       ${showZone ? zoneBadge(zoneMap.get(a.zoneId)) : ''}
@@ -306,7 +307,7 @@ function renderAddlSb(a: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<strin
 function renderHvac(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
   const heatingKw = nf('heatingCapacityKw', h);
   const coolingKw = nf('coolingCapacityKw', h);
-  const header = `<div class="item-head"><span class="iico">&#127777;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('hvac')}<div class="item-title">
       <div class="iname">${esc(sf('unitName', h))}</div>
       <div class="isub">${esc([sf('type', h), sf('make', h), sf('model', h)].filter(Boolean).join(' · ')) || 'HVAC Unit'}</div>
       ${showZone ? zoneBadge(zoneMap.get(h.zoneId)) : ''}
@@ -328,7 +329,7 @@ function renderHvac(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string,
 function renderLight(l: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
   const qty = nf('quantity', l);
   const watts = nf('ratedWattage', l);
-  const header = `<div class="item-head"><span class="iico">&#128161;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('lighting')}<div class="item-title">
       <div class="iname">${esc(sf('lightType', l))}${sf('brandModel', l) ? ` &mdash; ${esc(sf('brandModel', l))}` : ''}</div>
       <div class="isub">${[sf('areaLocation', l), qty != null ? `×${qty}` : null].filter(Boolean).join(' · ') || 'Lighting System'}</div>
       ${showZone ? zoneBadge(zoneMap.get(l.zoneId)) : ''}
@@ -349,7 +350,7 @@ function renderLight(l: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string
 function renderSolar(sv: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
   const sizeKw = nf('systemSizeKw', sv);
   const hasRoofSpace = sf('availableRoofSpace', sv);
-  const header = `<div class="item-head"><span class="iico">&#9728;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('solar')}<div class="item-title">
       <div class="iname">Solar PV${sizeKw != null ? ` &mdash; ${sizeKw} kW` : ''}</div>
       <div class="isub">${sf('inverterBrandModel', sv) ? esc(sf('inverterBrandModel', sv)) : 'Solar PV System'}</div>
       ${showZone ? zoneBadge(zoneMap.get(sv.zoneId)) : ''}
@@ -369,7 +370,7 @@ function renderSolar(sv: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<strin
 
 function renderForklift(f: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
   const qty = nf('quantity', f);
-  const header = `<div class="item-head"><span class="iico">&#128267;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('charger')}<div class="item-title">
       <div class="iname">${esc(sf('chargerType', f))}${sf('brandModel', f) ? ` &mdash; ${esc(sf('brandModel', f))}` : ''}</div>
       <div class="isub">Forklift Charger${sf('location', f) ? ` · ${esc(sf('location', f))}` : ''}${qty != null ? ` · ×${qty}` : ''}</div>
       ${showZone ? zoneBadge(zoneMap.get(f.zoneId)) : ''}
@@ -389,7 +390,7 @@ function renderForklift(f: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<str
 
 function renderHotWater(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
   const liters = nf('sizeLiters', h);
-  const header = `<div class="item-head"><span class="iico">&#128167;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('hot-water')}<div class="item-title">
       <div class="iname">${esc(sf('dhwDetailsType', h))}</div>
       <div class="isub">${[sf('fuelType', h), liters != null ? `${liters} L` : null, sf('location', h)].filter(Boolean).join(' · ') || 'Hot Water System'}</div>
       ${showZone ? zoneBadge(zoneMap.get(h.zoneId)) : ''}
@@ -407,7 +408,7 @@ function renderHotWater(h: EquipmentItem, photos: PhotoEntry[], zoneMap: Map<str
 }
 
 function renderGenWater(g: EquipmentItem, idx: number, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
-  const header = `<div class="item-head"><span class="iico">&#128167;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('water')}<div class="item-title">
       <div class="iname">Water Item ${idx + 1}${sf('question', g) ? ` &mdash; ${esc(sf('question', g))}` : ''}</div>
       ${showZone ? zoneBadge(zoneMap.get(g.zoneId)) : ''}
     </div></div>`;
@@ -417,7 +418,7 @@ function renderGenWater(g: EquipmentItem, idx: number, photos: PhotoEntry[], zon
 }
 
 function renderGenElec(g: EquipmentItem, idx: number, photos: PhotoEntry[], zoneMap: Map<string, string>, showZone = true): string {
-  const header = `<div class="item-head"><span class="iico">&#9889;</span><div class="item-title">
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('electricity')}<div class="item-title">
       <div class="iname">Electricity Item ${idx + 1}${sf('question', g) ? ` &mdash; ${esc(sf('question', g))}` : ''}</div>
       ${showZone ? zoneBadge(zoneMap.get(g.zoneId)) : ''}
     </div></div>`;
@@ -492,7 +493,8 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 .item{background:#FFFFFF;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 8px 8px 0;padding:11px 14px 18px;margin-bottom:14px;page-break-inside:auto;break-inside:auto;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .item-lead{page-break-inside:auto;break-inside:auto;-webkit-box-decoration-break:clone;box-decoration-break:clone;}
 .item-head{display:table;width:100%;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #E2E8F0;page-break-after:avoid;break-after:avoid;}
-.iico{display:table-cell;vertical-align:top;font-size:15px;width:24px;padding-top:2px;}
+.iico{display:table-cell;vertical-align:top;width:28px;padding-top:1px;color:#1E3A8A;}
+.iico-svg{display:block;width:19px;height:19px;overflow:visible;}
 .item-title{display:table-cell;vertical-align:top;}
 .iname{font-size:11.5pt;font-weight:700;color:#1E3A8A;}
 .isub{font-size:9.5pt;color:#64748B;margin-top:2px;}
@@ -625,7 +627,7 @@ function zonePhotosBody(zones: Array<typeof eaZones.$inferSelect>, photos: Photo
     const zPhotos = photosForEntity(photos, zone.id, zone.photoDescs);
     if (zPhotos.length === 0) return '';
     return `<div class="item">
-      <div class="item-head"><span class="iico">&#128247;</span><div class="item-title">
+      <div class="item-head">${renderPdfEquipmentIcon('camera')}<div class="item-title">
         <div class="iname">${esc(zone.zoneName)}</div>
         ${zone.zoneDescription ? `<div class="isub">${esc(zone.zoneDescription)}</div>` : '<div class="isub">Zone Photos</div>'}
       </div></div>
