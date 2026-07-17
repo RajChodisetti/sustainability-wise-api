@@ -135,6 +135,11 @@ export default function ReportDetailPage() {
   const emailDelta = latestDelivery?.emailDelta ?? null;
   const cohorts = fleetReportCohorts(emailDelta);
   const collectionComplete = emailDelta?.collectionComplete;
+  const deliveryTiming = latestDelivery?.sentAt
+    ? `Sent ${formatDateTime(latestDelivery.sentAt)}`
+    : latestDelivery?.attemptedAt
+      ? `Attempted ${formatDateTime(latestDelivery.attemptedAt)}`
+      : 'No delivery attempt recorded';
 
   return (
     <div>
@@ -162,11 +167,7 @@ export default function ReportDetailPage() {
           <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)] px-4 py-3">
             <dt className="text-xs font-bold uppercase tracking-[0.06em] text-[var(--text-sub)]">Latest delivery</dt>
             <dd className="mt-2"><ProcessStatusBadge status={latestDelivery?.status ?? 'not sent'} /></dd>
-            <dd className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
-              {latestDelivery?.sentAt
-                ? `Sent ${formatDateTime(latestDelivery.sentAt)}`
-                : `Attempted ${formatDateTime(latestDelivery?.attemptedAt)}`}
-            </dd>
+            <dd className="mt-2 text-xs leading-5 text-[var(--text-sub)]">{deliveryTiming}</dd>
           </div>
           <div className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)] px-4 py-3">
             <dt className="text-xs font-bold uppercase tracking-[0.06em] text-[var(--text-sub)]">Collection coverage</dt>
