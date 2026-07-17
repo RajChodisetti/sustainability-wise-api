@@ -1,0 +1,93 @@
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import {
+  getDashboardSummary,
+  getDashboardTrends,
+  getDevice,
+  getReport,
+  getRun,
+  listClients,
+  listDevices,
+  listReports,
+  listRuns,
+  type DeviceListParams,
+} from '@/modules/fleet/api/fleet';
+import type { FleetQueryFilters } from '@/modules/fleet/types/domain';
+
+export function useFleetSummary(filters: FleetQueryFilters & { runId?: string } = {}) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'dashboard', 'summary', filters],
+    queryFn: () => getDashboardSummary(filters),
+    staleTime: 60_000,
+    refetchInterval: 120_000,
+  });
+}
+
+export function useFleetTrends(
+  filters: FleetQueryFilters & { from?: string; to?: string } = {},
+) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'dashboard', 'trends', filters],
+    queryFn: () => getDashboardTrends(filters),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useFleetDevices(filters: DeviceListParams = {}) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'devices', filters],
+    queryFn: () => listDevices(filters),
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
+}
+
+export function useFleetDevice(deviceId: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'devices', deviceId],
+    queryFn: () => getDevice(deviceId),
+    enabled: Boolean(deviceId),
+    staleTime: 60_000,
+  });
+}
+
+export function useFleetClients(runId?: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'clients', runId ?? 'latest'],
+    queryFn: () => listClients(runId),
+    staleTime: 2 * 60_000,
+  });
+}
+
+export function useFleetRuns(filters: { limit?: number; offset?: number; status?: string } = {}) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'runs', filters],
+    queryFn: () => listRuns(filters),
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useFleetRun(runId: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'runs', runId],
+    queryFn: () => getRun(runId),
+    enabled: Boolean(runId),
+  });
+}
+
+export function useFleetReports(filters: { limit?: number; offset?: number } = {}) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'reports', filters],
+    queryFn: () => listReports(filters),
+    placeholderData: keepPreviousData,
+    staleTime: 2 * 60_000,
+  });
+}
+
+export function useFleetReport(reportId: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'reports', reportId],
+    queryFn: () => getReport(reportId),
+    enabled: Boolean(reportId),
+  });
+}

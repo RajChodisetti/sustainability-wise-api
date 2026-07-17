@@ -53,7 +53,7 @@ function NavLink({
 }
 
 type AppRole = {
-  app: 'ecoaudit' | 'solarsense';
+  app: 'ecoaudit' | 'solarsense' | 'wattwatchers';
   appName: string;
   role: string;
 };
@@ -241,10 +241,14 @@ function SidebarNavigation({
   setEcoOpen,
   solarOpen,
   setSolarOpen,
+  fleetOpen,
+  setFleetOpen,
   ecoChildren,
   solarChildren,
+  fleetChildren,
   showEcoNavigation,
   showSolarNavigation,
+  showFleetNavigation,
   healthState,
   onNavigate,
 }: {
@@ -256,10 +260,14 @@ function SidebarNavigation({
   setEcoOpen: (value: boolean) => void;
   solarOpen: boolean;
   setSolarOpen: (value: boolean) => void;
+  fleetOpen: boolean;
+  setFleetOpen: (value: boolean) => void;
   ecoChildren: ChildNavItem[];
   solarChildren: ChildNavItem[];
+  fleetChildren: ChildNavItem[];
   showEcoNavigation: boolean;
   showSolarNavigation: boolean;
+  showFleetNavigation: boolean;
   healthState: 'checking' | 'connected' | 'offline';
   onNavigate?: () => void;
 }) {
@@ -318,6 +326,19 @@ function SidebarNavigation({
                   onNavigate={onNavigate}
                 />
               ) : null}
+              {showFleetNavigation ? (
+                <AppNavigationSection
+                  label="Wattwatchers Fleet"
+                  href="/fleet/dashboard"
+                  icon="activity"
+                  open={fleetOpen}
+                  onToggle={() => setFleetOpen(!fleetOpen)}
+                  items={fleetChildren}
+                  regionId={`${idPrefix}-fleet-navigation`}
+                  active={pathname.startsWith('/fleet')}
+                  onNavigate={onNavigate}
+                />
+              ) : null}
               <Link
                 href="/field"
                 onClick={onNavigate}
@@ -357,6 +378,7 @@ function SidebarNavigation({
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
+  if (pathname.startsWith('/fleet')) return { name: 'Wattwatchers Fleet', icon: 'activity' as IconName };
   if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
   if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
   return { name: 'Portal overview', icon: 'grid' as IconName };
@@ -364,7 +386,7 @@ function workspaceFor(pathname: string) {
 
 export function PortalShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { logout, eaUser, ssUser } = usePortalAuth();
+  const { logout, eaUser, ssUser, wwUser } = usePortalAuth();
   const { isDark, setMode } = useTheme();
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
@@ -372,12 +394,15 @@ export function PortalShell({ children }: { children: ReactNode }) {
     ? 'ecoaudit'
     : pathname.startsWith('/solar')
       ? 'solar'
+      : pathname.startsWith('/fleet')
+        ? 'fleet'
       : pathname.startsWith('/field')
         ? 'field'
         : 'portal';
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [solarChoice, setSolarChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [fleetChoice, setFleetChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const appsOpen = appsChoice?.scope === navigationScope
     ? appsChoice.value
     : navigationScope !== 'portal';
@@ -387,9 +412,13 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const solarOpen = solarChoice?.scope === navigationScope
     ? solarChoice.value
     : navigationScope === 'solar';
+  const fleetOpen = fleetChoice?.scope === navigationScope
+    ? fleetChoice.value
+    : navigationScope === 'fleet';
   const setAppsOpen = (value: boolean) => setAppsChoice({ scope: navigationScope, value });
   const setEcoOpen = (value: boolean) => setEcoChoice({ scope: navigationScope, value });
   const setSolarOpen = (value: boolean) => setSolarChoice({ scope: navigationScope, value });
+  const setFleetOpen = (value: boolean) => setFleetChoice({ scope: navigationScope, value });
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerRef = useRef<HTMLElement>(null);
@@ -466,8 +495,16 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/solar/settings', label: 'Settings', icon: 'settings' },
     ...(ssAdmin ? [{ href: '/solar/admin', label: 'Admin', icon: 'shield' as IconName }] : []),
   ];
+  const fleetChildren: ChildNavItem[] = [
+    { href: '/fleet/dashboard', label: 'Overview', icon: 'grid', exact: true },
+    { href: '/fleet/devices', label: 'Devices', icon: 'wifi' },
+    { href: '/fleet/clients', label: 'Clients', icon: 'users' },
+    { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
+    { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
+  ];
   const showEcoNavigation = Boolean(eaUser);
   const showSolarNavigation = PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
+  const showFleetNavigation = Boolean(wwUser);
   const navigationProps = {
     pathname,
     appsOpen,
@@ -476,26 +513,37 @@ export function PortalShell({ children }: { children: ReactNode }) {
     setEcoOpen,
     solarOpen,
     setSolarOpen,
+    fleetOpen,
+    setFleetOpen,
     ecoChildren,
     solarChildren,
+    fleetChildren,
     showEcoNavigation,
     showSolarNavigation,
+    showFleetNavigation,
     healthState,
   };
   const activeUser = pathname.startsWith('/ecoaudit')
     ? eaUser
     : pathname.startsWith('/solar')
       ? ssUser
-      : eaUser ?? ssUser;
+      : pathname.startsWith('/fleet')
+        ? wwUser
+        : eaUser ?? ssUser ?? wwUser;
   const displayName = activeUser?.fullName || activeUser?.email || 'User';
   const appRoles: AppRole[] = [
     ...(eaUser ? [{ app: 'ecoaudit' as const, appName: 'Eco Audit Pro', role: eaUser.role }] : []),
     ...(ssUser ? [{ app: 'solarsense' as const, appName: 'SolarSense', role: ssUser.role }] : []),
+    ...(wwUser ? [{ app: 'wattwatchers' as const, appName: 'Wattwatchers Fleet', role: wwUser.role }] : []),
   ];
   const profileHref = pathname.startsWith('/solar')
     ? ssUser
       ? '/solar/settings'
       : eaUser
+        ? '/ecoaudit/settings'
+        : null
+    : pathname.startsWith('/fleet')
+      ? eaUser
         ? '/ecoaudit/settings'
         : null
     : eaUser

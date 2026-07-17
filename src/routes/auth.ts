@@ -1,33 +1,33 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { eq, and, isNull, gt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { refreshTokens } from '../db/schema/shared.js';
 import { eaUsers } from '../db/schema/ecoaudit.js';
 import { ssUsers } from '../db/schema/solarsense.js';
+import { wwUsers } from '../db/schema/wattwatchers.js';
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../auth/jwt.js';
 import type { App, Role } from '../auth/jwt.js';
 import { verifyPassword, hashPassword } from '../auth/apiKey.js';
+import { cloudEmailForLogin, verifyActiveLogin } from '../auth/loginIdentity.js';
 import { authenticate, requireRole } from '../auth/middleware.js';
 import { sha256String, randomToken } from '../utils/crypto.js';
 import { unauthorized, badRequest, notFound, conflict, gone, forbidden } from '../utils/errors.js';
 import { config } from '../config.js';
 
-type UserTable = typeof eaUsers | typeof ssUsers;
+type UserTable = typeof eaUsers | typeof ssUsers | typeof wwUsers;
 
 function tableForApp(app: App): UserTable {
-  return app === 'ecoaudit' ? eaUsers : ssUsers;
+  switch (app) {
+    case 'ecoaudit': return eaUsers;
+    case 'solarsense': return ssUsers;
+    case 'wattwatchers': return wwUsers;
+  }
 }
 
-function normalizeRole(value: unknown): Extract<Role, 'admin' | 'inspector'> {
-  return value === 'admin' ? 'admin' : 'inspector';
-}
-
-function cloudEmailForLogin(app: App, value: string): string {
-  const normalized = value.toLowerCase().trim();
-  if (normalized.includes('@')) return normalized;
-  const safeUsername = normalized.replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
-  return `${safeUsername}@${app}.users.local`;
+function normalizeRole(app: App, value: unknown): Extract<Role, 'admin' | 'inspector' | 'viewer'> {
+  if (value === 'admin') return 'admin';
+  return app === 'wattwatchers' ? 'viewer' : 'inspector';
 }
 
 async function registrationsAreClosed(): Promise<boolean> {
@@ -43,33 +43,40 @@ function assertRegistrationSecret(secret: string | string[] | undefined): void {
   if (!timingSafeEqual(a, b)) throw forbidden('Invalid or missing registration secret');
 }
 
-async function issueTokens(user: { id: string; email: string; fullName: string | null; role: string }, app: App) {
-  const role = normalizeRole(user.role);
+function prepareTokens(user: { id: string; email: string; fullName: string | null; role: string }, app: App) {
+  const role = normalizeRole(app, user.role);
   const accessToken = signAccessToken({ userId: user.id, app, role });
   const refreshToken = signRefreshToken({ userId: user.id, app });
   const tokenId = randomToken(16);
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-  await db.insert(refreshTokens).values({
-    id: tokenId,
-    userId: user.id,
-    app,
-    tokenHash: sha256String(refreshToken),
-    expiresAt,
-  });
-
   return {
-    accessToken,
-    refreshToken,
-    expiresIn: 900,
-    user: {
-      id: user.id,
-      email: user.email,
-      fullName: user.fullName,
-      role,
+    refreshTokenRecord: {
+      id: tokenId,
+      userId: user.id,
       app,
+      tokenHash: sha256String(refreshToken),
+      expiresAt,
+    },
+    response: {
+      accessToken,
+      refreshToken,
+      expiresIn: 900,
+      user: {
+        id: user.id,
+        email: user.email,
+        fullName: user.fullName,
+        role,
+        app,
+      },
     },
   };
+}
+
+async function issueTokens(user: { id: string; email: string; fullName: string | null; role: string }, app: App) {
+  const issued = prepareTokens(user, app);
+  await db.insert(refreshTokens).values(issued.refreshTokenRecord);
+  return issued.response;
 }
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
@@ -84,25 +91,33 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         properties: {
           email:    { type: 'string', minLength: 1 },
           password: { type: 'string', minLength: 1 },
-          app:      { type: 'string', enum: ['ecoaudit', 'solarsense'] },
+          app:      { type: 'string', enum: ['ecoaudit', 'solarsense', 'wattwatchers'] },
         },
       },
     },
   }, async (request, reply) => {
     const { email, password, app } = request.body as {
-      email: string; password: string; app: 'ecoaudit' | 'solarsense';
+      email: string; password: string; app: App;
     };
 
-    const userTable = tableForApp(app);
-    const loginEmail = cloudEmailForLogin(app, email);
-    const [user] = await db.select().from(userTable).where(eq(userTable.email, loginEmail));
+    if (app !== 'wattwatchers') {
+      const userTable = tableForApp(app);
+      const loginEmail = cloudEmailForLogin(app, email);
+      const [user] = await db.select().from(userTable).where(eq(userTable.email, loginEmail));
 
-    if (!user || !user.isActive) throw unauthorized('Invalid credentials');
+      if (!user || !user.isActive) throw unauthorized('Invalid credentials');
 
-    const valid = await verifyPassword(password, user.passwordHash);
-    if (!valid) throw unauthorized('Invalid credentials');
+      const valid = await verifyPassword(password, user.passwordHash);
+      if (!valid) throw unauthorized('Invalid credentials');
 
-    return reply.send(await issueTokens(user, app));
+      return reply.send(await issueTokens(user, app));
+    }
+
+    const fleetEmail = cloudEmailForLogin('wattwatchers', email);
+    const [fleetUser] = await db.select().from(wwUsers).where(eq(wwUsers.email, fleetEmail));
+    const fleetLoginValid = await verifyActiveLogin(fleetUser, password, verifyPassword);
+    if (!fleetUser || !fleetLoginValid) throw unauthorized('Invalid credentials');
+    return reply.send(await issueTokens(fleetUser, 'wattwatchers'));
   });
 
   // POST /v1/auth/refresh
@@ -147,7 +162,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const [user] = await db.select().from(userTable).where(eq(userTable.id, payload.userId));
     if (!user || !user.isActive) throw unauthorized('User not found or inactive');
 
-    const newAccess  = signAccessToken({ userId: user.id, app: payload.app, role: user.role as any });
+    const newAccess  = signAccessToken({
+      userId: user.id,
+      app: payload.app,
+      role: normalizeRole(payload.app, user.role),
+    });
     const newRefresh = signRefreshToken({ userId: user.id, app: payload.app });
     const newId      = randomToken(16);
     const expiresAt  = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -219,7 +238,6 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const [existing] = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.email, normalizedEmail));
     if (existing) throw conflict('An account with this email already exists');
 
-    const { randomUUID } = await import('node:crypto');
     const id = randomUUID();
     const passwordHash = await hashPassword(password);
     await db.insert(userTable).values({
@@ -286,7 +304,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const userTable = tableForApp(app);
     const now = new Date();
     const email = cloudEmailForLogin(app, username);
-    const requestedRole = normalizeRole(role);
+    const requestedRole = normalizeRole(app, role);
     const normalizedRole = requestedRole === 'admin' && !config.allowBootstrapAdminRole
       ? 'inspector'
       : requestedRole;
@@ -327,7 +345,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post('/close-registrations', {
     schema: { tags: ['Auth'], summary: 'Permanently close self-registration (admin only, irreversible via API)', security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireRole('admin')],
-  }, async (_request, reply) => {
+  }, async (request, reply) => {
+    // Fleet administration is isolated from mobile-app registration policy.
+    if (request.user.app === 'wattwatchers') {
+      throw forbidden('Wattwatchers administrators cannot change mobile registration policy');
+    }
     await db.execute(sql`
       INSERT INTO server_settings (key, value, updated_at)
       VALUES ('registrations_closed', 'true', NOW())

@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { cloudConnectionErrorMessage as solarConnectionErrorMessage } from '@solar/api/client';
+import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { AuthForm } from '@/components/auth/AuthForm';
 import { Spinner } from '@/components/ui/Card';
@@ -15,9 +16,11 @@ function LoginForm() {
     isAuthenticated,
     isEcoAuthenticated,
     isSolarAuthenticated,
+    isWattwatchersAuthenticated,
     isLoading,
     isEcoLoading,
     isSolarLoading,
+    isWattwatchersLoading,
   } = usePortalAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -28,12 +31,16 @@ function LoginForm() {
       ? isEcoAuthenticated
       : target === 'solarsense'
         ? isSolarAuthenticated
+        : target === 'wattwatchers'
+          ? isWattwatchersAuthenticated
         : isAuthenticated;
   const isTargetLoading =
     target === 'ecoaudit'
       ? isEcoLoading
       : target === 'solarsense'
         ? isSolarLoading
+        : target === 'wattwatchers'
+          ? isWattwatchersLoading
         : isLoading;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,6 +64,8 @@ function LoginForm() {
       setError(
         target === 'solarsense'
           ? solarConnectionErrorMessage(err)
+          : target === 'wattwatchers'
+            ? fleetConnectionErrorMessage(err)
           : cloudConnectionErrorMessage(err),
       );
     } finally {
