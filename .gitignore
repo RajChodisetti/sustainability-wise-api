@@ -1,5 +1,7 @@
 node_modules/
 dist/
+web/dist/
+web/.vite/
 .env
 .env.*
 !.env.example

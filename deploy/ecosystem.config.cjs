@@ -26,7 +26,7 @@ module.exports = {
       cwd: '/opt/ww-monitor',
       instances: 1,
       exec_mode: 'fork',
-      // Run once at 07:00 AEST (21:00 UTC) daily; do not autorestart after exit
+      // Server runs UTC; this is 07:00 AEST daily.
       cron_restart: '0 21 * * *',
       autorestart: false,
       watch: false,

@@ -264,8 +264,8 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const timing = resolveCompletionTiming(found, now);
     const [updated] = await db.update(eaAudits).set({
       status: 'Completed',
-      startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${timing.startedAt})`,
-      completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${timing.completedAt})`,
+      startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
+      completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
       updatedAt: now,
       syncStatus: 'local',
     }).where(eq(eaAudits.id, id)).returning();

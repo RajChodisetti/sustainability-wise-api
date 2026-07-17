@@ -2,8 +2,12 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import staticPlugin from '@fastify/static';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { authenticate } from './auth/middleware.js';
 import { authRoutes } from './routes/auth.js';
 import { apiKeyRoutes } from './routes/apiKeys.js';
@@ -16,6 +20,9 @@ import { AppError } from './utils/errors.js';
 import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
 import { resolveConfirmedPhotoReference } from './storage/photoRegistryReferences.js';
 import { config } from './config.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const webDistRoot = join(__dirname, '..', 'web', 'dist');
 
 const tagMap: Record<string, string> = {
   'SolarSense Users': 'SolarSense / Users',
@@ -93,6 +100,13 @@ function errorResponse(description: string) {
         schema: { $ref: '#/components/schemas/Error' },
       },
     },
+  };
+}
+
+function apiNotFoundResponse(path: string) {
+  return {
+    error: `Route ${path} not found`,
+    statusCode: 404,
   };
 }
 
@@ -324,6 +338,27 @@ export async function buildApp() {
   await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });
   await app.register(pdfJobRoutes, { prefix: '/v1' });
+
+  if (existsSync(webDistRoot)) {
+    await app.register(staticPlugin, {
+      root: webDistRoot,
+      prefix: '/',
+      wildcard: false,
+      maxAge: '30d',
+      immutable: true,
+    });
+
+    app.setNotFoundHandler((request, reply) => {
+      const requestPath = new URL(request.url, 'http://localhost').pathname;
+      if (requestPath === '/health' || requestPath.startsWith('/v1/')) {
+        return reply.status(404).send(apiNotFoundResponse(requestPath));
+      }
+
+      return reply
+        .type('text/html; charset=utf-8')
+        .sendFile('index.html', { maxAge: 0, immutable: false });
+    });
+  }
 
   return app;
 }
