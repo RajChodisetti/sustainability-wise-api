@@ -4,11 +4,12 @@ import { config } from '../config.js';
 import * as sharedSchema from './schema/shared.js';
 import * as solarsenseSchema from './schema/solarsense.js';
 import * as ecoauditSchema from './schema/ecoaudit.js';
+import * as wattwatchersSchema from './schema/wattwatchers.js';
 
 const sql = postgres(config.databaseUrl, { max: 10 });
 
 export const db = drizzle(sql, {
-  schema: { ...sharedSchema, ...solarsenseSchema, ...ecoauditSchema },
+  schema: { ...sharedSchema, ...solarsenseSchema, ...ecoauditSchema, ...wattwatchersSchema },
 });
 
 export async function closeDb(): Promise<void> {

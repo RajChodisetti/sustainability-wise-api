@@ -1,0 +1,23 @@
+[Unit]
+Description=Wattwatchers Fleet daily collection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=swapi
+Group=swapi
+WorkingDirectory=/opt/ww-monitor
+EnvironmentFile=/opt/ww-monitor/.env
+ExecStart=/opt/ww-monitor/.venv/bin/python3 /opt/ww-monitor/monitor.py --scheduled
+UMask=0077
+TimeoutStartSec=4h
+StateDirectory=ww-monitor
+StateDirectoryMode=0750
+LogsDirectory=ww-monitor
+LogsDirectoryMode=0750
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -11,7 +11,7 @@ const plusJakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: 'EcoSense Portal',
-  description: 'Sustainability audits, solar assessments, and field operations in one portal.',
+  description: 'Sustainability audits and field operations in one portal.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -13,6 +13,7 @@ import { authRoutes } from './routes/auth.js';
 import { apiKeyRoutes } from './routes/apiKeys.js';
 import { solarsenseRoutes } from './routes/solarsense/index.js';
 import { ecoauditRoutes } from './routes/ecoaudit/index.js';
+import { wattwatchersRoutes } from './routes/wattwatchers/index.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { thumbnailRoutes } from './routes/thumbnails.js';
@@ -38,6 +39,13 @@ const tagMap: Record<string, string> = {
   'EcoAudit Photos': 'EcoAudit / Photos',
   'EcoAudit Sync': 'EcoAudit / Sync',
   'EcoAudit PDF': 'EcoAudit / PDF',
+  'Wattwatchers Users': 'Wattwatchers / Users',
+  'Wattwatchers Dashboard': 'Wattwatchers / Dashboard',
+  'Wattwatchers Devices': 'Wattwatchers / Devices',
+  'Wattwatchers Clients': 'Wattwatchers / Clients',
+  'Wattwatchers Runs': 'Wattwatchers / Runs',
+  'Wattwatchers Reports': 'Wattwatchers / Reports',
+  'Wattwatchers Ingest': 'Wattwatchers / Ingest',
 };
 
 const orderedTags = [
@@ -56,6 +64,13 @@ const orderedTags = [
   { name: 'EcoAudit / Photos', description: 'EcoAudit Pro synced photo listing, export, and deletion.' },
   { name: 'EcoAudit / Sync', description: 'EcoAudit Pro mobile sync and photo upload endpoints.' },
   { name: 'EcoAudit / PDF', description: 'EcoAudit Pro server-side report generation.' },
+  { name: 'Wattwatchers / Users', description: 'Independent Wattwatchers Fleet portal access.' },
+  { name: 'Wattwatchers / Dashboard', description: 'Fleet connectivity summaries and trends.' },
+  { name: 'Wattwatchers / Devices', description: 'Current device state, history, and outages.' },
+  { name: 'Wattwatchers / Clients', description: 'Client and MaaS-scoped fleet health.' },
+  { name: 'Wattwatchers / Runs', description: 'Collector run history and diagnostics.' },
+  { name: 'Wattwatchers / Reports', description: 'Daily Fleet reports and safe CSV exports.' },
+  { name: 'Wattwatchers / Ingest', description: 'Idempotent service-account collector ingestion.' },
   { name: 'PDF Jobs', description: 'Async PDF job status polling and download.' },
   { name: 'Files', description: 'Stored photo and generated PDF downloads.' },
   { name: 'System', description: 'Public operational checks.' },
@@ -232,7 +247,7 @@ export async function buildApp() {
     openapi: {
       info: {
         title: 'Sustainability Wise API',
-        description: 'Unified API for EcoAudit Pro and SolarSense mobile applications',
+        description: 'Unified API for EcoAudit Pro, SolarSense, and Wattwatchers Fleet operations',
         version: '1.0.0',
       },
       servers: [{ url: config.publicBaseUrl, description: 'Configured API base URL' }],
@@ -337,6 +352,7 @@ export async function buildApp() {
 
   await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });
+  await app.register(wattwatchersRoutes, { prefix: '/v1/wattwatchers' });
   await app.register(pdfJobRoutes, { prefix: '/v1' });
 
   if (existsSync(webDistRoot)) {

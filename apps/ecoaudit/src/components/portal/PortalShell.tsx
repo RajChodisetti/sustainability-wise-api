@@ -9,6 +9,7 @@ import { API_DISPLAY_URL } from '@/lib/config';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
+import { PORTAL_FEATURES } from '@/lib/portalFeatures';
 
 function isActive(pathname: string, href: string, exact = false) {
   if (exact) return pathname === href;
@@ -51,15 +52,28 @@ function NavLink({
   );
 }
 
+type AppRole = {
+  app: 'ecoaudit' | 'solarsense' | 'wattwatchers';
+  appName: string;
+  role: string;
+};
+
+function formatRole(role: string) {
+  if (role === 'service_account') return 'Service account';
+  return role
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function ProfileMenu({
   displayName,
-  role,
+  appRoles,
   profileHref,
   onLogout,
 }: {
   displayName: string;
-  role?: string | null;
-  profileHref: string;
+  appRoles: AppRole[];
+  profileHref: string | null;
   onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -91,34 +105,58 @@ function ProfileMenu({
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((value) => !value)}
-        aria-label={`Open profile menu for ${displayName}`}
+        aria-label={`Open profile menu for ${displayName}${
+          appRoles.length > 0
+            ? `. ${appRoles.map(({ appName, role }) => `${appName} — ${formatRole(role)}`).join(', ')}`
+            : ''
+        }`}
         aria-haspopup="true"
         aria-expanded={open}
         className="flex min-h-11 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 text-sm shadow-[var(--shadow-xs)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)]"
       >
-        <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)] text-xs font-extrabold text-[var(--primary-fg)]">
+        <span className="hidden h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)] text-xs font-extrabold text-[var(--primary-fg)] sm:flex">
           {initial}
         </span>
-        <span className="hidden max-w-[150px] truncate font-bold text-[var(--text)] sm:inline">{displayName}</span>
+        {appRoles.length > 0 ? (
+          <span className="flex max-w-[118px] flex-col items-start text-left sm:max-w-[240px] xl:max-w-[320px]">
+            {appRoles.map(({ app, appName, role }) => (
+              <span key={app} className="block max-w-full truncate text-[9px] font-bold leading-3 text-[var(--text)] sm:text-[11px] sm:leading-4">
+                {appName} — {formatRole(role)}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="hidden max-w-[150px] truncate font-bold text-[var(--text)] sm:inline">{displayName}</span>
+        )}
         <Icon name="chevron-down" size={16} className="hidden text-[var(--muted)] sm:block" />
       </button>
       {open ? (
         <div
-          className="absolute right-0 z-50 mt-2 w-60 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]"
+          className="absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]"
           aria-label="Profile options"
         >
           <div className="mb-1 border-b border-[var(--border)] px-3 py-2.5">
             <p className="truncate text-sm font-bold text-[var(--text)]">{displayName}</p>
-            {role ? <p className="mt-0.5 truncate text-xs capitalize text-[var(--text-sub)]">{role}</p> : null}
+            {appRoles.length > 0 ? (
+              <div className="mt-2 space-y-1" aria-label="Application roles">
+                {appRoles.map(({ app, appName, role }) => (
+                  <p key={app} className="text-xs font-semibold text-[var(--text-sub)]">
+                    {appName} — {formatRole(role)}
+                  </p>
+                ))}
+              </div>
+            ) : null}
           </div>
-          <Link
-            href={profileHref}
-            onClick={() => setOpen(false)}
-            className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-semibold text-[var(--text)] hover:bg-[var(--surface2)]"
-          >
-            <Icon name="user" size={18} className="text-[var(--text-sub)]" />
-            Profile
-          </Link>
+          {profileHref ? (
+            <Link
+              href={profileHref}
+              onClick={() => setOpen(false)}
+              className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm font-semibold text-[var(--text)] hover:bg-[var(--surface2)]"
+            >
+              <Icon name="user" size={18} className="text-[var(--text-sub)]" />
+              Profile
+            </Link>
+          ) : null}
           <button
             type="button"
             onClick={() => {
@@ -203,8 +241,14 @@ function SidebarNavigation({
   setEcoOpen,
   solarOpen,
   setSolarOpen,
+  fleetOpen,
+  setFleetOpen,
   ecoChildren,
   solarChildren,
+  fleetChildren,
+  showEcoNavigation,
+  showSolarNavigation,
+  showFleetNavigation,
   healthState,
   onNavigate,
 }: {
@@ -216,8 +260,14 @@ function SidebarNavigation({
   setEcoOpen: (value: boolean) => void;
   solarOpen: boolean;
   setSolarOpen: (value: boolean) => void;
+  fleetOpen: boolean;
+  setFleetOpen: (value: boolean) => void;
   ecoChildren: ChildNavItem[];
   solarChildren: ChildNavItem[];
+  fleetChildren: ChildNavItem[];
+  showEcoNavigation: boolean;
+  showSolarNavigation: boolean;
+  showFleetNavigation: boolean;
   healthState: 'checking' | 'connected' | 'offline';
   onNavigate?: () => void;
 }) {
@@ -250,28 +300,45 @@ function SidebarNavigation({
 
           {appsOpen ? (
             <div id={appsRegionId} className="space-y-2">
-              <AppNavigationSection
-                label="Eco Audit"
-                href="/ecoaudit/dashboard"
-                icon="leaf"
-                open={ecoOpen}
-                onToggle={() => setEcoOpen(!ecoOpen)}
-                items={ecoChildren}
-                regionId={`${idPrefix}-eco-navigation`}
-                active={pathname.startsWith('/ecoaudit')}
-                onNavigate={onNavigate}
-              />
-              <AppNavigationSection
-                label="Solar Sense"
-                href="/solar/dashboard"
-                icon="sun"
-                open={solarOpen}
-                onToggle={() => setSolarOpen(!solarOpen)}
-                items={solarChildren}
-                regionId={`${idPrefix}-solar-navigation`}
-                active={pathname.startsWith('/solar')}
-                onNavigate={onNavigate}
-              />
+              {showEcoNavigation ? (
+                <AppNavigationSection
+                  label="Eco Audit"
+                  href="/ecoaudit/dashboard"
+                  icon="leaf"
+                  open={ecoOpen}
+                  onToggle={() => setEcoOpen(!ecoOpen)}
+                  items={ecoChildren}
+                  regionId={`${idPrefix}-eco-navigation`}
+                  active={pathname.startsWith('/ecoaudit')}
+                  onNavigate={onNavigate}
+                />
+              ) : null}
+              {showSolarNavigation ? (
+                <AppNavigationSection
+                  label="Solar Sense"
+                  href="/solar/dashboard"
+                  icon="sun"
+                  open={solarOpen}
+                  onToggle={() => setSolarOpen(!solarOpen)}
+                  items={solarChildren}
+                  regionId={`${idPrefix}-solar-navigation`}
+                  active={pathname.startsWith('/solar')}
+                  onNavigate={onNavigate}
+                />
+              ) : null}
+              {showFleetNavigation ? (
+                <AppNavigationSection
+                  label="Wattwatchers Fleet"
+                  href="/fleet/dashboard"
+                  icon="activity"
+                  open={fleetOpen}
+                  onToggle={() => setFleetOpen(!fleetOpen)}
+                  items={fleetChildren}
+                  regionId={`${idPrefix}-fleet-navigation`}
+                  active={pathname.startsWith('/fleet')}
+                  onNavigate={onNavigate}
+                />
+              ) : null}
               <Link
                 href="/field"
                 onClick={onNavigate}
@@ -311,6 +378,7 @@ function SidebarNavigation({
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
+  if (pathname.startsWith('/fleet')) return { name: 'Wattwatchers Fleet', icon: 'activity' as IconName };
   if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
   if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
   return { name: 'Portal overview', icon: 'grid' as IconName };
@@ -318,7 +386,7 @@ function workspaceFor(pathname: string) {
 
 export function PortalShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { user, logout, eaUser, ssUser } = usePortalAuth();
+  const { logout, eaUser, ssUser, wwUser } = usePortalAuth();
   const { isDark, setMode } = useTheme();
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
@@ -326,12 +394,15 @@ export function PortalShell({ children }: { children: ReactNode }) {
     ? 'ecoaudit'
     : pathname.startsWith('/solar')
       ? 'solar'
+      : pathname.startsWith('/fleet')
+        ? 'fleet'
       : pathname.startsWith('/field')
         ? 'field'
         : 'portal';
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [solarChoice, setSolarChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [fleetChoice, setFleetChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const appsOpen = appsChoice?.scope === navigationScope
     ? appsChoice.value
     : navigationScope !== 'portal';
@@ -341,9 +412,13 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const solarOpen = solarChoice?.scope === navigationScope
     ? solarChoice.value
     : navigationScope === 'solar';
+  const fleetOpen = fleetChoice?.scope === navigationScope
+    ? fleetChoice.value
+    : navigationScope === 'fleet';
   const setAppsOpen = (value: boolean) => setAppsChoice({ scope: navigationScope, value });
   const setEcoOpen = (value: boolean) => setEcoChoice({ scope: navigationScope, value });
   const setSolarOpen = (value: boolean) => setSolarChoice({ scope: navigationScope, value });
+  const setFleetOpen = (value: boolean) => setFleetChoice({ scope: navigationScope, value });
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
   const mobileDrawerRef = useRef<HTMLElement>(null);
@@ -420,6 +495,16 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/solar/settings', label: 'Settings', icon: 'settings' },
     ...(ssAdmin ? [{ href: '/solar/admin', label: 'Admin', icon: 'shield' as IconName }] : []),
   ];
+  const fleetChildren: ChildNavItem[] = [
+    { href: '/fleet/dashboard', label: 'Overview', icon: 'grid', exact: true },
+    { href: '/fleet/devices', label: 'Devices', icon: 'wifi' },
+    { href: '/fleet/clients', label: 'Clients', icon: 'users' },
+    { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
+    { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
+  ];
+  const showEcoNavigation = Boolean(eaUser);
+  const showSolarNavigation = PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
+  const showFleetNavigation = Boolean(wwUser);
   const navigationProps = {
     pathname,
     appsOpen,
@@ -428,12 +513,44 @@ export function PortalShell({ children }: { children: ReactNode }) {
     setEcoOpen,
     solarOpen,
     setSolarOpen,
+    fleetOpen,
+    setFleetOpen,
     ecoChildren,
     solarChildren,
+    fleetChildren,
+    showEcoNavigation,
+    showSolarNavigation,
+    showFleetNavigation,
     healthState,
   };
-  const displayName = user?.fullName || user?.email || 'User';
-  const profileHref = pathname.startsWith('/solar') ? '/solar/settings' : '/ecoaudit/settings';
+  const activeUser = pathname.startsWith('/ecoaudit')
+    ? eaUser
+    : pathname.startsWith('/solar')
+      ? ssUser
+      : pathname.startsWith('/fleet')
+        ? wwUser
+        : eaUser ?? ssUser ?? wwUser;
+  const displayName = activeUser?.fullName || activeUser?.email || 'User';
+  const appRoles: AppRole[] = [
+    ...(eaUser ? [{ app: 'ecoaudit' as const, appName: 'Eco Audit Pro', role: eaUser.role }] : []),
+    ...(ssUser ? [{ app: 'solarsense' as const, appName: 'SolarSense', role: ssUser.role }] : []),
+    ...(wwUser ? [{ app: 'wattwatchers' as const, appName: 'Wattwatchers Fleet', role: wwUser.role }] : []),
+  ];
+  const profileHref = pathname.startsWith('/solar')
+    ? ssUser
+      ? '/solar/settings'
+      : eaUser
+        ? '/ecoaudit/settings'
+        : null
+    : pathname.startsWith('/fleet')
+      ? eaUser
+        ? '/ecoaudit/settings'
+        : null
+    : eaUser
+      ? '/ecoaudit/settings'
+      : PORTAL_FEATURES.solarSenseVisible && ssUser
+        ? '/solar/settings'
+        : null;
   const workspace = workspaceFor(pathname);
 
   return (
@@ -511,7 +628,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
             </button>
             <ProfileMenu
               displayName={displayName}
-              role={user?.role}
+              appRoles={appRoles}
               profileHref={profileHref}
               onLogout={() => void handleLogout()}
             />

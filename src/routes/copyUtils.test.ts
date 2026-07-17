@@ -2,38 +2,42 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { cloneRecordForInsert, copyableBodyOverrides } from './copyUtils.js';
 
-test('copy helpers never inherit or accept audit timing metadata', () => {
+test('copy helpers never inherit or accept identity and lifecycle metadata', () => {
   const source = {
     id: 'source',
+    serverId: 'server-source',
     siteName: 'Site',
-    startedAt: new Date('2026-01-01T01:00:00.000Z'),
-    completedAt: new Date('2026-01-01T02:00:00.000Z'),
+    createdByUserId: 'creator',
+    createdAt: new Date('2026-01-01T01:00:00.000Z'),
   };
 
   const overrides = copyableBodyOverrides(source, {
     siteName: 'Requested name',
-    startedAt: new Date('2026-02-01T01:00:00.000Z'),
-    completedAt: new Date('2026-02-01T02:00:00.000Z'),
+    serverId: 'requested-server',
+    createdByUserId: 'requested-creator',
+    createdAt: new Date('2026-02-01T01:00:00.000Z'),
   });
   const copied = cloneRecordForInsert(source, overrides);
 
   assert.equal(overrides.siteName, 'Requested name');
-  assert.equal('startedAt' in overrides, false);
-  assert.equal('completedAt' in overrides, false);
-  assert.equal('startedAt' in copied, false);
-  assert.equal('completedAt' in copied, false);
+  assert.equal('serverId' in overrides, false);
+  assert.equal('createdByUserId' in overrides, false);
+  assert.equal('createdAt' in overrides, false);
+  assert.notEqual(copied.id, source.id);
+  assert.notEqual(copied.serverId, source.serverId);
+  assert.notEqual(copied.createdAt, source.createdAt);
 });
 
-test('explicit null timing overrides support top-level audit copy reset', () => {
+test('explicit allowed overrides support top-level audit copy reset', () => {
   const copied = cloneRecordForInsert({
     id: 'source',
-    startedAt: new Date('2026-01-01T01:00:00.000Z'),
-    completedAt: new Date('2026-01-01T02:00:00.000Z'),
+    status: 'Completed',
+    siteName: 'Original site',
   }, {
-    startedAt: null,
-    completedAt: null,
+    status: 'Draft',
+    siteName: 'Copied site',
   });
 
-  assert.equal(copied.startedAt, null);
-  assert.equal(copied.completedAt, null);
+  assert.equal(copied.status, 'Draft');
+  assert.equal(copied.siteName, 'Copied site');
 });

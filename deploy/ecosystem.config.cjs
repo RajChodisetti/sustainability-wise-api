@@ -1,7 +1,14 @@
+const path = require('node:path');
+
+const apiRoot = process.env.SW_API_ROOT
+  ? path.resolve(process.env.SW_API_ROOT)
+  : path.resolve(__dirname, '..');
+
 module.exports = {
   apps: [
     {
       name: 'sw-api',
+      cwd: apiRoot,
       script: 'src/index.ts',
       interpreter: 'node',
       interpreter_args: '--import tsx/esm',
@@ -18,21 +25,6 @@ module.exports = {
       env_production: {
         NODE_ENV: 'production',
       },
-    },
-    {
-      name: 'ww-fleet-monitor',
-      script: 'monitor.py',
-      interpreter: '/opt/ww-monitor/.venv/bin/python3',
-      cwd: '/opt/ww-monitor',
-      instances: 1,
-      exec_mode: 'fork',
-      // Server runs UTC; this is 07:00 AEST daily.
-      cron_restart: '0 21 * * *',
-      autorestart: false,
-      watch: false,
-      error_file: '/var/log/ww-monitor/error.log',
-      out_file: '/var/log/ww-monitor/out.log',
-      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     },
   ],
 };

@@ -7,5 +7,21 @@
 # api.sustainabilitywise.com.au at this droplet.
 api.sustainabilitywise.com.au {
     encode zstd gzip
-    reverse_proxy localhost:3000
+
+    # Stable public entry point for the combined EcoSense portal.
+    @portal_entry path /portal /portal/
+    handle @portal_entry {
+        redir * / 308
+    }
+
+    # Preserve the existing API surface exactly; all remaining routes belong to
+    # the root-relative Next.js portal.
+    @api path /health /v1 /v1/*
+    handle @api {
+        reverse_proxy 127.0.0.1:3000
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:3210
+    }
 }

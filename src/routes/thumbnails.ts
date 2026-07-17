@@ -21,6 +21,7 @@ async function authorizePhoto(
   photo: ConfirmedPhotoReference,
   user: AuthUser,
 ): Promise<ConfirmedPhotoReference> {
+  if (user.app === 'wattwatchers') throw notFound('Photo');
   let directAccessError: unknown;
   if (user.app === 'ecoaudit') {
     const [audit] = await db
@@ -36,7 +37,7 @@ async function authorizePhoto(
         directAccessError = error;
       }
     }
-  } else {
+  } else if (user.app === 'solarsense') {
     const [site] = await db
       .select()
       .from(ssSites)
@@ -61,6 +62,7 @@ async function loadAuthorizedPhotoByReference(
   storageKey: string,
   user: AuthUser,
 ): Promise<ConfirmedPhotoReference> {
+  if (user.app === 'wattwatchers') throw notFound('Photo');
   const photo = await resolveConfirmedPhotoReference(storageKey, user.app);
   if (!photo) throw notFound('Photo');
   return authorizePhoto(photo, user);
@@ -70,6 +72,7 @@ async function loadAuthorizedPhotoById(
   photoId: string,
   user: AuthUser,
 ): Promise<ConfirmedPhotoReference> {
+  if (user.app === 'wattwatchers') throw notFound('Photo');
   const photo = await findConfirmedPhotoById(photoId, user.app);
   if (!photo) throw notFound('Photo');
   return authorizePhoto(photo, user);

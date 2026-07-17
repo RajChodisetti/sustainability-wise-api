@@ -1,22 +1,34 @@
-# Optional EcoSense Portal Deployment
+# EcoSense Portal Deployment
 
-The combined Next.js portal is deployed as an optional process, separate from
-the existing Fastify API and its Vite UI. The existing `sw-api` PM2 process and
-port `3000` remain unchanged. The portal listens only on `127.0.0.1:3210` and
-is not started by the existing `deploy/ecosystem.config.cjs`.
+The combined Next.js portal is deployed as a separate process beside the
+existing Fastify API. The existing `sw-api` PM2 process and port `3000` remain
+unchanged. The portal listens only on `127.0.0.1:3210` and is not started by
+the existing `deploy/ecosystem.config.cjs`.
 
 ## Deployment boundary
 
-- API and existing Vite UI: existing process on `127.0.0.1:3000`
-- Combined Next.js portal: optional `ecosense-portal` process on
+- API: existing process on `127.0.0.1:3000`
+- Combined Next.js portal: `ecosense-portal` process on
   `127.0.0.1:3210`
-- Public entry point: a dedicated hostname such as
-  `portal.sustainabilitywise.com.au`
+- Public entry point: `https://api.sustainabilitywise.com.au/portal`
+- Portal checkout: `/opt/ecosense-portal`, isolated from the live API checkout
+  at `/opt/sw-api`
 
-Use a dedicated hostname instead of mounting the portal at `/` on the API
-hostname. The portal and the existing Vite UI both own routes such as `/`,
-`/login`, `/ecoaudit/*`, and `/solar/*`; sharing one URL path would make route
-selection ambiguous.
+The `/portal` endpoint redirects to the portal gateway at `/`. Caddy keeps
+`/v1`, `/v1/*`, and `/health` on port `3000`; every other route goes to the
+root-relative portal on port `3210`. This keeps the public API origin unchanged
+and requires no additional DNS record.
+
+## Checkout
+
+Clone the deployment branch into its own directory so API updates and local
+changes in `/opt/sw-api` cannot be disturbed:
+
+```bash
+sudo -u swapi -H git clone --branch deploy/ecosense-portal-vm \
+  https://github.com/RajChodisetti/sustainability-wise-api.git \
+  /opt/ecosense-portal
+```
 
 ## Build
 
@@ -30,7 +42,7 @@ sudo -u swapi -H bash -lc '
   set -a
   source /etc/sustainability-wise/ecosense-portal.env
   set +a
-  cd /opt/sw-api/apps/ecoaudit
+  cd /opt/ecosense-portal/apps/ecoaudit
   npm ci
   npm run build
 '
@@ -58,11 +70,14 @@ Configure these values:
   present during both `npm run build` (for rewrites) and `next start` (for
   Route Handlers).
 - `ECOSENSE_PORTAL_PORT=3210` keeps the portal on its dedicated loopback port.
-- `REGISTRATION_SECRET` must match the API registration secret. It is a
-  server-only credential and must never use a `NEXT_PUBLIC_` prefix.
+- `ECOSENSE_PORTAL_ROOT=/opt/ecosense-portal/apps/ecoaudit` points PM2 at the
+  isolated portal checkout.
 - `PORTAL_REGISTRATION_ENABLED=false` keeps public registration disabled. Set
   it to `true` only after the portal's server-side registration endpoint has
   been intentionally enabled and reviewed.
+- When registration is enabled, `REGISTRATION_SECRET` must match the API
+  registration secret. It is a server-only credential and must never use a
+  `NEXT_PUBLIC_` prefix.
 
 Do not configure `NEXT_PUBLIC_REGISTRATION_SECRET`. A `NEXT_PUBLIC_` value is
 included in browser JavaScript. The portal should call same-origin routes, and
@@ -79,7 +94,7 @@ sudo -u swapi -H bash -lc '
   set -a
   source /etc/sustainability-wise/ecosense-portal.env
   set +a
-  cd /opt/sw-api
+  cd /opt/ecosense-portal
   pm2 start deploy/ecosense-portal.ecosystem.config.cjs \
     --env production --only ecosense-portal
 '
@@ -104,7 +119,7 @@ sudo -u swapi -H bash -lc '
   set -a
   source /etc/sustainability-wise/ecosense-portal.env
   set +a
-  cd /opt/sw-api
+  cd /opt/ecosense-portal
   pm2 restart deploy/ecosense-portal.ecosystem.config.cjs \
     --env production --only ecosense-portal --update-env
 '
@@ -116,17 +131,25 @@ To remove the optional process without touching the API:
 sudo -u swapi -H pm2 delete ecosense-portal
 ```
 
-## Reverse proxy and DNS
+## Reverse proxy
 
-After the loopback check passes, choose a dedicated hostname, add its DNS
-record, and copy the block from
-`deploy/ecosense-portal.Caddyfile.example` into the active Caddy configuration.
-Validate and reload Caddy explicitly:
+After the loopback check passes, replace the existing
+`api.sustainabilitywise.com.au` block with the shared-host block from
+`deploy/ecosense-portal.Caddyfile.example`. No DNS change is required. Validate
+and reload Caddy explicitly:
 
 ```bash
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-This proxy addition is independent of the existing
-`api.sustainabilitywise.com.au -> 127.0.0.1:3000` route and must not replace it.
+Verify both services and the redirect endpoint:
+
+```bash
+curl --fail https://api.sustainabilitywise.com.au/health
+curl --fail --head https://api.sustainabilitywise.com.au/login
+curl --head https://api.sustainabilitywise.com.au/portal
+```
+
+The final command must return `308` with `Location: /`. API traffic remains on
+port `3000`; all non-API routes are sent to port `3210`.

@@ -40,6 +40,7 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
     const { jobId } = request.params as { jobId: string };
     const [job] = await db.select().from(pdfJobs).where(eq(pdfJobs.id, jobId));
     if (!job) throw notFound('PDF job');
+    if (job.app !== request.user.app) throw forbidden('PDF job belongs to another application');
     if (job.userId !== request.user.userId && request.user.role !== 'admin') {
       throw forbidden('PDF job belongs to another user');
     }
@@ -73,6 +74,7 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
     const { jobId } = request.params as { jobId: string };
     const [job] = await db.select().from(pdfJobs).where(eq(pdfJobs.id, jobId));
     if (!job) throw notFound('PDF job');
+    if (job.app !== request.user.app) throw forbidden('PDF job belongs to another application');
     if (job.userId !== request.user.userId && request.user.role !== 'admin') {
       throw forbidden('PDF job belongs to another user');
     }

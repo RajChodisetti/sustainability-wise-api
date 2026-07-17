@@ -49,10 +49,10 @@ export function AuthForm({
             One clear view of your sustainability work.
           </h2>
           <p className="mt-5 max-w-lg text-base leading-7 text-[var(--sidebar-muted)]">
-            Manage energy audits, solar assessments, field photos, reports, and operational follow-up from a single secure workspace.
+            Manage energy audits, field photos, reports, and operational follow-up from a single secure workspace.
           </p>
           <div className="mt-8 grid gap-3 text-sm font-semibold text-[var(--sidebar-text)] sm:grid-cols-2">
-            {['Energy audit workflows', 'Solar site assessments', 'Authenticated photo previews', 'PDF and ZIP exports'].map((feature) => (
+            {['Energy audit workflows', 'Structured site assessments', 'Authenticated photo previews', 'PDF and ZIP exports'].map((feature) => (
               <div key={feature} className="flex items-center gap-2.5">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-400/15 text-emerald-300">
                   <Icon name="check" size={14} />
@@ -79,7 +79,7 @@ export function AuthForm({
           <div className="mb-6">
             <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.12em] text-[var(--primary)]">Welcome back</p>
             <h1 className="text-3xl font-extrabold tracking-[-0.04em] text-[var(--text)]">Sign in to your workspace</h1>
-            <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">Use your Eco Audit or Solar Sense account credentials.</p>
+            <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">Use your Sustainability Wise account credentials.</p>
           </div>
 
           <Card className="!p-5 sm:!p-7">
