@@ -2,6 +2,12 @@
 
 All changes required in `solarsense-mobile/` and `ecoaudit-pro/mobile/` to support cloud sync.
 
+The mobile applications are sibling repositories, not folders in this Git
+repository. Treat the payload, photo-field, lifecycle, and thumbnail sections
+below as compatibility contracts for installed app versions. Do not modify mobile
+source during an API or portal-only task unless the request explicitly includes
+it.
+
 ---
 
 ## SolarSense Mobile — Changes Summary

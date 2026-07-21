@@ -1,6 +1,8 @@
-# Sustainability Wise — Unified API Server
+# Sustainability Wise — Unified Platform
 
-Unified REST API serving both **EcoAudit Pro** and **SolarSense** mobile applications.
+Unified API and web portal for **EcoAudit Pro**, **SolarSense**, and
+**Wattwatchers Fleet**, including compatibility APIs for the EcoAudit and
+SolarSense mobile applications.
 
 | | |
 |---|---|
@@ -13,6 +15,9 @@ Unified REST API serving both **EcoAudit Pro** and **SolarSense** mobile applica
 
 ## Documentation
 
+- [AI System Context](docs/ai/SYSTEM_CONTEXT.md) - product boundaries and runtime map
+- [AI Change Playbook](docs/ai/CHANGE_PLAYBOOK.md) - dependency tracing, migrations, verification
+- [Cross-System Contracts](docs/ai/CONTRACTS.md) - photos, exports, auth, sync, and database invariants
 - [Architecture](docs/ARCHITECTURE.md) — system design, auth model, data flow
 - [API Reference](docs/API_REFERENCE.md) — full endpoint list (also served live at `/v1/docs/`)
 - [Infrastructure](docs/INFRASTRUCTURE.md) — server setup, deployment, backup
@@ -50,3 +55,16 @@ npm run dev
 ```
 
 For production deployment on DigitalOcean, follow the [Deployment Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md).
+
+## AI-Assisted Development
+
+The repository uses hierarchical `AGENTS.md` files and one machine-readable
+context map. Before changing a feature, run:
+
+```bash
+npm run ai:context -- ecoaudit "photo export"
+```
+
+During implementation, `npm run ai:preflight` selects checks from changed paths.
+Before pushing or deploying, `npm run verify` runs API and portal tests,
+typechecks, lint, and both production builds.

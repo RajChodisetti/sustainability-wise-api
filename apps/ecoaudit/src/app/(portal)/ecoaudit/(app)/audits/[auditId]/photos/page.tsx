@@ -1,8 +1,9 @@
 'use client';
 
+import { useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { listAuditPhotos, startPhotosZipJob } from '@/api/photos';
+import { listAuditPhotos, startPhotosZipJob, type PhotoZipMode } from '@/api/photos';
 import { downloadExportJob, getExportJobStatus, getLatestExportJob } from '@/api/pdf';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
@@ -13,12 +14,14 @@ import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
+import { FieldLabel, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
 
 export default function AuditPhotosPage() {
   const { auditId } = useParams<{ auditId: string }>();
   const toast = useToast();
+  const [zipMode, setZipMode] = useState<PhotoZipMode>('by-zone');
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const photosQuery = useQuery({ queryKey: ['audit-photos', auditId], queryFn: () => listAuditPhotos(auditId!), enabled: Boolean(auditId) });
   const zipJob = useExportJob({
@@ -26,7 +29,7 @@ export default function AuditPhotosPage() {
     loadLatest: () => getLatestExportJob(auditId!, 'photos-zip'),
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id, job.contentType),
-    fallbackFilename: `${slugify(auditQuery.data?.siteName ?? 'audit')}-photos.zip`,
+    fallbackFilename: `${slugify(auditQuery.data?.siteName ?? 'audit')}-${zipMode === 'by-zone' ? 'zone' : 'equipment'}-photos.zip`,
   });
 
   if (photosQuery.isLoading || auditQuery.isLoading) return <Spinner />;
@@ -37,7 +40,7 @@ export default function AuditPhotosPage() {
   async function handleExport() {
     if (zipJob.active || zipJob.starting || photos.length === 0) return;
     try {
-      await zipJob.start(() => startPhotosZipJob(auditId!));
+      await zipJob.start(() => startPhotosZipJob(auditId!, zipMode));
       toast.success('Photo ZIP preparation started. The download will appear here when it is ready.');
     } catch (e) {
       toast.error(cloudConnectionErrorMessage(e));
@@ -80,6 +83,18 @@ export default function AuditPhotosPage() {
           </>
         }
       />
+      <div className="mb-5 max-w-xs">
+        <FieldLabel htmlFor="zip-folder-mode">ZIP folder structure</FieldLabel>
+        <Select
+          id="zip-folder-mode"
+          value={zipMode}
+          onChange={(event) => setZipMode(event.target.value as PhotoZipMode)}
+          disabled={zipJob.starting || zipJob.active}
+        >
+          <option value="by-zone">By zone</option>
+          <option value="by-equipment">By equipment</option>
+        </Select>
+      </div>
       <ExportJobStatus
         job={zipJob.job}
         artifactName="photo ZIP"

@@ -61,14 +61,20 @@ export type PhotoMeta = PhotoRecord & {
   contentType?: string | null;
 };
 
+export type PhotoZipMode = 'by-zone' | 'by-equipment';
+
 export function listAuditPhotos(auditId: string): Promise<{ data: PhotoMeta[] }> {
   return request<{ data: PhotoMeta[] }>('GET', `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos`);
 }
 
-export function startPhotosZipJob(auditId: string): Promise<{ jobId: string; reused?: boolean }> {
+export function startPhotosZipJob(
+  auditId: string,
+  mode: PhotoZipMode = 'by-zone',
+): Promise<{ jobId: string; reused?: boolean }> {
   return request<{ jobId: string; reused?: boolean }>(
     'POST',
     `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos/export/jobs`,
+    { mode },
   );
 }
 
@@ -76,9 +82,10 @@ export function getPhoto(photoId: string): Promise<PhotoMeta> {
   return request<PhotoMeta>('GET', `/v1/ecoaudit/photos/${encodeURIComponent(photoId)}`);
 }
 
-export async function exportPhotosZip(auditId: string): Promise<Blob> {
+export async function exportPhotosZip(auditId: string, mode: PhotoZipMode = 'by-zone'): Promise<Blob> {
   const jwt = getStoredJwt();
-  const res = await fetch(`${API_URL}/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos/export`, {
+  const query = new URLSearchParams({ mode });
+  const res = await fetch(`${API_URL}/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos/export?${query}`, {
     headers: jwt ? { Authorization: `Bearer ${jwt}` } : undefined,
   });
   if (!res.ok) throw new Error(await res.text().catch(() => res.statusText));

@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "always": {
+    "instructions": [
+      "AGENTS.md"
+    ],
+    "contracts": [
+      "docs/ai/SYSTEM_CONTEXT.md",
+      "docs/ai/CHANGE_PLAYBOOK.md",
+      "docs/ai/CONTRACTS.md"
+    ]
+  },
+  "scopes": [
+    {
+      "id": "api-core",
+      "summary": "Fastify construction, authentication, shared routes, configuration, and HTTP behavior.",
+      "keywords": ["api", "backend", "fastify", "authentication", "authorization", "jwt", "api key"],
+      "paths": [
+        "^src/(app|index|config)\\.ts$",
+        "^src/auth/",
+        "^src/utils/",
+        "^src/routes/(auth|apiKeys|recordVersions|syncOwnership|copyUtils)\\.ts$"
+      ],
+      "instructions": ["src/AGENTS.md"],
+      "contracts": ["docs/ARCHITECTURE.md", "docs/API_REFERENCE.md"],
+      "reviewWith": ["database", "portal-shared"],
+      "checks": ["npm run api:typecheck", "npm run test:api"]
+    },
+    {
+      "id": "database",
+      "summary": "Drizzle schemas, PostgreSQL migrations, and shared persistence contracts.",
+      "keywords": ["database", "schema", "migration", "postgres", "drizzle", "data migration"],
+      "paths": ["^src/db/", "^drizzle\\.config\\.ts$"],
+      "instructions": ["src/AGENTS.md", "src/db/AGENTS.md"],
+      "contracts": ["docs/INFRASTRUCTURE.md"],
+      "reviewWith": ["api-core", "ecoaudit", "solarsense", "fleet"],
+      "checks": ["npm run api:typecheck", "npm run test:api"]
+    },
+    {
+      "id": "storage",
+      "summary": "Original photos, virtual copies, thumbnails, local/Spaces storage, and OneDrive mirroring.",
+      "keywords": ["storage", "photo upload", "thumbnail", "onedrive", "spaces", "photo copy", "photo reference"],
+      "paths": [
+        "^src/storage/",
+        "^src/onedrive/",
+        "^src/routes/(thumbnails|storageBrowser)\\.ts$",
+        "^scripts/onedrive-"
+      ],
+      "instructions": ["src/AGENTS.md", "src/storage/AGENTS.md"],
+      "contracts": ["docs/MOBILE_INTEGRATION.md", "docs/ONEDRIVE_PHOTO_BACKUP.md"],
+      "reviewWith": ["exports", "ecoaudit", "solarsense"],
+      "checks": ["npm run api:typecheck", "npm run test:api"]
+    },
+    {
+      "id": "exports",
+      "summary": "Durable PDF, photo ZIP, and authenticated artifact download workflows.",
+      "keywords": ["pdf", "zip", "export", "download", "report generation", "export job"],
+      "paths": [
+        "^src/pdf/",
+        "^src/services/(exportJobQueue|pdfJobService|photoZipExport)(\\.test)?\\.ts$",
+        "^src/routes/pdfJobs\\.ts$",
+        "^src/routes/(ecoaudit|solarsense)/(pdf|photos)\\.ts$",
+        "^apps/ecoaudit/src/(hooks/useExportJob|components/exports/ExportJobStatus)\\.tsx?$",
+        "^apps/ecoaudit/src/(api|modules/solar/api)/(pdf|photos)\\.ts$",
+        "^apps/ecoaudit/src/modules/solar/components/reports/",
+        "^apps/ecoaudit/src/modules/fleet/pages/ReportsPage\\.tsx$"
+      ],
+      "instructions": [
+        "src/AGENTS.md",
+        "src/services/AGENTS.md",
+        "apps/ecoaudit/AGENTS.md"
+      ],
+      "contracts": ["docs/ECOAUDIT_PDF_RULES.md"],
+      "reviewWith": ["storage", "ecoaudit", "solarsense", "portal-shared"],
+      "checks": [
+        "npm run api:typecheck",
+        "npm run test:api",
+        "npm run portal:typecheck",
+        "npm run test:portal",
+        "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "ecoaudit",
+      "summary": "EcoAudit audits, zones, equipment, sync, photos, reports, and portal workflows.",
+      "keywords": ["ecoaudit", "eco audit", "audit", "zone", "equipment", "lighting", "hvac"],
+      "paths": [
+        "^src/routes/ecoaudit/",
+        "^src/db/schema/ecoaudit\\.ts$",
+        "^apps/ecoaudit/src/app/\\(portal\\)/ecoaudit/",
+        "^apps/ecoaudit/src/api/",
+        "^apps/ecoaudit/src/types/domain\\.ts$",
+        "^apps/ecoaudit/src/(components/equipment|components/photos|lib/(auditTiming|equipmentConfig|photoMetadata|photoReferences|photoUpload))"
+      ],
+      "instructions": [
+        "src/AGENTS.md",
+        "src/routes/ecoaudit/AGENTS.md",
+        "apps/ecoaudit/AGENTS.md"
+      ],
+      "contracts": [
+        "docs/MOBILE_INTEGRATION.md",
+        "docs/ECOAUDIT_PDF_RULES.md"
+      ],
+      "reviewWith": ["database", "storage", "exports"],
+      "checks": [
+        "npm run api:typecheck",
+        "npm run test:api",
+        "npm run portal:typecheck",
+        "npm run test:portal",
+        "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "solarsense",
+      "summary": "SolarSense sites, assessments, nested photos, sync, site packs, and portal workflows.",
+      "keywords": ["solarsense", "solar sense", "solar site", "assessment", "site pack"],
+      "paths": [
+        "^src/routes/solarsense/",
+        "^src/db/schema/solarsense\\.ts$",
+        "^apps/ecoaudit/src/app/\\(portal\\)/solar/",
+        "^apps/ecoaudit/src/modules/solar/"
+      ],
+      "instructions": [
+        "src/AGENTS.md",
+        "src/routes/solarsense/AGENTS.md",
+        "apps/ecoaudit/AGENTS.md",
+        "apps/ecoaudit/src/modules/solar/AGENTS.md"
+      ],
+      "contracts": ["docs/MOBILE_INTEGRATION.md"],
+      "reviewWith": ["database", "storage", "exports"],
+      "checks": [
+        "npm run api:typecheck",
+        "npm run test:api",
+        "npm run portal:typecheck",
+        "npm run test:portal",
+        "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "fleet",
+      "summary": "Wattwatchers ingestion, connectivity, clients, runs, reports, CSV, and Fleet portal.",
+      "keywords": ["wattwatchers", "fleet", "collector", "device", "outage", "fleet report"],
+      "paths": [
+        "^src/routes/wattwatchers/",
+        "^src/db/schema/wattwatchers\\.ts$",
+        "^apps/ecoaudit/src/app/\\(portal\\)/fleet/",
+        "^apps/ecoaudit/src/modules/fleet/",
+        "^scripts/wattwatchers-"
+      ],
+      "instructions": [
+        "src/AGENTS.md",
+        "src/routes/wattwatchers/AGENTS.md",
+        "apps/ecoaudit/AGENTS.md",
+        "apps/ecoaudit/src/modules/fleet/AGENTS.md"
+      ],
+      "contracts": ["docs/WATTWATCHERS_FLEET_RND.md"],
+      "reviewWith": ["database", "api-core", "portal-shared"],
+      "checks": [
+        "npm run api:typecheck",
+        "npm run test:api",
+        "npm run portal:typecheck",
+        "npm run test:portal",
+        "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "portal-shared",
+      "summary": "Shared Next.js shell, providers, sessions, components, navigation, and client-side utilities.",
+      "keywords": ["portal", "next", "shared ui", "login", "session", "navigation", "component"],
+      "paths": [
+        "^apps/ecoaudit/(package|next|eslint|postcss|tsconfig)",
+        "^apps/ecoaudit/src/(components|contexts|hooks|lib)/",
+        "^apps/ecoaudit/src/app/(layout|globals\\.css|\\(portal\\)/(login|signup|layout|page))"
+      ],
+      "instructions": ["apps/ecoaudit/AGENTS.md"],
+      "contracts": ["docs/ECOSENSE_PORTAL_DEPLOYMENT.md"],
+      "reviewWith": ["ecoaudit", "solarsense", "fleet", "api-core"],
+      "checks": [
+        "npm run portal:typecheck",
+        "npm run test:portal",
+        "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "legacy-web",
+      "summary": "Legacy Vite management UI served by the Fastify process.",
+      "keywords": ["legacy web", "vite ui", "management ui"],
+      "paths": ["^web/"],
+      "instructions": ["web/AGENTS.md"],
+      "contracts": ["docs/WEB_UI_FEATURE_CHECKLIST.md"],
+      "reviewWith": ["api-core"],
+      "checks": ["npm run web:typecheck", "npm run web:build"]
+    },
+    {
+      "id": "deployment",
+      "summary": "PM2, Caddy, VM releases, environment examples, backups, and operational runbooks.",
+      "keywords": ["deploy", "deployment", "production", "pm2", "caddy", "vm", "digitalocean"],
+      "paths": [
+        "^deploy/",
+        "^docs/(INFRASTRUCTURE|ECOSENSE_PORTAL_DEPLOYMENT|OPTION3_DIGITALOCEAN_RUNBOOK)\\.md$",
+        "^\\.env\\.production\\.example$"
+      ],
+      "instructions": ["deploy/AGENTS.md"],
+      "contracts": [
+        "docs/INFRASTRUCTURE.md",
+        "docs/ECOSENSE_PORTAL_DEPLOYMENT.md"
+      ],
+      "reviewWith": ["api-core", "portal-shared", "database"],
+      "checks": []
+    },
+    {
+      "id": "agent-tooling",
+      "summary": "AI context, repository instructions, CI, and developer workflow documentation.",
+      "keywords": ["agent", "ai context", "workflow", "ci", "repository guidance"],
+      "paths": [
+        "(^|/)AGENTS\\.md$",
+        "(^|/)CLAUDE\\.md$",
+        "^\\.ai/",
+        "^\\.github/",
+        "^docs/ai/",
+        "^scripts/ai-context\\.mjs$",
+        "^package(-lock)?\\.json$",
+        "^apps/ecoaudit/package(-lock)?\\.json$"
+      ],
+      "instructions": [],
+      "contracts": [],
+      "reviewWith": [],
+      "checks": []
+    }
+  ]
+}
+

@@ -1,10 +1,11 @@
 # API Reference
 
-Full live documentation is available at `GET /v1/docs/` (Swagger UI, JWT required).
-For browser use, open `/v1/docs/?access_token=<JWT or API key>` once; the UI stores the token
-locally and uses it for the OpenAPI JSON request.
+Full live documentation is available at `GET /v1/docs/` when enabled. In
+production it is protected by normal Bearer authentication. Never place a JWT or
+API key in a URL; use the Swagger UI authorization control/header.
 
-This file is a quick-reference index. Protected endpoints require `Authorization: Bearer <token>`
+This file is a non-exhaustive quick-reference index. `src/app.ts` and the product
+route indexes are authoritative. Protected endpoints require `Authorization: Bearer <token>`
 where the token is either a JWT access token or a service account API key. Public exceptions are
 `/health`, `/v1/files/...`, and raw upload session URLs returned by create-upload-session.
 
@@ -41,6 +42,18 @@ the thumbnail URL is display/cache-only. Successful responses include an `ETag`
 and are safe to resume or retry. A storage key is accepted only when it belongs to
 a confirmed photo in the caller's application and the caller can access its audit
 or site.
+
+## Durable Export Jobs
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/v1/export/jobs/latest?entityId=...&artifactType=pdf|photos-zip` | Latest export created by the current user |
+| GET | `/v1/export/jobs/:jobId` | Status, progress, and artifact metadata |
+| GET | `/v1/export/jobs/:jobId/download` | Authenticated completed artifact download |
+
+The older `/v1/pdf/jobs/:jobId` status/download paths remain compatibility
+aliases. Product PDF and ZIP routes create durable jobs; direct photo ZIP routes
+remain available where installed mobile clients require them.
 
 ---
 
@@ -95,7 +108,7 @@ or site.
 ### PDF
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/solarsense/sites/:siteId/site-pack/pdf` | inspector/admin | Generate site pack PDF and store generated PDF on the VM |
+| POST | `/v1/solarsense/sites/:siteId/site-pack/pdf` | inspector/admin | Queue a durable site pack PDF export |
 
 ---
 
@@ -140,7 +153,8 @@ Each type has identical CRUD. Replace `{type}` with one of:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/v1/ecoaudit/audits/:auditId/photos` | inspector/admin | List all photos for audit |
-| GET | `/v1/ecoaudit/audits/:auditId/photos/export` | inspector/admin | Download ZIP |
+| GET | `/v1/ecoaudit/audits/:auditId/photos/export?mode=by-zone|by-equipment` | inspector/admin | Download a mobile-compatible hierarchical ZIP |
+| POST | `/v1/ecoaudit/audits/:auditId/photos/export/jobs` | inspector/admin | Queue a durable hierarchical ZIP export |
 | DELETE | `/v1/ecoaudit/photos/:photoId` | admin | Delete from configured storage and registry |
 
 ### Sync
@@ -156,7 +170,24 @@ Each type has identical CRUD. Replace `{type}` with one of:
 ### PDF
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/v1/ecoaudit/audits/:auditId/report/pdf` | inspector/admin | Generate full audit PDF (server-side Puppeteer) |
+| POST | `/v1/ecoaudit/audits/:auditId/report/pdf` | inspector/admin | Queue a durable EcoAudit PDF report |
+
+---
+
+## Wattwatchers Fleet
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/v1/wattwatchers/dashboard/summary` | viewer+ | Fleet status summary |
+| GET | `/v1/wattwatchers/dashboard/trends` | viewer+ | Fleet status trends |
+| GET | `/v1/wattwatchers/devices[/:deviceId]` | viewer+ | Device list/detail |
+| GET | `/v1/wattwatchers/clients` | viewer+ | Client health |
+| GET | `/v1/wattwatchers/runs[/:runId]` | viewer+ | Collection runs |
+| GET | `/v1/wattwatchers/reports[/:reportId]` | viewer+ | Archived reports |
+| GET | `/v1/wattwatchers/reports/:reportId.csv` | viewer+ | Report CSV export |
+| GET | `/v1/wattwatchers/outages` | viewer+ | Outage history |
+| POST/PUT | `/v1/wattwatchers/ingest/*` | service account | Idempotent collector ingestion |
+| CRUD | `/v1/wattwatchers/users/*` | admin, self exceptions | Fleet users |
 
 ---
 

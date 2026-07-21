@@ -31,6 +31,12 @@ import {
   updateJobProgress,
   type ExportJobParams,
 } from '../../services/pdfJobService.js';
+import {
+  createEcoAuditPhotoZipEntryNamer,
+  loadEcoAuditPhotoZipContext,
+  parseEcoAuditPhotoZipMode,
+  type EcoAuditPhotoZipMode,
+} from './photoZipHierarchy.js';
 
 function photoMetadata(photo: PhotoRow) {
   return {
@@ -62,19 +68,18 @@ async function assertPhotoAccess(photo: PhotoRow, user: Parameters<typeof assert
   throw notFound('Photo');
 }
 
-function zipEntryName(photo: PhotoRow): string {
-  return [
-    photo.entityType,
-    photo.entityId,
-    canonicalEcoAuditPhotoFieldName(photo.fieldName),
-    photo.originalFilename || `${photo.fieldName}-${photo.id}`,
-  ].join('/').replace(/[^\w/.()-]+/g, '-');
-}
-
-async function runEcoAuditPhotoZipJob(jobId: string, auditId: string, auditName: string): Promise<void> {
+async function runEcoAuditPhotoZipJob(
+  jobId: string,
+  auditId: string,
+  auditName: string,
+  mode: EcoAuditPhotoZipMode,
+): Promise<void> {
   try {
     await markJobRunning(jobId, 'Collecting photos...');
-    const photos = await loadPhotosForParent({ app: 'ecoaudit', parentId: auditId });
+    const [photos, hierarchy] = await Promise.all([
+      loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
+      loadEcoAuditPhotoZipContext(auditId),
+    ]);
     const storageKey = makeNamedStorageKeyForFilename({
       app: 'ecoaudit',
       parentName: auditName,
@@ -84,7 +89,7 @@ async function runEcoAuditPhotoZipJob(jobId: string, auditId: string, auditName:
     await createStoredPhotoZip({
       photos,
       storageKey,
-      entryName: zipEntryName,
+      entryName: createEcoAuditPhotoZipEntryNamer(hierarchy, mode),
       onProgress: async (current, total) => {
         if (current === total || current % 5 === 0) {
           await updateJobProgress(jobId, `Adding photos (${current} of ${total})...`, current, total);
@@ -120,24 +125,36 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get('/audits/:auditId/photos/export', {
-    schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
+    schema: {
+      tags: ['EcoAudit Photos'],
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: { mode: { type: 'string', enum: ['by-zone', 'by-equipment'] } },
+      },
+    },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { auditId: auditRef } = request.params as { auditId: string };
+    const mode = parseEcoAuditPhotoZipMode((request.query as { mode?: string }).mode);
     const audit = await loadEcoAuditByIdOrName(auditRef);
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
-    const photos = await loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id });
+    const [photos, hierarchy] = await Promise.all([
+      loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
+      loadEcoAuditPhotoZipContext(audit.id),
+    ]);
     const archive = createPhotoZipStream(
       {
         photos,
-        entryName: zipEntryName,
+        entryName: createEcoAuditPhotoZipEntryNamer(hierarchy, mode),
         onSkipped: (photo, error) => request.log.warn({ photoId: photo.id, error }, 'Skipping unavailable photo'),
       },
       (task) => task(),
     );
+    const modeName = mode === 'by-zone' ? 'zone' : 'equipment';
     return reply
-      .header('Content-Disposition', `attachment; filename="ecoaudit-${audit.id}-photos.zip"`)
+      .header('Content-Disposition', `attachment; filename="${sanitizeStorageSegment(audit.siteName)}-${modeName}-photos.zip"`)
       .type('application/zip')
       .send(archive);
   });
@@ -147,6 +164,15 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
       tags: ['EcoAudit Photos', 'Export Jobs'],
       summary: 'Start a background EcoAudit photo ZIP export',
       security: [{ bearerAuth: [] }],
+      body: {
+        anyOf: [
+          {
+            type: 'object',
+            properties: { mode: { type: 'string', enum: ['by-zone', 'by-equipment'] } },
+          },
+          { type: 'null' },
+        ],
+      },
       response: {
         202: {
           type: 'object',
@@ -157,14 +183,16 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { auditId: auditRef } = request.params as { auditId: string };
+    const mode = parseEcoAuditPhotoZipMode((request.body as { mode?: string } | undefined)?.mode);
     const audit = await loadEcoAuditByIdOrName(auditRef);
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
 
     const params: ExportJobParams = {
       artifactType: 'photos-zip',
-      filename: `${sanitizeStorageSegment(audit.siteName)}-photos.zip`,
+      filename: `${sanitizeStorageSegment(audit.siteName)}-${mode === 'by-zone' ? 'zone' : 'equipment'}-photos.zip`,
       contentType: 'application/zip',
+      mode,
     };
     const activeJob = await findActiveExportJob({
       app: 'ecoaudit',
@@ -187,7 +215,7 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    void enqueueExportTask(() => runEcoAuditPhotoZipJob(jobId, audit.id, audit.siteName)).catch((error) => {
+    void enqueueExportTask(() => runEcoAuditPhotoZipJob(jobId, audit.id, audit.siteName, mode)).catch((error) => {
       request.log.error({ jobId, error }, 'EcoAudit photo ZIP queue failed');
     });
     return reply.status(202).send({ jobId, reused: false });

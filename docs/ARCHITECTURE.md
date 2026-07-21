@@ -2,44 +2,31 @@
 
 ## System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                     CLIENTS                                         │
-│  EcoAudit Pro Mobile   SolarSense Mobile   Web browser (API docs)  │
-└──────────────┬──────────────────┬───────────────────────────────────┘
-               │ JWT / API key    │ JWT / API key
-               ▼                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│               DigitalOcean Droplet SYD1 — 2 GB                     │
-│                                                                     │
-│   Caddy (HTTPS termination, reverse proxy to :3000)                │
-│                        │                                            │
-│   ┌────────────────────▼──────────────────────────────────────┐    │
-│   │               Fastify API Server (Node.js 22)             │    │
-│   │                                                           │    │
-│   │  /v1/auth/*          /v1/api-keys/*                       │    │
-│   │  /v1/ecoaudit/*      /v1/solarsense/*    /v1/docs         │    │
-│   │                                                           │    │
-│   │  Auth middleware (JWT + API key)                          │    │
-│   │  Drizzle ORM → PostgreSQL 16 (localhost)                  │    │
-│   │  Local file storage → LOCAL_FILE_STORAGE_ROOT             │    │
-│   │  Puppeteer / Chromium → PDF generation                    │    │
-│   └───────────────────────────────────────────────────────────┘    │
-│                                                                     │
-│   PostgreSQL 16 (localhost:5432)  ←  daily pg_dump                │
-│   /var/lib/sustainability-wise-api/uploads → photo/PDF files      │
-│   PM2 (process manager)                                            │
+```text
+EcoAudit mobile ---------\
+SolarSense mobile --------> Caddy -> Fastify API (sw-api)
+EcoSense portal ----------/                |
+Fleet collector ----------/                +-> PostgreSQL 16
+Legacy Vite UI -----------/                +-> local or Spaces storage
+                                           +-> Chromium PDF renderer
+
+EcoSense Next.js portal (ecosense-portal) is a separate PM2 process.
+
+API namespaces:
+  /v1/auth/*         /v1/api-keys/*       /v1/export/jobs/*
+  /v1/ecoaudit/*     /v1/solarsense/*     /v1/wattwatchers/*
+  /v1/files/*        /v1/thumbnails/*     /v1/docs
 ```
 
-OneDrive Business remains the planned durable/off-site storage backend, but
-Phase 2 stores SolarSense files on the VM first to reduce external dependencies.
+The configured storage provider is either VM-local disk or DigitalOcean Spaces.
+OneDrive is an optional photo backup mirror, not the canonical API reference.
 
 ## Auth Flow
 
 ### User Login (JWT)
 ```
 POST /v1/auth/login { email, password, app }
-  → Lookup user in ea_users or ss_users
+  → Lookup user in the selected ea_users, ss_users, or ww_users namespace
   → bcrypt.compare(password, hash)
   → signAccessToken({ userId, app, role })   15 min
   → signRefreshToken({ userId, app })         30 days
@@ -57,8 +44,8 @@ POST /v1/auth/refresh { refreshToken }
 
 ### API Key Auth (App-to-App)
 ```
-Authorization: Bearer sk_ea_live_xxxxxxxxxxxxxxxxxxxx
-  → Extract prefix (sk_ea_live_)
+Authorization: Bearer sk_<app>_live_xxxxxxxxxxxxxxxxxxxx
+  → Extract the app-specific prefix
   → Lookup matching non-revoked rows in api_keys
   → bcrypt.compare(raw, stored_hash)
   → Attach { userId, app, role: 'service_account' } to request
@@ -67,16 +54,16 @@ Authorization: Bearer sk_ea_live_xxxxxxxxxxxxxxxxxxxx
 
 ## Namespace Isolation
 
-EcoAudit and SolarSense are hard-isolated:
-- Separate user tables (`ea_users`, `ss_users`)
-- Separate data tables (`ea_*`, `ss_*`)
+EcoAudit, SolarSense, and Wattwatchers are hard-isolated:
+- Separate user tables (`ea_users`, `ss_users`, `ww_users`)
+- Separate data tables (`ea_*`, `ss_*`, `ww_*`)
 - Auth middleware enforces `requireApp(app)` on every route
-- An EcoAudit admin token cannot reach `/v1/solarsense/*` routes
+- A token from one product cannot reach another product's routes
 
-## Photo Upload — Phase 2 VM-Local Flow
+## Photo Upload Flow
 
 ```
-Mobile App                        API Server / VM filesystem
+Mobile App                        API Server / configured storage
     │                                  │
     │── POST /sync/check-photo ────────▶│
     │   { checksum }                   │── query photo_registry
@@ -86,18 +73,18 @@ Mobile App                        API Server / VM filesystem
     │   { siteId, field, size, checksum}│── create pending registry row
     │◀── { uploadUrl, sessionId } ──────│
     │                                  │
-    │── PUT uploadUrl (raw bytes) ─────▶│── write to LOCAL_FILE_STORAGE_ROOT
+    │── PUT uploadUrl (raw bytes) ─────▶│── write to local disk or Spaces
     │◀── { ok, checksum } ─────────────│
     │                                  │
     │── POST /sync/confirm-upload ─────▶│── verify checksum/file exists
     │◀── { remoteUrl } ────────────────│   remoteUrl = /v1/files/{storageKey}
 ```
 
-Phase 2 uploads are single-request raw byte uploads. They are not resumable. If
+Uploads are single-request raw byte uploads. They are not resumable. If
 the connection drops mid-upload, the client should create a new session and retry.
-When OneDrive is added later, the mobile API surface can keep the same
-`create-upload-session` / `confirm-upload` shape while changing the returned
-`uploadUrl` behavior.
+The local and Spaces providers preserve the same `create-upload-session` and
+`confirm-upload` API shape. Optional OneDrive mirroring runs after canonical
+storage and does not change the returned photo reference.
 
 ## Data Sync Completion Gate
 
@@ -116,6 +103,7 @@ a record that is still `'Draft'`.
 
 | Role | Create own records | Read own records | Read all records | Manage users | Manage API keys |
 |---|---|---|---|---|---|
+| `viewer` | ✗ | n/a | Fleet only | ✗ | ✗ |
 | `inspector` | ✓ | ✓ | ✗ | ✗ | ✗ |
 | `admin` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `service_account` | sync only | sync records | sync records | ✗ | ✗ |
