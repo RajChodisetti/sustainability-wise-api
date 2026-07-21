@@ -5,15 +5,47 @@ import { useParams } from 'next/navigation';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getAudit } from '@/api/audits';
 import { listEquipment } from '@/api/equipment';
+import { listAuditPhotos, type PhotoMeta } from '@/api/photos';
 import { getZone, updateZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
-import { PhotoMetadataManager } from '@/components/photos/PhotoMetadataManager';
+import { PhotoMetadataManager, type PdfPhotoEntry } from '@/components/photos/PhotoMetadataManager';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { LinkButton } from '@/components/ui/Button';
 import { EquipmentIcon, Icon } from '@/components/ui/Icon';
 import { useToast } from '@/contexts/ToastContext';
 import { EQUIPMENT_TYPES, equipmentDisplayName } from '@/lib/equipmentConfig';
-import { photoMetadataKey, type PhotoMetadataMap } from '@/lib/photoMetadata';
+import {
+  normalizePhotoDescsRecord,
+  normalizePhotoMetadataMap,
+  parsePhotoFieldName,
+  photoMetadataKey,
+  photoMetadataKeyFromUploadField,
+  type PhotoMetadataMap,
+} from '@/lib/photoMetadata';
+
+function mergePhotoEntries(...entryGroups: PdfPhotoEntry[][]): PdfPhotoEntry[] {
+  const byKey = new Map<string, PdfPhotoEntry>();
+  for (const entries of entryGroups) {
+    for (const entry of entries) byKey.set(entry.key, entry);
+  }
+  return [...byKey.values()];
+}
+
+function zoneRegistryPhotoLabel(fieldName: string | undefined): string {
+  const parsed = parsePhotoFieldName(fieldName ?? 'photos');
+  if (parsed.fieldName === 'photos' && parsed.index !== undefined) return `Zone photo ${parsed.index + 1}`;
+  if (parsed.index !== undefined) return `${parsed.fieldName || 'Photo'} ${parsed.index + 1}`;
+  return parsed.fieldName || 'Zone photo';
+}
+
+function zoneRegistryPhotoEntries(photos: PhotoMeta[], zoneId: string): PdfPhotoEntry[] {
+  return photos.flatMap((photo) => {
+    const uri = typeof photo.remoteUrl === 'string' ? photo.remoteUrl : '';
+    if (photo.entityId !== zoneId || !uri) return [];
+    const key = photoMetadataKeyFromUploadField(photo.fieldName);
+    return key ? [{ key, uri, defaultLabel: zoneRegistryPhotoLabel(photo.fieldName) }] : [];
+  });
+}
 
 export default function ZoneDetailPage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
@@ -21,6 +53,11 @@ export default function ZoneDetailPage() {
   const toast = useToast();
   const zoneQuery = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId) });
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
+  const photosQuery = useQuery({
+    queryKey: ['audit-photos', auditId],
+    queryFn: () => listAuditPhotos(auditId!),
+    enabled: Boolean(auditId),
+  });
   const equipmentQueries = useQueries({
     queries: EQUIPMENT_TYPES.map((equipmentType) => ({
       queryKey: ['equipment', equipmentType.slug, auditId],
@@ -40,16 +77,21 @@ export default function ZoneDetailPage() {
     items: (equipmentQueries[index].data?.data ?? []).filter((item) => item.zoneId === zoneId),
   }));
   const equipmentCount = equipmentByType.reduce((total, group) => total + group.items.length, 0);
-  const photoEntries = (zone.photos ?? []).map((uri, index) => ({
+  const zonePhotoEntries = (zone.photos ?? []).flatMap((uri, index) => (typeof uri === 'string' && uri ? [{
     key: photoMetadataKey('photos', index),
     uri,
     defaultLabel: `Zone photo ${index + 1}`,
-  }));
+  }] : []));
+  const photoEntries = mergePhotoEntries(
+    zonePhotoEntries,
+    zoneRegistryPhotoEntries(photosQuery.data?.data ?? [], zone.id),
+  );
 
   async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
     try {
-      await updateZone(zoneId!, { photoDescs });
+      await updateZone(zoneId!, { photoDescs: normalizePhotoMetadataMap(photoDescs) });
       await queryClient.invalidateQueries({ queryKey: ['zone', zoneId] });
+      await queryClient.invalidateQueries({ queryKey: ['audit-photos', auditId] });
       toast.success('Zone PDF photo settings saved.');
     } catch (error) {
       toast.error(cloudConnectionErrorMessage(error));
@@ -78,7 +120,7 @@ export default function ZoneDetailPage() {
         <Card className="mb-5">
           <PhotoMetadataManager
             photos={photoEntries}
-            initialMetadata={zone.photoDescs}
+            initialMetadata={normalizePhotoDescsRecord(zone)}
             disabled={isCompleted}
             onSave={savePhotoMetadata}
           />

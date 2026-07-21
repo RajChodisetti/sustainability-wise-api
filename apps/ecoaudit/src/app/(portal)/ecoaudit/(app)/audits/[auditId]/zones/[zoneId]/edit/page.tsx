@@ -12,7 +12,7 @@ import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import type { Zone } from '@/types/domain';
-import { normalizePhotoMetadataMap } from '@/lib/photoMetadata';
+import { normalizePhotoDescsRecord, normalizePhotoMetadataMap } from '@/lib/photoMetadata';
 
 export default function EditZonePage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
@@ -50,14 +50,14 @@ function ZoneEditForm({
   const [zoneName, setZoneName] = useState(zone.zoneName);
   const [zoneDescription, setZoneDescription] = useState(zone.zoneDescription ?? '');
   const [photos, setPhotos] = useState<string[]>(zone.photos ?? []);
-  const [photoDescs, setPhotoDescs] = useState(() => normalizePhotoMetadataMap(zone.photoDescs));
+  const [photoDescs, setPhotoDescs] = useState(() => normalizePhotoDescsRecord(zone));
   const [busy, setBusy] = useState(false);
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     try {
-      await updateZone(zoneId!, { zoneName, zoneDescription, photos, photoDescs });
+      await updateZone(zoneId!, { zoneName, zoneDescription, photos, photoDescs: normalizePhotoMetadataMap(photoDescs) });
       toast.success('Zone saved.');
       router.push(`/ecoaudit/audits/${auditId}/zones/${zoneId}`);
     } catch (err) {

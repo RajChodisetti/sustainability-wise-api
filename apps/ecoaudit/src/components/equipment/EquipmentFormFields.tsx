@@ -4,6 +4,7 @@ import type { EquipmentTypeConfig, FieldDef } from '@/lib/equipmentConfig';
 import { PhotoField, PhotoGridField } from '@/components/photos/PhotoField';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import {
+  normalizePhotoDescsRecord,
   normalizePhotoMetadataMap,
   setPhotoMetadata,
 } from '@/lib/photoMetadata';
@@ -23,7 +24,7 @@ export function EquipmentFormFields({
   entityId?: string;
   disabled?: boolean;
 }) {
-  const photoMetadata = normalizePhotoMetadataMap(values.photoDescs);
+  const photoMetadata = normalizePhotoDescsRecord(values);
 
   function renderField(field: FieldDef) {
     const val = values[field.key];
@@ -42,7 +43,7 @@ export function EquipmentFormFields({
           photoMetadata={photoMetadata[field.key]}
           onPhotoMetadataChange={(metadata) => onChange(
             'photoDescs',
-            setPhotoMetadata(photoMetadata, field.key, metadata),
+            normalizePhotoMetadataMap(setPhotoMetadata(photoMetadata, field.key, metadata)),
           )}
           disabled={disabled}
         />

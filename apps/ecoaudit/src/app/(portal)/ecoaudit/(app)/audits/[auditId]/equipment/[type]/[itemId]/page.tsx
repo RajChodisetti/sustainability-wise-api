@@ -4,15 +4,50 @@ import { useParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getAudit } from '@/api/audits';
 import { getEquipment, updateEquipment } from '@/api/equipment';
+import { listAuditPhotos, type PhotoMeta } from '@/api/photos';
 import { getZone } from '@/api/zones';
 import { getEquipmentConfig, equipmentDisplayName } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
-import { PhotoMetadataManager } from '@/components/photos/PhotoMetadataManager';
+import { PhotoMetadataManager, type PdfPhotoEntry } from '@/components/photos/PhotoMetadataManager';
 import { LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/contexts/ToastContext';
-import { photoMetadataKey, type PhotoMetadataMap } from '@/lib/photoMetadata';
+import {
+  normalizePhotoDescsRecord,
+  normalizePhotoMetadataMap,
+  parsePhotoFieldName,
+  photoMetadataKey,
+  photoMetadataKeyFromUploadField,
+  type PhotoMetadataMap,
+} from '@/lib/photoMetadata';
+
+function mergePhotoEntries(...entryGroups: PdfPhotoEntry[][]): PdfPhotoEntry[] {
+  const byKey = new Map<string, PdfPhotoEntry>();
+  for (const entries of entryGroups) {
+    for (const entry of entries) byKey.set(entry.key, entry);
+  }
+  return [...byKey.values()];
+}
+
+function equipmentRegistryPhotoLabel(fieldName: string | undefined, labelsByField: Map<string, string>): string {
+  const parsed = parsePhotoFieldName(fieldName ?? '');
+  const label = labelsByField.get(parsed.fieldName) || parsed.fieldName || 'Photo';
+  return parsed.index === undefined ? label : `${label} ${parsed.index + 1}`;
+}
+
+function equipmentRegistryPhotoEntries(
+  photos: PhotoMeta[],
+  itemId: string,
+  labelsByField: Map<string, string>,
+): PdfPhotoEntry[] {
+  return photos.flatMap((photo) => {
+    const uri = typeof photo.remoteUrl === 'string' ? photo.remoteUrl : '';
+    if (photo.entityId !== itemId || !uri) return [];
+    const key = photoMetadataKeyFromUploadField(photo.fieldName);
+    return key ? [{ key, uri, defaultLabel: equipmentRegistryPhotoLabel(photo.fieldName, labelsByField) }] : [];
+  });
+}
 
 export default function EquipmentDetailPage() {
   const { auditId, type, itemId } = useParams<{ auditId: string; type: string; itemId: string }>();
@@ -24,6 +59,11 @@ export default function EquipmentDetailPage() {
     queryKey: ['equipment', type, itemId],
     queryFn: () => getEquipment(type!, itemId!),
     enabled: Boolean(type && itemId),
+  });
+  const photosQuery = useQuery({
+    queryKey: ['audit-photos', auditId],
+    queryFn: () => listAuditPhotos(auditId!),
+    enabled: Boolean(auditId),
   });
   const zoneId = query.data?.zoneId;
   const zoneQuery = useQuery({
@@ -40,18 +80,24 @@ export default function EquipmentDetailPage() {
   const isCompleted = auditQuery.data?.status === 'Completed';
 
   const photoFields = config.fields.filter((f) => f.kind === 'photo' || f.kind === 'photos');
-  const photoEntries = photoFields.flatMap((f) => {
+  const fieldLabels = new Map(photoFields.map((field) => [field.key, field.label]));
+  const fieldPhotoEntries = photoFields.flatMap((f) => {
     const val = item[f.key];
     if (f.kind === 'photos' && Array.isArray(val)) {
       return val.flatMap((uri, index) => typeof uri === 'string' && uri ? [{ key: photoMetadataKey(f.key, index), uri, defaultLabel: `${f.label} ${index + 1}` }] : []);
     }
     return typeof val === 'string' && val ? [{ key: f.key, uri: val, defaultLabel: f.label }] : [];
   });
+  const photoEntries = mergePhotoEntries(
+    fieldPhotoEntries,
+    equipmentRegistryPhotoEntries(photosQuery.data?.data ?? [], item.id, fieldLabels),
+  );
 
   async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
     try {
-      await updateEquipment(type!, itemId!, { photoDescs });
+      await updateEquipment(type!, itemId!, { photoDescs: normalizePhotoMetadataMap(photoDescs) });
       await queryClient.invalidateQueries({ queryKey: ['equipment', type, itemId] });
+      await queryClient.invalidateQueries({ queryKey: ['audit-photos', auditId] });
       toast.success('Equipment PDF photo settings saved.');
     } catch (error) {
       toast.error(cloudConnectionErrorMessage(error));
@@ -89,7 +135,7 @@ export default function EquipmentDetailPage() {
         <Card>
           <PhotoMetadataManager
             photos={photoEntries}
-            initialMetadata={item.photoDescs}
+            initialMetadata={normalizePhotoDescsRecord(item)}
             disabled={isCompleted}
             onSave={savePhotoMetadata}
           />
