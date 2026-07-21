@@ -9,11 +9,19 @@ import { authenticate, requireApp, requireRole } from '../../auth/middleware.js'
 import { renderPdf } from '../../pdf/renderer.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
-import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { publicFileUrl, sanitizeStorageSegment, writeLocalFile } from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertFound, assertSiteAccess } from './helpers.js';
-import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
+import {
+  completeJob,
+  failJob,
+  findActiveExportJob,
+  markJobRunning,
+  updateJobPhase,
+  type ExportJobParams,
+} from '../../services/pdfJobService.js';
+import { enqueueExportTask } from '../../services/exportJobQueue.js';
 import {
   loadPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
@@ -773,6 +781,21 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       includeAppendix: rawOptions.includeAppendix !== false,
     };
 
+    const params: ExportJobParams = {
+      artifactType: 'pdf',
+      filename: `${sanitizeStorageSegment(foundSite.siteName)}-site-pack.pdf`,
+      contentType: 'application/pdf',
+      assessmentIds,
+      options,
+    };
+    const activeJob = await findActiveExportJob({
+      app: 'solarsense',
+      entityId: siteId,
+      userId: request.user.userId,
+      params,
+    });
+    if (activeJob) return reply.status(202).send({ jobId: activeJob.id, reused: true });
+
     const jobId = randomUUID();
     await db.insert(pdfJobs).values({
       id: jobId,
@@ -780,14 +803,22 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       entityId: siteId,
       entityType: 'site',
       userId: request.user.userId,
-      params: { assessmentIds, options } as Record<string, unknown>,
+      params,
       status: 'queued',
       phase: 'Queued…',
       createdAt: new Date(),
       updatedAt: new Date(),
     });
 
-    setImmediate(() => { void runSolarSensePdfJobInBackground(jobId, siteId, assessmentIds, options); });
+    void enqueueExportTask(
+      () => runSolarSensePdfJobInBackground(jobId, siteId, assessmentIds, options),
+    ).catch((error) => {
+      console.error('[pdf-job] SolarSense queue failed', {
+        jobId,
+        siteId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
 
     return reply.status(202).send({ jobId });
   });
@@ -853,12 +884,12 @@ export async function solarsensePdfRoutes(app: FastifyInstance): Promise<void> {
       includeAppendix: rawOptions.includeAppendix !== false,
     };
 
-    const pdf = await renderSolarSensePdf({
+    const pdf = await enqueueExportTask(() => renderSolarSensePdf({
       site: foundSite,
       assessments,
       photos: scopedPhotos,
       options,
-    });
+    }));
     if (pdf.byteLength > MAX_PDF_BYTES) {
       console.warn('[pdf] SolarSense PDF exceeded preferred size limit; returning generated PDF anyway', {
         siteId,

@@ -66,3 +66,10 @@ export async function exportPhotosZip(siteId: string): Promise<Blob> {
   if (!res.ok) throw new Error(await res.text().catch(() => res.statusText));
   return res.blob();
 }
+
+export function startPhotosZipJob(siteId: string): Promise<{ jobId: string; reused?: boolean }> {
+  return request<{ jobId: string; reused?: boolean }>(
+    'POST',
+    `/v1/solarsense/sites/${encodeURIComponent(siteId)}/photos/export/jobs`,
+  );
+}

@@ -5,17 +5,25 @@ import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { completeSite, deleteSite, getSite } from '@solar/api/sites';
-import { exportPhotosZip } from '@solar/api/photos';
-import { downloadPdfJob, pollPdfJob, startSitePackPdfJob } from '@solar/api/pdf';
+import { startPhotosZipJob } from '@solar/api/photos';
+import {
+  downloadExportJob,
+  getExportJobStatus,
+  getLatestExportJob,
+  startSitePackPdfJob,
+} from '@solar/api/pdf';
 import { useAssessmentsForSite } from '@solar/hooks/useAssessments';
 import { SitePackReportModal } from '@solar/components/reports/SitePackReportModal';
 import type { SitePackReportOptions } from '@solar/lib/reportConfig';
-import { downloadBlob, slugify } from '@solar/lib/download';
+import { slugify } from '@solar/lib/download';
 import { Button, LinkButton } from '@solar/components/ui/Button';
 import { DealBreakerFlag, RAGBadge, StatusBadge, ViabilityBadge } from '@solar/components/ui/Badges';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
 import { useToast } from '@/contexts/ToastContext';
+import { useExportJob } from '@/hooks/useExportJob';
+import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
+import { Icon } from '@/components/ui/Icon';
 
 
 function asId(v: string | string[] | undefined): string | undefined {
@@ -36,7 +44,6 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [reportOpen, setReportOpen] = useState(false);
-  const [pdfBusy, setPdfBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const siteQuery = useQuery({
@@ -45,6 +52,20 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
     enabled: Boolean(siteId),
   });
   const assessmentsQuery = useAssessmentsForSite(siteId);
+  const pdfJob = useExportJob({
+    scopeKey: ['solarsense', siteId, 'site-pack-pdf'],
+    loadLatest: () => getLatestExportJob(siteId, 'pdf'),
+    getStatus: getExportJobStatus,
+    downloadJob: (job) => downloadExportJob(job.id, job.contentType),
+    fallbackFilename: `${slugify(siteQuery.data?.siteName ?? 'site')}-site-pack.pdf`,
+  });
+  const zipJob = useExportJob({
+    scopeKey: ['solarsense', siteId, 'photos-zip'],
+    loadLatest: () => getLatestExportJob(siteId, 'photos-zip'),
+    getStatus: getExportJobStatus,
+    downloadJob: (job) => downloadExportJob(job.id, job.contentType),
+    fallbackFilename: `${slugify(siteQuery.data?.siteName ?? 'site')}-photos.zip`,
+  });
 
   if (siteQuery.isLoading || assessmentsQuery.isLoading) return <Spinner />;
   if (siteQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(siteQuery.error)} />;
@@ -86,10 +107,23 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
   }
 
   async function handleExportZip() {
+    if (zipJob.starting || zipJob.active) return;
+    setActionError(null);
     try {
-      const blob = await exportPhotosZip(siteId!);
-      downloadBlob(blob, `${slugify(site!.siteName)}-photos.zip`);
-      toast.success('Photo ZIP downloaded successfully.');
+      await zipJob.start(() => startPhotosZipJob(siteId));
+      toast.success('Photo ZIP preparation started. The download will appear here when it is ready.');
+    } catch (e) {
+      const msg = cloudConnectionErrorMessage(e);
+      setActionError(msg);
+      toast.error(msg);
+    }
+  }
+
+  async function handleDownloadZip() {
+    setActionError(null);
+    try {
+      await zipJob.download();
+      toast.success('Photo ZIP download started.');
     } catch (e) {
       const msg = cloudConnectionErrorMessage(e);
       setActionError(msg);
@@ -98,25 +132,31 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
   }
 
   async function handleGeneratePdf(_options: SitePackReportOptions, assessmentIds: string[]) {
-    setPdfBusy(true);
     setActionError(null);
     try {
-      const { jobId } = await startSitePackPdfJob(siteId!, assessmentIds, {
+      await pdfJob.start(() => startSitePackPdfJob(siteId, assessmentIds, {
         includeRagFramework: _options.includeRagFramework,
         includeAppendix: _options.includeAppendix,
         includedPhotoUris: [..._options.includedPhotoUris],
-      });
-      await pollPdfJob(jobId);
-      const blob = await downloadPdfJob(jobId);
-      downloadBlob(blob, `${slugify(site!.siteName)}-site-pack.pdf`);
+      }));
       setReportOpen(false);
-      toast.success('Site pack PDF generated successfully.');
+      toast.success('PDF generation started. The download will appear here when it is ready.');
     } catch (e) {
       const msg = cloudConnectionErrorMessage(e);
       setActionError(msg);
       toast.error(msg);
-    } finally {
-      setPdfBusy(false);
+    }
+  }
+
+  async function handleDownloadPdf() {
+    setActionError(null);
+    try {
+      await pdfJob.download();
+      toast.success('PDF download started.');
+    } catch (e) {
+      const msg = cloudConnectionErrorMessage(e);
+      setActionError(msg);
+      toast.error(msg);
     }
   }
 
@@ -130,14 +170,40 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
             <StatusBadge status={site.status} />
             <LinkButton href={`/solar/sites/${siteId}/edit`} variant="secondary">Edit</LinkButton>
             {site.status !== 'Completed' ? <Button variant="secondary" onClick={() => void handleComplete()}>Mark complete</Button> : null}
-            <Button variant="secondary" onClick={() => setReportOpen(true)}>Generate PDF</Button>
-            <Button variant="secondary" onClick={() => void handleExportZip()}>Export photos ZIP</Button>
+            <Button variant="secondary" onClick={() => setReportOpen(true)} disabled={pdfJob.starting || pdfJob.active}>
+              <Icon name="file-text" size={17} />
+              {pdfJob.starting || pdfJob.active ? 'Preparing PDF...' : 'Generate PDF'}
+            </Button>
+            <Button variant="secondary" onClick={() => void handleExportZip()} disabled={zipJob.starting || zipJob.active}>
+              <Icon name="camera" size={17} />
+              {zipJob.starting || zipJob.active ? 'Preparing ZIP...' : 'Export photos ZIP'}
+            </Button>
             <Button variant="danger" onClick={() => void handleDelete()}>Delete</Button>
           </>
         }
       />
 
+      <div className="mb-5 space-y-3">
+        <ExportJobStatus
+          job={pdfJob.job}
+          artifactName="PDF"
+          starting={pdfJob.starting}
+          downloading={pdfJob.downloading}
+          onDownload={() => void handleDownloadPdf()}
+        />
+        <ExportJobStatus
+          job={zipJob.job}
+          artifactName="photo ZIP"
+          starting={zipJob.starting}
+          downloading={zipJob.downloading}
+          onDownload={() => void handleDownloadZip()}
+        />
+      </div>
+
       {actionError ? <div className="mb-4"><ErrorBanner message={actionError} /></div> : null}
+      {!actionError && (pdfJob.error || zipJob.error) ? (
+        <div className="mb-4"><ErrorBanner message={cloudConnectionErrorMessage(pdfJob.error || zipJob.error)} /></div>
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -194,7 +260,7 @@ function SiteDetailContent({ siteId }: { siteId: string }) {
         assessments={assessments}
         onClose={() => setReportOpen(false)}
         onGenerate={(opts, ids) => void handleGeneratePdf(opts, ids)}
-        busy={pdfBusy}
+        busy={pdfJob.starting}
       />
     </div>
   );

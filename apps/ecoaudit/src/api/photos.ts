@@ -65,6 +65,13 @@ export function listAuditPhotos(auditId: string): Promise<{ data: PhotoMeta[] }>
   return request<{ data: PhotoMeta[] }>('GET', `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos`);
 }
 
+export function startPhotosZipJob(auditId: string): Promise<{ jobId: string; reused?: boolean }> {
+  return request<{ jobId: string; reused?: boolean }>(
+    'POST',
+    `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/photos/export/jobs`,
+  );
+}
+
 export function getPhoto(photoId: string): Promise<PhotoMeta> {
   return request<PhotoMeta>('GET', `/v1/ecoaudit/photos/${encodeURIComponent(photoId)}`);
 }

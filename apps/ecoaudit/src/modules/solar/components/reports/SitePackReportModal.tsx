@@ -193,7 +193,7 @@ export function SitePackReportModal({
             }
             disabled={busy || options.includedAssessmentIds.size === 0}
           >
-            {busy ? 'Generating…' : 'Generate PDF'}
+            {busy ? 'Starting...' : 'Generate PDF'}
           </Button>
         </div>
       </div>

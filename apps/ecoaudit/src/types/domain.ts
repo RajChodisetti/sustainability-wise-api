@@ -55,7 +55,9 @@ export type PhotoRecord = {
   originalFilename?: string;
 };
 
-export type PdfJobStatus = {
+export type ExportArtifactType = 'pdf' | 'photos-zip';
+
+export type ExportJobStatus = {
   id: string;
   status: 'queued' | 'running' | 'complete' | 'failed';
   phase: string | null;
@@ -63,4 +65,11 @@ export type PdfJobStatus = {
   progressTotal: number | null;
   pdfUrl: string | null;
   error: string | null;
+  artifactType: ExportArtifactType;
+  filename: string;
+  contentType: 'application/pdf' | 'application/zip';
+  createdAt: string;
+  updatedAt: string;
 };
+
+export type PdfJobStatus = ExportJobStatus;

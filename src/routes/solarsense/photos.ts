@@ -1,11 +1,16 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { photoRegistry } from '../../db/schema/shared.js';
+import { pdfJobs, photoRegistry } from '../../db/schema/shared.js';
 import { ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertSiteAccess } from './helpers.js';
-import { localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { assertSiteAccess } from './helpers.js';
+import {
+  makeNamedStorageKeyForFilename,
+  publicFileUrl,
+  sanitizeStorageSegment,
+} from '../../storage/localFiles.js';
 import { loadPhotoByIdOrName, loadSolarsenseSiteByIdOrName } from '../../services/storageNaming.js';
 import {
   deletePhotoUnlessReferenced,
@@ -15,19 +20,16 @@ import {
   type PhotoRow,
 } from '../../storage/photoCopyReferences.js';
 import { conflict, notFound } from '../../utils/errors.js';
-
-type ZipArchiveInstance = NodeJS.ReadableStream & {
-  append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
-  file(source: string, data: { name: string }): void;
-  finalize(): Promise<void>;
-};
-
-async function createZipArchive(): Promise<ZipArchiveInstance> {
-  const mod = await import('archiver') as unknown as {
-    ZipArchive: new (options: { zlib: { level: number } }) => ZipArchiveInstance;
-  };
-  return new mod.ZipArchive({ zlib: { level: 9 } });
-}
+import { enqueueExportTask } from '../../services/exportJobQueue.js';
+import { createPhotoZipStream, createStoredPhotoZip } from '../../services/photoZipExport.js';
+import {
+  completeJob,
+  failJob,
+  findActiveExportJob,
+  markJobRunning,
+  updateJobProgress,
+  type ExportJobParams,
+} from '../../services/pdfJobService.js';
 
 async function loadSite(siteId: string) {
   return loadSolarsenseSiteByIdOrName(siteId);
@@ -81,6 +83,41 @@ function zipEntryName(photo: typeof photoRegistry.$inferSelect): string {
   ].join('/');
 }
 
+async function runSolarSensePhotoZipJob(jobId: string, siteId: string, siteName: string): Promise<void> {
+  try {
+    await markJobRunning(jobId, 'Collecting photos...');
+    const photos = await loadPhotosForParent({ app: 'solarsense', parentId: siteId });
+    const storageKey = makeNamedStorageKeyForFilename({
+      app: 'solarsense',
+      parentName: siteName,
+      entityType: 'exports',
+      filename: `photos-${randomUUID()}.zip`,
+    });
+    await createStoredPhotoZip({
+      photos,
+      storageKey,
+      entryName: zipEntryName,
+      onProgress: async (current, total) => {
+        if (current === total || current % 5 === 0) {
+          await updateJobProgress(jobId, `Adding photos (${current} of ${total})...`, current, total);
+        }
+      },
+      onSkipped: (photo, error) => {
+        console.warn('[zip-job] Skipping unavailable SolarSense photo', {
+          jobId,
+          photoId: photo.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    await completeJob(jobId, publicFileUrl(storageKey), storageKey);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await failJob(jobId, message);
+    console.error('[zip-job] SolarSense photo export failed', { jobId, siteId, error: message });
+  }
+}
+
 export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void> {
   app.get('/sites/:siteId/photos', {
     schema: {
@@ -115,18 +152,70 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
 
     const photos = await loadPhotosForParent({ app: 'solarsense', parentId: site.id });
 
-    const archive = await createZipArchive();
-    for (const photo of photos) {
-      if (photo.storageKey && await localFileExists(photo.storageKey)) {
-        archive.append(await localFileStream(photo.storageKey), { name: zipEntryName(photo) });
-      }
-    }
-    void archive.finalize();
+    const archive = createPhotoZipStream(
+      {
+        photos,
+        entryName: zipEntryName,
+        onSkipped: (photo, error) => request.log.warn({ photoId: photo.id, error }, 'Skipping unavailable photo'),
+      },
+      (task) => task(),
+    );
 
     return reply
       .header('Content-Disposition', `attachment; filename="solarsense-${site.id}-photos.zip"`)
       .type('application/zip')
       .send(archive);
+  });
+
+  app.post('/sites/:siteId/photos/export/jobs', {
+    schema: {
+      tags: ['SolarSense Photos', 'Export Jobs'],
+      summary: 'Start a background SolarSense photo ZIP export',
+      security: [{ bearerAuth: [] }],
+      response: {
+        202: {
+          type: 'object',
+          properties: { jobId: { type: 'string' }, reused: { type: 'boolean' } },
+        },
+      },
+    },
+    preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { siteId: siteRef } = request.params as { siteId: string };
+    const site = await loadSite(siteRef);
+    assertSiteAccess(site, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
+
+    const params: ExportJobParams = {
+      artifactType: 'photos-zip',
+      filename: `${sanitizeStorageSegment(site.siteName)}-photos.zip`,
+      contentType: 'application/zip',
+    };
+    const activeJob = await findActiveExportJob({
+      app: 'solarsense',
+      entityId: site.id,
+      userId: request.user.userId,
+      params,
+    });
+    if (activeJob) return reply.status(202).send({ jobId: activeJob.id, reused: true });
+
+    const jobId = randomUUID();
+    await db.insert(pdfJobs).values({
+      id: jobId,
+      app: 'solarsense',
+      entityId: site.id,
+      entityType: 'site',
+      userId: request.user.userId,
+      params,
+      status: 'queued',
+      phase: 'Queued...',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    void enqueueExportTask(() => runSolarSensePhotoZipJob(jobId, site.id, site.siteName)).catch((error) => {
+      request.log.error({ jobId, error }, 'SolarSense photo ZIP queue failed');
+    });
+    return reply.status(202).send({ jobId, reused: false });
   });
 
   app.get('/photos/:photoId', {

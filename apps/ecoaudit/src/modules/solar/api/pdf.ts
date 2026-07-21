@@ -1,15 +1,8 @@
 import { request, requestBinary } from '@solar/api/client';
 import { API_DISPLAY_URL, API_URL } from '@solar/lib/config';
+import type { ExportArtifactType, ExportJobStatus } from '@/types/domain';
 
-export type PdfJobStatus = {
-  id: string;
-  status: 'queued' | 'running' | 'complete' | 'failed';
-  phase: string | null;
-  progressCurrent: number | null;
-  progressTotal: number | null;
-  pdfUrl: string | null;
-  error: string | null;
-};
+export type PdfJobStatus = ExportJobStatus;
 
 export function startSitePackPdfJob(
   siteId: string,
@@ -22,13 +15,32 @@ export function startSitePackPdfJob(
   });
 }
 
+export function getExportJobStatus(jobId: string): Promise<ExportJobStatus> {
+  return request<ExportJobStatus>('GET', `/v1/export/jobs/${encodeURIComponent(jobId)}`);
+}
+
 export function getPdfJobStatus(jobId: string): Promise<PdfJobStatus> {
-  return request<PdfJobStatus>('GET', `/v1/pdf/jobs/${encodeURIComponent(jobId)}`);
+  return getExportJobStatus(jobId);
+}
+
+export async function getLatestExportJob(
+  entityId: string,
+  artifactType: ExportArtifactType,
+): Promise<ExportJobStatus | null> {
+  const result = await request<{ job: ExportJobStatus | null }>(
+    'GET',
+    `/v1/export/jobs/latest?entityId=${encodeURIComponent(entityId)}&artifactType=${encodeURIComponent(artifactType)}`,
+  );
+  return result.job;
+}
+
+export async function downloadExportJob(jobId: string, contentType: string): Promise<Blob> {
+  const buffer = await requestBinary('GET', `/v1/export/jobs/${encodeURIComponent(jobId)}/download`);
+  return new Blob([buffer], { type: contentType });
 }
 
 export async function downloadPdfJob(jobId: string): Promise<Blob> {
-  const buffer = await requestBinary('GET', `/v1/pdf/jobs/${encodeURIComponent(jobId)}/download`);
-  return new Blob([buffer], { type: 'application/pdf' });
+  return downloadExportJob(jobId, 'application/pdf');
 }
 
 export async function generateSitePackPdfSync(siteId: string, assessmentIds?: string[]): Promise<Blob> {
@@ -42,7 +54,7 @@ export async function pollPdfJob(
   jobId: string,
   onProgress?: (status: PdfJobStatus) => void,
   intervalMs = 1500,
-  maxAttempts = 120,
+  maxAttempts = Number.POSITIVE_INFINITY,
 ): Promise<PdfJobStatus> {
   for (let i = 0; i < maxAttempts; i += 1) {
     const status = await getPdfJobStatus(jobId);
@@ -51,7 +63,7 @@ export async function pollPdfJob(
     if (status.status === 'failed') throw new Error(status.error ?? 'PDF generation failed.');
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error('PDF generation timed out.');
+  throw new Error('PDF generation is still in progress.');
 }
 
 export function resolvePdfUrl(url: string | null): string | null {

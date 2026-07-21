@@ -4,7 +4,15 @@ import { randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { photoRegistry, pdfJobs } from '../../db/schema/shared.js';
-import { markJobRunning, updateJobPhase, completeJob, failJob } from '../../services/pdfJobService.js';
+import {
+  completeJob,
+  failJob,
+  findActiveExportJob,
+  markJobRunning,
+  updateJobPhase,
+  type ExportJobParams,
+} from '../../services/pdfJobService.js';
+import { enqueueExportTask } from '../../services/exportJobQueue.js';
 import {
   eaAdditionalSwitchboards,
   eaAudits,
@@ -23,7 +31,7 @@ import { renderPdf } from '../../pdf/renderer.js';
 import { renderPdfEquipmentIcon } from '../../pdf/equipmentIcons.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
-import { publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
+import { publicFileUrl, sanitizeStorageSegment, writeLocalFile } from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
@@ -1157,7 +1165,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   const brandLogo = await loadBrandLogo();
   const genDate = fmtDate(new Date().toISOString());
 
-  const pdf = await renderEcoAuditPdf({
+  const pdf = await enqueueExportTask(() => renderEcoAuditPdf({
     audit: foundAudit,
     zones,
     photos: [],
@@ -1173,7 +1181,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
     genWaterList: generalWater as unknown as EquipmentItem[],
     genElecList: generalElectricity as unknown as EquipmentItem[],
-  }, scopedPhotos);
+  }, scopedPhotos));
   if (pdf.byteLength > MAX_PDF_BYTES) {
     console.warn('[pdf] EcoAudit PDF exceeded preferred size limit; returning generated PDF anyway', {
       auditId,
@@ -1380,6 +1388,21 @@ async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: Fastif
     actor: request.user,
   });
 
+  const params: ExportJobParams = {
+    artifactType: 'pdf',
+    filename: `${sanitizeStorageSegment(foundAudit.siteName)}-report.pdf`,
+    contentType: 'application/pdf',
+    mode,
+    zoneIds,
+  };
+  const activeJob = await findActiveExportJob({
+    app: 'ecoaudit',
+    entityId: auditId,
+    userId: request.user.userId,
+    params,
+  });
+  if (activeJob) return reply.status(202).send({ jobId: activeJob.id, reused: true });
+
   const jobId = randomUUID();
   await db.insert(pdfJobs).values({
     id: jobId,
@@ -1387,14 +1410,22 @@ async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: Fastif
     entityId: auditId,
     entityType: 'audit',
     userId: request.user.userId,
-    params: { mode, zoneIds } as Record<string, unknown>,
+    params,
     status: 'queued',
     phase: 'Queued…',
     createdAt: new Date(),
     updatedAt: new Date(),
   });
 
-  setImmediate(() => { void runEcoAuditPdfJobInBackground(jobId, auditId, mode, zoneIds); });
+  void enqueueExportTask(
+    () => runEcoAuditPdfJobInBackground(jobId, auditId, mode, zoneIds),
+  ).catch((error) => {
+    console.error('[pdf-job] EcoAudit queue failed', {
+      jobId,
+      auditId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   return reply.status(202).send({ jobId });
 }

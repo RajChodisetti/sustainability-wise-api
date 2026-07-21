@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
+import { downloadBlob } from '@/lib/download';
 import { downloadReportCsv } from '@/modules/fleet/api/fleet';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { FleetScopeFilters } from '@/modules/fleet/components/FleetScopeFilters';
@@ -47,14 +48,7 @@ export default function ReportsPage() {
     setDownloadError(null);
     try {
       const blob = await downloadReportCsv(reportId, scope);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = `wattwatchers-fleet-${reportingDate}.csv`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, `wattwatchers-fleet-${reportingDate}.csv`);
     } catch (error) {
       setDownloadError(fleetConnectionErrorMessage(error));
     } finally {

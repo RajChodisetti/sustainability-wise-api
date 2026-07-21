@@ -1,5 +1,5 @@
-import { createReadStream } from 'node:fs';
-import { access, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { constants, createReadStream } from 'node:fs';
+import { access, copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import {
@@ -255,6 +255,32 @@ export async function writeLocalFile(storageKey: string, body: Buffer): Promise<
   await mkdir(path.dirname(absolute), { recursive: true });
   await writeFile(absolute, body, { flag: 'wx' });
   return { size: body.length, checksum: sha256(body) };
+}
+
+export async function writeLocalFileFromPath(
+  storageKey: string,
+  sourcePath: string,
+  contentType = contentTypeForStorageKey(storageKey),
+): Promise<{ size: number }> {
+  const sourceInfo = await stat(sourcePath);
+  if (!sourceInfo.isFile()) throw badRequest('Stored export source must be a file');
+
+  if (config.storage.provider === 'spaces') {
+    const { client, spaces } = requireSpaces();
+    await client.send(new PutObjectCommand({
+      Bucket: spaces.bucket,
+      Key: storageKeyToObjectKey(storageKey),
+      Body: createReadStream(sourcePath),
+      ContentLength: sourceInfo.size,
+      ContentType: contentType,
+    }));
+    return { size: sourceInfo.size };
+  }
+
+  const absolute = storageKeyToPath(storageKey);
+  await mkdir(path.dirname(absolute), { recursive: true });
+  await copyFile(sourcePath, absolute, constants.COPYFILE_EXCL);
+  return { size: sourceInfo.size };
 }
 
 export async function localFileExists(storageKey: string): Promise<boolean> {

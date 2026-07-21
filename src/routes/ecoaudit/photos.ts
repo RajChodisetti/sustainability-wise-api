@@ -1,11 +1,16 @@
 import type { FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { photoRegistry } from '../../db/schema/shared.js';
+import { pdfJobs } from '../../db/schema/shared.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertAuditAccess } from './helpers.js';
-import { localFileExists, localFileStream } from '../../storage/localFiles.js';
+import { assertAuditAccess } from './helpers.js';
+import {
+  makeNamedStorageKeyForFilename,
+  publicFileUrl,
+  sanitizeStorageSegment,
+} from '../../storage/localFiles.js';
 import { loadEcoAuditByIdOrName, loadPhotoByIdOrName } from '../../services/storageNaming.js';
 import {
   deletePhotoUnlessReferenced,
@@ -16,19 +21,16 @@ import {
 } from '../../storage/photoCopyReferences.js';
 import { conflict, notFound } from '../../utils/errors.js';
 import { canonicalEcoAuditPhotoFieldName } from './lightingPhotoField.js';
-
-type ZipArchiveInstance = NodeJS.ReadableStream & {
-  append(source: NodeJS.ReadableStream | Buffer | string, data: { name: string }): void;
-  file(source: string, data: { name: string }): void;
-  finalize(): Promise<void>;
-};
-
-async function createZipArchive(): Promise<ZipArchiveInstance> {
-  const mod = await import('archiver') as unknown as {
-    ZipArchive: new (options: { zlib: { level: number } }) => ZipArchiveInstance;
-  };
-  return new mod.ZipArchive({ zlib: { level: 9 } });
-}
+import { enqueueExportTask } from '../../services/exportJobQueue.js';
+import { createPhotoZipStream, createStoredPhotoZip } from '../../services/photoZipExport.js';
+import {
+  completeJob,
+  failJob,
+  findActiveExportJob,
+  markJobRunning,
+  updateJobProgress,
+  type ExportJobParams,
+} from '../../services/pdfJobService.js';
 
 function photoMetadata(photo: PhotoRow) {
   return {
@@ -60,6 +62,50 @@ async function assertPhotoAccess(photo: PhotoRow, user: Parameters<typeof assert
   throw notFound('Photo');
 }
 
+function zipEntryName(photo: PhotoRow): string {
+  return [
+    photo.entityType,
+    photo.entityId,
+    canonicalEcoAuditPhotoFieldName(photo.fieldName),
+    photo.originalFilename || `${photo.fieldName}-${photo.id}`,
+  ].join('/').replace(/[^\w/.()-]+/g, '-');
+}
+
+async function runEcoAuditPhotoZipJob(jobId: string, auditId: string, auditName: string): Promise<void> {
+  try {
+    await markJobRunning(jobId, 'Collecting photos...');
+    const photos = await loadPhotosForParent({ app: 'ecoaudit', parentId: auditId });
+    const storageKey = makeNamedStorageKeyForFilename({
+      app: 'ecoaudit',
+      parentName: auditName,
+      entityType: 'exports',
+      filename: `photos-${randomUUID()}.zip`,
+    });
+    await createStoredPhotoZip({
+      photos,
+      storageKey,
+      entryName: zipEntryName,
+      onProgress: async (current, total) => {
+        if (current === total || current % 5 === 0) {
+          await updateJobProgress(jobId, `Adding photos (${current} of ${total})...`, current, total);
+        }
+      },
+      onSkipped: (photo, error) => {
+        console.warn('[zip-job] Skipping unavailable EcoAudit photo', {
+          jobId,
+          photoId: photo.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+    await completeJob(jobId, publicFileUrl(storageKey), storageKey);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await failJob(jobId, message);
+    console.error('[zip-job] EcoAudit photo export failed', { jobId, auditId, error: message });
+  }
+}
+
 export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   app.get('/audits/:auditId/photos', {
     schema: { tags: ['EcoAudit Photos'], security: [{ bearerAuth: [] }] },
@@ -82,18 +128,69 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
     const photos = await loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id });
-    const archive = await createZipArchive();
-    for (const photo of photos) {
-      if (photo.storageKey && await localFileExists(photo.storageKey)) {
-        const name = [photo.entityType, photo.entityId, photo.fieldName, photo.originalFilename || `${photo.fieldName}-${photo.id}`].join('/').replace(/[^\w/.()-]+/g, '-');
-        archive.append(await localFileStream(photo.storageKey), { name });
-      }
-    }
-    void archive.finalize();
+    const archive = createPhotoZipStream(
+      {
+        photos,
+        entryName: zipEntryName,
+        onSkipped: (photo, error) => request.log.warn({ photoId: photo.id, error }, 'Skipping unavailable photo'),
+      },
+      (task) => task(),
+    );
     return reply
       .header('Content-Disposition', `attachment; filename="ecoaudit-${audit.id}-photos.zip"`)
       .type('application/zip')
       .send(archive);
+  });
+
+  app.post('/audits/:auditId/photos/export/jobs', {
+    schema: {
+      tags: ['EcoAudit Photos', 'Export Jobs'],
+      summary: 'Start a background EcoAudit photo ZIP export',
+      security: [{ bearerAuth: [] }],
+      response: {
+        202: {
+          type: 'object',
+          properties: { jobId: { type: 'string' }, reused: { type: 'boolean' } },
+        },
+      },
+    },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { auditId: auditRef } = request.params as { auditId: string };
+    const audit = await loadEcoAuditByIdOrName(auditRef);
+    assertAuditAccess(audit, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
+
+    const params: ExportJobParams = {
+      artifactType: 'photos-zip',
+      filename: `${sanitizeStorageSegment(audit.siteName)}-photos.zip`,
+      contentType: 'application/zip',
+    };
+    const activeJob = await findActiveExportJob({
+      app: 'ecoaudit',
+      entityId: audit.id,
+      userId: request.user.userId,
+      params,
+    });
+    if (activeJob) return reply.status(202).send({ jobId: activeJob.id, reused: true });
+
+    const jobId = randomUUID();
+    await db.insert(pdfJobs).values({
+      id: jobId,
+      app: 'ecoaudit',
+      entityId: audit.id,
+      entityType: 'audit',
+      userId: request.user.userId,
+      params,
+      status: 'queued',
+      phase: 'Queued...',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    void enqueueExportTask(() => runEcoAuditPhotoZipJob(jobId, audit.id, audit.siteName)).catch((error) => {
+      request.log.error({ jobId, error }, 'EcoAudit photo ZIP queue failed');
+    });
+    return reply.status(202).send({ jobId, reused: false });
   });
 
   app.get('/photos/:photoId', {

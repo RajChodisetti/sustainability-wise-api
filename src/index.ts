@@ -3,9 +3,11 @@ import { runMigrations } from './db/migrate.js';
 import { buildApp } from './app.js';
 import { closeBrowser } from './pdf/renderer.js';
 import { closeDb } from './db/client.js';
+import { failInterruptedExportJobs } from './services/pdfJobService.js';
 
 async function main() {
   await runMigrations();
+  await failInterruptedExportJobs();
 
   const app = await buildApp();
 
