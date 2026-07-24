@@ -1,4 +1,5 @@
 import type { RooftopAssessment } from '@solar/types/domain';
+import { photoDisplayName } from '@solar/lib/photoMetadata';
 
 export type SitePackReportOptions = {
   includedAssessmentIds: Set<string>;
@@ -22,28 +23,50 @@ export type SitePackBuildingGroup = {
 export function buildSitePackInventory(assessments: RooftopAssessment[]): SitePackBuildingGroup[] {
   return assessments.map((a) => {
     const photos: SitePackPhotoItem[] = [];
-    if (a.aerialPhotoUri) photos.push({ uri: a.aerialPhotoUri, label: 'Aerial Photo', assessmentId: a.id });
-    if (a.msbPhotoUri) photos.push({ uri: a.msbPhotoUri, label: 'MSB Photo', assessmentId: a.id });
+    if (a.aerialPhotoUri) {
+      photos.push({
+        uri: a.aerialPhotoUri,
+        label: photoDisplayName('Aerial Photo', a.photoMetadata.aerialPhoto),
+        assessmentId: a.id,
+      });
+    }
+    if (a.msbPhotoUri) {
+      photos.push({
+        uri: a.msbPhotoUri,
+        label: photoDisplayName('MSB Photo', a.photoMetadata.msbPhoto),
+        assessmentId: a.id,
+      });
+    }
     for (const [i, sb] of a.switchboards.entries()) {
       if (sb.photoUri) {
+        const defaultLabel = sb.panelNameId
+          ? `SB ${i + 1} — ${sb.panelNameId}`
+          : `Switchboard ${i + 1} Photo`;
         photos.push({
           uri: sb.photoUri,
-          label: sb.panelNameId ? `SB ${i + 1} — ${sb.panelNameId}` : `Switchboard ${i + 1} Photo`,
+          label: photoDisplayName(defaultLabel, a.photoMetadata[`switchboard.${i}.photo`]),
           assessmentId: a.id,
         });
       }
     }
     for (const [i, oc] of a.otherConsiderations.entries()) {
       for (const [j, u] of (oc.photoUris ?? []).entries()) {
+        const defaultLabel = oc.issue
+          ? `${oc.issue} — Photo ${j + 1}`
+          : `Consideration ${i + 1} Photo ${j + 1}`;
         photos.push({
           uri: u,
-          label: oc.issue ? `${oc.issue} — Photo ${j + 1}` : `Consideration ${i + 1} Photo ${j + 1}`,
+          label: photoDisplayName(defaultLabel, a.photoMetadata[`consideration.${i}.${j}`]),
           assessmentId: a.id,
         });
       }
     }
     for (const [i, u] of a.additionalPhotos.entries()) {
-      photos.push({ uri: u, label: `Additional Photo ${i + 1}`, assessmentId: a.id });
+      photos.push({
+        uri: u,
+        label: photoDisplayName(`Additional Photo ${i + 1}`, a.photoMetadata[`additionalPhoto.${i}`]),
+        assessmentId: a.id,
+      });
     }
     return { assessmentId: a.id, buildingName: a.buildingIdName, photos };
   });

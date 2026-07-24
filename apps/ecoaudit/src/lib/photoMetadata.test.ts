@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  normalizePhotoMetadata,
   normalizePhotoDescsRecord,
   normalizePhotoMetadataMap,
   photoMetadataKeyFromUploadField,
+  setPhotoMetadata,
 } from './photoMetadata';
 
 test('canonicalizes app upload photo fields to PDF metadata keys', () => {
@@ -43,4 +45,24 @@ test('normalizes duplicate photo metadata keys without keeping aliases', () => {
       'photos.1': { name: 'From PDF key', largeInPdf: true },
     },
   );
+});
+
+test('preserves mobile PDF sizing through a portal caption edit, normalized save, and reload', () => {
+  const loadedFromMobile = normalizePhotoDescsRecord({
+    photoDescs: {
+      'extraPhotos.0': { name: 'Mobile caption', largeInPdf: true },
+    },
+  });
+  const current = normalizePhotoMetadata(loadedFromMobile['extraPhotos.0']);
+  const portalEdit = setPhotoMetadata(
+    loadedFromMobile,
+    'extraPhotos[0]',
+    { ...current, name: 'Portal caption' },
+  );
+  const saved = normalizePhotoMetadataMap(portalEdit);
+  const reloaded = normalizePhotoDescsRecord({ photoDescs: saved });
+
+  assert.deepEqual(reloaded, {
+    'extraPhotos.0': { name: 'Portal caption', largeInPdf: true },
+  });
 });

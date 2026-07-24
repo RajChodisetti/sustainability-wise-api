@@ -30,13 +30,42 @@ import {
   ecoAuditPhotoFieldAliases,
   withLegacyLightingPhotoSyncAlias,
 } from './lightingPhotoField.js';
+import {
+  createConfiguredUploadUrl,
+  requireUploadCapability,
+} from '../../auth/uploadCapability.js';
 
 function uploadUrl(sessionId: string): string {
-  return `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`;
+  return createConfiguredUploadUrl(
+    `${config.publicBaseUrl}/v1/ecoaudit/sync/upload/${sessionId}`,
+    'ecoaudit',
+    sessionId,
+  );
 }
 
 function assertUploadSessionFresh(createdAt: Date): void {
   if (Date.now() - createdAt.getTime() > 24 * 60 * 60 * 1000) throw badRequest('Upload session has expired');
+}
+
+export function resolveSyncedPhotoMetadata(
+  incoming: { updatedAt: Date; photoDescs: JsonRecord },
+  existing?: { updatedAt?: Date | null; photoDescs?: unknown },
+): { updatedAt: Date; photoDescs: JsonRecord } {
+  if (
+    existing?.updatedAt
+    && existing.updatedAt.getTime() > incoming.updatedAt.getTime()
+  ) {
+    return {
+      updatedAt: existing.updatedAt,
+      photoDescs:
+        existing.photoDescs
+        && typeof existing.photoDescs === 'object'
+        && !Array.isArray(existing.photoDescs)
+          ? existing.photoDescs as JsonRecord
+          : {},
+    };
+  }
+  return incoming;
 }
 
 async function deletePhotosForAudit(auditId: string): Promise<void> {
@@ -135,6 +164,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
   // PUT /upload/:sessionId — raw bytes, no auth
   app.put('/upload/:sessionId', {
     schema: { tags: ['EcoAudit Sync'] },
+    onRequest: requireUploadCapability('ecoaudit'),
     bodyLimit: config.storage.maxUploadBytes,
   }, async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };
@@ -280,21 +310,25 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Upsert zones
-    const photoDescs = (item: JsonRecord) =>
+    const photoDescs = (item: JsonRecord): JsonRecord =>
       item.photoDescs && typeof item.photoDescs === 'object' && !Array.isArray(item.photoDescs)
-        ? item.photoDescs
+        ? item.photoDescs as JsonRecord
         : {};
 
     for (const zone of (body.zones ?? [])) {
       const zoneId = requiredString(zone, 'id');
       const [existing] = await db.select().from(eaZones).where(eq(eaZones.id, zoneId));
       const serverId = existing?.serverId ?? (str(zone.serverId) ?? randomUUID());
+      const resolvedPhotoMetadata = resolveSyncedPhotoMetadata({
+        updatedAt: dateOrNow(zone.updatedAt),
+        photoDescs: photoDescs(zone),
+      }, existing);
       const vals = {
-        id: zoneId, serverId, syncStatus: 'synced', updatedAt: dateOrNow(zone.updatedAt),
+        id: zoneId, serverId, syncStatus: 'synced', updatedAt: resolvedPhotoMetadata.updatedAt,
         deletedAt: zone.deletedAt ? dateOrNow(zone.deletedAt) : null,
         auditId: localAuditId, zoneName: requiredString(zone, 'zoneName'),
         zoneDescription: str(zone.zoneDescription),
-        photos: arr(zone.photos), photoDescs: photoDescs(zone), createdAt: dateOrNow(zone.createdAt),
+        photos: arr(zone.photos), photoDescs: resolvedPhotoMetadata.photoDescs, createdAt: dateOrNow(zone.createdAt),
       };
       const { id: _zid, ...zoneUpdate } = vals;
       await db.insert(eaZones).values(vals as any).onConflictDoUpdate({ target: eaZones.id, set: zoneUpdate as any });
@@ -321,17 +355,23 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const baseCols = (item: JsonRecord, existing: any, extra: Record<string, unknown>) => ({
-      id: requiredString(item, 'id'),
-      serverId: existing?.serverId ?? (str(item.serverId) ?? randomUUID()),
-      syncStatus: 'synced', updatedAt: dateOrNow(item.updatedAt),
-      deletedAt: item.deletedAt ? dateOrNow(item.deletedAt) : null,
-      zoneId: requiredString(item, 'zoneId'), auditId: localAuditId,
-      createdAt: dateOrNow(item.createdAt),
-      extraNotes: str(item.extraNotes), extraPhotos: arr(item.extraPhotos),
-      photoDescs: photoDescs(item),
-      ...extra,
-    });
+    const baseCols = (item: JsonRecord, existing: any, extra: Record<string, unknown>) => {
+      const resolvedPhotoMetadata = resolveSyncedPhotoMetadata({
+        updatedAt: dateOrNow(item.updatedAt),
+        photoDescs: photoDescs(item),
+      }, existing);
+      return {
+        id: requiredString(item, 'id'),
+        serverId: existing?.serverId ?? (str(item.serverId) ?? randomUUID()),
+        syncStatus: 'synced', updatedAt: resolvedPhotoMetadata.updatedAt,
+        deletedAt: item.deletedAt ? dateOrNow(item.deletedAt) : null,
+        zoneId: requiredString(item, 'zoneId'), auditId: localAuditId,
+        createdAt: dateOrNow(item.createdAt),
+        extraNotes: str(item.extraNotes), extraPhotos: arr(item.extraPhotos),
+        photoDescs: resolvedPhotoMetadata.photoDescs,
+        ...extra,
+      };
+    };
 
     await upsertEquipment(eaMainSwitchboards, body.mainSwitchboards ?? [], (item, ex) => baseCols(item, ex, {
       name: requiredString(item, 'name'), location: str(item.location), mapLocator: str(item.mapLocator),

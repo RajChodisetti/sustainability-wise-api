@@ -14,12 +14,12 @@ import { apiKeyRoutes } from './routes/apiKeys.js';
 import { solarsenseRoutes } from './routes/solarsense/index.js';
 import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { wattwatchersRoutes } from './routes/wattwatchers/index.js';
+import { installhubRoutes } from './routes/installhub/index.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { thumbnailRoutes } from './routes/thumbnails.js';
+import { fileRoutes } from './routes/files.js';
 import { AppError } from './utils/errors.js';
-import { contentTypeForStorageKey, localFileSize, localFileStream } from './storage/localFiles.js';
-import { resolveConfirmedPhotoReference } from './storage/photoRegistryReferences.js';
 import { config } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,10 @@ const tagMap: Record<string, string> = {
   'EcoAudit Photos': 'EcoAudit / Photos',
   'EcoAudit Sync': 'EcoAudit / Sync',
   'EcoAudit PDF': 'EcoAudit / PDF',
+  'InstallHub Users': 'InstallHub / Users',
+  'InstallHub Installations': 'InstallHub / Installations',
+  'InstallHub Sync': 'InstallHub / Sync',
+  'InstallHub PDF': 'InstallHub / PDF',
   'Wattwatchers Users': 'Wattwatchers / Users',
   'Wattwatchers Dashboard': 'Wattwatchers / Dashboard',
   'Wattwatchers Devices': 'Wattwatchers / Devices',
@@ -64,6 +68,10 @@ const orderedTags = [
   { name: 'EcoAudit / Photos', description: 'EcoAudit Pro synced photo listing, export, and deletion.' },
   { name: 'EcoAudit / Sync', description: 'EcoAudit Pro mobile sync and photo upload endpoints.' },
   { name: 'EcoAudit / PDF', description: 'EcoAudit Pro server-side report generation.' },
+  { name: 'InstallHub / Users', description: 'InstallHub user administration and password management.' },
+  { name: 'InstallHub / Installations', description: 'InstallHub installation ownership and shared-access controls.' },
+  { name: 'InstallHub / Sync', description: 'InstallHub mobile metadata and evidence backup.' },
+  { name: 'InstallHub / PDF', description: 'InstallHub server-side form and installation-pack generation.' },
   { name: 'Wattwatchers / Users', description: 'Independent Wattwatchers Fleet portal access.' },
   { name: 'Wattwatchers / Dashboard', description: 'Fleet connectivity summaries and trends.' },
   { name: 'Wattwatchers / Devices', description: 'Current device state, history, and outages.' },
@@ -223,7 +231,25 @@ function completeOpenApiDocument(swaggerObject: Readonly<Record<string, any>>): 
 }
 
 export async function buildApp() {
-  const app = Fastify({ logger: true, bodyLimit: config.storage.maxUploadBytes });
+  const app = Fastify({
+    logger: {
+      // Capability signatures are bearer credentials. Strip every query string
+      // from request logs so signed upload/download URLs cannot leak to log
+      // aggregation, support exports, or crash reports.
+      serializers: {
+        req(request) {
+          return {
+            method: request.method,
+            url: request.url?.split('?', 1)[0],
+            host: request.hostname,
+            remoteAddress: request.ip,
+            remotePort: request.socket?.remotePort,
+          };
+        },
+      },
+    },
+    bodyLimit: config.storage.maxUploadBytes,
+  });
 
   const bufferParser = (_request: unknown, body: Buffer, done: (err: Error | null, body?: Buffer) => void) => {
     done(null, body);
@@ -247,7 +273,7 @@ export async function buildApp() {
     openapi: {
       info: {
         title: 'Sustainability Wise API',
-        description: 'Unified API for EcoAudit Pro, SolarSense, and Wattwatchers Fleet operations',
+        description: 'Unified API for EcoAudit Pro, SolarSense, InstallHub, and Wattwatchers Fleet operations',
         version: '1.0.0',
       },
       servers: [{ url: config.publicBaseUrl, description: 'Configured API base URL' }],
@@ -291,10 +317,14 @@ export async function buildApp() {
       });
     }
     const fastifyErr = err as { statusCode?: number; message?: string };
-    if (fastifyErr.statusCode === 400) {
-      return reply.status(400).send({
-        error: 'Bad request',
-        statusCode: 400,
+    if (
+      typeof fastifyErr.statusCode === 'number'
+      && fastifyErr.statusCode >= 400
+      && fastifyErr.statusCode < 500
+    ) {
+      return reply.status(fastifyErr.statusCode).send({
+        error: fastifyErr.statusCode === 400 ? 'Bad request' : fastifyErr.message,
+        statusCode: fastifyErr.statusCode,
         detail: fastifyErr.message,
       });
     }
@@ -313,46 +343,17 @@ export async function buildApp() {
     return reply.send({ status: 'ok', uptime: Math.floor(process.uptime()) });
   });
 
-  // Public-by-URL file serving for local disk or Spaces-backed storage.
-  app.get('/v1/files/*', {
-    config: {
-      // Local PDF generation can resolve every original in a large audit.
-      rateLimit: { max: 2_000, timeWindow: '1 minute' },
-    },
-    schema: {
-      tags: ['Files'],
-      summary: 'Download a locally stored file by storage key',
-    },
-  }, async (request, reply) => {
-    const storageKey = (request.params as { '*': string })['*'];
-    let resolvedStorageKey = storageKey;
-    let size: number;
-    try {
-      size = await localFileSize(resolvedStorageKey);
-    } catch (error) {
-      if (!(error instanceof AppError) || error.statusCode !== 404) throw error;
-      const photo = await resolveConfirmedPhotoReference(storageKey);
-      if (!photo) throw error;
-      resolvedStorageKey = photo.storageKey;
-      size = await localFileSize(resolvedStorageKey);
-    }
-    const stream = await localFileStream(resolvedStorageKey);
-    return reply
-      .header('Content-Length', String(size))
-      .header('Cache-Control', 'private, max-age=86400')
-      .type(contentTypeForStorageKey(resolvedStorageKey))
-      .send(stream);
-  });
-
   // Route groups
   await app.register(authRoutes,   { prefix: '/v1/auth' });
   await app.register(apiKeyRoutes, { prefix: '/v1/api-keys' });
+  await app.register(fileRoutes);
   await app.register(storageBrowserRoutes);
   await app.register(thumbnailRoutes);
 
   await app.register(ecoauditRoutes, { prefix: '/v1/ecoaudit' });
   await app.register(solarsenseRoutes, { prefix: '/v1/solarsense' });
   await app.register(wattwatchersRoutes, { prefix: '/v1/wattwatchers' });
+  await app.register(installhubRoutes, { prefix: '/v1/installhub' });
   await app.register(pdfJobRoutes, { prefix: '/v1' });
 
   if (existsSync(webDistRoot)) {

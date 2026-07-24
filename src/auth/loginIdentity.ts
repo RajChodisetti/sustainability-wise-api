@@ -28,7 +28,7 @@ type PasswordVerifier = (password: string, passwordHash: string) => Promise<bool
 // A valid bcrypt hash keeps missing/inactive/ineligible lookups on the same
 // verification path without exposing whether an app identity exists.
 const DUMMY_PASSWORD_HASH = '$2b$10$a1lmvS6vLz25GfpMp58yjOQV3fVZy.pUmhhGpHkZWhcfYt0cLDFSK';
-const APP_LOCAL_EMAIL = /^([^@]+)@(ecoaudit|solarsense|wattwatchers)\.users\.local$/;
+const APP_LOCAL_EMAIL = /^([^@]+)@(ecoaudit|solarsense|installhub|wattwatchers)\.users\.local$/;
 const SOURCE_APPS: readonly FleetSourceApp[] = ['ecoaudit', 'solarsense'];
 
 export function cloudEmailForLogin(app: App, value: string): string {

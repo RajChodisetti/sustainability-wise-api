@@ -81,14 +81,6 @@ export async function POST(request: Request): Promise<Response> {
     );
   }
 
-  const registrationSecret = process.env.REGISTRATION_SECRET;
-  if (!registrationSecret) {
-    return Response.json(
-      { error: 'Portal registration is unavailable.' },
-      { status: 503, headers: { 'Cache-Control': 'no-store' } },
-    );
-  }
-
   let body: RegistrationBody;
   try {
     body = await readRegistrationBody(request);
@@ -120,6 +112,15 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(
       { error: 'Registration fields exceed the allowed length.' },
       { status: 400, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+  const registrationSecret = app === 'ecoaudit'
+    ? process.env.ECOAUDIT_REGISTRATION_SECRET
+    : process.env.SOLARSENSE_REGISTRATION_SECRET;
+  if (!registrationSecret) {
+    return Response.json(
+      { error: `Portal registration for ${app} is unavailable.` },
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
     );
   }
 

@@ -75,14 +75,14 @@ Configure these values:
 - `PORTAL_REGISTRATION_ENABLED=false` keeps public registration disabled. Set
   it to `true` only after the portal's server-side registration endpoint has
   been intentionally enabled and reviewed.
-- When registration is enabled, `REGISTRATION_SECRET` must match the API
-  registration secret. It is a server-only credential and must never use a
-  `NEXT_PUBLIC_` prefix.
+- When registration is enabled, `ECOAUDIT_REGISTRATION_SECRET` and/or
+  `SOLARSENSE_REGISTRATION_SECRET` must match the corresponding API secret.
+  They are server-only credentials and must never use a `NEXT_PUBLIC_` prefix.
 
-Do not configure `NEXT_PUBLIC_REGISTRATION_SECRET`. A `NEXT_PUBLIC_` value is
+Do not configure any `NEXT_PUBLIC_*REGISTRATION_SECRET`. A `NEXT_PUBLIC_` value is
 included in browser JavaScript. The portal should call same-origin routes, and
 only its server-side code should read `INTERNAL_API_URL` or
-`REGISTRATION_SECRET`.
+the app-specific registration secrets.
 
 ## Explicit start
 

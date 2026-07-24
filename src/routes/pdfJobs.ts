@@ -5,7 +5,11 @@ import { db } from '../db/client.js';
 import { pdfJobs } from '../db/schema/shared.js';
 import { authenticate } from '../auth/middleware.js';
 import { forbidden, notFound } from '../utils/errors.js';
-import { localFileSize, localFileStream } from '../storage/localFiles.js';
+import {
+  localFileSize,
+  localFileStream,
+  signedFileUrl,
+} from '../storage/localFiles.js';
 import { exportJobParams, type ExportArtifactType } from '../services/pdfJobService.js';
 
 type ExportJob = typeof pdfJobs.$inferSelect;
@@ -40,7 +44,10 @@ function serializeJob(job: ExportJob) {
     phase: job.phase,
     progressCurrent: job.progressCurrent,
     progressTotal: job.progressTotal,
-    pdfUrl: job.pdfUrl,
+    pdfUrl:
+      job.status === 'complete' && job.storageKey
+        ? signedFileUrl(job.storageKey)
+        : job.pdfUrl,
     error: job.error,
     artifactType: metadata.artifactType,
     filename: metadata.filename,
@@ -67,7 +74,7 @@ async function loadAccessibleJob(request: FastifyRequest): Promise<ExportJob> {
 
 const statusRoute: RouteShorthandOptions = {
   schema: {
-    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF'],
+    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'InstallHub PDF'],
     summary: 'Get export job status',
     description: 'Returns progress and download metadata for a PDF or ZIP export job.',
     security: [{ bearerAuth: [] }],
@@ -105,7 +112,7 @@ async function statusHandler(request: FastifyRequest, reply: FastifyReply) {
 
 const downloadRoute: RouteShorthandOptions = {
   schema: {
-    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF'],
+    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'InstallHub PDF'],
     summary: 'Download a completed export job',
     description: 'Streams a completed PDF or ZIP. Returns 409 while the export is still running.',
     security: [{ bearerAuth: [] }],

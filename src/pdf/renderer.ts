@@ -47,6 +47,8 @@ export async function renderPdf(html: string): Promise<Buffer> {
         headerTitle: header?.getAttribute('data-title') ?? '',
         footerLeft: footer?.getAttribute('data-left') ?? '',
         footerRight: footer?.getAttribute('data-right') ?? '',
+        footerPageNumbers:
+          footer?.getAttribute('data-page-numbers') === 'true',
       };
     });
     const hasPageFrame = Boolean(pageFrame.headerBrand || pageFrame.headerTitle || pageFrame.footerLeft || pageFrame.footerRight);

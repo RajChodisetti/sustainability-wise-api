@@ -3,10 +3,11 @@ import test from 'node:test';
 import { generateKey, verifyKey } from './apiKey.js';
 import { apiKeyIsCurrent } from './middleware.js';
 
-test('API key prefixes remain isolated for all three applications', async () => {
+test('API key prefixes remain isolated for every application namespace', async () => {
   for (const [app, prefix] of [
     ['ecoaudit', 'sk_ea_live_'],
     ['solarsense', 'sk_ss_live_'],
+    ['installhub', 'sk_ih_live_'],
     ['wattwatchers', 'sk_ww_live_'],
   ] as const) {
     const generated = generateKey(app);

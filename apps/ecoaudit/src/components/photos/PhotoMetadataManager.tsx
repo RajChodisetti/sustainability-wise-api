@@ -20,12 +20,12 @@ export type PdfPhotoEntry = {
 export function PhotoMetadataManager({
   photos,
   initialMetadata,
-  disabled,
+  completedAudit,
   onSave,
 }: {
   photos: PdfPhotoEntry[];
   initialMetadata: unknown;
-  disabled?: boolean;
+  completedAudit?: boolean;
   onSave: (metadata: PhotoMetadataMap) => Promise<void>;
 }) {
   const controlId = useId().replaceAll(':', '');
@@ -45,7 +45,11 @@ export function PhotoMetadataManager({
     <div>
       <div className="mb-4">
         <h2 className="font-semibold">Photos and PDF settings</h2>
-        <p className="mt-1 text-sm text-[var(--text-sub)]">Rename each photo caption and choose whether it uses a large or compact layout in the PDF.</p>
+        <p className="mt-1 text-sm text-[var(--text-sub)]">
+          {completedAudit
+            ? 'This audit is completed, so its record details and photo content remain read-only. Photo captions and PDF layout can still be updated.'
+            : 'Rename each photo caption and choose whether it uses a large or compact layout in the PDF.'}
+        </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {photos.map((photo, index) => {
@@ -61,20 +65,18 @@ export function PhotoMetadataManager({
                 id={`${controlId}-${index}`}
                 defaultLabel={photo.defaultLabel}
                 value={value}
-                disabled={disabled || busy}
+                disabled={busy}
                 onChange={(next) => setMetadata((current) => setPhotoMetadata(current, photo.key, next))}
               />
             </div>
           );
         })}
       </div>
-      {!disabled ? (
-        <div className="mt-4 flex justify-end">
-          <Button onClick={() => void handleSave()} disabled={busy}>{busy ? 'Saving PDF photo settings…' : 'Save PDF photo settings'}</Button>
-        </div>
-      ) : (
-        <p className="mt-4 text-sm text-[var(--text-sub)]">Completed audits are read-only.</p>
-      )}
+      <div className="mt-4 flex justify-end">
+        <Button onClick={() => void handleSave()} disabled={busy} aria-busy={busy}>
+          {busy ? 'Saving PDF photo settings…' : 'Save PDF photo settings'}
+        </Button>
+      </div>
     </div>
   );
 }

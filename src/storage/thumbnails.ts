@@ -11,6 +11,7 @@ import {
   THUMBNAIL_WIDTH_PX,
   thumbnailStorageKeyForChecksum,
 } from './thumbnailReference.js';
+import type { StorageApp } from './localFiles.js';
 
 const inFlightBuilds = new Map<string, Promise<void>>();
 const MAX_CONCURRENT_BUILDS = 3;
@@ -76,10 +77,11 @@ async function buildAndCacheThumbnail(args: {
 }
 
 export async function ensurePhotoThumbnail(args: {
+  app: StorageApp;
   originalStorageKey: string;
   checksum: string;
 }): Promise<{ storageKey: string; size: number }> {
-  const thumbnailStorageKey = thumbnailStorageKeyForChecksum(args.checksum);
+  const thumbnailStorageKey = thumbnailStorageKeyForChecksum(args.app, args.checksum);
 
   if (!(await hasUsableCachedFile(thumbnailStorageKey))) {
     // Remove a zero-byte/incomplete entry before rebuilding it.

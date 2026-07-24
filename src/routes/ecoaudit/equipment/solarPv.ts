@@ -8,17 +8,18 @@ import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, str, num, arr, photoMetadata, type JsonRecord } from '../helpers.js';
+import { assertFound, assertDraftMutable, assertAuditOwnerPatchMutable, assertAuditAccess, dateOrNow, str, num, arr, photoMetadata, type JsonRecord } from '../helpers.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
   return a;
 }
 
-async function assertMutableAudit(id: string, user: Parameters<typeof assertAuditAccess>[1]) {
+async function assertMutableAudit(id: string, user: Parameters<typeof assertAuditAccess>[1], patchBody?: JsonRecord) {
   const audit = assertFound(await loadAudit(id), 'Audit');
   assertAuditAccess(audit, user);
-  assertDraftMutable(audit, 'Audit');
+  if (patchBody) assertAuditOwnerPatchMutable(audit, patchBody, 'Audit');
+  else assertDraftMutable(audit, 'Audit');
 }
 
 export async function eaSolarPvRoutes(app: FastifyInstance): Promise<void> {
@@ -68,8 +69,8 @@ export async function eaSolarPvRoutes(app: FastifyInstance): Promise<void> {
       const { id } = req.params as { id: string };
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
       const found = assertFound(row, label);
-      await assertMutableAudit(found.auditId, req.user);
       const body = req.body as JsonRecord;
+      await assertMutableAudit(found.auditId, req.user, body);
       const c: Record<string, unknown> = { updatedAt: new Date(), syncStatus: 'local' };
       for (const k of ['roofPhoto','inverterBrandModel','inverterLocation','inverterLabelPhoto','powerSupplyToPv','electricityMeterPhoto','availableRoofSpace','roofSpaceAmount','additionalSolarSpacePhoto','suitableSwitchboard','switchboardPhoto','switchboardLocation','cableDistance','cableRouteDescription','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
       if ('systemSizeKw' in body) c.systemSizeKw = num(body.systemSizeKw);

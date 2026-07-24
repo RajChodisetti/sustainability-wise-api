@@ -111,6 +111,22 @@ export function assertDraftMutable(record: { status?: unknown }, label: string):
   }
 }
 
+/**
+ * Completed audits remain immutable except for their canonical PDF photo
+ * metadata. This keeps post-sync caption/size corrections narrow while
+ * preventing a metadata PATCH from being used to smuggle business-field edits.
+ */
+export function assertAuditOwnerPatchMutable(
+  record: { status?: unknown },
+  body: JsonRecord,
+  label: string,
+): void {
+  if (record.status !== 'Completed') return;
+  const keys = Object.keys(body);
+  if (keys.length === 1 && keys[0] === 'photoDescs') return;
+  assertDraftMutable(record, label);
+}
+
 export function str(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }

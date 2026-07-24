@@ -1,15 +1,17 @@
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole, type AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
+import { ihFormSubmissions, ihInstallations } from '../db/schema/installhub.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
-import { photoRegistry, recordVersions } from '../db/schema/shared.js';
+import { pdfJobs, photoRegistry, recordVersions } from '../db/schema/shared.js';
 import {
   contentTypeForStorageKey,
   localFileExists,
   localFileSize,
-  publicFileUrl,
+  makeNamedStoragePrefix,
+  signedFileUrl,
   type StoredFileListing,
 } from '../storage/localFiles.js';
 import { badRequest, notFound } from '../utils/errors.js';
@@ -23,13 +25,14 @@ import {
   loadSolarsenseAssessmentByIdOrName,
   loadSolarsenseSiteByIdOrName,
 } from '../services/storageNaming.js';
+import { assertInstallationAccess } from './installhub/helpers.js';
 import {
   loadPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
 } from '../storage/photoCopyReferences.js';
 
-type AppName = 'ecoaudit' | 'solarsense';
-type EntityType = 'audit' | 'site';
+type AppName = 'ecoaudit' | 'solarsense' | 'installhub';
+type EntityType = 'audit' | 'site' | 'installation';
 
 async function loadSolarSenseSiteForAccess(siteRef: string, user: Parameters<typeof assertSiteAccess>[1]) {
   const site = await loadSolarsenseSiteByIdOrName(siteRef);
@@ -43,6 +46,22 @@ async function loadEcoAuditForAccess(auditRef: string, user: Parameters<typeof a
   return audit;
 }
 
+async function loadInstallHubInstallationForAccess(
+  installationId: string,
+  user: Parameters<typeof assertInstallationAccess>[1],
+) {
+  const [installation] = await db
+    .select()
+    .from(ihInstallations)
+    .where(and(
+      eq(ihInstallations.id, installationId),
+      isNull(ihInstallations.deletedAt),
+    ));
+  if (!installation) throw notFound('Installation');
+  assertInstallationAccess(installation, user);
+  return installation;
+}
+
 function fileResponse(
   file: StoredFileListing,
   metadataByKey: Map<string, typeof photoRegistry.$inferSelect>,
@@ -52,7 +71,7 @@ function fileResponse(
   const isReportPdf = reportPdfKeys.has(file.storageKey);
   return {
     storageKey: file.storageKey,
-    downloadUrl: publicFileUrl(file.storageKey),
+    downloadUrl: signedFileUrl(file.storageKey),
     contentType: metadata?.contentType ?? contentTypeForStorageKey(file.storageKey),
     sizeBytes: metadata?.fileSizeBytes ?? file.sizeBytes,
     lastModified: file.lastModified?.toISOString() ?? null,
@@ -83,6 +102,7 @@ async function listFilesForRecords(input: {
   parentId: string;
   entityId?: string;
   reportPdfLocalPath?: string | null;
+  reportPdfStorageKeys?: string[];
   actor: AuthUser;
 }) {
   await reconcilePhotoCopyReferencesForParent({
@@ -99,7 +119,10 @@ async function listFilesForRecords(input: {
       .filter((row) => row.storageKey)
       .map((row) => [row.storageKey as string, row]),
   );
-  const reportPdfKeys = new Set(input.reportPdfLocalPath ? [input.reportPdfLocalPath] : []);
+  const reportPdfKeys = new Set([
+    ...(input.reportPdfLocalPath ? [input.reportPdfLocalPath] : []),
+    ...(input.reportPdfStorageKeys ?? []),
+  ]);
   const keys = [...new Set([
     ...registryRows.map((row) => row.storageKey).filter((key): key is string => Boolean(key)),
     ...reportPdfKeys,
@@ -107,6 +130,32 @@ async function listFilesForRecords(input: {
   const files = (await Promise.all(keys.map(storageListingForKey)))
     .filter((file): file is StoredFileListing => Boolean(file));
   return files.map((file) => fileResponse(file, metadataByKey, reportPdfKeys));
+}
+
+async function completedInstallHubReportStorageKeys(
+  installationId: string,
+): Promise<string[]> {
+  const forms = await db
+    .select({ id: ihFormSubmissions.id })
+    .from(ihFormSubmissions)
+    .where(and(
+      eq(ihFormSubmissions.installationId, installationId),
+      isNull(ihFormSubmissions.deletedAt),
+    ));
+  const entityIds = [installationId, ...forms.map((form) => form.id)];
+  const jobs = await db
+    .select({ storageKey: pdfJobs.storageKey })
+    .from(pdfJobs)
+    .where(and(
+      eq(pdfJobs.app, 'installhub'),
+      eq(pdfJobs.status, 'complete'),
+      isNotNull(pdfJobs.storageKey),
+      inArray(pdfJobs.entityId, entityIds),
+    ))
+    .orderBy(desc(pdfJobs.createdAt));
+  return jobs
+    .map((job) => job.storageKey)
+    .filter((storageKey): storageKey is string => Boolean(storageKey));
 }
 
 async function listVersions(app: AppName, entityType: EntityType, entityId: string) {
@@ -221,6 +270,42 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
     return reply.send({ app: 'ecoaudit', entityType: 'audit', auditRef, auditId: audit.id, auditName: audit.siteName, prefix, files });
   });
 
+  app.get('/v1/installhub/installations/:installationId/files', {
+    schema: {
+      tags: ['Files'],
+      summary: 'List stored InstallHub files for an installation',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { installationId } = request.params as { installationId: string };
+    const installation = await loadInstallHubInstallationForAccess(
+      installationId,
+      request.user,
+    );
+    const reportPdfStorageKeys = await completedInstallHubReportStorageKeys(
+      installation.id,
+    );
+    const prefix = makeNamedStoragePrefix({
+      app: 'installhub',
+      parentName: installation.siteName,
+    });
+    const files = await listFilesForRecords({
+      app: 'installhub',
+      parentId: installation.id,
+      reportPdfStorageKeys,
+      actor: request.user,
+    });
+    return reply.send({
+      app: 'installhub',
+      entityType: 'installation',
+      installationId: installation.id,
+      installationName: installation.siteName,
+      prefix,
+      files,
+    });
+  });
+
   app.get('/v1/solarsense/sites/:siteId/versions', {
     schema: { tags: ['Files'], summary: 'List SolarSense site versions', security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
@@ -255,5 +340,44 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
     const { auditId, versionNumber } = request.params as { auditId: string; versionNumber: string };
     await loadEcoAuditForAccess(auditId, request.user);
     return reply.send(await getVersion('ecoaudit', 'audit', auditId, parseVersionNumber(versionNumber)));
+  });
+
+  app.get('/v1/installhub/installations/:installationId/versions', {
+    schema: {
+      tags: ['Files'],
+      summary: 'List InstallHub installation versions',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { installationId } = request.params as { installationId: string };
+    await loadInstallHubInstallationForAccess(installationId, request.user);
+    return reply.send({
+      app: 'installhub',
+      entityType: 'installation',
+      entityId: installationId,
+      versions: await listVersions('installhub', 'installation', installationId),
+    });
+  });
+
+  app.get('/v1/installhub/installations/:installationId/versions/:versionNumber', {
+    schema: {
+      tags: ['Files'],
+      summary: 'Get an InstallHub installation version',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { installationId, versionNumber } = request.params as {
+      installationId: string;
+      versionNumber: string;
+    };
+    await loadInstallHubInstallationForAccess(installationId, request.user);
+    return reply.send(await getVersion(
+      'installhub',
+      'installation',
+      installationId,
+      parseVersionNumber(versionNumber),
+    ));
   });
 }

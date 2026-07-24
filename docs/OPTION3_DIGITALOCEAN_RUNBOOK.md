@@ -323,14 +323,40 @@ PUBLIC_BASE_URL=https://api.sustainabilitywise.com.au
 DATABASE_URL=postgresql://sw_api:<password>@<private-db-host>:25060/sustainability_wise?sslmode=require
 JWT_SECRET=<openssl-rand-hex-32>
 JWT_REFRESH_SECRET=<openssl-rand-hex-32>
+UPLOAD_CAPABILITY_SECRET=<openssl-rand-hex-32>
+FILE_CAPABILITY_SECRET=<openssl-rand-hex-32>
+ALLOW_LEGACY_UNSIGNED_UPLOADS=false
+ALLOW_LEGACY_PUBLIC_FILES=false
 
-# Spaces is the production storage target for uploaded photos and generated PDFs.
+# Legacy Spaces destination retained during the migration window.
 STORAGE_PROVIDER=spaces
+STORAGE_WRITE_MODE=legacy
 SPACES_REGION=syd1
 SPACES_ENDPOINT=https://syd1.digitaloceanspaces.com
-SPACES_BUCKET=sw-prod-files-syd1
-SPACES_ACCESS_KEY_ID=<spaces-access-key>
-SPACES_SECRET_ACCESS_KEY=<spaces-secret-key>
+SPACES_BUCKET=sw-legacy-files-syd1
+SPACES_ACCESS_KEY_ID=<legacy-spaces-access-key>
+SPACES_SECRET_ACCESS_KEY=<legacy-spaces-secret-key>
+
+# Configure distinct buckets and least-privilege credentials, then follow
+# docs/SECURE_STORAGE_MIGRATION.md to move legacy -> dual -> isolated.
+ECOAUDIT_STORAGE_PROVIDER=spaces
+ECOAUDIT_SPACES_REGION=syd1
+ECOAUDIT_SPACES_ENDPOINT=https://syd1.digitaloceanspaces.com
+ECOAUDIT_SPACES_BUCKET=sw-ecoaudit-files-syd1
+ECOAUDIT_SPACES_ACCESS_KEY_ID=<ecoaudit-spaces-access-key>
+ECOAUDIT_SPACES_SECRET_ACCESS_KEY=<ecoaudit-spaces-secret-key>
+SOLARSENSE_STORAGE_PROVIDER=spaces
+SOLARSENSE_SPACES_REGION=syd1
+SOLARSENSE_SPACES_ENDPOINT=https://syd1.digitaloceanspaces.com
+SOLARSENSE_SPACES_BUCKET=sw-solarsense-files-syd1
+SOLARSENSE_SPACES_ACCESS_KEY_ID=<solarsense-spaces-access-key>
+SOLARSENSE_SPACES_SECRET_ACCESS_KEY=<solarsense-spaces-secret-key>
+INSTALLHUB_STORAGE_PROVIDER=spaces
+INSTALLHUB_SPACES_REGION=syd1
+INSTALLHUB_SPACES_ENDPOINT=https://syd1.digitaloceanspaces.com
+INSTALLHUB_SPACES_BUCKET=sw-installhub-files-syd1
+INSTALLHUB_SPACES_ACCESS_KEY_ID=<installhub-spaces-access-key>
+INSTALLHUB_SPACES_SECRET_ACCESS_KEY=<installhub-spaces-secret-key>
 
 # Kept for rollback/local emergency mode only when STORAGE_PROVIDER=local.
 LOCAL_FILE_STORAGE_ROOT=/var/lib/sustainability-wise-api/uploads
@@ -339,12 +365,15 @@ MAX_UPLOAD_BYTES=52428800
 ENABLE_API_DOCS=false
 PROTECT_API_DOCS=true
 CORS_ORIGINS=
-ALLOW_LOCAL_BOOTSTRAP=true
-ALLOW_LOCAL_BOOTSTRAP_ADMIN_ROLE=true
+ALLOW_LOCAL_BOOTSTRAP=false
+ALLOW_LEGACY_BOOTSTRAP_UPSERT=false
+ALLOW_LEGACY_SHARED_REGISTRATION_SECRET=false
 RATE_LIMIT_MAX=300
 RATE_LIMIT_WINDOW_MS=60000
 
-REGISTRATION_SECRET=<registration-secret>
+ECOAUDIT_REGISTRATION_SECRET=
+SOLARSENSE_REGISTRATION_SECRET=
+INSTALLHUB_REGISTRATION_SECRET=
 PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 EOF
 
@@ -354,6 +383,8 @@ chmod 0600 /opt/sw-api/.env
 Generate secrets on the server:
 
 ```bash
+openssl rand -hex 32
+openssl rand -hex 32
 openssl rand -hex 32
 openssl rand -hex 32
 ```

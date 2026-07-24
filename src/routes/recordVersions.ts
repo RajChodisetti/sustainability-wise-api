@@ -4,8 +4,8 @@ import { db } from '../db/client.js';
 import { recordVersions } from '../db/schema/shared.js';
 
 type VersionInput = {
-  app: 'ecoaudit' | 'solarsense';
-  entityType: 'audit' | 'site';
+  app: 'ecoaudit' | 'solarsense' | 'installhub';
+  entityType: 'audit' | 'site' | 'installation';
   entityId: string;
   snapshot: unknown;
   userId: string;

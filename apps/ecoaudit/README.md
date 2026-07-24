@@ -18,8 +18,9 @@ cp .env.example .env.local
 - `ECOSENSE_PORTAL_PORT` configures the dedicated PM2 listener and defaults to
   `3210`; the local npm scripts use that same port.
 - `PORTAL_REGISTRATION_ENABLED=true` enables portal self-registration.
-- `REGISTRATION_SECRET` is read only by the registration Route Handler. Never
-  prefix it with `NEXT_PUBLIC_`; public variables are embedded in browser code.
+- `ECOAUDIT_REGISTRATION_SECRET` and `SOLARSENSE_REGISTRATION_SECRET` are
+  app-specific and read only by the registration Route Handler. Never prefix
+  them with `NEXT_PUBLIC_`; public variables are embedded in browser code.
 
 Registration stays disabled unless both the enable flag and secret are set.
 

@@ -110,6 +110,8 @@ export default function AuditPhotosPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {photos.map((p) => {
             const uri = p.remoteUrl || p.id;
+            const caption = p.caption?.trim() || '';
+            const displayName = caption || p.fieldName || 'Photo';
             const equipmentType = EQUIPMENT_TYPES.find((candidate) => candidate.entityType === p.entityType);
             const settingsHref = p.entityId
               ? p.entityType === 'zone'
@@ -120,8 +122,11 @@ export default function AuditPhotosPage() {
               : null;
             return (
               <Card key={p.id} className="overflow-hidden !p-3">
-                <PhotoThumb uri={uri} label={p.fieldName ?? 'Photo'} className="mb-2 w-full rounded-lg object-cover" />
-                <p className="mt-2 text-xs font-bold text-[var(--text-sub)]">{p.fieldName}</p>
+                <PhotoThumb uri={uri} label={displayName} className="mb-2 w-full rounded-lg object-cover" />
+                <p className="mt-2 text-sm font-bold text-[var(--text)]">{displayName}</p>
+                {caption && p.fieldName ? (
+                  <p className="mt-0.5 text-xs text-[var(--text-sub)]">{p.fieldName}</p>
+                ) : null}
                 <p className="mt-0.5 break-all text-xs text-[var(--muted)]">{p.originalFilename}</p>
                 {settingsHref ? (
                   <LinkButton href={settingsHref} variant="secondary" className="mt-3 w-full !px-3 !text-xs">

@@ -10,6 +10,8 @@ import { DealBreakerFlag, RAGBadge, StatusBadge, ViabilityBadge } from '@solar/c
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@solar/api/client';
 import { useState } from 'react';
+import { normalizePhotoMetadata } from '@solar/lib/photoMetadata';
+import type { PhotoMetadataValue } from '@solar/types/domain';
 
 
 function asId(v: string | string[] | undefined): string | undefined {
@@ -25,6 +27,31 @@ function DetailRow({ label, value }: { label: string; value?: string | number | 
       <dt className="text-xs font-semibold uppercase text-[var(--text-sub)]">{label}</dt>
       <dd className="text-sm text-[var(--text)]">{value}</dd>
     </div>
+  );
+}
+
+function CaptionedPhoto({
+  uri,
+  label,
+  metadata,
+}: {
+  uri: string;
+  label: string;
+  metadata?: PhotoMetadataValue;
+}) {
+  const caption = normalizePhotoMetadata(metadata).name?.trim();
+  return (
+    <figure>
+      <PhotoThumb
+        app="solarsense"
+        uri={uri}
+        label={caption || label}
+        className="rounded-lg object-cover"
+      />
+      {caption ? (
+        <figcaption className="mt-1.5 text-sm leading-5 text-[var(--text-sub)]">{caption}</figcaption>
+      ) : null}
+    </figure>
   );
 }
 
@@ -136,18 +163,46 @@ export default function AssessmentDetailPage() {
           <h2 className="mb-3 font-semibold">Photos</h2>
           <div className="grid grid-cols-2 gap-3">
             {assessment.aerialPhotoUri ? (
-              <PhotoThumb app="solarsense" uri={assessment.aerialPhotoUri} label="Aerial" className="rounded-lg object-cover" />
+              <CaptionedPhoto
+                uri={assessment.aerialPhotoUri}
+                label="Aerial"
+                metadata={assessment.photoMetadata.aerialPhoto}
+              />
             ) : null}
             {assessment.msbPhotoUri ? (
-              <PhotoThumb app="solarsense" uri={assessment.msbPhotoUri} label="MSB" className="rounded-lg object-cover" />
+              <CaptionedPhoto
+                uri={assessment.msbPhotoUri}
+                label="MSB"
+                metadata={assessment.photoMetadata.msbPhoto}
+              />
             ) : null}
             {assessment.switchboards.map((sb, i) =>
               sb.photoUri ? (
-                <PhotoThumb key={`${sb.photoUri}-${i}`} app="solarsense" uri={sb.photoUri} label={`Switchboard ${i + 1}`} className="rounded-lg object-cover" />
+                <CaptionedPhoto
+                  key={`${sb.photoUri}-${i}`}
+                  uri={sb.photoUri}
+                  label={sb.panelNameId || `Switchboard ${i + 1}`}
+                  metadata={assessment.photoMetadata[`switchboard.${i}.photo`]}
+                />
               ) : null,
             )}
+            {assessment.otherConsiderations.map((consideration, considerationIndex) =>
+              (consideration.photoUris ?? []).map((uri, photoIndex) => (
+                <CaptionedPhoto
+                  key={`${uri}-${considerationIndex}-${photoIndex}`}
+                  uri={uri}
+                  label={consideration.issue || `Consideration ${considerationIndex + 1} photo ${photoIndex + 1}`}
+                  metadata={assessment.photoMetadata[`consideration.${considerationIndex}.${photoIndex}`]}
+                />
+              )),
+            )}
             {assessment.additionalPhotos.map((uri, i) => (
-              <PhotoThumb key={`${uri}-${i}`} app="solarsense" uri={uri} label={`Additional ${i + 1}`} className="rounded-lg object-cover" />
+              <CaptionedPhoto
+                key={`${uri}-${i}`}
+                uri={uri}
+                label={`Additional ${i + 1}`}
+                metadata={assessment.photoMetadata[`additionalPhoto.${i}`]}
+              />
             ))}
           </div>
         </Card>

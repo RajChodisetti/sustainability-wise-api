@@ -4,7 +4,7 @@ import { and, asc, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaAudits, eaZones } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertFound, assertDraftMutable, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, photoMetadata, type JsonRecord } from './helpers.js';
+import { assertFound, assertDraftMutable, assertAuditOwnerPatchMutable, assertAuditAccess, dateOrNow, requiredString, optionalString, optionalStringArray, photoMetadata, type JsonRecord } from './helpers.js';
 import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
@@ -73,7 +73,7 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     const [audit] = await db.select().from(eaAudits).where(eq(eaAudits.id, found.auditId));
     const foundAudit = assertFound(audit, 'Audit');
     assertAuditAccess(foundAudit, request.user);
-    assertDraftMutable(foundAudit, 'Audit');
+    assertAuditOwnerPatchMutable(foundAudit, body, 'Audit');
     const changes: Partial<typeof eaZones.$inferInsert> = { updatedAt: new Date(), syncStatus: 'local' };
     const zn = optionalString(body, 'zoneName'); if (zn !== undefined) changes.zoneName = zn ?? found.zoneName;
     if ('zoneDescription' in body) changes.zoneDescription = optionalString(body, 'zoneDescription') ?? null;

@@ -1,7 +1,7 @@
 import { useId } from 'react';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { Button } from '@solar/components/ui/Button';
-import { FieldError } from '@solar/components/ui/FormFields';
+import { FieldError, FieldLabel, Input } from '@solar/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { usePhotoUpload } from '@solar/hooks/usePhotoUpload';
 import { Icon } from '@/components/ui/Icon';
@@ -13,6 +13,8 @@ export function PhotoField({
   assessmentId,
   fieldName,
   onChange,
+  caption,
+  onCaptionChange,
   disabled,
 }: {
   label: string;
@@ -21,11 +23,14 @@ export function PhotoField({
   assessmentId?: string;
   fieldName: string;
   onChange: (uri: string | null) => void;
+  caption?: string;
+  onCaptionChange?: (caption: string) => void;
   disabled?: boolean;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
   const toast = useToast();
   const inputId = useId();
+  const captionId = useId();
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
@@ -46,7 +51,7 @@ export function PhotoField({
           key={uri}
           app="solarsense"
           uri={uri}
-          label={label}
+          label={caption?.trim() || label}
           className="mb-2 max-h-48 w-full rounded-lg object-cover"
         />
       ) : (
@@ -78,6 +83,19 @@ export function PhotoField({
           </Button>
         ) : null}
       </div>
+      {uri && onCaptionChange ? (
+        <div className="mt-3">
+          <FieldLabel htmlFor={captionId} className="!mt-0">Photo caption</FieldLabel>
+          <Input
+            id={captionId}
+            value={caption ?? ''}
+            onChange={(event) => onCaptionChange(event.target.value)}
+            placeholder="Optional caption"
+            maxLength={120}
+            disabled={disabled}
+          />
+        </div>
+      ) : null}
       <FieldError message={error ?? undefined} />
     </div>
   );
@@ -90,6 +108,9 @@ export function PhotoGridField({
   assessmentId,
   fieldPrefix,
   onChange,
+  captions,
+  onCaptionChange,
+  onPhotoRemoved,
   disabled,
 }: {
   label: string;
@@ -98,6 +119,9 @@ export function PhotoGridField({
   assessmentId?: string;
   fieldPrefix: string;
   onChange: (uris: string[]) => void;
+  captions?: string[];
+  onCaptionChange?: (index: number, caption: string) => void;
+  onPhotoRemoved?: (index: number) => void;
   disabled?: boolean;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
@@ -130,18 +154,39 @@ export function PhotoGridField({
               <PhotoThumb
                 app="solarsense"
                 uri={uri}
-                label={`${label} ${i + 1}`}
+                label={captions?.[i]?.trim() || `${label} ${i + 1}`}
                 className="aspect-square w-full object-cover"
               />
               {!disabled ? (
                 <button
                   type="button"
                   className="absolute right-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-lg bg-black/65 text-white shadow-lg hover:bg-black/80"
-                  onClick={() => onChange(uris.filter((_, idx) => idx !== i))}
+                  onClick={() => {
+                    onChange(uris.filter((_, idx) => idx !== i));
+                    onPhotoRemoved?.(i);
+                  }}
                   aria-label={`Remove ${label} photo ${i + 1}`}
                 >
                   <Icon name="close" size={18} />
                 </button>
+              ) : null}
+              {onCaptionChange ? (
+                <div className="p-3">
+                  <label
+                    htmlFor={`${inputId}-caption-${i}`}
+                    className="mb-1.5 block text-xs font-bold text-[var(--text)]"
+                  >
+                    Photo caption
+                  </label>
+                  <Input
+                    id={`${inputId}-caption-${i}`}
+                    value={captions?.[i] ?? ''}
+                    onChange={(event) => onCaptionChange(i, event.target.value)}
+                    placeholder="Optional caption"
+                    maxLength={120}
+                    disabled={disabled}
+                  />
+                </div>
               ) : null}
             </div>
           );

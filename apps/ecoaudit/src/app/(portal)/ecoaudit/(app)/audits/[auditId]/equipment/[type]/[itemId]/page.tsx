@@ -136,7 +136,7 @@ export default function EquipmentDetailPage() {
           <PhotoMetadataManager
             photos={photoEntries}
             initialMetadata={normalizePhotoDescsRecord(item)}
-            disabled={isCompleted}
+            completedAudit={isCompleted}
             onSave={savePhotoMetadata}
           />
         </Card>

@@ -5,6 +5,7 @@ export type PdfPageFrame = {
   headerTitle: string;
   footerLeft: string;
   footerRight: string;
+  footerPageNumbers?: boolean;
 };
 
 const PX_TO_PT = 72 / 96;
@@ -115,7 +116,13 @@ export async function stampPdfPageFrame(pdfBuffer: Buffer, frame: PdfPageFrame):
     const footerLeft = fitText(frame.footerLeft, bold, footerSize, width * 0.38);
     page.drawText(footerLeft, { x: 15, y: footerY, size: footerSize, font: bold, color: muted });
 
-    const footerRight = fitText(frame.footerRight, regular, footerSize, width * 0.48);
+    const footerRightText = frame.footerPageNumbers
+      ? [
+          frame.footerRight,
+          `Page ${index + 1} of ${sourcePages.length}`,
+        ].filter(Boolean).join(' - ')
+      : frame.footerRight;
+    const footerRight = fitText(footerRightText, regular, footerSize, width * 0.48);
     const footerRightWidth = regular.widthOfTextAtSize(footerRight, footerSize);
     page.drawText(footerRight, {
       x: Math.max(width / 2, width - 15 - footerRightWidth),

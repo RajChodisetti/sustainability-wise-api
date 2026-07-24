@@ -175,13 +175,23 @@ function defaultPhotoLabel(entityType: string, field: PhotoField): string {
   return field.index === undefined ? label : `${label} ${field.index + 1}`;
 }
 
-function fallbackEntity(photo: EcoAuditZipPhoto): EcoAuditPhotoZipEntity {
+function fallbackEntity(
+  photo: Pick<EcoAuditZipPhoto, 'entityType' | 'entityId' | 'fieldName'>,
+): EcoAuditPhotoZipEntity {
   return {
     zoneName: 'General',
     sectionTitle: SECTION_TITLES[photo.entityType] ?? humanize(photo.entityType),
     itemLabel: FALLBACK_ITEM_LABELS[photo.entityType] ?? humanize(photo.entityType),
     photoDescs: {},
   };
+}
+
+export function resolveEcoAuditPhotoCaption(
+  context: EcoAuditPhotoZipContext,
+  photo: Pick<EcoAuditZipPhoto, 'entityType' | 'entityId' | 'fieldName'>,
+): string | null {
+  const entity = context.entities.get(entityKey(photo.entityType, photo.entityId)) ?? fallbackEntity(photo);
+  return metadataName(entity.photoDescs, parsePhotoField(photo.fieldName));
 }
 
 export function createEcoAuditPhotoZipEntryNamer(
@@ -197,7 +207,7 @@ export function createEcoAuditPhotoZipEntryNamer(
     const section = sanitizeEcoAuditZipName(entity.sectionTitle);
     const item = sanitizeEcoAuditZipName(entity.itemLabel);
     const label = sanitizeEcoAuditZipName(
-      metadataName(entity.photoDescs, field) ?? defaultPhotoLabel(photo.entityType, field),
+      resolveEcoAuditPhotoCaption(context, photo) ?? defaultPhotoLabel(photo.entityType, field),
     );
     const directory = mode === 'by-zone'
       ? `${zone}/${section}/${item}`

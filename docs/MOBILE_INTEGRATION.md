@@ -1,12 +1,196 @@
 # Mobile Integration Guide
 
-All changes required in `solarsense-mobile/` and `ecoaudit-pro/mobile/` to support cloud sync.
+Cloud sync contracts for `installhub-mobile/`, `solarsense-mobile/`, and
+`ecoaudit-pro/mobile/`.
 
 The mobile applications are sibling repositories, not folders in this Git
 repository. Treat the payload, photo-field, lifecycle, and thumbnail sections
 below as compatibility contracts for installed app versions. Do not modify mobile
 source during an API or portal-only task unless the request explicitly includes
 it.
+
+---
+
+## InstallHub Mobile — Cloud Backup
+
+InstallHub uses user JWT authentication, not a device API key. Login sends
+`app: "installhub"` to `/v1/auth/login`; access and rotated refresh tokens are
+stored in iOS Keychain through Expo SecureStore. The app may restore a cached
+session while offline. New-user bootstrap is available only in a controlled
+migration build that supplies both
+`EXPO_PUBLIC_ENABLE_LEGACY_BOOTSTRAP=true` and an app-specific
+`EXPO_PUBLIC_REGISTRATION_SECRET`; normal release builds ignore the secret and
+no registration credential is committed to source.
+
+The API owns a separate namespace:
+
+| Concern | Contract |
+|---|---|
+| Routes | `/v1/installhub/*` plus shared `/v1/export/jobs/*` |
+| JWT app claim | `installhub` |
+| API-key prefix (administrative compatibility) | `sk_ih_live_*` |
+| Tables | `ih_users`, `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, `ih_form_submissions` |
+| Shared media registry | `photo_registry` rows with `app = installhub` |
+
+### Sync endpoints
+
+| Method and route | Purpose |
+|---|---|
+| `POST /v1/installhub/sync/push` | Transactionally upsert a complete installation tree |
+| `GET /v1/installhub/sync/pull` | Pull owner/assignee/admin-visible trees changed since an ISO timestamp |
+| `POST /v1/installhub/sync/check-photo` | Check an exact scoped SHA-256 match |
+| `POST /v1/installhub/sync/create-upload-session` | Create a validated media session |
+| `PUT /v1/installhub/sync/upload/:sessionId?expires=...&signature=...` | Use a short-lived app/session-bound HMAC capability, then verify size/checksum |
+| `POST /v1/installhub/sync/confirm-upload` | Confirm storage and return the durable URL |
+
+`push` requires `installation`, `zones`, `electricalAssets`, `siteAssets`, and
+`formSubmissions`. It is a full-snapshot contract: an existing child omitted
+from its corresponding array is soft-deleted. Every protected operation checks
+the `installhub` app claim, inspector role, installation ownership, and entity
+parentage. Mobile labels the pre-upload push `syncStage: "metadata"` and the
+post-upload push `syncStage: "complete"`. Metadata pushes return
+`versionNumber: null`; complete pushes create/deduplicate an immutable version.
+For backward compatibility, an absent stage is treated as complete.
+
+### User and installation-access endpoints
+
+| Method and route | Access | Purpose |
+|---|---|---|
+| `GET /v1/installhub/users` | admin | List InstallHub users |
+| `POST /v1/installhub/users` | admin | Create an `admin` or `inspector` |
+| `GET /v1/installhub/users/:id` | self or admin | Read one public user profile |
+| `PATCH /v1/installhub/users/:id` | admin | Change email, name, role, or active state |
+| `PATCH /v1/installhub/users/:id/password` | self or admin | Self-change with `currentPassword`, or admin reset of another user |
+| `DELETE /v1/installhub/users/:id` | admin | Soft-deactivate the account and revoke refresh tokens |
+| `GET /v1/installhub/installations/:installationId/access` | accessible inspector | Read the assigned inspector |
+| `PATCH /v1/installhub/installations/:installationId/access` | admin | Assign one active user or clear with `assignedInspectorUserId: null` |
+| `DELETE /v1/installhub/installations/:installationId` | creator or admin | Reversibly soft-remove an active Cloud Backup |
+| `DELETE /v1/installhub/installations/:installationId?purge=true` | creator or admin | Permanently delete a Cloud Backup tree, unreferenced originals, report files/jobs, and versions |
+
+User administration is scoped to `ih_users`. The API prevents an administrator
+from demoting/deactivating their own account and prevents removal of the last
+active InstallHub administrator. Role or active-state changes, password changes,
+and deactivation revoke outstanding InstallHub refresh tokens.
+
+Assignment augments, rather than transfers, access: the creator and elevated
+users retain access. The assignee can pull/import the tree and access its
+originals, thumbnails, files, versions, and report source data.
+
+Permanent Cloud Backup deletion is intentionally narrower than read/import
+access: only the installation creator or an elevated user may purge it. The
+purge is rejected while one of its PDF jobs is active and retains any immutable
+original still referenced by another backed-up copy.
+
+Turning backup off is a separate preference from deleting server data. Mobile
+asks whether to keep the active server copy or soft-remove it. A soft-removed
+tree is restored under the same IDs when backup is re-enabled. InstallHub
+backfills the retained-copy indicator for older local records from their
+successful sync watermark.
+
+### Files and immutable versions
+
+| Method and route | Purpose |
+|---|---|
+| `GET /v1/installhub/installations/:installationId/files` | List accessible confirmed originals and completed InstallHub report PDFs with storage metadata |
+| `GET /v1/installhub/installations/:installationId/versions` | List immutable full-snapshot version metadata |
+| `GET /v1/installhub/installations/:installationId/versions/:versionNumber` | Return one saved installation snapshot |
+
+Each successful complete or legacy-unstaged `push` saves a new installation
+version only when the stable full-snapshot payload differs from the latest
+version. Metadata-stage pushes are intentionally excluded. File and version
+reads apply the same creator/assigned-inspector/elevated access rule as pull.
+
+### Form and installation-pack PDF jobs
+
+| Method and route | Purpose |
+|---|---|
+| `POST /v1/installhub/installations/:installationId/forms/:formId/report/pdf/jobs` | Queue one completed backed-up form report |
+| `POST /v1/installhub/installations/:installationId/report/pdf/jobs` | Queue an installation pack; optional `formSubmissionIds` selects completed forms |
+| `GET /v1/export/jobs/:jobId` | Poll durable status, phase, progress, filename, and error |
+| `GET /v1/export/jobs/latest?entityId=...&artifactType=pdf` | Find the current user's latest PDF job for an entity |
+| `GET /v1/export/jobs/:jobId/download` | Authenticated stream of a completed PDF |
+
+Queue responses are HTTP 202 with `{ jobId, reused }`. Equivalent active work
+for the same user/entity/source revision is reused. Job status/download requires
+the same app and job owner, except an admin may inspect another user's job.
+Clients should persist the job ID, poll without a fixed overall timeout, and
+download only after `status=complete`; the download endpoint returns 409 while
+work is not ready.
+
+The server report manifest mirrors all six schema-v2 mobile forms and the two
+readable schema-v1 A3RM/A6M forms. Reports are A4, use the Sustainability Wise
+logo and navy/blue field-section system, escape dynamic values, render only
+visible conditional fields, preserve evidence aspect ratio, and stamp `Page X
+of Y` in the repeated footer. Each
+`attachments[index].uri` must resolve to its exact confirmed
+`photo_registry.field_name = attachments[index].uri` original (or authorized
+copy reference); missing originals fail the job rather than silently omitting
+evidence.
+
+Large reports are compressed and rendered sequentially. More than 120 evidence
+photos or more than 120 MiB of raw registered evidence activates section-boundary
+chunking, targeting about 50 photos per part; parts are merged into one PDF.
+Form jobs and installation-pack jobs share these report rules, storage naming,
+durable job lifecycle, and configured OneDrive mirroring.
+
+### Mobile backup sequence
+
+1. Persist edits locally and mark the installation tree dirty.
+2. Push metadata with all device-only media URIs removed.
+3. Discover and durably queue zone, board, embedded-meter, site-asset, and form
+   attachment media.
+4. Deduplicate by scoped SHA-256, otherwise create/upload/confirm a session.
+5. Push the full tree again with confirmed remote URLs.
+6. Advance the local installation watermark only after the final push succeeds.
+
+The queue survives restarts, caps automatic attempts at five, and can be reset
+from Settings. Foreground activation, a 15-minute in-app timer, debounced local
+changes, connectivity recovery, a Settings action, and the registered Expo
+background task can trigger backup. iOS background execution is opportunistic
+and requires a development/production build on a physical device; it does not
+run reliably in Expo Go or the simulator.
+
+The mobile API URL defaults to `https://api.sustainabilitywise.com.au` and can be
+overridden with `EXPO_PUBLIC_SYNC_API_URL`. Release builds reject plaintext HTTP.
+SecureStore keys are `ih_cloud_jwt`, `ih_cloud_refresh`, and `ih_cloud_user`.
+InstallHub exposes `/pull` only through an explicit user-driven browser/import
+flow. It never silently overwrites local records: the selected tree is cloned
+with fresh IDs and the next `cpN` suffix.
+
+### Form schema compatibility
+
+New submissions use schema version 2 and expose six form families:
+`ww-installation`, `comms-fault`, `ace-switchboard`, `honeywell-q400`,
+`captis-logger`, and `sums-logger`. The API continues accepting schema-v1
+`a3rm-installation` and `a6m-installation` records for existing mobile data.
+Completed Installation and Comms Fault submissions are rejected unless
+device type, device number, device ID, and the exact type-compatible CT/Rogowski
+selection are present. Scanner modality is a mobile capture concern; the API
+validates the resulting identifiers and conditional values.
+
+For Installation, A3RM exposes exactly three channels and A6M exactly six.
+Every visible channel requires a `channel.N.load`. A real load requires an
+A3RM Rogowski value (`3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`) or an
+A6M CT value (`60A`, `120A`, `200A`, `400A`, or `600A`). `Not Used` is a load
+state and requires `channel.N.rating` to be empty; it is not a sensor option.
+A3RM submissions must not carry hidden channel 4-6 load/rating values; the
+mobile condition engine clears the rest of those hidden fields. Schema-v2
+answers reject the legacy `not_applicable` value; yes/no fields must use `yes`
+or `no`.
+
+Completed standard forms require their ingestion identities: ACE job number and
+phase A/B/C CT serials; Honeywell Q400 water-meter serial; and both meter and
+logger serials for Captis and SUMS. SUMS uses the Captis answer shape. Barcode
+versus QR acceptance remains a mobile scanner concern (SUMS accepts both); the
+API stores and validates the resulting strings.
+
+For schema v2, a completed metadata-stage push must contain every visible
+required answer but may omit evidence while uploads are pending. A complete
+push requires every visible required evidence slot. The API rejects unknown or
+hidden stale answer keys, hidden evidence, invalid select/binary/numeric values,
+duplicate attachment IDs, non-image attachments, malformed capture timestamps,
+and non-HTTP(S) attachment URIs. Drafts remain incrementally valid and schema-v1
+records keep their compatibility behavior.
 
 ---
 
@@ -130,6 +314,17 @@ individual download failures as import errors. An imported copy becomes openable
 only after every required preview job is complete. PDF requests continue to use
 the original URL/checksum, not the preview cache file.
 
+Original `/v1/files/*` reads are never public. A mobile original download sends
+the current bearer token; completed export links may instead use a short-lived
+HMAC capability generated by the API. Thumbnails are app-namespaced under
+`<app>/_thumbnails/v2` and remain bearer-authorized.
+
+InstallHub follows the same contract. Backup is opt-in per installation. A selected server tree is
+cloned locally with fresh IDs and a deterministic `<site> cpN` name, remains local-only by default,
+and is hidden from the main list until every required preview is ready. Creator, assigned inspector,
+or elevated access is required for both tree reads and thumbnail downloads. If an imported copy is
+later opted into backup, `photo_copy_references` preserves the original bytes and authorization.
+
 ## Photo Fields Covered Per App
 
 ### SolarSense (`rooftop_assessments`)
@@ -167,15 +362,17 @@ general_electricity:      photos[], extra_photos[]
 ### SolarSense
 | Key | Value |
 |---|---|
-| `ss_api_url` | API base URL, e.g. `https://api.sustainabilitywise.com.au` |
-| `ss_api_key` | Service account API key: `sk_ss_live_xxx` |
+| `ss_cloud_jwt` | Short-lived Solar Sense access JWT |
+| `ss_cloud_refresh` | Rotating Solar Sense refresh token |
+| `ss_cloud_local_owner` | Local user ID bound to the token pair |
 | `ss_last_synced_at` | ISO8601 timestamp of last successful sync |
 
 ### EcoAudit Pro
 | Key | Value |
 |---|---|
-| `ea_api_url` | API base URL |
-| `ea_api_key` | Service account API key: `sk_ea_live_xxx` |
+| `ea_cloud_jwt` | Short-lived Eco Audit access JWT |
+| `ea_cloud_refresh` | Rotating Eco Audit refresh token |
+| `ea_cloud_local_owner` | Local user ID bound to the token pair |
 | `ea_last_synced_at` | ISO8601 timestamp |
 
 ---

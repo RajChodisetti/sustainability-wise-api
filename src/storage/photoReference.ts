@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-export type PhotoApp = 'ecoaudit' | 'solarsense';
+export type PhotoApp = 'ecoaudit' | 'solarsense' | 'installhub';
 
 export type ParsedPhotoReference = {
   app: PhotoApp;
@@ -42,7 +42,7 @@ function safeStorageSegments(storageKey: string): string[] | null {
 export function photoAppFromStorageKey(storageKey: string): PhotoApp | null {
   const segments = safeStorageSegments(storageKey);
   if (!segments) return null;
-  return segments[0] === 'ecoaudit' || segments[0] === 'solarsense'
+  return segments[0] === 'ecoaudit' || segments[0] === 'solarsense' || segments[0] === 'installhub'
     ? segments[0]
     : null;
 }

@@ -21,6 +21,14 @@ export type AppendixItem = {
   name: string;
 };
 
+export type PhotoMetadata = {
+  name?: string;
+  largeInPdf?: boolean;
+};
+
+export type PhotoMetadataValue = string | PhotoMetadata | null | undefined;
+export type PhotoMetadataMap = Record<string, PhotoMetadataValue>;
+
 export type Site = {
   id: string;
   serverId?: string | null;
@@ -97,7 +105,7 @@ export type RooftopAssessment = {
   ragPriority?: 'Green' | 'Amber' | 'Red' | string | null;
   keyAssumptionsGaps?: string | null;
   additionalPhotos: string[];
-  photoMetadata: Record<string, unknown>;
+  photoMetadata: PhotoMetadataMap;
   createdByUserId?: string | null;
   createdAt: string;
 };

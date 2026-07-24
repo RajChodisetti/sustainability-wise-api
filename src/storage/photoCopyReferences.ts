@@ -17,6 +17,13 @@ import {
 } from '../db/schema/ecoaudit.js';
 import { photoCopyReferences, photoRegistry } from '../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
+import {
+  ihElectricalAssets,
+  ihFormSubmissions,
+  ihInstallations,
+  ihSiteAssets,
+  ihZones,
+} from '../db/schema/installhub.js';
 import { deleteLocalFile } from './localFiles.js';
 import type { PhotoApp } from './photoReference.js';
 
@@ -163,6 +170,65 @@ export function solarAssessmentPhotoFieldReferences(record: Record<string, unkno
     });
   });
   return references;
+}
+
+export function installHubZonePhotoFieldReferences(
+  record: Record<string, unknown>,
+): PhotoFieldReference[] {
+  return indexedReferences(record.photos, 'photos');
+}
+
+export function installHubElectricalPhotoFieldReferences(
+  record: Record<string, unknown>,
+): PhotoFieldReference[] {
+  const references = [
+    ...referencesAt(record.photo, 'photo'),
+    ...indexedReferences(record.extraPhotos, 'extraPhotos'),
+  ];
+  const meters = Array.isArray(record.meters) ? record.meters : [];
+  meters.forEach((meter, meterIndex) => {
+    if (!meter || typeof meter !== 'object') return;
+    const item = meter as Record<string, unknown>;
+    const photos = (item.wwPhotos ?? item.ww_photos) as Record<string, unknown> | undefined;
+    if (!photos) return;
+    const prefix = `meters[${meterIndex}].wwPhotos`;
+    references.push(...referencesAt(
+      photos.deviceInstalled ?? photos.device_installed,
+      `${prefix}.deviceInstalled`,
+    ));
+    references.push(...referencesAt(
+      photos.switchboardOverview ?? photos.switchboard_overview,
+      `${prefix}.switchboardOverview`,
+    ));
+    references.push(...referencesAt(photos.labeling, `${prefix}.labeling`));
+    const extras = Array.isArray(photos.extra) ? photos.extra : [];
+    extras.forEach((photo, index) => {
+      references.push(...referencesAt(photo, `${prefix}.extra[${index}]`));
+    });
+  });
+  return references;
+}
+
+export function installHubSiteAssetPhotoFieldReferences(
+  record: Record<string, unknown>,
+): PhotoFieldReference[] {
+  return [
+    ...referencesAt(record.locationPhoto, 'locationPhoto'),
+    ...indexedReferences(record.extraPhotos, 'extraPhotos'),
+  ];
+}
+
+export function installHubFormPhotoFieldReferences(
+  record: Record<string, unknown>,
+): PhotoFieldReference[] {
+  const attachments = Array.isArray(record.attachments) ? record.attachments : [];
+  return attachments.flatMap((attachment, index) => {
+    if (!attachment || typeof attachment !== 'object') return [];
+    return referencesAt(
+      (attachment as Record<string, unknown>).uri,
+      `attachments[${index}].uri`,
+    );
+  });
 }
 
 export function buildPhotoCopyReferenceRows(input: {
@@ -340,7 +406,10 @@ export function actorCanAccessPhotoParent(
   if (actor.app !== app) return false;
   if (elevated(actor)) return true;
   if (parent.createdByUserId === actor.userId) return true;
-  return app === 'ecoaudit' && parent.assignedInspectorUserId === actor.userId;
+  return (
+    (app === 'ecoaudit' || app === 'installhub')
+    && parent.assignedInspectorUserId === actor.userId
+  );
 }
 
 export function genericPhotoCandidateIsAuthorized(input: {
@@ -378,6 +447,19 @@ async function lockTargetParent(
       .limit(1);
     return parent ?? null;
   }
+  if (app === 'installhub') {
+    const [parent] = await executor
+      .select({
+        id: ihInstallations.id,
+        createdByUserId: ihInstallations.createdByUserId,
+        assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
+      })
+      .from(ihInstallations)
+      .where(and(eq(ihInstallations.id, parentId), isNull(ihInstallations.deletedAt)))
+      .for('update')
+      .limit(1);
+    return parent ?? null;
+  }
   const [parent] = await executor
     .select({ id: ssSites.id, createdByUserId: ssSites.createdByUserId })
     .from(ssSites)
@@ -402,6 +484,17 @@ async function loadSourceParents(
       })
       .from(eaAudits)
       .where(and(inArray(eaAudits.id, parentIds), isNull(eaAudits.deletedAt)));
+    return new Map(parents.map((parent) => [parent.id, parent]));
+  }
+  if (app === 'installhub') {
+    const parents = await executor
+      .select({
+        id: ihInstallations.id,
+        createdByUserId: ihInstallations.createdByUserId,
+        assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
+      })
+      .from(ihInstallations)
+      .where(and(inArray(ihInstallations.id, parentIds), isNull(ihInstallations.deletedAt)));
     return new Map(parents.map((parent) => [parent.id, parent]));
   }
   const parents = await executor
@@ -459,6 +552,57 @@ async function currentPhotoEntities(
       photoValues: ecoPhotoValues(record),
       photoReferences: ecoPhotoFieldReferences(record),
     })));
+  }
+
+  if (app === 'installhub') {
+    const [zones, electricalAssets, siteAssets, forms] = await Promise.all([
+      executor.select().from(ihZones).where(and(
+        eq(ihZones.installationId, parentId),
+        isNull(ihZones.deletedAt),
+      )),
+      executor.select().from(ihElectricalAssets).where(and(
+        eq(ihElectricalAssets.installationId, parentId),
+        isNull(ihElectricalAssets.deletedAt),
+      )),
+      executor.select().from(ihSiteAssets).where(and(
+        eq(ihSiteAssets.installationId, parentId),
+        isNull(ihSiteAssets.deletedAt),
+      )),
+      executor.select().from(ihFormSubmissions).where(and(
+        eq(ihFormSubmissions.installationId, parentId),
+        isNull(ihFormSubmissions.deletedAt),
+      )),
+    ]);
+    return [
+      ...zones.map((record) => ({
+        sourceEntityId: record.id,
+        targetEntityId: record.id,
+        targetEntityType: 'zone',
+        photoValues: [record.photos],
+        photoReferences: installHubZonePhotoFieldReferences(record),
+      })),
+      ...electricalAssets.map((record) => ({
+        sourceEntityId: record.id,
+        targetEntityId: record.id,
+        targetEntityType: 'electrical_asset',
+        photoValues: [record.photo, record.extraPhotos, record.meters],
+        photoReferences: installHubElectricalPhotoFieldReferences(record),
+      })),
+      ...siteAssets.map((record) => ({
+        sourceEntityId: record.id,
+        targetEntityId: record.id,
+        targetEntityType: 'site_asset',
+        photoValues: [record.locationPhoto, record.extraPhotos],
+        photoReferences: installHubSiteAssetPhotoFieldReferences(record),
+      })),
+      ...forms.map((record) => ({
+        sourceEntityId: record.id,
+        targetEntityId: record.id,
+        targetEntityType: 'form_submission',
+        photoValues: [record.attachments],
+        photoReferences: installHubFormPhotoFieldReferences(record),
+      })),
+    ];
   }
 
   const [[site], assessments] = await Promise.all([
@@ -610,6 +754,27 @@ export async function hasAccessibleCopyReference(photoId: string, user: AuthUser
     return Boolean(row);
   }
 
+  if (user.app === 'installhub') {
+    const access = elevated(user)
+      ? undefined
+      : or(
+          eq(ihInstallations.createdByUserId, user.userId),
+          eq(ihInstallations.assignedInspectorUserId, user.userId),
+        );
+    const [row] = await db
+      .select({ id: photoCopyReferences.id })
+      .from(photoCopyReferences)
+      .innerJoin(ihInstallations, eq(ihInstallations.id, photoCopyReferences.targetParentId))
+      .where(and(
+        eq(photoCopyReferences.app, 'installhub'),
+        eq(photoCopyReferences.photoId, photoId),
+        isNull(ihInstallations.deletedAt),
+        access,
+      ))
+      .limit(1);
+    return Boolean(row);
+  }
+
   const [row] = await db
     .select({ id: photoCopyReferences.id })
     .from(photoCopyReferences)
@@ -636,6 +801,14 @@ export async function photoHasCopyReferences(photoId: string): Promise<boolean> 
 async function originalParentExists(photo: PhotoRow, executor: DbExecutor = db): Promise<boolean> {
   if (photo.app === 'ecoaudit') {
     const [row] = await executor.select({ id: eaAudits.id }).from(eaAudits).where(eq(eaAudits.id, photo.parentId)).limit(1);
+    return Boolean(row);
+  }
+  if (photo.app === 'installhub') {
+    const [row] = await executor
+      .select({ id: ihInstallations.id })
+      .from(ihInstallations)
+      .where(eq(ihInstallations.id, photo.parentId))
+      .limit(1);
     return Boolean(row);
   }
   const [row] = await executor.select({ id: ssSites.id }).from(ssSites).where(eq(ssSites.id, photo.parentId)).limit(1);

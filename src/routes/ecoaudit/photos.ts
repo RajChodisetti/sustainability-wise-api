@@ -35,15 +35,18 @@ import {
   createEcoAuditPhotoZipEntryNamer,
   loadEcoAuditPhotoZipContext,
   parseEcoAuditPhotoZipMode,
+  resolveEcoAuditPhotoCaption,
+  type EcoAuditPhotoZipContext,
   type EcoAuditPhotoZipMode,
 } from './photoZipHierarchy.js';
 
-function photoMetadata(photo: PhotoRow) {
+function photoMetadata(photo: PhotoRow, context?: EcoAuditPhotoZipContext) {
   return {
     id: photo.id, checksum: photo.checksum, remoteUrl: photo.remoteUrl,
     contentType: photo.contentType, originalFilename: photo.originalFilename,
     app: photo.app, parentId: photo.parentId, entityType: photo.entityType,
     entityId: photo.entityId, fieldName: canonicalEcoAuditPhotoFieldName(photo.fieldName),
+    caption: context ? resolveEcoAuditPhotoCaption(context, photo) : null,
     fileSizeBytes: photo.fileSizeBytes, status: photo.status,
     uploadedAt: photo.uploadedAt, createdAt: photo.createdAt,
   };
@@ -120,7 +123,11 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     const audit = await loadEcoAuditByIdOrName(auditRef);
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
-    const photos = (await loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id })).map(photoMetadata);
+    const [photoRows, context] = await Promise.all([
+      loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
+      loadEcoAuditPhotoZipContext(audit.id),
+    ]);
+    const photos = photoRows.map((photo) => photoMetadata(photo, context));
     return reply.send({ auditRef, auditId: audit.id, auditName: audit.siteName, data: photos });
   });
 

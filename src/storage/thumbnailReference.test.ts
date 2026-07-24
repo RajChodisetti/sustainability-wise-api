@@ -21,8 +21,15 @@ test('derives a thumbnail URL while preserving the original key and query', () =
 });
 
 test('cache keys and ETags are deterministic and variant-specific', () => {
-  const key = thumbnailStorageKeyForChecksum(CHECKSUM);
-  assert.match(key, /^_thumbnails\/v1\/[a-f0-9]{2}\/[a-f0-9]{64}-w400-q52\.jpg$/);
-  assert.equal(key, thumbnailStorageKeyForChecksum(CHECKSUM.toUpperCase()));
-  assert.match(thumbnailEtagForChecksum(CHECKSUM), /^"[a-f0-9]{64}-v1-w400-q52"$/);
+  const key = thumbnailStorageKeyForChecksum('ecoaudit', CHECKSUM);
+  assert.match(
+    key,
+    /^ecoaudit\/_thumbnails\/v2\/[a-f0-9]{2}\/[a-f0-9]{64}-w400-q52\.jpg$/,
+  );
+  assert.equal(
+    key,
+    thumbnailStorageKeyForChecksum('ecoaudit', CHECKSUM.toUpperCase()),
+  );
+  assert.notEqual(key, thumbnailStorageKeyForChecksum('solarsense', CHECKSUM));
+  assert.match(thumbnailEtagForChecksum(CHECKSUM), /^"[a-f0-9]{64}-v2-w400-q52"$/);
 });

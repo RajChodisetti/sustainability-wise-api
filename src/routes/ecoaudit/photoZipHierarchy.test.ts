@@ -5,6 +5,7 @@ import { writePhotoZip } from '../../services/photoZipExport.js';
 import {
   createEcoAuditPhotoZipEntryNamer,
   parseEcoAuditPhotoZipMode,
+  resolveEcoAuditPhotoCaption,
   type EcoAuditPhotoZipContext,
 } from './photoZipHierarchy.js';
 
@@ -118,6 +119,37 @@ test('legacy lighting field aliases resolve canonical metadata names', () => {
     originalFilename: null,
     contentType: 'image/jpeg',
   }), 'Factory/Lighting_Systems/High_Bay/Lighting_controls.jpg');
+});
+
+test('photo-list captions use the same canonical scalar and array lookup as ZIP exports', () => {
+  const arrayContext = contextFor('zone', 'zone-1', {
+    zoneName: 'Factory',
+    sectionTitle: 'Zone Photos',
+    itemLabel: 'Factory',
+    photoDescs: { 'photos.1': { name: 'Rear loading dock' } },
+  });
+  const lightingContext = contextFor('lighting_system', 'light-1', {
+    zoneName: 'Factory',
+    sectionTitle: 'Lighting Systems',
+    itemLabel: 'High Bay',
+    photoDescs: { switchboardControlsPhoto: { name: 'Lighting controls' } },
+  });
+
+  assert.equal(resolveEcoAuditPhotoCaption(arrayContext, {
+    entityType: 'zone',
+    entityId: 'zone-1',
+    fieldName: 'photos[1]',
+  }), 'Rear loading dock');
+  assert.equal(resolveEcoAuditPhotoCaption(lightingContext, {
+    entityType: 'lighting_system',
+    entityId: 'light-1',
+    fieldName: 'switchboard_photo_notes',
+  }), 'Lighting controls');
+  assert.equal(resolveEcoAuditPhotoCaption(arrayContext, {
+    entityType: 'zone',
+    entityId: 'missing-zone',
+    fieldName: 'photos[1]',
+  }), null);
 });
 
 test('missing records never expose entity UUIDs as folder names', () => {

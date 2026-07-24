@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Unified API server for EcoAudit Pro, SolarSense, and Wattwatchers Fleet",
   "type": "module",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node --import tsx/esm src/index.ts",
@@ -27,6 +30,7 @@
     "onedrive:backfill": "node --import tsx/esm scripts/onedrive-backfill.ts",
     "onedrive:smoke": "node --import tsx/esm scripts/onedrive-photo-smoke.ts",
     "storage:rename-to-names": "node --import tsx/esm scripts/storage-name-migration.ts",
+    "storage:isolation-backfill": "node --import tsx/esm scripts/storage-isolation-backfill.ts",
     "smoke:option3": "node --import tsx/esm scripts/option3-smoke.ts",
     "smoke:wattwatchers": "node --import tsx/esm scripts/wattwatchers-smoke.ts",
     "typecheck": "npm run api:typecheck && npm run web:typecheck",
@@ -56,7 +60,7 @@
     "puppeteer-core": "^25.1.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.3",
     "tsx": "^4.22.4",
     "zod": "^3.24.4"
   },

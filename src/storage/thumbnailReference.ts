@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
+import type { StorageApp } from './localFiles.js';
 
 export const THUMBNAIL_WIDTH_PX = 400;
 export const THUMBNAIL_JPEG_QUALITY = 52;
-export const THUMBNAIL_CACHE_VERSION = 'v1';
+export const THUMBNAIL_CACHE_VERSION = 'v2';
 
 const ORIGINAL_FILE_PATH_MARKER = '/v1/files/';
 const THUMBNAIL_PATH_MARKER = '/v1/thumbnails/';
@@ -13,9 +14,13 @@ function cacheIdentity(checksum: string): string {
     .digest('hex');
 }
 
-export function thumbnailStorageKeyForChecksum(checksum: string): string {
+export function thumbnailStorageKeyForChecksum(
+  app: StorageApp,
+  checksum: string,
+): string {
   const identity = cacheIdentity(checksum);
   return [
+    app,
     '_thumbnails',
     THUMBNAIL_CACHE_VERSION,
     identity.slice(0, 2),

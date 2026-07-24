@@ -7,6 +7,13 @@ import { createAssessment, getAssessment, updateAssessment } from '@solar/api/as
 import { getSite } from '@solar/api/sites';
 import type { OtherConsideration, RooftopAssessment, Switchboard } from '@solar/types/domain';
 import { PhotoField, PhotoGridField } from '@solar/components/photos/PhotoField';
+import {
+  normalizePhotoMetadata,
+  normalizePhotoMetadataMap,
+  removeIndexedPhotoMetadata,
+  removePhotoMetadata,
+  setPhotoMetadataName,
+} from '@solar/lib/photoMetadata';
 import { Button } from '@solar/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@solar/components/ui/Card';
 import { Checkbox, FieldLabel, Input, Select, Textarea } from '@solar/components/ui/FormFields';
@@ -115,6 +122,9 @@ function AssessmentEditor({
   const [ragPriority, setRagPriority] = useState(assessment?.ragPriority ?? '');
   const [keyAssumptionsGaps, setKeyAssumptionsGaps] = useState(assessment?.keyAssumptionsGaps ?? '');
   const [additionalPhotos, setAdditionalPhotos] = useState<string[]>(assessment?.additionalPhotos ?? []);
+  const [photoMetadata, setPhotoMetadata] = useState(
+    () => normalizePhotoMetadataMap(assessment?.photoMetadata),
+  );
 
 
   function numOrNull(v: string) {
@@ -165,7 +175,7 @@ function AssessmentEditor({
       ragPriority: ragPriority || null,
       keyAssumptionsGaps: keyAssumptionsGaps || null,
       additionalPhotos,
-      photoMetadata: assessment?.photoMetadata ?? {},
+      photoMetadata: normalizePhotoMetadataMap(photoMetadata),
     };
   }
 
@@ -192,6 +202,19 @@ function AssessmentEditor({
 
   function updateSwitchboard(index: number, patch: Partial<Switchboard>) {
     setSwitchboards((prev) => prev.map((sb, i) => (i === index ? { ...sb, ...patch } : sb)));
+  }
+
+  function photoCaption(key: string): string {
+    return normalizePhotoMetadata(photoMetadata[key]).name ?? '';
+  }
+
+  function updatePhotoCaption(key: string, caption: string) {
+    setPhotoMetadata((current) => setPhotoMetadataName(current, key, caption));
+  }
+
+  function removeSwitchboard(index: number) {
+    setSwitchboards((current) => current.filter((_, itemIndex) => itemIndex !== index));
+    setPhotoMetadata((current) => removeIndexedPhotoMetadata(current, 'switchboard', index));
   }
 
   return (
@@ -275,7 +298,7 @@ function AssessmentEditor({
               <div className="mb-2 flex items-center justify-between">
                 <p className="text-sm font-medium">Switchboard {i + 1}</p>
                 {switchboards.length > 1 ? (
-                  <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs" onClick={() => setSwitchboards((p) => p.filter((_, idx) => idx !== i))}>
+                  <Button type="button" variant="ghost" className="!px-2 !py-1 !text-xs" onClick={() => removeSwitchboard(i)}>
                     Remove
                   </Button>
                 ) : null}
@@ -294,7 +317,14 @@ function AssessmentEditor({
                   siteId={siteId}
                   assessmentId={assessmentId}
                   fieldName={`switchboard_${i}`}
-                  onChange={(uri) => updateSwitchboard(i, { photoUri: uri ?? undefined })}
+                  onChange={(uri) => {
+                    updateSwitchboard(i, { photoUri: uri ?? undefined });
+                    if (!uri) {
+                      setPhotoMetadata((current) => removePhotoMetadata(current, `switchboard.${i}.photo`));
+                    }
+                  }}
+                  caption={photoCaption(`switchboard.${i}.photo`)}
+                  onCaptionChange={(caption) => updatePhotoCaption(`switchboard.${i}.photo`, caption)}
                   disabled={isCompleted}
                 />
               </div>
@@ -305,11 +335,50 @@ function AssessmentEditor({
         <Card>
           <h2 className="mb-2 font-semibold">Photos</h2>
           <div className="grid gap-4 md:grid-cols-2">
-            <PhotoField label="Aerial photo" uri={aerialPhotoUri} siteId={siteId} assessmentId={assessmentId} fieldName="aerial" onChange={setAerialPhotoUri} disabled={isCompleted} />
-            <PhotoField label="MSB photo" uri={msbPhotoUri} siteId={siteId} assessmentId={assessmentId} fieldName="msb" onChange={setMsbPhotoUri} disabled={isCompleted} />
+            <PhotoField
+              label="Aerial photo"
+              uri={aerialPhotoUri}
+              siteId={siteId}
+              assessmentId={assessmentId}
+              fieldName="aerial"
+              onChange={(uri) => {
+                setAerialPhotoUri(uri);
+                if (!uri) setPhotoMetadata((current) => removePhotoMetadata(current, 'aerialPhoto'));
+              }}
+              caption={photoCaption('aerialPhoto')}
+              onCaptionChange={(caption) => updatePhotoCaption('aerialPhoto', caption)}
+              disabled={isCompleted}
+            />
+            <PhotoField
+              label="MSB photo"
+              uri={msbPhotoUri}
+              siteId={siteId}
+              assessmentId={assessmentId}
+              fieldName="msb"
+              onChange={(uri) => {
+                setMsbPhotoUri(uri);
+                if (!uri) setPhotoMetadata((current) => removePhotoMetadata(current, 'msbPhoto'));
+              }}
+              caption={photoCaption('msbPhoto')}
+              onCaptionChange={(caption) => updatePhotoCaption('msbPhoto', caption)}
+              disabled={isCompleted}
+            />
           </div>
           <div className="mt-4">
-            <PhotoGridField label="Additional photos" uris={additionalPhotos} siteId={siteId} assessmentId={assessmentId} fieldPrefix="additional" onChange={setAdditionalPhotos} disabled={isCompleted} />
+            <PhotoGridField
+              label="Additional photos"
+              uris={additionalPhotos}
+              siteId={siteId}
+              assessmentId={assessmentId}
+              fieldPrefix="additional"
+              onChange={setAdditionalPhotos}
+              captions={additionalPhotos.map((_, index) => photoCaption(`additionalPhoto.${index}`))}
+              onCaptionChange={(index, caption) => updatePhotoCaption(`additionalPhoto.${index}`, caption)}
+              onPhotoRemoved={(index) => {
+                setPhotoMetadata((current) => removeIndexedPhotoMetadata(current, 'additionalPhoto', index));
+              }}
+              disabled={isCompleted}
+            />
           </div>
         </Card>
 

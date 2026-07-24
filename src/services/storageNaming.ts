@@ -24,7 +24,7 @@ import {
 } from '../storage/localFiles.js';
 import { badRequest, notFound } from '../utils/errors.js';
 
-export type AppName = 'solarsense' | 'ecoaudit';
+export type AppName = 'solarsense' | 'ecoaudit' | 'installhub';
 export type PhotoRow = typeof photoRegistry.$inferSelect;
 
 type SolarSite = typeof ssSites.$inferSelect;

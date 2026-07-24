@@ -30,8 +30,11 @@ module.exports = {
         PORT: portalPort,
         INTERNAL_API_URL: process.env.INTERNAL_API_URL ?? 'http://127.0.0.1:3000',
         PORTAL_REGISTRATION_ENABLED: registrationEnabled,
-        ...(process.env.REGISTRATION_SECRET
-          ? { REGISTRATION_SECRET: process.env.REGISTRATION_SECRET }
+        ...(process.env.ECOAUDIT_REGISTRATION_SECRET
+          ? { ECOAUDIT_REGISTRATION_SECRET: process.env.ECOAUDIT_REGISTRATION_SECRET }
+          : {}),
+        ...(process.env.SOLARSENSE_REGISTRATION_SECRET
+          ? { SOLARSENSE_REGISTRATION_SECRET: process.env.SOLARSENSE_REGISTRATION_SECRET }
           : {}),
       },
     },

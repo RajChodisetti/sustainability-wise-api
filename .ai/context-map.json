@@ -33,7 +33,7 @@
       "paths": ["^src/db/", "^drizzle\\.config\\.ts$"],
       "instructions": ["src/AGENTS.md", "src/db/AGENTS.md"],
       "contracts": ["docs/INFRASTRUCTURE.md"],
-      "reviewWith": ["api-core", "ecoaudit", "solarsense", "fleet"],
+      "reviewWith": ["api-core", "ecoaudit", "solarsense", "installhub", "fleet"],
       "checks": ["npm run api:typecheck", "npm run test:api"]
     },
     {
@@ -48,7 +48,7 @@
       ],
       "instructions": ["src/AGENTS.md", "src/storage/AGENTS.md"],
       "contracts": ["docs/MOBILE_INTEGRATION.md", "docs/ONEDRIVE_PHOTO_BACKUP.md"],
-      "reviewWith": ["exports", "ecoaudit", "solarsense"],
+      "reviewWith": ["exports", "ecoaudit", "solarsense", "installhub"],
       "checks": ["npm run api:typecheck", "npm run test:api"]
     },
     {
@@ -101,7 +101,7 @@
         "docs/MOBILE_INTEGRATION.md",
         "docs/ECOAUDIT_PDF_RULES.md"
       ],
-      "reviewWith": ["database", "storage", "exports"],
+      "reviewWith": ["database", "storage", "exports", "installhub"],
       "checks": [
         "npm run api:typecheck",
         "npm run test:api",
@@ -134,6 +134,26 @@
         "npm run portal:typecheck",
         "npm run test:portal",
         "npm run portal:lint"
+      ]
+    },
+    {
+      "id": "installhub",
+      "summary": "InstallHub installations, zones, assets, commissioning forms, media, and mobile cloud backup.",
+      "keywords": ["installhub", "installation", "commissioning form", "cloud backup", "ios backup"],
+      "paths": [
+        "^src/routes/installhub/",
+        "^src/db/schema/installhub\\.ts$",
+        "^src/db/migrations/[0-9]+_installhub"
+      ],
+      "instructions": [
+        "src/AGENTS.md",
+        "src/routes/installhub/AGENTS.md"
+      ],
+      "contracts": ["docs/MOBILE_INTEGRATION.md"],
+      "reviewWith": ["database", "storage", "api-core"],
+      "checks": [
+        "npm run api:typecheck",
+        "npm run test:api"
       ]
     },
     {
@@ -229,4 +249,3 @@
     }
   ]
 }
-

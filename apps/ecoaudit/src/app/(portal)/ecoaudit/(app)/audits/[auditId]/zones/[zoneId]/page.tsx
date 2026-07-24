@@ -121,7 +121,7 @@ export default function ZoneDetailPage() {
           <PhotoMetadataManager
             photos={photoEntries}
             initialMetadata={normalizePhotoDescsRecord(zone)}
-            disabled={isCompleted}
+            completedAudit={isCompleted}
             onSave={savePhotoMetadata}
           />
         </Card>

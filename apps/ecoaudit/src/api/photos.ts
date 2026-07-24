@@ -59,6 +59,7 @@ export type PhotoMeta = PhotoRecord & {
   storageKey?: string | null;
   status?: string;
   contentType?: string | null;
+  caption?: string | null;
 };
 
 export type PhotoZipMode = 'by-zone' | 'by-equipment';

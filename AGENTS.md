@@ -37,12 +37,14 @@ all instruction files from this root down to every file you plan to edit.
 | Mobile clients | sibling repositories, not this repository | Expo applications |
 
 The folder name `apps/ecoaudit` is historical. It contains the shared EcoSense
-portal for EcoAudit, SolarSense, and Wattwatchers Fleet.
+portal for EcoAudit, SolarSense, and Wattwatchers Fleet. InstallHub currently has
+no portal surface; its field client is `../installhub-mobile/`.
 
 ## Non-Negotiable Contracts
 
-- Keep `ecoaudit`, `solarsense`, and `wattwatchers` authentication, storage, and
-  data namespaces isolated. Every protected route needs `authenticate`, the
+- Keep `ecoaudit`, `solarsense`, `installhub`, and `wattwatchers`
+  authentication, storage, and data namespaces isolated. Every protected route
+  needs `authenticate`, the
   correct `requireApp(...)`, and the minimum appropriate role.
 - Treat API routes consumed by installed mobile apps as public compatibility
   contracts. Do not remove or silently rename request fields, response fields,
@@ -61,7 +63,7 @@ portal for EcoAudit, SolarSense, and Wattwatchers Fleet.
 - Do not duplicate API normalization, auth refresh, download, photo metadata, or
   export polling logic in pages. Use the existing clients, hooks, and helpers.
 - Changes to shared schema, auth, storage, photos, exports, or portal components
-  require impact review across all three products.
+  require impact review across all four products.
 
 ## Change Discipline
 

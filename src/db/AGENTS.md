@@ -5,8 +5,8 @@ Applies to `src/db/schema/`, `src/db/migrations/`, and migration startup code.
 ## Schema Ownership
 
 - `ecoaudit.ts` owns `ea_*` tables, `solarsense.ts` owns `ss_*`,
-  `wattwatchers.ts` owns `ww_*`, and `shared.ts` owns intentionally shared
-  infrastructure only.
+  `installhub.ts` owns `ih_*`, `wattwatchers.ts` owns `ww_*`, and `shared.ts`
+  owns intentionally shared infrastructure only.
 - Keep Drizzle schema and the migration that introduces it in the same change.
 - Use the existing UUID, timestamp, JSONB, index, and foreign-key conventions.
   Do not move a product field into `shared.ts` merely to reuse a type.
@@ -29,4 +29,3 @@ Applies to `src/db/schema/`, `src/db/migrations/`, and migration startup code.
 Inspect generated SQL before applying it. Test null, legacy-only, canonical-only,
 both-present, and repeated-run cases where relevant. Run API typecheck/tests and
 the consumers for every changed field.
-

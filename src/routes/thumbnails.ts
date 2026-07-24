@@ -1,82 +1,15 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { and, eq, isNull } from 'drizzle-orm';
-import { authenticate, requireRole, type AuthUser } from '../auth/middleware.js';
-import { db } from '../db/client.js';
-import { eaAudits } from '../db/schema/ecoaudit.js';
-import { ssSites } from '../db/schema/solarsense.js';
-import { assertAuditAccess } from './ecoaudit/helpers.js';
-import { assertSiteAccess } from './solarsense/helpers.js';
-import { localFileStream } from '../storage/localFiles.js';
+import { authenticate, requireRole } from '../auth/middleware.js';
+import { localFileStream, type StorageApp } from '../storage/localFiles.js';
 import {
-  findConfirmedPhotoById,
-  resolveConfirmedPhotoReference,
   type ConfirmedPhotoReference,
 } from '../storage/photoRegistryReferences.js';
 import { ensurePhotoThumbnail } from '../storage/thumbnails.js';
 import { thumbnailEtagForChecksum } from '../storage/thumbnailReference.js';
-import { hasAccessibleCopyReference } from '../storage/photoCopyReferences.js';
-import { notFound } from '../utils/errors.js';
-
-async function authorizePhoto(
-  photo: ConfirmedPhotoReference,
-  user: AuthUser,
-): Promise<ConfirmedPhotoReference> {
-  if (user.app === 'wattwatchers') throw notFound('Photo');
-  let directAccessError: unknown;
-  if (user.app === 'ecoaudit') {
-    const [audit] = await db
-      .select()
-      .from(eaAudits)
-      .where(and(eq(eaAudits.id, photo.parentId), isNull(eaAudits.deletedAt)))
-      .limit(1);
-    if (audit) {
-      try {
-        assertAuditAccess(audit, user);
-        return photo;
-      } catch (error) {
-        directAccessError = error;
-      }
-    }
-  } else if (user.app === 'solarsense') {
-    const [site] = await db
-      .select()
-      .from(ssSites)
-      .where(and(eq(ssSites.id, photo.parentId), isNull(ssSites.deletedAt)))
-      .limit(1);
-    if (site) {
-      try {
-        assertSiteAccess(site, user);
-        return photo;
-      } catch (error) {
-        directAccessError = error;
-      }
-    }
-  }
-
-  if (await hasAccessibleCopyReference(photo.id, user)) return photo;
-  if (directAccessError) throw directAccessError;
-  throw notFound('Photo');
-}
-
-async function loadAuthorizedPhotoByReference(
-  storageKey: string,
-  user: AuthUser,
-): Promise<ConfirmedPhotoReference> {
-  if (user.app === 'wattwatchers') throw notFound('Photo');
-  const photo = await resolveConfirmedPhotoReference(storageKey, user.app);
-  if (!photo) throw notFound('Photo');
-  return authorizePhoto(photo, user);
-}
-
-async function loadAuthorizedPhotoById(
-  photoId: string,
-  user: AuthUser,
-): Promise<ConfirmedPhotoReference> {
-  if (user.app === 'wattwatchers') throw notFound('Photo');
-  const photo = await findConfirmedPhotoById(photoId, user.app);
-  if (!photo) throw notFound('Photo');
-  return authorizePhoto(photo, user);
-}
+import {
+  loadAuthorizedPhotoById,
+  loadAuthorizedPhotoByReference,
+} from '../storage/photoAuthorization.js';
 
 function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
   if (!ifNoneMatch) return false;
@@ -119,6 +52,7 @@ async function sendThumbnail(
   }
 
   const thumbnail = await ensurePhotoThumbnail({
+    app: photo.app as StorageApp,
     originalStorageKey: photo.storageKey,
     checksum: photo.checksum,
   });

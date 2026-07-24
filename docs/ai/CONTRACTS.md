@@ -21,6 +21,10 @@ type PhotoMetadataMap = Record<string, PhotoMetadata>;
   helpers such as `lightingPhotoField.ts`.
 - PDF authority: the record's canonical `photoDescs`; the PDF must not maintain a
   second caption or sizing field.
+- Completed EcoAudit records remain immutable except for an authenticated
+  `photoDescs`-only update. That exception may change photo captions/PDF sizing
+  but no business fields, and an older mobile sync must not overwrite newer
+  server-side photo metadata.
 
 The lighting controls image is canonically `switchboardControlsPhoto`.
 `switchboardPhotoNotes` is a legacy compatibility alias only. A rename must cover
@@ -60,6 +64,53 @@ EcoAudit photo ZIP paths follow the mobile report inventory hierarchy. The
 come from zone and equipment records, never entity UUIDs. Duplicate captions get
 deterministic numeric suffixes and all path segments are archive-safe.
 
+### InstallHub PDF jobs
+
+InstallHub queues reports through:
+
+```text
+POST /v1/installhub/installations/:installationId/forms/:formId/report/pdf/jobs
+POST /v1/installhub/installations/:installationId/report/pdf/jobs
+     body: { formSubmissionIds?: string[] }
+GET  /v1/export/jobs/latest?entityId=<id>&artifactType=pdf
+GET  /v1/export/jobs/:jobId
+GET  /v1/export/jobs/:jobId/download
+```
+
+The two start routes require a completed, backed-up form source and installation
+access and return HTTP 202 `{ jobId, reused }`. The installation route includes
+all completed forms when `formSubmissionIds` is omitted. Status/download is
+app-scoped and owner-scoped, with admin override; download returns 409 until the
+job is complete. Active equivalent work is reused, and clients persist/poll the
+job instead of applying a fixed overall timeout.
+
+The versioned InstallHub report manifest is the shared source for server form
+labels, order and conditional visibility across the six schema-v2 form families
+and the readable schema-v1 A3RM/A6M forms. Server reports use the Sustainability
+Wise A4 theme and confirmed original evidence. Resolve every attachment by its
+exact `attachments[index].uri` registry identity; never guess by filename or
+slot, substitute a thumbnail, or silently omit a missing original.
+
+More than 120 photos or more than 120 MiB raw evidence activates semantic
+section-boundary chunking with a target of about 50 photos per rendered part.
+Compress originals, render parts sequentially, and merge them into one PDF.
+Individual forms and installation packs must follow the same manifest, evidence,
+branding, storage, and durable-job rules.
+
+InstallHub stored-artifact and snapshot reads are:
+
+```text
+GET /v1/installhub/installations/:installationId/files
+GET /v1/installhub/installations/:installationId/versions
+GET /v1/installhub/installations/:installationId/versions/:versionNumber
+```
+
+Files include accessible confirmed originals and completed InstallHub report
+artifacts. Versions are immutable complete full sync snapshots and are added
+only when a complete or legacy-unstaged push differs from the latest stable
+snapshot; metadata-stage pushes are excluded. All three routes use creator,
+assigned-inspector, or elevated access.
+
 ## Authentication and Ownership
 
 Every protected domain route uses `authenticate`, `requireApp(product)`, and the
@@ -68,12 +119,94 @@ sync and CRUD operations cannot assign another creator or access another user's
 parent. Fleet viewer access is read-only; collector ingestion requires
 `service_account`; user administration requires `admin`.
 
+InstallHub account and access endpoints are part of that boundary:
+
+```text
+GET    /v1/installhub/users                         admin
+POST   /v1/installhub/users                         admin
+GET    /v1/installhub/users/:id                     self or admin
+PATCH  /v1/installhub/users/:id                     admin
+PATCH  /v1/installhub/users/:id/password            self or admin reset of another user
+DELETE /v1/installhub/users/:id                     admin deactivation
+DELETE /v1/installhub/installations/:installationId?purge=true   creator or elevated
+GET    /v1/installhub/installations/:installationId/access   creator, assignee or elevated
+PATCH  /v1/installhub/installations/:installationId/access   admin
+```
+
+The access patch assigns one active InstallHub user or clears the assignment
+with `assignedInspectorUserId: null`; it does not transfer ownership. User
+mutations cannot remove the last active admin or let an admin demote/deactivate
+themself. Password, role, active-state and deactivation changes revoke affected
+InstallHub refresh tokens.
+
+Assigned-only access does not authorize permanent Cloud Backup deletion. Purge
+must reject active PDF jobs, release copied-parent references, preserve
+originals still referenced by another backed-up copy, and remove the
+installation tree, unreferenced originals, completed report files/jobs, and
+record versions.
+
 ## Sync and Lifecycle
 
 Mobile sync payloads are compatibility contracts. Completed records are eligible
 for sync and photo upload; draft records are not. Preserve stable completion
 timestamps and idempotent upsert behavior. Copy/import and sync endpoints must
 apply the same canonical field normalization as portal CRUD.
+
+InstallHub uses one complete installation tree per push. Mobile backup is opt-in per installation;
+new and migrated local records are not eligible until the user enables it. Pull/import visibility
+is creator, assigned inspector, or elevated access. Imports are fresh-ID local copies with
+deterministic `cpN` names and immutable original media URLs; only 400 px authenticated thumbnails
+are cached. Backing up an imported copy reconciles shared photo-copy references instead of copying
+bytes. The four child arrays
+(`zones`, `electricalAssets`, `siteAssets`, and `formSubmissions`) are required;
+omitting a previously stored child from the snapshot soft-deletes it. The mobile
+client must push sanitized metadata before creating upload sessions, confirm
+every media upload, replace local-only URIs with confirmed remote URLs, and push
+the final snapshot before advancing its local backup watermark. The first push
+uses `syncStage: "metadata"` and never creates a record version; the final push
+uses `syncStage: "complete"` and is versioned. An absent `syncStage` remains a
+versioned legacy-complete push. Before each attempt, mobile reconciles its
+durable media queue to the current exact installation references so removed or
+replaced failed uploads cannot block the final snapshot. A `file://` or
+`content://` URI must never be persisted by the API.
+
+InstallHub deduplication is exact and scoped by app, installation, entity type,
+entity ID, field name, and SHA-256 checksum. Upload-session creation and
+confirmation require owner access to both the installation and referenced
+entity. The raw upload URL carries a short-lived HMAC capability bound to app,
+session UUID, and expiry; the session UUID alone is never authorization. Its
+bytes must match both the declared size and checksum.
+
+Stored originals and report artifacts under `/v1/files/*` require either a
+bearer token with exact app/parent authorization or a short-lived server-issued
+file capability. Stable `remoteUrl` values are references, not public access
+grants. Never log a capability query string.
+
+Object writes support `legacy`, `dual`, and `isolated` modes. In isolated mode
+Eco Audit, Solar Sense, and InstallHub must use distinct roots/buckets and
+least-privilege credentials. Migration is copy-first and SHA-256 verified; read
+fallback keeps rollback possible. Derived thumbnails use app-scoped v2 keys.
+
+InstallHub has six user-facing schema-v2 form families: WW Installation,
+Comms Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS
+Logger. Schema-v1 A3RM/A6M installation types remain accepted for installed-data
+compatibility but are not new-form choices. Completed WW and Communications
+Fault submissions require device number, device ID, A3RM/A6M type, and matching
+sensor selection. A3RM accepts only the three documented 3000A Rogowski sizes;
+A6M accepts only 60A, 120A, 200A, 400A, or 600A.
+
+WW Installation requires a valid Load for all visible channels: three for A3RM
+and six for A6M. `Not Used` is a load value, never a rating. It requires the
+rating to be empty and suppresses load description/evidence and commissioning
+polarity/current in the app/report. A real load requires the exact
+device-compatible rating. A3RM payloads cannot retain hidden channel 4-6
+load/rating values; the mobile condition engine clears their other hidden
+fields. Schema-v2 answers reject the legacy `not_applicable` value.
+
+Completed ACE requires job number and all three phase CT serials; Honeywell Q400
+requires the water-meter serial; Captis and SUMS require meter and logger
+serials. SUMS retains the Captis field shape while the mobile scanner accepts
+both barcode and QR values.
 
 ## Database Changes
 
@@ -82,6 +215,7 @@ apply the same canonical field normalization as portal CRUD.
 - Renames require data movement and compatibility handling, not just a TypeScript
   rename.
 - JSON migrations preserve canonical values when both keys exist.
-- Shared-table changes require EcoAudit, SolarSense, and Fleet impact review.
+- Shared-table changes require EcoAudit, SolarSense, InstallHub, and Fleet impact
+  review.
 - Production deploy order is migration first only when old code tolerates the
   new schema; otherwise use an expand/migrate/contract sequence across releases.

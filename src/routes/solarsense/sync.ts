@@ -31,6 +31,10 @@ import {
   releaseCopyReferencesForEntity,
   releaseCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
+import {
+  createConfiguredUploadUrl,
+  requireUploadCapability,
+} from '../../auth/uploadCapability.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -63,7 +67,11 @@ async function deletePhotosForAssessment(assessmentId: string): Promise<void> {
 }
 
 function uploadUrl(sessionId: string): string {
-  return `${config.publicBaseUrl}/v1/solarsense/sync/upload/${sessionId}`;
+  return createConfiguredUploadUrl(
+    `${config.publicBaseUrl}/v1/solarsense/sync/upload/${sessionId}`,
+    'solarsense',
+    sessionId,
+  );
 }
 
 function assertUploadSessionFresh(createdAt: Date): void {
@@ -325,6 +333,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       tags: ['SolarSense Sync'],
       summary: 'Upload photo bytes for an upload session',
     },
+    onRequest: requireUploadCapability('solarsense'),
     bodyLimit: config.storage.maxUploadBytes,
   }, async (request, reply) => {
     const { sessionId } = request.params as { sessionId: string };

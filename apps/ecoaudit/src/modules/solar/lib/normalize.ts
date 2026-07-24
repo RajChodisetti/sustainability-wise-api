@@ -1,4 +1,5 @@
 import type { RooftopAssessment, Site, Switchboard, OtherConsideration } from '@solar/types/domain';
+import { normalizePhotoMetadataMap } from '@solar/lib/photoMetadata';
 
 function pick<T>(raw: Record<string, unknown>, camel: string, snake: string): T | undefined {
   if (raw[camel] !== undefined) return raw[camel] as T;
@@ -105,7 +106,7 @@ export function normalizeAssessment(raw: Record<string, unknown>): RooftopAssess
     ragPriority: pick(raw, 'ragPriority', 'rag_priority') as string | null | undefined,
     keyAssumptionsGaps: pick(raw, 'keyAssumptionsGaps', 'key_assumptions_gaps') as string | null | undefined,
     additionalPhotos: parseJson<string[]>(pick(raw, 'additionalPhotos', 'additional_photos'), []),
-    photoMetadata: parseJson<Record<string, unknown>>(pick(raw, 'photoMetadata', 'photo_metadata'), {}),
+    photoMetadata: normalizePhotoMetadataMap(pick(raw, 'photoMetadata', 'photo_metadata')),
     createdByUserId: pick(raw, 'createdByUserId', 'created_by_user_id') as string | null | undefined,
     createdAt: String(pick(raw, 'createdAt', 'created_at') ?? new Date().toISOString()),
   };

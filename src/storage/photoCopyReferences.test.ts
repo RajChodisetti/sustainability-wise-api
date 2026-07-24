@@ -17,6 +17,10 @@ const {
   solarAssessmentPhotoValues,
   solarAssessmentPhotoFieldReferences,
   solarSitePhotoFieldReferences,
+  installHubElectricalPhotoFieldReferences,
+  installHubFormPhotoFieldReferences,
+  installHubSiteAssetPhotoFieldReferences,
+  installHubZonePhotoFieldReferences,
 } = await import('./photoCopyReferences.js');
 
 const PHOTO_A = '11111111-1111-4111-8111-111111111111';
@@ -76,6 +80,37 @@ test('photo field extractors include the canonical lighting controls photo but n
     keyAssumptionsGaps: `unrelated ${PHOTO_C}`,
   }));
   assert.deepEqual([...solarIds].sort(), [PHOTO_A, PHOTO_B, PHOTO_C]);
+});
+
+test('InstallHub copy references cover zones, boards, nested meters, site assets and forms', () => {
+  assert.deepEqual(installHubZonePhotoFieldReferences({
+    photos: [`/v1/files/photo-${PHOTO_A}.jpg`],
+  }), [{ photoId: PHOTO_A, targetFieldName: 'photos[0]' }]);
+  assert.deepEqual(installHubElectricalPhotoFieldReferences({
+    photo: `/v1/files/photo-${PHOTO_A}.jpg`,
+    extraPhotos: [`/v1/files/photo-${PHOTO_B}.jpg`],
+    meters: [{
+      wwPhotos: {
+        deviceInstalled: `/v1/files/photo-${PHOTO_C}.jpg`,
+        extra: [`/v1/files/photo-${PHOTO_D}.jpg`],
+      },
+    }],
+  }), [
+    { photoId: PHOTO_A, targetFieldName: 'photo' },
+    { photoId: PHOTO_B, targetFieldName: 'extraPhotos[0]' },
+    { photoId: PHOTO_C, targetFieldName: 'meters[0].wwPhotos.deviceInstalled' },
+    { photoId: PHOTO_D, targetFieldName: 'meters[0].wwPhotos.extra[0]' },
+  ]);
+  assert.deepEqual(installHubSiteAssetPhotoFieldReferences({
+    locationPhoto: `/v1/files/photo-${PHOTO_A}.jpg`,
+    extraPhotos: [`/v1/files/photo-${PHOTO_B}.jpg`],
+  }), [
+    { photoId: PHOTO_A, targetFieldName: 'locationPhoto' },
+    { photoId: PHOTO_B, targetFieldName: 'extraPhotos[0]' },
+  ]);
+  assert.deepEqual(installHubFormPhotoFieldReferences({
+    attachments: [{ uri: `/v1/files/photo-${PHOTO_C}.jpg` }],
+  }), [{ photoId: PHOTO_C, targetFieldName: 'attachments[0].uri' }]);
 });
 
 test('copy links only confirmed stored photos actually present in copied photo fields', () => {

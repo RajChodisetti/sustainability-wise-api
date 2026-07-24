@@ -8,6 +8,7 @@ export function generateKey(app: App): { raw: string; prefix: string; hashed: Pr
   const appCode: Record<App, string> = {
     ecoaudit: 'ea',
     solarsense: 'ss',
+    installhub: 'ih',
     wattwatchers: 'ww',
   };
   const secret = randomBytes(24).toString('hex');
