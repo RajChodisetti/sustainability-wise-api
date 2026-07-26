@@ -15,6 +15,8 @@ export type IconName =
   | 'close'
   | 'cloud'
   | 'droplet'
+  | 'download'
+  | 'eye'
   | 'file-text'
   | 'gauge'
   | 'grid'
@@ -22,15 +24,20 @@ export type IconName =
   | 'lightbulb'
   | 'lock'
   | 'log-out'
+  | 'map-pin'
   | 'menu'
   | 'moon'
   | 'plug'
   | 'plus'
+  | 'refresh'
   | 'search'
   | 'settings'
   | 'shield'
   | 'snowflake'
   | 'sun'
+  | 'tool'
+  | 'trash'
+  | 'upload'
   | 'user'
   | 'users'
   | 'wifi'
@@ -58,6 +65,8 @@ export function Icon({ name, size = 20, className = '', ...props }: IconProps) {
     close: <><path d="m6 6 12 12M18 6 6 18" /></>,
     cloud: <path d="M17.5 19H7a5 5 0 0 1-.6-9.96A7 7 0 0 1 20 11.5 3.5 3.5 0 0 1 17.5 19Z" />,
     droplet: <path d="M12 3s6 6.2 6 11a6 6 0 0 1-12 0c0-4.8 6-11 6-11Z" />,
+    download: <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M4 21h16" /></>,
+    eye: <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="2.5" /></>,
     'file-text': <><path d="M6 2h8l4 4v16H6z" /><path d="M14 2v5h5M9 13h6M9 17h6M9 9h2" /></>,
     gauge: <><path d="M4.9 19a9 9 0 1 1 14.2 0" /><path d="m12 13 4-4" /><circle cx="12" cy="13" r="1" /></>,
     grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
@@ -65,15 +74,20 @@ export function Icon({ name, size = 20, className = '', ...props }: IconProps) {
     lightbulb: <><path d="M9 18h6M10 22h4" /><path d="M8.5 15.5A7 7 0 1 1 15.5 15.5c-.9.7-1.5 1.5-1.5 2.5h-4c0-1-.6-1.8-1.5-2.5Z" /></>,
     lock: <><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></>,
     'log-out': <><path d="M10 17l5-5-5-5M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></>,
+    'map-pin': <><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></>,
     menu: <><path d="M4 7h16M4 12h16M4 17h16" /></>,
     moon: <path d="M20.5 14.5A8 8 0 0 1 9.5 3.5 8.5 8.5 0 1 0 20.5 14.5Z" />,
     plug: <><path d="M8 3v5M16 3v5M7 8h10v3a5 5 0 0 1-10 0zM12 16v5" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
+    refresh: <><path d="M20 6v5h-5" /><path d="M4 18v-5h5" /><path d="M18.5 9A7 7 0 0 0 6 6.5L4 9M5.5 15A7 7 0 0 0 18 17.5l2-2.5" /></>,
     search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></>,
     settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
     shield: <><path d="M12 3 20 6v6c0 5-3.4 8-8 10-4.6-2-8-5-8-10V6z" /><path d="m9 12 2 2 4-4" /></>,
     snowflake: <><path d="M12 2v20M4.2 6.5l15.6 11M4.2 17.5l15.6-11" /><path d="m9 4 3 2 3-2M9 20l3-2 3 2M4.5 10l3 .2.5-3M20 14l-3-.2-.5 3" /></>,
     sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
+    tool: <><path d="M14.5 6.5a4 4 0 0 0-5-5l2.2 2.2-3 3L6.5 4.5a4 4 0 0 0 5 5L20 18l-2 2-8.5-8.5" /><path d="m5 19 4-4" /></>,
+    trash: <><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" /></>,
+    upload: <><path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M4 21h16" /></>,
     user: <><circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" /></>,
     users: <><circle cx="9" cy="8" r="3" /><path d="M3 20a6 6 0 0 1 12 0M16 4a3 3 0 0 1 0 6M17 14a5 5 0 0 1 4 5" /></>,
     wifi: <><path d="M5 12.6a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0" /><circle cx="12" cy="20" r="1" /></>,

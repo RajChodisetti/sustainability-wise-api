@@ -1,4 +1,4 @@
-export type PortalApp = 'ecoaudit' | 'solarsense' | 'wattwatchers';
+export type PortalApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'wattwatchers';
 
 const PORTAL_ORIGIN = 'https://portal.local';
 const UNSAFE_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\\]/;
@@ -53,6 +53,7 @@ export function portalAppForPath(path: string): PortalApp | null {
 
   if (pathname === '/ecoaudit' || pathname.startsWith('/ecoaudit/')) return 'ecoaudit';
   if (pathname === '/solar' || pathname.startsWith('/solar/')) return 'solarsense';
+  if (pathname === '/installhub' || pathname.startsWith('/installhub/')) return 'installhub';
   if (pathname === '/fleet' || pathname.startsWith('/fleet/')) return 'wattwatchers';
   return null;
 }

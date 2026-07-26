@@ -1,4 +1,4 @@
-export type PhotoApp = 'ecoaudit' | 'solarsense';
+export type PhotoApp = 'ecoaudit' | 'solarsense' | 'installhub';
 
 const UUID_PATTERN = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const PHOTO_ID_AT_END_RE = new RegExp(
@@ -52,7 +52,7 @@ function pathFromPhotoUri(uri: string): string | null {
 
 /**
  * Return the API storage reference without mutating the value held by the audit.
- * Only safe Eco Audit and Solar Sense keys are accepted for the thumbnail proxy.
+ * Only safe, known application keys are accepted for the thumbnail proxy.
  */
 export function extractPhotoStorageKey(
   uri: string | null | undefined,
@@ -67,7 +67,7 @@ export function extractPhotoStorageKey(
 
   const safeSegments = segments as string[];
   const app = safeSegments[0];
-  if (app !== 'ecoaudit' && app !== 'solarsense') return null;
+  if (app !== 'ecoaudit' && app !== 'solarsense' && app !== 'installhub') return null;
   if (expectedApp && app !== expectedApp) return null;
   return safeSegments.join('/');
 }

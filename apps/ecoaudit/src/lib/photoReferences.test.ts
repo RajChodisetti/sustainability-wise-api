@@ -17,6 +17,11 @@ test('normalizes only safe API photo storage references', () => {
     key,
   );
   assert.equal(extractPhotoStorageKey(`/v1/thumbnails/${key}`, 'ecoaudit'), key);
+  const installHubKey = `installhub/installation/photo_${PHOTO_ID}.jpg`;
+  assert.equal(
+    extractPhotoStorageKey(`/v1/files/${installHubKey}`, 'installhub'),
+    installHubKey,
+  );
   assert.equal(extractPhotoStorageKey(key, 'solarsense'), null);
   assert.equal(extractPhotoStorageKey(`ecoaudit/%2e%2e/photo-${PHOTO_ID}.jpg`), null);
   assert.equal(extractPhotoStorageKey(`ecoaudit/audit%2Fescape/photo-${PHOTO_ID}.jpg`), null);

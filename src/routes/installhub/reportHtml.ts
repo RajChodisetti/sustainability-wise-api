@@ -313,8 +313,31 @@ function displayValue(value: string | undefined): string {
   return value;
 }
 
-function answerHtml(value: string | undefined): string {
-  const display = escapeHtml(displayValue(value));
+function displayDate(value: string | undefined): string {
+  const raw = String(value ?? '').trim();
+  if (!raw) return displayValue(value);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (dateOnly) return `${dateOnly[3]}/${dateOnly[2]}/${dateOnly[1]}`;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const hasTime = /T\d{2}:\d{2}/.test(raw);
+  return new Intl.DateTimeFormat('en-AU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    ...(hasTime
+      ? { hour: '2-digit', minute: '2-digit', hour12: false }
+      : {}),
+    timeZone: 'Australia/Sydney',
+  }).format(parsed);
+}
+
+function answerHtml(value: string | undefined, key?: string): string {
+  const display = escapeHtml(
+    key && /(^|\.)(date|date_time)$/.test(key)
+      ? displayDate(value)
+      : displayValue(value),
+  );
   if (value === 'yes') return `<span class="badge badge-yes">${display}</span>`;
   if (value === 'no') return `<span class="badge badge-no">${display}</span>`;
   if (value === 'not_applicable') {
@@ -363,7 +386,7 @@ function formSectionsHtml(
       .filter((field) => field.kind !== 'photo')
       .map((field) => `<div class="field-row">
         <div class="field-label">${escapeHtml(field.label)}</div>
-        <div class="field-value">${answerHtml(form.answers[field.key])}</div>
+        <div class="field-value">${answerHtml(form.answers[field.key], field.key)}</div>
       </div>`)
       .join('');
     const photos = visibleFields
@@ -421,7 +444,7 @@ function formCoverHtml(
     <div class="cover-meta">
       <div class="cover-meta-row">
         <div class="cover-meta-cell"><div class="cover-meta-label">${escapeHtml(primary.label)}</div><div class="cover-meta-value">${escapeHtml(primary.value)}</div></div>
-        <div class="cover-meta-cell"><div class="cover-meta-label">Date and time</div><div class="cover-meta-value">${escapeHtml(displayValue(form.answers['site.date_time']))}</div></div>
+        <div class="cover-meta-cell"><div class="cover-meta-label">Date and time</div><div class="cover-meta-value">${escapeHtml(displayDate(form.answers['site.date_time']))}</div></div>
       </div>
       <div class="cover-meta-row">
         <div class="cover-meta-cell"><div class="cover-meta-label">Installer</div><div class="cover-meta-value">${escapeHtml(displayValue(form.answers['installer.name']))}</div></div>
@@ -452,7 +475,7 @@ function installationCoverHtml(
       </div>
       <div class="cover-meta-row">
         <div class="cover-meta-cell"><div class="cover-meta-label">Address</div><div class="cover-meta-value">${escapeHtml(installation.siteAddress)}</div></div>
-        <div class="cover-meta-cell"><div class="cover-meta-label">Audit date</div><div class="cover-meta-value">${escapeHtml(installation.auditDate)}</div></div>
+        <div class="cover-meta-cell"><div class="cover-meta-label">Audit date</div><div class="cover-meta-value">${escapeHtml(displayDate(installation.auditDate))}</div></div>
       </div>
       <div class="cover-meta-row">
         <div class="cover-meta-cell"><div class="cover-meta-label">Inspector</div><div class="cover-meta-value">${escapeHtml(installation.inspectorName)}</div></div>

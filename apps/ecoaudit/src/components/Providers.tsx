@@ -8,6 +8,7 @@ import { SolarAuthProvider } from '@solar/contexts/AuthContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { ToastProvider } from '@/contexts/ToastContext';
 import { ToastViewport } from '@/components/ui/Toast';
+import { InstallHubAuthProvider } from '@/modules/installhub/contexts/AuthContext';
 
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -24,8 +25,10 @@ export function Providers({ children }: { children: ReactNode }) {
           <PortalAuthProvider>
             <AuthProvider>
               <SolarAuthProvider>
-                {children}
-                <ToastViewport />
+                <InstallHubAuthProvider>
+                  {children}
+                  <ToastViewport />
+                </InstallHubAuthProvider>
               </SolarAuthProvider>
             </AuthProvider>
           </PortalAuthProvider>

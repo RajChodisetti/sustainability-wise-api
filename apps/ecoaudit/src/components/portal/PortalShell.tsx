@@ -53,7 +53,7 @@ function NavLink({
 }
 
 type AppRole = {
-  app: 'ecoaudit' | 'solarsense' | 'wattwatchers';
+  app: 'ecoaudit' | 'solarsense' | 'installhub' | 'wattwatchers';
   appName: string;
   role: string;
 };
@@ -241,13 +241,17 @@ function SidebarNavigation({
   setEcoOpen,
   solarOpen,
   setSolarOpen,
+  installHubOpen,
+  setInstallHubOpen,
   fleetOpen,
   setFleetOpen,
   ecoChildren,
   solarChildren,
+  installHubChildren,
   fleetChildren,
   showEcoNavigation,
   showSolarNavigation,
+  showInstallHubNavigation,
   showFleetNavigation,
   healthState,
   onNavigate,
@@ -260,13 +264,17 @@ function SidebarNavigation({
   setEcoOpen: (value: boolean) => void;
   solarOpen: boolean;
   setSolarOpen: (value: boolean) => void;
+  installHubOpen: boolean;
+  setInstallHubOpen: (value: boolean) => void;
   fleetOpen: boolean;
   setFleetOpen: (value: boolean) => void;
   ecoChildren: ChildNavItem[];
   solarChildren: ChildNavItem[];
+  installHubChildren: ChildNavItem[];
   fleetChildren: ChildNavItem[];
   showEcoNavigation: boolean;
   showSolarNavigation: boolean;
+  showInstallHubNavigation: boolean;
   showFleetNavigation: boolean;
   healthState: 'checking' | 'connected' | 'offline';
   onNavigate?: () => void;
@@ -326,6 +334,19 @@ function SidebarNavigation({
                   onNavigate={onNavigate}
                 />
               ) : null}
+              {showInstallHubNavigation ? (
+                <AppNavigationSection
+                  label="InstallHub"
+                  href="/installhub/dashboard"
+                  icon="tool"
+                  open={installHubOpen}
+                  onToggle={() => setInstallHubOpen(!installHubOpen)}
+                  items={installHubChildren}
+                  regionId={`${idPrefix}-installhub-navigation`}
+                  active={pathname.startsWith('/installhub')}
+                  onNavigate={onNavigate}
+                />
+              ) : null}
               {showFleetNavigation ? (
                 <AppNavigationSection
                   label="Wattwatchers Fleet"
@@ -378,6 +399,7 @@ function SidebarNavigation({
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
+  if (pathname.startsWith('/installhub')) return { name: 'InstallHub', icon: 'tool' as IconName };
   if (pathname.startsWith('/fleet')) return { name: 'Wattwatchers Fleet', icon: 'activity' as IconName };
   if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
   if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
@@ -386,22 +408,26 @@ function workspaceFor(pathname: string) {
 
 export function PortalShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
-  const { logout, eaUser, ssUser, wwUser } = usePortalAuth();
+  const { logout, eaUser, ssUser, ihUser, wwUser } = usePortalAuth();
   const { isDark, setMode } = useTheme();
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
+  const ihAdmin = ihUser?.role === 'admin';
   const navigationScope = pathname.startsWith('/ecoaudit')
     ? 'ecoaudit'
     : pathname.startsWith('/solar')
       ? 'solar'
-      : pathname.startsWith('/fleet')
-        ? 'fleet'
-      : pathname.startsWith('/field')
-        ? 'field'
-        : 'portal';
+      : pathname.startsWith('/installhub')
+        ? 'installhub'
+        : pathname.startsWith('/fleet')
+          ? 'fleet'
+          : pathname.startsWith('/field')
+            ? 'field'
+            : 'portal';
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [solarChoice, setSolarChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [installHubChoice, setInstallHubChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [fleetChoice, setFleetChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const appsOpen = appsChoice?.scope === navigationScope
     ? appsChoice.value
@@ -412,12 +438,17 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const solarOpen = solarChoice?.scope === navigationScope
     ? solarChoice.value
     : navigationScope === 'solar';
+  const installHubOpen = installHubChoice?.scope === navigationScope
+    ? installHubChoice.value
+    : navigationScope === 'installhub';
   const fleetOpen = fleetChoice?.scope === navigationScope
     ? fleetChoice.value
     : navigationScope === 'fleet';
   const setAppsOpen = (value: boolean) => setAppsChoice({ scope: navigationScope, value });
   const setEcoOpen = (value: boolean) => setEcoChoice({ scope: navigationScope, value });
   const setSolarOpen = (value: boolean) => setSolarChoice({ scope: navigationScope, value });
+  const setInstallHubOpen = (value: boolean) =>
+    setInstallHubChoice({ scope: navigationScope, value });
   const setFleetOpen = (value: boolean) => setFleetChoice({ scope: navigationScope, value });
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
@@ -473,7 +504,8 @@ export function PortalShell({ children }: { children: ReactNode }) {
     pathname.startsWith('/ecoaudit/login') ||
     pathname.startsWith('/ecoaudit/signup') ||
     pathname.startsWith('/solar/login') ||
-    pathname.startsWith('/solar/signup');
+    pathname.startsWith('/solar/signup') ||
+    pathname.startsWith('/installhub/login');
 
   async function handleLogout() {
     await logout();
@@ -502,8 +534,17 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
     { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
   ];
+  const installHubChildren: ChildNavItem[] = [
+    { href: '/installhub/dashboard', label: 'Dashboard', icon: 'grid', exact: true },
+    { href: '/installhub/installations', label: 'Installations', icon: 'building' },
+    { href: '/installhub/settings', label: 'Settings', icon: 'settings' },
+    ...(ihAdmin
+      ? [{ href: '/installhub/admin/users', label: 'User management', icon: 'shield' as IconName }]
+      : []),
+  ];
   const showEcoNavigation = Boolean(eaUser);
   const showSolarNavigation = PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
+  const showInstallHubNavigation = Boolean(ihUser);
   const showFleetNavigation = Boolean(wwUser);
   const navigationProps = {
     pathname,
@@ -513,13 +554,17 @@ export function PortalShell({ children }: { children: ReactNode }) {
     setEcoOpen,
     solarOpen,
     setSolarOpen,
+    installHubOpen,
+    setInstallHubOpen,
     fleetOpen,
     setFleetOpen,
     ecoChildren,
     solarChildren,
+    installHubChildren,
     fleetChildren,
     showEcoNavigation,
     showSolarNavigation,
+    showInstallHubNavigation,
     showFleetNavigation,
     healthState,
   };
@@ -527,13 +572,16 @@ export function PortalShell({ children }: { children: ReactNode }) {
     ? eaUser
     : pathname.startsWith('/solar')
       ? ssUser
-      : pathname.startsWith('/fleet')
-        ? wwUser
-        : eaUser ?? ssUser ?? wwUser;
+      : pathname.startsWith('/installhub')
+        ? ihUser
+        : pathname.startsWith('/fleet')
+          ? wwUser
+          : eaUser ?? ssUser ?? ihUser ?? wwUser;
   const displayName = activeUser?.fullName || activeUser?.email || 'User';
   const appRoles: AppRole[] = [
     ...(eaUser ? [{ app: 'ecoaudit' as const, appName: 'Eco Audit Pro', role: eaUser.role }] : []),
     ...(ssUser ? [{ app: 'solarsense' as const, appName: 'SolarSense', role: ssUser.role }] : []),
+    ...(ihUser ? [{ app: 'installhub' as const, appName: 'InstallHub', role: ihUser.role }] : []),
     ...(wwUser ? [{ app: 'wattwatchers' as const, appName: 'Wattwatchers Fleet', role: wwUser.role }] : []),
   ];
   const profileHref = pathname.startsWith('/solar')
@@ -542,15 +590,23 @@ export function PortalShell({ children }: { children: ReactNode }) {
       : eaUser
         ? '/ecoaudit/settings'
         : null
+    : pathname.startsWith('/installhub')
+      ? ihUser
+        ? '/installhub/settings'
+        : eaUser
+          ? '/ecoaudit/settings'
+          : null
     : pathname.startsWith('/fleet')
       ? eaUser
         ? '/ecoaudit/settings'
         : null
     : eaUser
       ? '/ecoaudit/settings'
-      : PORTAL_FEATURES.solarSenseVisible && ssUser
-        ? '/solar/settings'
-        : null;
+      : ihUser
+        ? '/installhub/settings'
+        : PORTAL_FEATURES.solarSenseVisible && ssUser
+          ? '/solar/settings'
+          : null;
   const workspace = workspaceFor(pathname);
 
   return (

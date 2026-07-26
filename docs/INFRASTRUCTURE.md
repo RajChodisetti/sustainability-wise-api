@@ -118,19 +118,14 @@ For full-server disaster recovery:
 ## Deployment Workflow
 
 ```bash
-# On local machine — push a new release:
+# On the verified local main branch:
 git push origin main
-
-# On droplet — pull and restart:
-cd /opt/sw-api
-git pull origin main
-npm ci --omit=dev
-pm2 restart sw-api        # startup runs migrations before listening
-pm2 logs --lines 50       # verify startup
 ```
 
-Alternatively, configure a GitHub webhook or GitHub Actions CD pipeline to
-trigger the deploy script on push to main.
+On the VM, build an immutable `/opt/sw-releases/<shortsha>` artifact and point
+only the intended PM2 processes at that artifact. Do not pull or build in the
+mutable `/opt/sw-api` checkout. The exact build, switch, verification, and
+rollback commands are in `docs/ECOSENSE_PORTAL_DEPLOYMENT.md`.
 
 ## Smoke Tests
 

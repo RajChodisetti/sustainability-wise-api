@@ -192,6 +192,26 @@ duplicate attachment IDs, non-image attachments, malformed capture timestamps,
 and non-HTTP(S) attachment URIs. Drafts remain incrementally valid and schema-v1
 records keep their compatibility behavior.
 
+### InstallHub web portal counterpart
+
+The EcoSense portal exposes the same server-backed InstallHub domain under
+`/installhub`. It keeps an isolated `installhub` JWT/refresh session and uses the
+same pull, full-snapshot push, exact photo-field upload, access, file/version,
+user, and durable PDF-job endpoints as the iOS app.
+
+The web workspace covers installation and zone editing, switchboards, embedded
+meters, site assets, all six schema-v2 form families, readable schema-v1 form
+history, amendments, conditional cleanup and validation, scanner fields with a
+manual fallback, TBC resolution, metering, evidence selection, client preview,
+report packs, cloud history, access assignment, account security, diagnostics,
+and administrator user management.
+
+The browser is deliberately cloud-first. It does not duplicate the mobile
+opt-in backup queue, local `cpN` import store, generated-report cache, or
+thumbnail cache. Every persisted web edit saves the current complete tree, and
+web diagnostics explain this distinction. This preserves the iOS offline-first
+workflow without creating a competing browser source of truth.
+
 ---
 
 ## SolarSense Mobile — Changes Summary

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { cloudConnectionErrorMessage as solarConnectionErrorMessage } from '@solar/api/client';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
+import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { AuthForm } from '@/components/auth/AuthForm';
 import { Spinner } from '@/components/ui/Card';
@@ -16,10 +17,12 @@ function LoginForm() {
     isAuthenticated,
     isEcoAuthenticated,
     isSolarAuthenticated,
+    isInstallHubAuthenticated,
     isWattwatchersAuthenticated,
     isLoading,
     isEcoLoading,
     isSolarLoading,
+    isInstallHubLoading,
     isWattwatchersLoading,
   } = usePortalAuth();
   const router = useRouter();
@@ -31,17 +34,21 @@ function LoginForm() {
       ? isEcoAuthenticated
       : target === 'solarsense'
         ? isSolarAuthenticated
-        : target === 'wattwatchers'
-          ? isWattwatchersAuthenticated
-        : isAuthenticated;
+        : target === 'installhub'
+          ? isInstallHubAuthenticated
+          : target === 'wattwatchers'
+            ? isWattwatchersAuthenticated
+            : isAuthenticated;
   const isTargetLoading =
     target === 'ecoaudit'
       ? isEcoLoading
       : target === 'solarsense'
         ? isSolarLoading
-        : target === 'wattwatchers'
-          ? isWattwatchersLoading
-        : isLoading;
+        : target === 'installhub'
+          ? isInstallHubLoading
+          : target === 'wattwatchers'
+            ? isWattwatchersLoading
+            : isLoading;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -64,9 +71,11 @@ function LoginForm() {
       setError(
         target === 'solarsense'
           ? solarConnectionErrorMessage(err)
-          : target === 'wattwatchers'
-            ? fleetConnectionErrorMessage(err)
-          : cloudConnectionErrorMessage(err),
+          : target === 'installhub'
+            ? installHubConnectionErrorMessage(err)
+            : target === 'wattwatchers'
+              ? fleetConnectionErrorMessage(err)
+              : cloudConnectionErrorMessage(err),
       );
     } finally {
       setBusy(false);

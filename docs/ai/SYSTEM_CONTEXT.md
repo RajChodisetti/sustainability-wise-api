@@ -29,9 +29,16 @@ fresh entity IDs and deterministic `cp1`, `cp2`, ... names while retaining
 source installation/form IDs and immutable original evidence references.
 
 InstallHub administrators manage users and assign one active user access to a
-backed-up installation. The app also exposes API/sync diagnostics and protected
-local storage cleanup. Original evidence and form data are never part of the
-generated-report or imported-preview cache-clearing operations.
+backed-up installation. The iOS app also exposes API/sync diagnostics and
+protected local storage cleanup. Original evidence and form data are never part
+of the generated-report or imported-preview cache-clearing operations.
+
+The EcoSense portal exposes a cloud-first InstallHub workspace at
+`/installhub`. It works directly against accessible API trees and mirrors the
+iOS hierarchy, commissioning forms, evidence capture, data/TBC resolution,
+metering table, reports, cloud files and versions, access controls, user
+administration, and diagnostics. It does not emulate the iOS local database,
+offline upload queue, or import-preview cache.
 
 Completed forms and installation packs can be rendered locally or queued on the
 API. Server jobs use the same six current form families, conditional values,
@@ -75,7 +82,7 @@ versions still constrain compatibility in this repository.
 |---|---|---|---|---|
 | EcoAudit | `/v1/ecoaudit` | `ecoaudit` | `ea_*` | `src/app/(portal)/ecoaudit`, `src/api` |
 | SolarSense | `/v1/solarsense` | `solarsense` | `ss_*` | `src/app/(portal)/solar`, `src/modules/solar` |
-| InstallHub | `/v1/installhub` | `installhub` | `ih_*` | Mobile only |
+| InstallHub | `/v1/installhub` | `installhub` | `ih_*` | `src/app/(portal)/installhub`, `src/modules/installhub` |
 | Fleet | `/v1/wattwatchers` | `wattwatchers` | `ww_*` | `src/app/(portal)/fleet`, `src/modules/fleet` |
 
 JWTs and API keys carry an `app` claim. That claim is a security boundary, not a

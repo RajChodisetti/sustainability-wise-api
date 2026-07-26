@@ -1,8 +1,8 @@
 # Sustainability Wise — Unified Platform
 
-Unified API and web portal for **EcoAudit Pro**, **SolarSense**, and
-**Wattwatchers Fleet**, including compatibility APIs for the EcoAudit and
-SolarSense mobile applications.
+Unified API and web portal for **EcoAudit Pro**, **SolarSense**,
+**InstallHub**, and **Wattwatchers Fleet**, including compatibility APIs for
+their mobile applications.
 
 | | |
 |---|---|

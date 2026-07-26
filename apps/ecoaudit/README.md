@@ -1,7 +1,8 @@
 # EcoSense Portal
 
-The combined, online-first web portal for EcoAudit Pro and SolarSense. It is a
-standalone Next.js service and does not replace or serve the Fastify API.
+The combined, online-first web portal for EcoAudit Pro, SolarSense, InstallHub,
+and Wattwatchers Fleet. It is a standalone Next.js service and does not replace
+or serve the Fastify API.
 
 ## Configuration
 
@@ -52,8 +53,14 @@ authenticated thumbnail responses private in the browser cache.
 
 ## Features
 
-- Shared portal authentication for EcoAudit Pro and SolarSense
+- App-isolated portal authentication for EcoAudit Pro, SolarSense, InstallHub,
+  and Wattwatchers Fleet
 - Audit, zone, equipment, site, and assessment workflows
+- InstallHub installation hierarchy, switchboards, embedded meters, site
+  assets, commissioning forms, TBC resolution, evidence, reports, and cloud
+  history
+- InstallHub access assignment, password security, diagnostics, and
+  administrator user management
 - Authenticated 400 px photo thumbnails with ETag revalidation
 - Photo upload, PDF generation, and original-photo ZIP exports
-- Admin, diagnostics, settings, scheduler, and field-app placeholders
+- Admin, diagnostics, settings, and scheduler workflows

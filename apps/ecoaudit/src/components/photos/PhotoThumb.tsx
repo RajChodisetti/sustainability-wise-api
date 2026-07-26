@@ -9,13 +9,17 @@ import {
   getStoredJwt as getSolarJwt,
   tryRefreshToken as refreshSolarToken,
 } from '@solar/api/client';
+import {
+  getStoredJwt as getInstallHubJwt,
+  tryRefreshToken as refreshInstallHubToken,
+} from '@/modules/installhub/api/client';
 import { extractPhotoIdFromUri, extractPhotoStorageKey } from '@/lib/photoReferences';
 import {
   isRetryableThumbnailStatus,
   thumbnailRetryDelayMs,
 } from '@/lib/thumbnailRetry';
 
-type AppName = 'ecoaudit' | 'solarsense';
+type AppName = 'ecoaudit' | 'solarsense' | 'installhub';
 type PreviewStatus = 'loading' | 'ready' | 'missing' | 'local';
 type PhotoThumbProps = {
   uri: string;
@@ -27,11 +31,15 @@ type PhotoThumbProps = {
 const THUMBNAIL_ATTEMPT_TIMEOUT_MS = 25_000;
 
 function tokenFor(app: AppName): string | null {
-  return app === 'ecoaudit' ? getEcoJwt() : getSolarJwt();
+  if (app === 'ecoaudit') return getEcoJwt();
+  if (app === 'solarsense') return getSolarJwt();
+  return getInstallHubJwt();
 }
 
 function refreshFor(app: AppName): Promise<string | null> {
-  return app === 'ecoaudit' ? refreshEcoToken() : refreshSolarToken();
+  if (app === 'ecoaudit') return refreshEcoToken();
+  if (app === 'solarsense') return refreshSolarToken();
+  return refreshInstallHubToken();
 }
 
 async function fetchWithToken(

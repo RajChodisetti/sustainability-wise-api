@@ -42,20 +42,34 @@ import {
   logout as wwLogoutApi,
   me as wwMe,
 } from '@/modules/fleet/api/auth';
+import {
+  getStoredJwt as getIhJwt,
+  clearTokens as clearIhTokens,
+  subscribeAuthSession as subscribeIhAuthSession,
+} from '@/modules/installhub/api/client';
+import {
+  loginWithUsername as ihLogin,
+  logout as ihLogoutApi,
+  me as ihMe,
+} from '@/modules/installhub/api/auth';
 import type { CloudUser } from '@/types/domain';
 import type { CloudUser as SolarCloudUser } from '@solar/types/domain';
 import type { FleetUser } from '@/modules/fleet/types/domain';
+import type { InstallHubUser } from '@/modules/installhub/types/domain';
 import type { PortalApp } from '@/lib/portalNavigation';
 import { authQueryRetryDelayMs, shouldRetryAuthQuery } from '@/lib/authQuery';
 
 const EA_AUTH_QUERY_KEY = ['ecoaudit', 'auth', 'me'] as const;
 const SS_AUTH_QUERY_KEY = ['solar', 'auth', 'me'] as const;
+const IH_AUTH_QUERY_KEY = ['installhub', 'auth', 'me'] as const;
 const WW_AUTH_QUERY_KEY = ['wattwatchers', 'auth', 'me'] as const;
 const noServerSession = () => null;
 const subscribeEaSessionSnapshot = (onStoreChange: () => void) =>
   subscribeEaAuthSession(() => onStoreChange());
 const subscribeSsSessionSnapshot = (onStoreChange: () => void) =>
   subscribeSsAuthSession(() => onStoreChange());
+const subscribeIhSessionSnapshot = (onStoreChange: () => void) =>
+  subscribeIhAuthSession(() => onStoreChange());
 const subscribeWwSessionSnapshot = (onStoreChange: () => void) =>
   subscribeWwAuthSession(() => onStoreChange());
 const subscribeClientSnapshot = () => () => undefined;
@@ -65,15 +79,18 @@ const getServerClientSnapshot = () => false;
 type PortalAuthValue = {
   eaUser: CloudUser | null;
   ssUser: SolarCloudUser | null;
+  ihUser: InstallHubUser | null;
   wwUser: FleetUser | null;
-  user: CloudUser | SolarCloudUser | FleetUser | null;
+  user: CloudUser | SolarCloudUser | InstallHubUser | FleetUser | null;
   isLoading: boolean;
   isEcoLoading: boolean;
   isSolarLoading: boolean;
+  isInstallHubLoading: boolean;
   isWattwatchersLoading: boolean;
   isAuthenticated: boolean;
   isEcoAuthenticated: boolean;
   isSolarAuthenticated: boolean;
+  isInstallHubAuthenticated: boolean;
   isWattwatchersAuthenticated: boolean;
   login: (username: string, password: string, target?: PortalApp | null) => Promise<void>;
   register: (input: { username: string; password: string; fullName: string }) => Promise<void>;
@@ -86,6 +103,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const eaToken = useSyncExternalStore(subscribeEaSessionSnapshot, getEaJwt, noServerSession);
   const ssToken = useSyncExternalStore(subscribeSsSessionSnapshot, getSsJwt, noServerSession);
+  const ihToken = useSyncExternalStore(subscribeIhSessionSnapshot, getIhJwt, noServerSession);
   const wwToken = useSyncExternalStore(subscribeWwSessionSnapshot, getWwJwt, noServerSession);
   const isClient = useSyncExternalStore(
     subscribeClientSnapshot,
@@ -94,6 +112,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   );
   const hasEa = Boolean(eaToken);
   const hasSs = Boolean(ssToken);
+  const hasIh = Boolean(ihToken);
   const hasWw = Boolean(wwToken);
 
   useEffect(() => {
@@ -111,6 +130,13 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
         void queryClient.invalidateQueries({ queryKey: SS_AUTH_QUERY_KEY, exact: true });
       }
     });
+    const unsubscribeIh = subscribeIhAuthSession((event) => {
+      if (event === 'cleared') {
+        queryClient.removeQueries({ queryKey: IH_AUTH_QUERY_KEY, exact: true });
+      } else {
+        void queryClient.invalidateQueries({ queryKey: IH_AUTH_QUERY_KEY, exact: true });
+      }
+    });
     const unsubscribeWw = subscribeWwAuthSession((event) => {
       if (event === 'cleared') {
         queryClient.removeQueries({ queryKey: WW_AUTH_QUERY_KEY, exact: true });
@@ -121,6 +147,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     return () => {
       unsubscribeEa();
       unsubscribeSs();
+      unsubscribeIh();
       unsubscribeWw();
     };
   }, [queryClient]);
@@ -140,6 +167,15 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     enabled: hasSs,
     retry: (_failureCount, error) =>
       shouldRetryAuthQuery(error, Boolean(getSsJwt())),
+    retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
+  });
+
+  const ihQuery = useQuery({
+    queryKey: IH_AUTH_QUERY_KEY,
+    queryFn: ihMe,
+    enabled: hasIh,
+    retry: (_failureCount, error) =>
+      shouldRetryAuthQuery(error, Boolean(getIhJwt())),
     retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
   });
 
@@ -165,6 +201,10 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       const user = await wwLogin(username, password);
       queryClient.setQueryData(WW_AUTH_QUERY_KEY, user);
     };
+    const loginInstallHub = async () => {
+      const user = await ihLogin(username, password);
+      queryClient.setQueryData(IH_AUTH_QUERY_KEY, user);
+    };
 
     if (target === 'ecoaudit') {
       const preserveSolarSession = Boolean(
@@ -176,6 +216,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       );
       await Promise.allSettled([
         ...(preserveSolarSession ? [] : [loginSolar()]),
+        ...(getIhJwt() || queryClient.getQueryData(IH_AUTH_QUERY_KEY) ? [] : [loginInstallHub()]),
         ...(preserveWattwatchersSession ? [] : [loginWattwatchers()]),
       ]);
       return;
@@ -191,6 +232,26 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       );
       await Promise.allSettled([
         ...(preserveEcoSession ? [] : [loginEco()]),
+        ...(getIhJwt() || queryClient.getQueryData(IH_AUTH_QUERY_KEY) ? [] : [loginInstallHub()]),
+        ...(preserveWattwatchersSession ? [] : [loginWattwatchers()]),
+      ]);
+      return;
+    }
+
+    if (target === 'installhub') {
+      const preserveEcoSession = Boolean(
+        getEaJwt() || queryClient.getQueryData(EA_AUTH_QUERY_KEY),
+      );
+      const preserveSolarSession = Boolean(
+        getSsJwt() || queryClient.getQueryData(SS_AUTH_QUERY_KEY),
+      );
+      const preserveWattwatchersSession = Boolean(
+        getWwJwt() || queryClient.getQueryData(WW_AUTH_QUERY_KEY),
+      );
+      await loginInstallHub();
+      await Promise.allSettled([
+        ...(preserveEcoSession ? [] : [loginEco()]),
+        ...(preserveSolarSession ? [] : [loginSolar()]),
         ...(preserveWattwatchersSession ? [] : [loginWattwatchers()]),
       ]);
       return;
@@ -207,20 +268,23 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       await Promise.allSettled([
         ...(preserveEcoSession ? [] : [loginEco()]),
         ...(preserveSolarSession ? [] : [loginSolar()]),
+        ...(getIhJwt() || queryClient.getQueryData(IH_AUTH_QUERY_KEY) ? [] : [loginInstallHub()]),
       ]);
       return;
     }
 
-    // The portal home and shared tools accept any app identity. Try all three
+    // The portal home and shared tools accept any app identity. Try every
     // so accounts only provisioned for one workspace can still sign in.
-    const [ecoResult, solarResult, wattwatchersResult] = await Promise.allSettled([
+    const [ecoResult, solarResult, installHubResult, wattwatchersResult] = await Promise.allSettled([
       loginEco(),
       loginSolar(),
+      loginInstallHub(),
       loginWattwatchers(),
     ]);
     if (
       ecoResult.status === 'rejected' &&
       solarResult.status === 'rejected' &&
+      installHubResult.status === 'rejected' &&
       wattwatchersResult.status === 'rejected'
     ) {
       throw ecoResult.reason;
@@ -249,48 +313,66 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const logout = useCallback(async () => {
-    await Promise.allSettled([eaLogoutApi(), ssLogoutApi(), wwLogoutApi()]);
+    await Promise.allSettled([eaLogoutApi(), ssLogoutApi(), ihLogoutApi(), wwLogoutApi()]);
     clearEaTokens();
     clearSsTokens();
+    clearIhTokens();
     clearWwTokens();
     queryClient.setQueryData(EA_AUTH_QUERY_KEY, null);
     queryClient.setQueryData(SS_AUTH_QUERY_KEY, null);
+    queryClient.setQueryData(IH_AUTH_QUERY_KEY, null);
     queryClient.setQueryData(WW_AUTH_QUERY_KEY, null);
     queryClient.removeQueries({ queryKey: ['ecoaudit'] });
     queryClient.removeQueries({ queryKey: ['solar'] });
+    queryClient.removeQueries({ queryKey: ['installhub'] });
     queryClient.removeQueries({ queryKey: ['wattwatchers'] });
   }, [queryClient]);
 
   const eaUser = (hasEa ? eaQuery.data ?? null : null) as CloudUser | null;
   const ssUser = (hasSs ? ssQuery.data ?? null : null) as SolarCloudUser | null;
+  const ihUser = (hasIh ? ihQuery.data ?? null : null) as InstallHubUser | null;
   const wwUser = (hasWw ? wwQuery.data ?? null : null) as FleetUser | null;
   const isEcoAuthenticated = Boolean(eaUser);
   const isSolarAuthenticated = Boolean(ssUser);
+  const isInstallHubAuthenticated = Boolean(ihUser);
   const isWattwatchersAuthenticated = Boolean(wwUser);
   // A stored token with no verified user is a pending session, including while
   // React Query is paused offline or retrying a transient failure. Only a
   // definitive 401/403 clears the token and allows a login redirect.
   const isEcoLoading = !isClient || (hasEa && !eaUser);
   const isSolarLoading = !isClient || (hasSs && !ssUser);
+  const isInstallHubLoading = !isClient || (hasIh && !ihUser);
   const isWattwatchersLoading = !isClient || (hasWw && !wwUser);
-  const isAuthenticated = isEcoAuthenticated || isSolarAuthenticated || isWattwatchersAuthenticated;
+  const isAuthenticated =
+    isEcoAuthenticated ||
+    isSolarAuthenticated ||
+    isInstallHubAuthenticated ||
+    isWattwatchersAuthenticated;
   const isLoading = !isClient || (
-    !isAuthenticated && (isEcoLoading || isSolarLoading || isWattwatchersLoading)
+    !isAuthenticated && (
+      isEcoLoading ||
+      isSolarLoading ||
+      isInstallHubLoading ||
+      isWattwatchersLoading
+    )
   );
 
   const value = useMemo<PortalAuthValue>(
     () => ({
       eaUser,
       ssUser,
+      ihUser,
       wwUser,
-      user: eaUser ?? ssUser ?? wwUser,
+      user: eaUser ?? ssUser ?? ihUser ?? wwUser,
       isLoading,
       isEcoLoading,
       isSolarLoading,
+      isInstallHubLoading,
       isWattwatchersLoading,
       isAuthenticated,
       isEcoAuthenticated,
       isSolarAuthenticated,
+      isInstallHubAuthenticated,
       isWattwatchersAuthenticated,
       login,
       register,
@@ -299,14 +381,17 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     [
       eaUser,
       ssUser,
+      ihUser,
       wwUser,
       isLoading,
       isEcoLoading,
       isSolarLoading,
+      isInstallHubLoading,
       isWattwatchersLoading,
       isAuthenticated,
       isEcoAuthenticated,
       isSolarAuthenticated,
+      isInstallHubAuthenticated,
       isWattwatchersAuthenticated,
       login,
       register,

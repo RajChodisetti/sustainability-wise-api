@@ -13,7 +13,7 @@ const apps: Array<{
   description: string;
   icon: IconName;
   tone: string;
-  access?: 'ecoaudit' | 'solarsense' | 'wattwatchers';
+  access?: 'ecoaudit' | 'solarsense' | 'installhub' | 'wattwatchers';
   soon?: boolean;
 }> = [
   {
@@ -33,6 +33,15 @@ const apps: Array<{
     icon: 'sun',
     tone: 'bg-amber-500/12 text-amber-700 dark:text-amber-300',
     access: 'solarsense',
+  },
+  {
+    href: '/installhub/dashboard',
+    title: 'InstallHub',
+    eyebrow: 'Installation operations',
+    description: 'Installations, switchboards, meters, assets, field forms, evidence, and report packs.',
+    icon: 'tool',
+    tone: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+    access: 'installhub',
   },
   {
     href: '/fleet/dashboard',
@@ -55,12 +64,13 @@ const apps: Array<{
 ];
 
 export default function PortalHomePage() {
-  const { eaUser, ssUser, wwUser } = usePortalAuth();
+  const { eaUser, ssUser, ihUser, wwUser } = usePortalAuth();
   const visibleApps = apps.filter((app) => {
     if (app.access === 'ecoaudit') return Boolean(eaUser);
     if (app.access === 'solarsense') {
       return PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
     }
+    if (app.access === 'installhub') return Boolean(ihUser);
     if (app.access === 'wattwatchers') return Boolean(wwUser);
     return true;
   });

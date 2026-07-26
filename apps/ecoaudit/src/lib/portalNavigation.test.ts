@@ -31,6 +31,7 @@ test('safePortalNext rejects absolute, network and unsafe encoded paths', () => 
 test('portalAppForPath selects only app-local targets', () => {
   assert.equal(portalAppForPath('/ecoaudit/audits'), 'ecoaudit');
   assert.equal(portalAppForPath('/solar/sites'), 'solarsense');
+  assert.equal(portalAppForPath('/installhub/installations'), 'installhub');
   assert.equal(portalAppForPath('/fleet/devices'), 'wattwatchers');
   assert.equal(portalAppForPath('/scheduler'), null);
   assert.equal(portalAppForPath('//example.com/solar'), null);

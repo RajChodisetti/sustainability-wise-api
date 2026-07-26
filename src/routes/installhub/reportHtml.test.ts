@@ -258,7 +258,7 @@ test('HTML uses the Sustainability Wise A4 frame, contains photos, and escapes d
   const reportForm = form({
     answers: {
       'site.customer_name': '<script>alert("x")</script> & Client',
-      'site.date_time': '2026-07-23 10:30',
+      'site.date_time': '2026-07-26T12:00:00.000Z',
       'installer.name': 'Installer',
       'water.serial_number': 'Q400-123',
     },
@@ -303,8 +303,65 @@ test('HTML uses the Sustainability Wise A4 frame, contains photos, and escapes d
   assert.match(html, /data:image\/jpeg;base64,ZmFrZQ==/);
   assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt; &amp; Client/);
   assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /26\/07\/2026, 22:00/);
+  assert.doesNotMatch(html, /2026-07-26T12:00:00\.000Z/);
+  assert.match(html, /23\/07\/2026/);
   assert.match(html, /<span>125<\/span>Evidence photos/);
   assert.match(html, /InstallHub report manifest v1/);
+});
+
+test('HTML renders escaped attachment captions and falls back to the evidence label', () => {
+  const reportForm = form({
+    attachments: [
+      {
+        slot: 'water.lcd_photo',
+        uri: 'https://files.example/lcd.jpg',
+        caption: '<caption>Panel 4 0 2</caption>',
+      },
+      {
+        slot: 'water.completed_photo',
+        uri: 'https://files.example/completed.jpg',
+      },
+    ],
+  });
+  const reportPhotos = [
+    {
+      ...resolved(0, 'water.lcd_photo'),
+      caption: '<caption>Panel 4 0 2</caption>',
+      photo: photo({
+        remoteUrl: 'data:image/jpeg;base64,bGNk',
+      }),
+    },
+    {
+      ...resolved(1, 'water.completed_photo'),
+      photo: photo({
+        remoteUrl: 'data:image/jpeg;base64,Y29tcGxldGVk',
+      }),
+    },
+  ];
+  const html = buildInstallHubReportHtml({
+    mode: 'form',
+    installation,
+    forms: [reportForm],
+    slices: [{
+      formId: reportForm.id,
+      sectionIndexes: visibleInstallHubReportSectionIndexes(reportForm),
+      continuation: false,
+      photoCount: reportPhotos.length,
+    }],
+    resolvedByForm: new Map([[reportForm.id, reportPhotos]]),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: false,
+    includeEnd: false,
+    generatedLabel: 'Generated 26/07/2026',
+  });
+
+  assert.match(
+    html,
+    /&lt;caption&gt;Panel 4 0 2&lt;\/caption&gt;/,
+  );
+  assert.doesNotMatch(html, /<caption>Panel 4 0 2<\/caption>/);
+  assert.match(html, /Completed water-meter installation/);
 });
 
 test('conditional sections retain contiguous visible numbering', () => {

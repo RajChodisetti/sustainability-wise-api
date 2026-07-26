@@ -17,6 +17,15 @@ import {
   saveTokens as saveSolarTokens,
   subscribeAuthSession as subscribeSolarSession,
 } from '../modules/solar/api/client';
+import {
+  InstallHubAuthError,
+  clearTokens as clearInstallHubTokens,
+  getStoredJwt as getInstallHubJwt,
+  installHubRequest,
+  saveTokens as saveInstallHubTokens,
+  subscribeAuthSession as subscribeInstallHubSession,
+  type InstallHubAuthSessionEvent,
+} from '../modules/installhub/api/client';
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -70,26 +79,35 @@ function installBrowserGlobals(): () => void {
   };
 }
 
-test('both app clients notify same-window token save and clear events', () => {
+test('app clients notify same-window token save and clear events', () => {
   const restoreBrowserGlobals = installBrowserGlobals();
 
   const ecoEvents: AuthSessionEvent[] = [];
   const solarEvents: AuthSessionEvent[] = [];
+  const installHubEvents: InstallHubAuthSessionEvent[] = [];
   const unsubscribeEco = subscribeEcoSession((event) => ecoEvents.push(event));
   const unsubscribeSolar = subscribeSolarSession((event) => solarEvents.push(event));
+  const unsubscribeInstallHub = subscribeInstallHubSession((event) =>
+    installHubEvents.push(event),
+  );
 
   try {
     saveEcoTokens('eco-access', 'eco-refresh');
     saveSolarTokens('solar-access', 'solar-refresh');
+    saveInstallHubTokens('installhub-access', 'installhub-refresh');
     assert.equal(getEcoJwt(), 'eco-access');
     assert.equal(getSolarJwt(), 'solar-access');
+    assert.equal(getInstallHubJwt(), 'installhub-access');
     clearEcoTokens();
     clearSolarTokens();
+    clearInstallHubTokens();
     assert.deepEqual(ecoEvents, ['saved', 'cleared']);
     assert.deepEqual(solarEvents, ['saved', 'cleared']);
+    assert.deepEqual(installHubEvents, ['saved', 'cleared']);
   } finally {
     unsubscribeEco();
     unsubscribeSolar();
+    unsubscribeInstallHub();
     restoreBrowserGlobals();
   }
 });
@@ -100,8 +118,12 @@ test('first 401 clears a matching stale access token when no refresh token exist
   globalThis.fetch = async () => new Response(null, { status: 401 });
   const ecoEvents: AuthSessionEvent[] = [];
   const solarEvents: AuthSessionEvent[] = [];
+  const installHubEvents: InstallHubAuthSessionEvent[] = [];
   const unsubscribeEco = subscribeEcoSession((event) => ecoEvents.push(event));
   const unsubscribeSolar = subscribeSolarSession((event) => solarEvents.push(event));
+  const unsubscribeInstallHub = subscribeInstallHubSession((event) =>
+    installHubEvents.push(event),
+  );
 
   try {
     saveEcoTokens('eco-stale', 'eco-refresh');
@@ -114,11 +136,21 @@ test('first 401 clears a matching stale access token when no refresh token exist
     await assert.rejects(() => solarRequest('GET', '/v1/auth/me'), SolarAuthError);
     assert.equal(getSolarJwt(), null);
 
+    saveInstallHubTokens('installhub-stale', 'installhub-refresh');
+    localStorage.removeItem('ih_web_refresh');
+    await assert.rejects(
+      () => installHubRequest('GET', '/v1/auth/me'),
+      InstallHubAuthError,
+    );
+    assert.equal(getInstallHubJwt(), null);
+
     assert.deepEqual(ecoEvents, ['saved', 'cleared']);
     assert.deepEqual(solarEvents, ['saved', 'cleared']);
+    assert.deepEqual(installHubEvents, ['saved', 'cleared']);
   } finally {
     unsubscribeEco();
     unsubscribeSolar();
+    unsubscribeInstallHub();
     globalThis.fetch = originalFetch;
     restoreBrowserGlobals();
   }
@@ -150,6 +182,20 @@ test('a token rotated during a failed refresh is not cleared by the stale 401', 
     };
     await assert.rejects(() => solarRequest('GET', '/v1/auth/me'), SolarAuthError);
     assert.equal(getSolarJwt(), 'solar-rotated');
+
+    saveInstallHubTokens('installhub-old', 'installhub-old-refresh');
+    globalThis.fetch = async (input) => {
+      if (String(input).endsWith('/v1/auth/refresh')) {
+        localStorage.setItem('ih_web_jwt', 'installhub-rotated');
+        localStorage.setItem('ih_web_refresh', 'installhub-rotated-refresh');
+      }
+      return new Response(null, { status: 401 });
+    };
+    await assert.rejects(
+      () => installHubRequest('GET', '/v1/auth/me'),
+      InstallHubAuthError,
+    );
+    assert.equal(getInstallHubJwt(), 'installhub-rotated');
   } finally {
     globalThis.fetch = originalFetch;
     restoreBrowserGlobals();

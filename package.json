@@ -1,7 +1,7 @@
 {
   "name": "sustainability-wise-api",
   "version": "1.0.0",
-  "description": "Unified API server for EcoAudit Pro, SolarSense, and Wattwatchers Fleet",
+  "description": "Unified API server for EcoAudit Pro, SolarSense, InstallHub, and Wattwatchers Fleet",
   "type": "module",
   "engines": {
     "node": ">=20.9.0"

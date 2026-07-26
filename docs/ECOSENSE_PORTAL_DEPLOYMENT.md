@@ -1,9 +1,9 @@
 # EcoSense Portal Deployment
 
-The combined Next.js portal is deployed as a separate process beside the
-existing Fastify API. The existing `sw-api` PM2 process and port `3000` remain
-unchanged. The portal listens only on `127.0.0.1:3210` and is not started by
-the existing `deploy/ecosystem.config.cjs`.
+The combined Next.js portal runs beside the Fastify API. Both processes are
+switched only to immutable release artifacts created from verified `main`
+commits. The portal listens on `127.0.0.1:3210`; the API remains on
+`127.0.0.1:3000`.
 
 ## Deployment boundary
 
@@ -11,56 +11,79 @@ the existing `deploy/ecosystem.config.cjs`.
 - Combined Next.js portal: `ecosense-portal` process on
   `127.0.0.1:3210`
 - Public entry point: `https://api.sustainabilitywise.com.au/portal`
-- Portal checkout: `/opt/ecosense-portal`, isolated from the live API checkout
-  at `/opt/sw-api`
+- Deployment source and protected environment: `/opt/ecosense-portal`
+- Immutable runtime artifact: `/opt/sw-releases/<shortsha>`
+- API runtime: `/opt/sw-releases/<shortsha>`
+- Portal runtime: `/opt/sw-releases/<shortsha>/apps/ecoaudit`
 
 The `/portal` endpoint redirects to the portal gateway at `/`. Caddy keeps
 `/v1`, `/v1/*`, and `/health` on port `3000`; every other route goes to the
 root-relative portal on port `3210`. This keeps the public API origin unchanged
 and requires no additional DNS record.
 
-## Checkout
+Do not deploy from `/opt/sw-api`. It is a mutable maintenance checkout and may
+contain unrelated work.
 
-Clone the deployment branch into its own directory so API updates and local
-changes in `/opt/sw-api` cannot be disturbed:
+## Source checkout
 
 ```bash
-sudo -u swapi -H git clone --branch deploy/ecosense-portal-vm \
+sudo -u swapi -H git clone --branch main \
   https://github.com/RajChodisetti/sustainability-wise-api.git \
   /opt/ecosense-portal
 ```
 
-## Build
+Before each release, require a clean source checkout and fast-forward it:
 
-The portal must be integrated at `apps/ecoaudit` and built before it can be
-started. Provision the protected environment file described below first, then
-load that same file for the build so Next.js bakes the intended rewrite target
-into the production bundle:
+```bash
+sudo -u swapi -H git -C /opt/ecosense-portal status --short
+sudo -u swapi -H git -C /opt/ecosense-portal switch main
+sudo -u swapi -H git -C /opt/ecosense-portal pull --ff-only origin main
+```
+
+The status command must be empty. Record the full commit and confirm it is the
+same commit that passed `npm run verify` locally.
+
+## Immutable release build
+
+Create a new artifact without modifying a running release. Replace the example
+SHA values with the verified commit:
 
 ```bash
 sudo -u swapi -H bash -lc '
-  set -a
-  source /etc/sustainability-wise/ecosense-portal.env
-  set +a
-  cd /opt/ecosense-portal/apps/ecoaudit
+  set -euo pipefail
+  release_sha=0123456789abcdef0123456789abcdef01234567
+  release_short=0123456
+  release_dir=/opt/sw-releases/$release_short
+  test ! -e "$release_dir"
+  git clone --local --no-hardlinks --no-checkout \
+    /opt/ecosense-portal "$release_dir"
+  git -C "$release_dir" checkout --detach "$release_sha"
+  test "$(git -C "$release_dir" rev-parse HEAD)" = "$release_sha"
+  test -z "$(git -C "$release_dir" status --short)"
+  ln -s /opt/ecosense-portal/.env "$release_dir/.env"
+  cd "$release_dir"
   npm ci
+  npm run web:build
+  cd "$release_dir/apps/ecoaudit"
+  npm ci
+  set -a
+  source /opt/ecosense-portal/.env
+  set +a
   npm run build
 '
 ```
 
-The PM2 configuration runs `next start`; it intentionally does not install
-dependencies, build the portal, alter the API process, or update the reverse
-proxy.
+The PM2 configurations only start their processes. They do not install
+dependencies, build assets, apply migrations, or update Caddy.
 
 ## Server-only environment
 
-Copy `deploy/ecosense-portal.env.example` to a location outside the repository
-and restrict it to the service account:
+The current VM keeps the ignored, protected environment at
+`/opt/ecosense-portal/.env`. Restrict it to the service account:
 
 ```bash
-sudo install -o swapi -g swapi -m 0600 /dev/null \
-  /etc/sustainability-wise/ecosense-portal.env
-sudoedit /etc/sustainability-wise/ecosense-portal.env
+sudo chown swapi:swapi /opt/ecosense-portal/.env
+sudo chmod 0600 /opt/ecosense-portal/.env
 ```
 
 Configure these values:
@@ -70,8 +93,6 @@ Configure these values:
   present during both `npm run build` (for rewrites) and `next start` (for
   Route Handlers).
 - `ECOSENSE_PORTAL_PORT=3210` keeps the portal on its dedicated loopback port.
-- `ECOSENSE_PORTAL_ROOT=/opt/ecosense-portal/apps/ecoaudit` points PM2 at the
-  isolated portal checkout.
 - `PORTAL_REGISTRATION_ENABLED=false` keeps public registration disabled. Set
   it to `true` only after the portal's server-side registration endpoint has
   been intentionally enabled and reviewed.
@@ -84,52 +105,47 @@ included in browser JavaScript. The portal should call same-origin routes, and
 only its server-side code should read `INTERNAL_API_URL` or
 the app-specific registration secrets.
 
-## Explicit start
+## Atomic process switch
 
-Starting this file is an explicit operation; it is not referenced by the
-existing API ecosystem file:
+Record both current PM2 working directories as rollback targets. Then switch the
+API and portal explicitly to the new release. Replace the example release path:
 
 ```bash
 sudo -u swapi -H bash -lc '
+  set -euo pipefail
+  release_dir=/opt/sw-releases/0123456
   set -a
-  source /etc/sustainability-wise/ecosense-portal.env
+  source /opt/ecosense-portal/.env
   set +a
-  cd /opt/ecosense-portal
-  pm2 start deploy/ecosense-portal.ecosystem.config.cjs \
-    --env production --only ecosense-portal
+  SW_API_ROOT="$release_dir" \
+    pm2 startOrRestart "$release_dir/deploy/ecosystem.config.cjs" \
+      --env production --only sw-api --update-env
+  curl --fail http://127.0.0.1:3000/health
+  ECOSENSE_PORTAL_ROOT="$release_dir/apps/ecoaudit" \
+    pm2 startOrRestart \
+      "$release_dir/deploy/ecosense-portal.ecosystem.config.cjs" \
+      --env production --only ecosense-portal --update-env
 '
 ```
 
-Verify the loopback service before exposing it:
+Verify the exact release paths and both loopback services:
 
 ```bash
+sudo -u swapi -H pm2 describe sw-api
+sudo -u swapi -H pm2 describe ecosense-portal
+curl --fail http://127.0.0.1:3000/health
 curl --fail --head http://127.0.0.1:3210/login
-sudo -u swapi -H pm2 logs ecosense-portal --lines 100
+sudo -u swapi -H pm2 logs sw-api --lines 100 --nostream
+sudo -u swapi -H pm2 logs ecosense-portal --lines 100 --nostream
 ```
 
-Do not run `pm2 save` during evaluation. Saving the process list makes the
-portal eligible for automatic resurrection after reboot. Run it only when the
-portal has been deliberately approved as a permanent service.
+Do not run `pm2 save` as part of a routine release.
 
-To update runtime environment values after editing the protected environment
-file, source it again and restart with `--update-env`:
+## Rollback
 
-```bash
-sudo -u swapi -H bash -lc '
-  set -a
-  source /etc/sustainability-wise/ecosense-portal.env
-  set +a
-  cd /opt/ecosense-portal
-  pm2 restart deploy/ecosense-portal.ecosystem.config.cjs \
-    --env production --only ecosense-portal --update-env
-'
-```
-
-To remove the optional process without touching the API:
-
-```bash
-sudo -u swapi -H pm2 delete ecosense-portal
-```
+Retain at least the previously running release. If verification fails, repeat
+the process-switch commands with the recorded previous API and portal release
+paths. Never repair a failed artifact in place.
 
 ## Reverse proxy
 
@@ -148,6 +164,8 @@ Verify both services and the redirect endpoint:
 ```bash
 curl --fail https://api.sustainabilitywise.com.au/health
 curl --fail --head https://api.sustainabilitywise.com.au/login
+curl --fail --head \
+  'https://api.sustainabilitywise.com.au/installhub/login?next=%2Finstallhub%2Fdashboard'
 curl --head https://api.sustainabilitywise.com.au/portal
 ```
 

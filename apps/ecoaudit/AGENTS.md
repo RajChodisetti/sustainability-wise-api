@@ -1,7 +1,8 @@
 # EcoSense Portal Working Agreement
 
 This folder is the separately deployed Next.js portal for EcoAudit, SolarSense,
-and Wattwatchers Fleet. Its historical directory name does not limit its scope.
+InstallHub, and Wattwatchers Fleet. Its historical directory name does not
+limit its scope.
 
 <!-- BEGIN:nextjs-agent-rules -->
 ## Next.js Version Rule
@@ -17,6 +18,8 @@ behavior, and heed its deprecation notices.
   types `src/types/domain.ts`.
 - SolarSense: route tree `src/app/(portal)/solar`, implementation
   `src/modules/solar`.
+- InstallHub: route tree `src/app/(portal)/installhub`, implementation
+  `src/modules/installhub`.
 - Fleet: route tree `src/app/(portal)/fleet`, implementation `src/modules/fleet`.
 - Shared portal shell, providers, components, hooks, contexts, and utilities are
   under their top-level `src/` folders.
@@ -36,6 +39,9 @@ utility with tests; never import another product's client to save a few lines.
   record forms.
 - Use `useExportJob` and `ExportJobStatus` for durable PDF/ZIP flows. Do not add
   fixed polling timeouts or page-local binary download implementations.
+- InstallHub web is cloud-first and saves complete trees through its typed
+  module API. Do not simulate the mobile opt-in queue, imported `cpN` local
+  copies, or cache cleanup as a second browser-side database.
 - Use React Query patterns already present in each module and invalidate the
   narrowest affected keys after mutation.
 

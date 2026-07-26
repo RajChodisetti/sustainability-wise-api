@@ -111,6 +111,22 @@ only when a complete or legacy-unstaged push differs from the latest stable
 snapshot; metadata-stage pushes are excluded. All three routes use creator,
 assigned-inspector, or elevated access.
 
+### InstallHub portal
+
+The portal workspace lives under `/installhub` and uses the `installhub` auth
+namespace and separate `ih_web_jwt`/`ih_web_refresh` browser keys. Portal
+installation edits write a complete cloud tree through the same sync contract
+used by mobile; evidence uploads retain the exact entity/field identities used
+by iOS. Dynamic form visibility, allowed selections, hidden-value cleanup,
+required evidence, completion rules, legacy read-only forms, amendment
+provenance, and scanner modes must remain aligned with the mobile form catalog.
+
+The portal is cloud-first. It may expose files, immutable versions, reports,
+access assignment, and administrative user controls, but must not present
+browser cache as the iOS local working copy or silently implement the mobile
+pull/import flow. Self-service password changes require the current password;
+an administrator may reset another user's password without it.
+
 ## Authentication and Ownership
 
 Every protected domain route uses `authenticate`, `requireApp(product)`, and the
