@@ -10,6 +10,7 @@ import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
 import { PORTAL_FEATURES } from '@/lib/portalFeatures';
+import { isPortalApplicationListed } from '@/lib/portalApplications';
 import { portalNavigationScopeForPath } from '@/lib/portalNavigation';
 
 function isActive(pathname: string, href: string, exact = false) {
@@ -517,10 +518,11 @@ export function PortalShell({ children }: { children: ReactNode }) {
       ? [{ href: '/installhub/admin/users', label: 'User management', icon: 'shield' as IconName }]
       : []),
   ];
-  const showEcoNavigation = Boolean(eaUser);
-  const showSolarNavigation = PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
-  const showFieldNavigation = Boolean(ihUser);
-  const showFleetNavigation = Boolean(wwUser);
+  const showEcoNavigation = isPortalApplicationListed('ecoaudit');
+  const showSolarNavigation =
+    PORTAL_FEATURES.solarSenseVisible && isPortalApplicationListed('solarsense');
+  const showFieldNavigation = isPortalApplicationListed('installhub');
+  const showFleetNavigation = isPortalApplicationListed('wattwatchers');
   const navigationProps = {
     pathname,
     appsOpen,
