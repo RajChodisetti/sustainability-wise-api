@@ -5,9 +5,10 @@ import { Card } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import {
-  PORTAL_APPLICATIONS,
   type PortalApplicationAccess,
+  visiblePortalApplications,
 } from '@/lib/portalApplications';
+import { PORTAL_FEATURES } from '@/lib/portalFeatures';
 
 export default function PortalHomePage() {
   const { eaUser, ssUser, ihUser, wwUser } = usePortalAuth();
@@ -17,6 +18,10 @@ export default function PortalHomePage() {
     installhub: Boolean(ihUser),
     wattwatchers: Boolean(wwUser),
   };
+  const visibleApps = visiblePortalApplications(
+    authenticatedApps,
+    PORTAL_FEATURES.solarSenseVisible,
+  );
 
   return (
     <div>
@@ -28,7 +33,7 @@ export default function PortalHomePage() {
             Welcome to EcoSense Portal
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-[var(--text-sub)] sm:text-base">
-            Access Eco Audit, Solar Sense, Wattwatchers, Field App, and Scheduler from one portal.
+            Choose a workspace to continue your audits, fleet monitoring, scheduling, and field operations.
           </p>
         </div>
       </section>
@@ -41,8 +46,8 @@ export default function PortalHomePage() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {PORTAL_APPLICATIONS.map((app) => {
-          const available = app.access ? authenticatedApps[app.access] : true;
+        {visibleApps.map((app) => {
+          const available = authenticatedApps[app.access];
           return (
             <Link
               key={app.href}
@@ -56,15 +61,11 @@ export default function PortalHomePage() {
                     <span className={`flex h-12 w-12 items-center justify-center rounded-xl ${app.tone}`}>
                       <Icon name={app.icon} size={24} />
                     </span>
-                    <span
-                      className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider ${
-                        available
-                          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                          : 'border-[var(--border)] bg-[var(--surface2)] text-[var(--text-sub)]'
-                      }`}
-                    >
-                      {available ? 'Available' : 'Sign in required'}
-                    </span>
+                    {!available ? (
+                      <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[var(--text-sub)]">
+                        Sign in required
+                      </span>
+                    ) : null}
                   </div>
                   <p className="mt-5 text-[11px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">{app.eyebrow}</p>
                   <h3 className="mt-1 text-xl font-extrabold tracking-[-0.025em] text-[var(--text)]">{app.title}</h3>
@@ -78,6 +79,20 @@ export default function PortalHomePage() {
           );
         })}
       </div>
+
+      <Link
+        href="/scheduler"
+        className="interactive-card mt-5 flex min-h-16 cursor-pointer items-center gap-4 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] px-5 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2"
+      >
+        <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]">
+          <Icon name="calendar" size={20} />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-extrabold text-[var(--text)]">Scheduler</span>
+          <span className="block truncate text-xs text-[var(--text-sub)]">Plan and coordinate upcoming work.</span>
+        </span>
+        <Icon name="chevron-right" size={19} className="text-[var(--muted)]" />
+      </Link>
     </div>
   );
 }

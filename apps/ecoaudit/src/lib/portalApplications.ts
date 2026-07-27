@@ -13,8 +13,10 @@ export type PortalApplication = {
   description: string;
   icon: IconName;
   tone: string;
-  access?: PortalApplicationAccess;
+  access: PortalApplicationAccess;
 };
+
+export type PortalApplicationSessions = Record<PortalApplicationAccess, boolean>;
 
 export const PORTAL_APPLICATIONS: readonly PortalApplication[] = [
   {
@@ -53,16 +55,23 @@ export const PORTAL_APPLICATIONS: readonly PortalApplication[] = [
     tone: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
     access: 'installhub',
   },
-  {
-    href: '/scheduler',
-    title: 'Scheduler',
-    eyebrow: 'Work planning',
-    description: 'Plan and coordinate upcoming audits, installations, and site visits.',
-    icon: 'calendar',
-    tone: 'bg-violet-500/10 text-violet-700 dark:text-violet-300',
-  },
 ];
 
 export function isPortalApplicationListed(access: PortalApplicationAccess): boolean {
   return PORTAL_APPLICATIONS.some((application) => application.access === access);
+}
+
+export function visiblePortalApplications(
+  sessions: PortalApplicationSessions,
+  solarSenseVisible: boolean,
+): readonly PortalApplication[] {
+  return PORTAL_APPLICATIONS.filter((application) => {
+    if (application.access === 'solarsense') {
+      return solarSenseVisible && sessions.solarsense;
+    }
+    if (application.access === 'installhub') {
+      return true;
+    }
+    return sessions[application.access];
+  });
 }

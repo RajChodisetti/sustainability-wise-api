@@ -218,14 +218,23 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     }
   }
 
-  async function removePhoto(slot: 'deviceInstalled' | 'switchboardOverview' | 'labeling' | 'extra') {
+  async function removePhoto(
+    slot: 'deviceInstalled' | 'switchboardOverview' | 'labeling' | 'extra',
+    id?: string,
+  ) {
     try {
       await writer.mutate((next) => {
         const target = next.electricalAssets
           .find((item) => item.id === boardId)
           ?.meters.find((item) => item.id === meterId);
         if (!target?.wwPhotos) return;
-        if (slot === 'extra') target.wwPhotos.extra?.pop();
+        if (slot === 'extra') {
+          const photoIndex = Number(id);
+          if (!Number.isInteger(photoIndex)) return;
+          target.wwPhotos.extra = target.wwPhotos.extra?.filter(
+            (_, index) => index !== photoIndex,
+          );
+        }
         else target.wwPhotos[slot] = null;
       });
       toast.success('Meter photo removed.');
@@ -549,7 +558,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 items={uri ? [{ id: slot, uri }] : []}
                 busy={uploading}
                 onFiles={(files) => uploadSingle(slot, files)}
-                onRemoveLast={uri ? () => removePhoto(slot) : undefined}
+                onRemove={uri ? () => removePhoto(slot) : undefined}
               />
             );
           })}
@@ -558,7 +567,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
             items={(latest.wwPhotos?.extra ?? []).map((uri, index) => ({ id: `${index}`, uri }))}
             busy={uploading}
             onFiles={uploadExtra}
-            onRemoveLast={latest.wwPhotos?.extra?.length ? () => removePhoto('extra') : undefined}
+            onRemove={latest.wwPhotos?.extra?.length ? (id) => removePhoto('extra', id) : undefined}
           />
         </Card>
       )}

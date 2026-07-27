@@ -1,3 +1,3 @@
 export const PORTAL_FEATURES = {
-  solarSenseVisible: true,
+  solarSenseVisible: false,
 } as const;

@@ -84,10 +84,12 @@ export class MissingInstallHubReportEvidenceError extends Error {
 }
 
 const UUID_RE =
-  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 function referencedPhotoId(uri: string): string | null {
-  return UUID_RE.exec(uri)?.[0]?.toLowerCase() ?? null;
+  // Storage paths may contain a parent UUID before the immutable photo UUID.
+  // The final UUID is the photo registry identity embedded in the filename.
+  return uri.match(UUID_RE)?.at(-1)?.toLowerCase() ?? null;
 }
 
 function createdAtValue(photo: InstallHubReportPhoto): number {
@@ -126,8 +128,7 @@ export function resolveInstallHubFormPhotos(
       (photoId
         ? candidates.find((candidate) => candidate.id.toLowerCase() === photoId)
         : undefined)
-      ?? candidates.find((candidate) => candidate.remoteUrl === attachment.uri)
-      ?? candidates.at(-1);
+      ?? candidates.find((candidate) => candidate.remoteUrl === attachment.uri);
     if (!selected) {
       missing.push(attachmentIndex);
       return [];

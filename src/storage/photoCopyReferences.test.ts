@@ -113,6 +113,136 @@ test('InstallHub copy references cover zones, boards, nested meters, site assets
   }), [{ photoId: PHOTO_C, targetFieldName: 'attachments[0].uri' }]);
 });
 
+test('InstallHub reindexing creates a same-parent alias without duplicating an exact direct identity', () => {
+  const installationId = 'installation-1';
+  const formId = 'form-1';
+  const direct = photo({
+    id: PHOTO_A,
+    app: 'installhub',
+    parentId: installationId,
+    entityType: 'form_submission',
+    entityId: formId,
+    fieldName: 'attachments[0].uri',
+  });
+  const shifted = photo({
+    id: PHOTO_B,
+    app: 'installhub',
+    parentId: installationId,
+    entityType: 'form_submission',
+    entityId: formId,
+    fieldName: 'attachments[1].uri',
+  });
+  const rows = buildPhotoCopyReferenceRows({
+    app: 'installhub',
+    targetParentId: installationId,
+    entities: [{
+      sourceEntityId: formId,
+      targetEntityId: formId,
+      targetEntityType: 'form_submission',
+      photoValues: [],
+      photoReferences: [
+        { photoId: PHOTO_A, targetFieldName: 'attachments[0].uri' },
+        { photoId: PHOTO_B, targetFieldName: 'attachments[0].uri' },
+      ],
+    }],
+    photos: [direct, shifted],
+    allowUnconfirmed: true,
+  });
+
+  assert.deepEqual(rows.map((row) => ({
+    photoId: row.photoId,
+    targetFieldName: row.targetFieldName,
+  })), [{
+    photoId: PHOTO_B,
+    targetFieldName: 'attachments[0].uri',
+  }]);
+});
+
+test('InstallHub middle-photo removal preserves the shifted photo identity', () => {
+  const references = installHubFormPhotoFieldReferences({
+    attachments: [
+      {
+        id: 'attachment-b',
+        slot: 'water.completed_photo',
+        uri: `/v1/files/installhub/installation-1/photo-${PHOTO_B}.jpg`,
+        caption: 'Completed installation',
+      },
+    ],
+  });
+  assert.deepEqual(references, [{
+    photoId: PHOTO_B,
+    targetFieldName: 'attachments[0].uri',
+  }]);
+
+  const desired = buildPhotoCopyReferenceRows({
+    app: 'installhub',
+    targetParentId: 'installation-1',
+    entities: [{
+      sourceEntityId: 'form-1',
+      targetEntityId: 'form-1',
+      targetEntityType: 'form_submission',
+      photoValues: [],
+      photoReferences: references,
+    }],
+    photos: [photo({
+      id: PHOTO_B,
+      app: 'installhub',
+      parentId: 'installation-1',
+      entityType: 'form_submission',
+      entityId: 'form-1',
+      fieldName: 'attachments[1].uri',
+    })],
+    allowUnconfirmed: true,
+  });
+  const settled = [{
+    ...desired[0],
+    id: 'existing-alias',
+    createdAt: new Date('2026-07-26T00:00:00Z'),
+  }];
+
+  assert.equal(desired[0]?.targetFieldName, 'attachments[0].uri');
+  assert.deepEqual(planPhotoCopyReferenceReconciliation(settled, desired), {
+    add: [],
+    remove: [],
+  });
+});
+
+test('InstallHub amendments receive same-parent aliases for retained evidence', () => {
+  const rows = buildPhotoCopyReferenceRows({
+    app: 'installhub',
+    targetParentId: 'installation-1',
+    entities: [{
+      sourceEntityId: 'form-2',
+      targetEntityId: 'form-2',
+      targetEntityType: 'form_submission',
+      photoValues: [],
+      photoReferences: [{
+        photoId: PHOTO_A,
+        targetFieldName: 'attachments[0].uri',
+      }],
+    }],
+    photos: [photo({
+      id: PHOTO_A,
+      app: 'installhub',
+      parentId: 'installation-1',
+      entityType: 'form_submission',
+      entityId: 'form-1',
+      fieldName: 'attachments[0].uri',
+    })],
+    allowUnconfirmed: true,
+  });
+
+  assert.deepEqual(rows.map((row) => ({
+    photoId: row.photoId,
+    targetEntityId: row.targetEntityId,
+    targetFieldName: row.targetFieldName,
+  })), [{
+    photoId: PHOTO_A,
+    targetEntityId: 'form-2',
+    targetFieldName: 'attachments[0].uri',
+  }]);
+});
+
 test('copy links only confirmed stored photos actually present in copied photo fields', () => {
   const rows = buildPhotoCopyReferenceRows({
     app: 'ecoaudit',

@@ -518,11 +518,11 @@ export function PortalShell({ children }: { children: ReactNode }) {
       ? [{ href: '/installhub/admin/users', label: 'User management', icon: 'shield' as IconName }]
       : []),
   ];
-  const showEcoNavigation = isPortalApplicationListed('ecoaudit');
+  const showEcoNavigation = Boolean(eaUser);
   const showSolarNavigation =
-    PORTAL_FEATURES.solarSenseVisible && isPortalApplicationListed('solarsense');
+    PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
   const showFieldNavigation = isPortalApplicationListed('installhub');
-  const showFleetNavigation = isPortalApplicationListed('wattwatchers');
+  const showFleetNavigation = Boolean(wwUser);
   const navigationProps = {
     pathname,
     appsOpen,

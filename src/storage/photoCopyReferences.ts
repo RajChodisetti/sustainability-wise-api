@@ -259,6 +259,16 @@ export function buildPhotoCopyReferenceRows(input: {
       ) continue;
 
       const targetFieldName = reference.targetFieldName || photo.fieldName;
+      // The registry row is already the canonical identity when the original
+      // still occupies this exact parent/entity/field. Same-parent aliases are
+      // only needed after an indexed value moves (for example when the first
+      // attachment is removed and the second becomes attachments[0].uri).
+      if (
+        photo.parentId === input.targetParentId
+        && photo.entityType === entity.targetEntityType
+        && photo.entityId === entity.targetEntityId
+        && photo.fieldName === targetFieldName
+      ) continue;
       const key = [photo.id, input.targetParentId, entity.targetEntityId, targetFieldName].join('\0');
       if (seen.has(key)) continue;
       seen.add(key);
@@ -665,7 +675,12 @@ async function reconcileWithExecutor(input: {
     [...new Set(photos.map((photo) => photo.parentId).filter((id) => id !== input.parentId))],
   );
   const authorizedPhotos = photos.filter((photo) => {
-    if (photo.parentId === input.parentId) return false;
+    // A current record may compact an indexed photo array after removing an
+    // item. The immutable original then needs a same-parent virtual identity
+    // at its new field path. This is safe without an actor because both the
+    // original and the saved reference are already scoped to this locked
+    // parent; buildPhotoCopyReferenceRows skips unchanged direct identities.
+    if (photo.parentId === input.parentId) return true;
     // Existing grants are trusted proof from an explicit copy or prior secure
     // reconciliation and may be remapped after array reorder/source purge.
     const sourceParent = sourceParents.get(photo.parentId);

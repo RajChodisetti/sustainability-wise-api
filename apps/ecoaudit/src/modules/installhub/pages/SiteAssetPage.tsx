@@ -136,13 +136,19 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     }
   }
 
-  async function removePhoto(kind: 'location' | 'extra') {
+  async function removePhoto(kind: 'location' | 'extra', id?: string) {
     try {
       await writer.mutate((next) => {
         const target = next.siteAssets.find((item) => item.id === assetId);
         if (!target) return;
         if (kind === 'location') target.locationPhoto = null;
-        else target.extraPhotos.pop();
+        else {
+          const photoIndex = Number(id);
+          if (!Number.isInteger(photoIndex)) return;
+          target.extraPhotos = target.extraPhotos.filter(
+            (_, index) => index !== photoIndex,
+          );
+        }
         target.updatedAt = nowIso();
       });
       toast.success('Photo removed.');
@@ -336,14 +342,14 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               items={latest.locationPhoto ? [{ id: 'location', uri: latest.locationPhoto }] : []}
               busy={uploading}
               onFiles={uploadLocation}
-              onRemoveLast={latest.locationPhoto ? () => removePhoto('location') : undefined}
+              onRemove={latest.locationPhoto ? () => removePhoto('location') : undefined}
             />
             <EvidenceField
               label="Extra photos"
               items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
               busy={uploading}
               onFiles={uploadExtra}
-              onRemoveLast={latest.extraPhotos.length ? () => removePhoto('extra') : undefined}
+              onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}
             />
           </Card>
         </>

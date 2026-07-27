@@ -602,7 +602,7 @@ function FormField({
         onCaptionChange={
           readOnly ? undefined : (id, caption) => onCaption(id, caption)
         }
-        onRemoveLast={
+        onRemove={
           readOnly || !items.length
             ? undefined
             : (id) => {

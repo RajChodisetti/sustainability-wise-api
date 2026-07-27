@@ -21,7 +21,7 @@ export function EvidenceField({
   hint,
   onFiles,
   onCaptionChange,
-  onRemoveLast,
+  onRemove,
 }: {
   label: string;
   items: EvidenceItem[];
@@ -31,7 +31,7 @@ export function EvidenceField({
   hint?: string;
   onFiles: (files: File[]) => void | Promise<void>;
   onCaptionChange?: (id: string, caption: string) => void | Promise<void>;
-  onRemoveLast?: (id: string) => void | Promise<void>;
+  onRemove?: (id: string) => void | Promise<void>;
 }) {
   const inputId = useId();
 
@@ -71,15 +71,15 @@ export function EvidenceField({
                 ) : (
                   <p className="text-xs text-[var(--text-sub)]">{item.caption || `Photo ${index + 1}`}</p>
                 )}
-                {!readOnly && onRemoveLast && index === items.length - 1 ? (
+                {!readOnly && onRemove ? (
                   <Button
                     variant="ghost"
                     className="mt-2 w-full text-[var(--red)]"
                     disabled={busy}
-                    onClick={() => void onRemoveLast(item.id)}
+                    onClick={() => void onRemove(item.id)}
                   >
                     <Icon name="trash" size={16} />
-                    Remove latest
+                    Remove photo
                   </Button>
                 ) : null}
               </div>

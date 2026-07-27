@@ -189,14 +189,18 @@ export function InstallHubZoneDetailPage() {
     }
   }
 
-  async function removeLatest() {
+  async function removePhoto(id: string) {
+    const photoIndex = Number(id);
+    if (!Number.isInteger(photoIndex)) return;
     try {
       await writer.mutate((next) => {
         const target = next.zones.find((item) => item.id === zoneId);
-        target?.photos.pop();
+        if (target) {
+          target.photos = target.photos.filter((_, index) => index !== photoIndex);
+        }
         if (target) target.updatedAt = nowIso();
       });
-      toast.success('Latest zone photo removed.');
+      toast.success('Zone photo removed.');
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     }
@@ -294,7 +298,7 @@ export function InstallHubZoneDetailPage() {
           items={zone.photos.map((uri, index) => ({ id: `${index}`, uri }))}
           busy={uploading}
           onFiles={upload}
-          onRemoveLast={zone.photos.length ? () => removeLatest() : undefined}
+          onRemove={zone.photos.length ? removePhoto : undefined}
         />
       </Card>
     </div>

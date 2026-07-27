@@ -173,10 +173,69 @@ test('photo evidence resolves only through the exact attachment registry field',
   assert.equal(resolvedPhotos[1]?.caption, 'Completed installation');
 });
 
+test('reindexed evidence resolves the attachment UUID when an obsolete direct row shares its field', () => {
+  const installationId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const removedId = '11111111-1111-4111-8111-111111111111';
+  const shiftedId = '22222222-2222-4222-8222-222222222222';
+  const reportForm = form({
+    attachments: [{
+      slot: 'water.completed_photo',
+      uri: `https://files.example/installhub/${installationId}/photo-${shiftedId}.jpg`,
+      caption: 'Completed installation',
+    }],
+  });
+
+  const [resolvedPhoto] = resolveInstallHubFormPhotos(reportForm, [
+    photo({
+      id: removedId,
+      fieldName: 'attachments[0].uri',
+      remoteUrl: `https://files.example/installhub/${installationId}/photo-${removedId}.jpg`,
+    }),
+    photo({
+      id: shiftedId,
+      fieldName: 'attachments[0].uri',
+      remoteUrl: `https://files.example/installhub/${installationId}/photo-${shiftedId}.jpg`,
+      createdAt: '2026-07-23T01:00:00.000Z',
+    }),
+  ]);
+
+  assert.equal(resolvedPhoto?.photo.id, shiftedId);
+  assert.equal(resolvedPhoto?.caption, 'Completed installation');
+});
+
+test('reindexed evidence never substitutes an obsolete direct photo when its alias is missing', () => {
+  const removedId = '11111111-1111-4111-8111-111111111111';
+  const shiftedId = '22222222-2222-4222-8222-222222222222';
+  const reportForm = form({
+    attachments: [{
+      slot: 'water.completed_photo',
+      uri: `https://files.example/photo-${shiftedId}.jpg`,
+    }],
+  });
+
+  assert.throws(
+    () => resolveInstallHubFormPhotos(reportForm, [
+      photo({
+        id: removedId,
+        fieldName: 'attachments[0].uri',
+        remoteUrl: `https://files.example/photo-${removedId}.jpg`,
+      }),
+    ]),
+    (error: unknown) => {
+      assert.ok(error instanceof MissingInstallHubReportEvidenceError);
+      assert.deepEqual(error.attachmentIndexes, [0]);
+      return true;
+    },
+  );
+});
+
 test('missing backed evidence fails with the exact attachment identities', () => {
   const reportForm = form({
     attachments: [
-      { slot: 'water.lcd_photo', uri: 'file:///lcd.jpg' },
+      {
+        slot: 'water.lcd_photo',
+        uri: 'https://files.example/original.jpg',
+      },
       { slot: 'water.completed_photo', uri: 'file:///completed.jpg' },
     ],
   });

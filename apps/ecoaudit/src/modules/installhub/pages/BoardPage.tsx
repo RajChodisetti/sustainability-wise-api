@@ -138,13 +138,19 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     }
   }
 
-  async function removePhoto(kind: 'main' | 'extra') {
+  async function removePhoto(kind: 'main' | 'extra', id?: string) {
     try {
       await writer.mutate((next) => {
         const target = next.electricalAssets.find((item) => item.id === boardId);
         if (!target) return;
         if (kind === 'main') target.photo = null;
-        else target.extraPhotos.pop();
+        else {
+          const photoIndex = Number(id);
+          if (!Number.isInteger(photoIndex)) return;
+          target.extraPhotos = target.extraPhotos.filter(
+            (_, index) => index !== photoIndex,
+          );
+        }
         target.updatedAt = nowIso();
       });
       toast.success('Photo removed.');
@@ -336,14 +342,14 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               items={latest.photo ? [{ id: 'main', uri: latest.photo }] : []}
               busy={uploading}
               onFiles={uploadMain}
-              onRemoveLast={latest.photo ? () => removePhoto('main') : undefined}
+              onRemove={latest.photo ? () => removePhoto('main') : undefined}
             />
             <EvidenceField
               label="Extra photos"
               items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
               busy={uploading}
               onFiles={uploadExtra}
-              onRemoveLast={latest.extraPhotos.length ? () => removePhoto('extra') : undefined}
+              onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}
             />
           </Card>
         </>
