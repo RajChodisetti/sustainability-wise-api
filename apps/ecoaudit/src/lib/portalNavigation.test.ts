@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { portalAppForPath, safePortalNext } from './portalNavigation';
+import {
+  portalAppForPath,
+  portalNavigationScopeForPath,
+  safePortalNext,
+} from './portalNavigation';
 
 test('safePortalNext accepts and normalizes local portal paths', () => {
   assert.equal(safePortalNext('/solar/sites?tab=photos#latest'), '/solar/sites?tab=photos#latest');
@@ -35,4 +39,13 @@ test('portalAppForPath selects only app-local targets', () => {
   assert.equal(portalAppForPath('/fleet/devices'), 'wattwatchers');
   assert.equal(portalAppForPath('/scheduler'), null);
   assert.equal(portalAppForPath('//example.com/solar'), null);
+});
+
+test('InstallHub is grouped under the Field App navigation scope', () => {
+  assert.equal(portalNavigationScopeForPath('/field'), 'field');
+  assert.equal(portalNavigationScopeForPath('/installhub/dashboard'), 'field');
+  assert.equal(portalNavigationScopeForPath('/installhub/installations/installation-1'), 'field');
+  assert.equal(portalNavigationScopeForPath('/ecoaudit/audits'), 'ecoaudit');
+  assert.equal(portalNavigationScopeForPath('/fleet/devices'), 'fleet');
+  assert.equal(portalNavigationScopeForPath('/scheduler'), 'portal');
 });

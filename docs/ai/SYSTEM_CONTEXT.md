@@ -33,10 +33,11 @@ backed-up installation. The iOS app also exposes API/sync diagnostics and
 protected local storage cleanup. Original evidence and form data are never part
 of the generated-report or imported-preview cache-clearing operations.
 
-The EcoSense portal exposes a cloud-first InstallHub workspace at
-`/installhub`. It works directly against accessible API trees and mirrors the
-iOS hierarchy, commissioning forms, evidence capture, data/TBC resolution,
-metering table, reports, cloud files and versions, access controls, user
+The EcoSense portal exposes InstallHub beneath the shared Field App destination
+at `/field`, with the cloud-first InstallHub workspace at `/installhub`. It
+works directly against accessible API trees and mirrors the iOS hierarchy,
+commissioning forms, evidence capture, data/TBC resolution, metering table,
+reports, cloud files and versions, access controls, user
 administration, and diagnostics. It does not emulate the iOS local database,
 offline upload queue, or import-preview cache.
 

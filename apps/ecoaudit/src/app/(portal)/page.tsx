@@ -14,7 +14,6 @@ const apps: Array<{
   icon: IconName;
   tone: string;
   access?: 'ecoaudit' | 'solarsense' | 'installhub' | 'wattwatchers';
-  soon?: boolean;
 }> = [
   {
     href: '/ecoaudit/dashboard',
@@ -35,15 +34,6 @@ const apps: Array<{
     access: 'solarsense',
   },
   {
-    href: '/installhub/dashboard',
-    title: 'InstallHub',
-    eyebrow: 'Installation operations',
-    description: 'Installations, switchboards, meters, assets, field forms, evidence, and report packs.',
-    icon: 'tool',
-    tone: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
-    access: 'installhub',
-  },
-  {
     href: '/fleet/dashboard',
     title: 'Wattwatchers Fleet',
     eyebrow: 'Device operations',
@@ -56,10 +46,10 @@ const apps: Array<{
     href: '/field',
     title: 'Field App',
     eyebrow: 'Mobile operations',
-    description: 'Mobile field workflows — coming soon.',
+    description: 'Open InstallHub for installations, field forms, evidence capture, and report packs.',
     icon: 'clipboard',
-    tone: 'bg-blue-500/10 text-blue-700 dark:text-blue-300',
-    soon: true,
+    tone: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
+    access: 'installhub',
   },
 ];
 
@@ -106,11 +96,6 @@ export default function PortalHomePage() {
                   <span className={`flex h-12 w-12 items-center justify-center rounded-xl ${app.tone}`}>
                     <Icon name={app.icon} size={24} />
                   </span>
-                  {app.soon ? (
-                    <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider text-[var(--text-sub)]">
-                      Coming soon
-                    </span>
-                  ) : null}
                 </div>
                 <p className="mt-5 text-[11px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">{app.eyebrow}</p>
                 <h3 className="mt-1 text-xl font-extrabold tracking-[-0.025em] text-[var(--text)]">{app.title}</h3>

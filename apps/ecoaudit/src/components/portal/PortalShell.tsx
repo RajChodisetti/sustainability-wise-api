@@ -10,6 +10,7 @@ import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
 import { PORTAL_FEATURES } from '@/lib/portalFeatures';
+import { portalNavigationScopeForPath } from '@/lib/portalNavigation';
 
 function isActive(pathname: string, href: string, exact = false) {
   if (exact) return pathname === href;
@@ -241,17 +242,17 @@ function SidebarNavigation({
   setEcoOpen,
   solarOpen,
   setSolarOpen,
-  installHubOpen,
-  setInstallHubOpen,
+  fieldOpen,
+  setFieldOpen,
   fleetOpen,
   setFleetOpen,
   ecoChildren,
   solarChildren,
-  installHubChildren,
+  fieldChildren,
   fleetChildren,
   showEcoNavigation,
   showSolarNavigation,
-  showInstallHubNavigation,
+  showFieldNavigation,
   showFleetNavigation,
   healthState,
   onNavigate,
@@ -264,17 +265,17 @@ function SidebarNavigation({
   setEcoOpen: (value: boolean) => void;
   solarOpen: boolean;
   setSolarOpen: (value: boolean) => void;
-  installHubOpen: boolean;
-  setInstallHubOpen: (value: boolean) => void;
+  fieldOpen: boolean;
+  setFieldOpen: (value: boolean) => void;
   fleetOpen: boolean;
   setFleetOpen: (value: boolean) => void;
   ecoChildren: ChildNavItem[];
   solarChildren: ChildNavItem[];
-  installHubChildren: ChildNavItem[];
+  fieldChildren: ChildNavItem[];
   fleetChildren: ChildNavItem[];
   showEcoNavigation: boolean;
   showSolarNavigation: boolean;
-  showInstallHubNavigation: boolean;
+  showFieldNavigation: boolean;
   showFleetNavigation: boolean;
   healthState: 'checking' | 'connected' | 'offline';
   onNavigate?: () => void;
@@ -334,16 +335,16 @@ function SidebarNavigation({
                   onNavigate={onNavigate}
                 />
               ) : null}
-              {showInstallHubNavigation ? (
+              {showFieldNavigation ? (
                 <AppNavigationSection
-                  label="InstallHub"
-                  href="/installhub/dashboard"
-                  icon="tool"
-                  open={installHubOpen}
-                  onToggle={() => setInstallHubOpen(!installHubOpen)}
-                  items={installHubChildren}
-                  regionId={`${idPrefix}-installhub-navigation`}
-                  active={pathname.startsWith('/installhub')}
+                  label="Field App"
+                  href="/field"
+                  icon="clipboard"
+                  open={fieldOpen}
+                  onToggle={() => setFieldOpen(!fieldOpen)}
+                  items={fieldChildren}
+                  regionId={`${idPrefix}-field-navigation`}
+                  active={pathname.startsWith('/field') || pathname.startsWith('/installhub')}
                   onNavigate={onNavigate}
                 />
               ) : null}
@@ -360,22 +361,6 @@ function SidebarNavigation({
                   onNavigate={onNavigate}
                 />
               ) : null}
-              <Link
-                href="/field"
-                onClick={onNavigate}
-                aria-current={isActive(pathname, '/field') ? 'page' : undefined}
-                className={`flex min-h-11 items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm font-semibold ${
-                  isActive(pathname, '/field')
-                    ? 'bg-white/14 text-white shadow-[inset_3px_0_0_var(--accent)]'
-                    : 'text-[var(--sidebar-muted)] hover:bg-white/[0.07] hover:text-white'
-                }`}
-              >
-                <Icon name="clipboard" size={19} />
-                <span className="flex-1">Field App</span>
-                <span className="rounded-full border border-[var(--sidebar-border)] bg-white/[0.06] px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider">
-                  Soon
-                </span>
-              </Link>
             </div>
           ) : null}
         </div>
@@ -399,7 +384,7 @@ function SidebarNavigation({
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
-  if (pathname.startsWith('/installhub')) return { name: 'InstallHub', icon: 'tool' as IconName };
+  if (pathname.startsWith('/installhub')) return { name: 'Field App · InstallHub', icon: 'tool' as IconName };
   if (pathname.startsWith('/fleet')) return { name: 'Wattwatchers Fleet', icon: 'activity' as IconName };
   if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
   if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
@@ -413,21 +398,11 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
   const ihAdmin = ihUser?.role === 'admin';
-  const navigationScope = pathname.startsWith('/ecoaudit')
-    ? 'ecoaudit'
-    : pathname.startsWith('/solar')
-      ? 'solar'
-      : pathname.startsWith('/installhub')
-        ? 'installhub'
-        : pathname.startsWith('/fleet')
-          ? 'fleet'
-          : pathname.startsWith('/field')
-            ? 'field'
-            : 'portal';
+  const navigationScope = portalNavigationScopeForPath(pathname);
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [solarChoice, setSolarChoice] = useState<{ scope: string; value: boolean } | null>(null);
-  const [installHubChoice, setInstallHubChoice] = useState<{ scope: string; value: boolean } | null>(null);
+  const [fieldChoice, setFieldChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [fleetChoice, setFleetChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const appsOpen = appsChoice?.scope === navigationScope
     ? appsChoice.value
@@ -438,17 +413,17 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const solarOpen = solarChoice?.scope === navigationScope
     ? solarChoice.value
     : navigationScope === 'solar';
-  const installHubOpen = installHubChoice?.scope === navigationScope
-    ? installHubChoice.value
-    : navigationScope === 'installhub';
+  const fieldOpen = fieldChoice?.scope === navigationScope
+    ? fieldChoice.value
+    : navigationScope === 'field';
   const fleetOpen = fleetChoice?.scope === navigationScope
     ? fleetChoice.value
     : navigationScope === 'fleet';
   const setAppsOpen = (value: boolean) => setAppsChoice({ scope: navigationScope, value });
   const setEcoOpen = (value: boolean) => setEcoChoice({ scope: navigationScope, value });
   const setSolarOpen = (value: boolean) => setSolarChoice({ scope: navigationScope, value });
-  const setInstallHubOpen = (value: boolean) =>
-    setInstallHubChoice({ scope: navigationScope, value });
+  const setFieldOpen = (value: boolean) =>
+    setFieldChoice({ scope: navigationScope, value });
   const setFleetOpen = (value: boolean) => setFleetChoice({ scope: navigationScope, value });
   const [mobileOpen, setMobileOpen] = useState(false);
   const mobileCloseRef = useRef<HTMLButtonElement>(null);
@@ -534,8 +509,8 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
     { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
   ];
-  const installHubChildren: ChildNavItem[] = [
-    { href: '/installhub/dashboard', label: 'Dashboard', icon: 'grid', exact: true },
+  const fieldChildren: ChildNavItem[] = [
+    { href: '/installhub/dashboard', label: 'InstallHub', icon: 'tool', exact: true },
     { href: '/installhub/installations', label: 'Installations', icon: 'building' },
     { href: '/installhub/settings', label: 'Settings', icon: 'settings' },
     ...(ihAdmin
@@ -544,7 +519,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   ];
   const showEcoNavigation = Boolean(eaUser);
   const showSolarNavigation = PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
-  const showInstallHubNavigation = Boolean(ihUser);
+  const showFieldNavigation = Boolean(ihUser);
   const showFleetNavigation = Boolean(wwUser);
   const navigationProps = {
     pathname,
@@ -554,17 +529,17 @@ export function PortalShell({ children }: { children: ReactNode }) {
     setEcoOpen,
     solarOpen,
     setSolarOpen,
-    installHubOpen,
-    setInstallHubOpen,
+    fieldOpen,
+    setFieldOpen,
     fleetOpen,
     setFleetOpen,
     ecoChildren,
     solarChildren,
-    installHubChildren,
+    fieldChildren,
     fleetChildren,
     showEcoNavigation,
     showSolarNavigation,
-    showInstallHubNavigation,
+    showFieldNavigation,
     showFleetNavigation,
     healthState,
   };
