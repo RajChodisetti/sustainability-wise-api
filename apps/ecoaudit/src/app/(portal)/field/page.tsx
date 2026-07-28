@@ -6,7 +6,8 @@ import { Icon } from '@/components/ui/Icon';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 
 export default function FieldAppPage() {
-  const { ihUser } = usePortalAuth();
+  const { eaUser, ssUser, ihUser } = usePortalAuth();
+  const canOpenInstallHub = Boolean(ihUser || eaUser || ssUser);
 
   return (
     <div>
@@ -18,7 +19,7 @@ export default function FieldAppPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Link
           href="/installhub/dashboard"
-          aria-label={`${ihUser ? 'Open' : 'Sign in to'} InstallHub`}
+          aria-label={`${canOpenInstallHub ? 'Open' : 'Sign in to'} InstallHub`}
           className="group block cursor-pointer rounded-[var(--radius-md)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2"
         >
           <Card className="interactive-card h-full !p-5 sm:!p-6">
@@ -29,12 +30,12 @@ export default function FieldAppPage() {
                 </span>
                 <span
                   className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wider ${
-                    ihUser
+                    canOpenInstallHub
                       ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                       : 'border-[var(--border)] bg-[var(--surface2)] text-[var(--text-sub)]'
                   }`}
                 >
-                  {ihUser ? 'Available' : 'Sign in required'}
+                  {canOpenInstallHub ? 'Available' : 'Sign in required'}
                 </span>
               </div>
               <p className="mt-5 text-[11px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">
@@ -48,7 +49,7 @@ export default function FieldAppPage() {
                 evidence, and PDF report packs.
               </p>
               <span className="mt-5 inline-flex items-center gap-2 text-sm font-bold text-[var(--primary)]">
-                {ihUser ? 'Open InstallHub' : 'Sign in to InstallHub'} <Icon name="arrow-right" size={17} />
+                {canOpenInstallHub ? 'Open InstallHub' : 'Sign in to InstallHub'} <Icon name="arrow-right" size={17} />
               </span>
             </div>
           </Card>

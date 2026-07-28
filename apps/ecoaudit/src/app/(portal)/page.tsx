@@ -15,7 +15,7 @@ export default function PortalHomePage() {
   const authenticatedApps: Record<PortalApplicationAccess, boolean> = {
     ecoaudit: Boolean(eaUser),
     solarsense: Boolean(ssUser),
-    installhub: Boolean(ihUser),
+    installhub: Boolean(ihUser || eaUser || ssUser),
     wattwatchers: Boolean(wwUser),
   };
   const visibleApps = visiblePortalApplications(

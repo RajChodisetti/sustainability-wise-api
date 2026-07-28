@@ -19,6 +19,7 @@ function LoginForm() {
     isSolarAuthenticated,
     isInstallHubAuthenticated,
     isWattwatchersAuthenticated,
+    hasInstallHubSourceSession,
     isLoading,
     isEcoLoading,
     isSolarLoading,
@@ -39,6 +40,13 @@ function LoginForm() {
           : target === 'wattwatchers'
             ? isWattwatchersAuthenticated
             : isAuthenticated;
+  const canEnterTargetWithoutCredentials = (
+    isTargetAuthenticated
+    || (
+      target === 'installhub'
+      && hasInstallHubSourceSession
+    )
+  );
   const isTargetLoading =
     target === 'ecoaudit'
       ? isEcoLoading
@@ -53,12 +61,14 @@ function LoginForm() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!isTargetLoading && isTargetAuthenticated) {
+    if (!isTargetLoading && canEnterTargetWithoutCredentials) {
       router.replace(next);
     }
-  }, [isTargetLoading, isTargetAuthenticated, router, next]);
+  }, [isTargetLoading, canEnterTargetWithoutCredentials, router, next]);
 
-  if (isTargetLoading || isTargetAuthenticated) return <Spinner fullPage label="Preparing your workspace…" />;
+  if (isTargetLoading || canEnterTargetWithoutCredentials) {
+    return <Spinner fullPage label="Preparing your workspace…" />;
+  }
 
   async function handleSubmit(username: string, password: string) {
     setBusy(true);

@@ -5,10 +5,10 @@ import {
   PortalLoginNetworkError,
   PortalLoginResponseError,
   applyPortalLoginSessions,
-  fieldSessionSourceOptions,
-  fieldSessionSourceToken,
   isPortalLoginUnavailable,
+  rankedFieldSessionSources,
   requestFieldSession,
+  requestFieldSessionFromSources,
   requestPortalLogin,
   shouldApplyPortalLoginSession,
   type PortalLoginHandlers,
@@ -115,46 +115,130 @@ test('Field session exchange uses the existing source bearer token', async () =>
   assert.equal(session.user.id, 'field-user');
 });
 
-test('Field session exchange selects only one unambiguous source session', () => {
-  assert.equal(fieldSessionSourceToken({
+test('Field source ranking prefers an administrator and uses Eco Audit as the stable tie-breaker', () => {
+  const solarAdmin = rankedFieldSessionSources({
     ecoAccessToken: 'eco-token',
+    ecoRefreshToken: 'eco-refresh',
     ecoAuthenticated: true,
-    solarAccessToken: null,
-    solarAuthenticated: false,
-  }), 'eco-token');
-  assert.equal(fieldSessionSourceToken({
-    ecoAccessToken: null,
-    ecoAuthenticated: false,
+    ecoRole: 'inspector',
     solarAccessToken: 'solar-token',
+    solarRefreshToken: 'solar-refresh',
     solarAuthenticated: true,
-  }), 'solar-token');
-  assert.equal(fieldSessionSourceToken({
+    solarRole: 'admin',
+  });
+  assert.deepEqual(solarAdmin.map((source) => source.app), [
+    'solarsense',
+    'ecoaudit',
+  ]);
+
+  const equalRoles = rankedFieldSessionSources({
     ecoAccessToken: 'eco-token',
+    ecoRefreshToken: 'eco-refresh',
     ecoAuthenticated: true,
+    ecoRole: 'admin',
     solarAccessToken: 'solar-token',
+    solarRefreshToken: 'solar-refresh',
     solarAuthenticated: true,
-  }), null);
+    solarRole: 'admin',
+  });
+  assert.deepEqual(equalRoles.map((source) => source.app), [
+    'ecoaudit',
+    'solarsense',
+  ]);
 });
 
-test('Field session choices expose both verified sources without choosing one', () => {
-  assert.deepEqual(fieldSessionSourceOptions({
-    ecoAccessToken: 'eco-token',
-    ecoAuthenticated: true,
-    solarAccessToken: 'solar-token',
-    solarAuthenticated: true,
-  }), ['ecoaudit', 'solarsense']);
-  assert.deepEqual(fieldSessionSourceOptions({
-    ecoAccessToken: 'stale-eco-token',
+test('Field source ranking waits for every populated source session to resolve', () => {
+  assert.deepEqual(rankedFieldSessionSources({
+    ecoAccessToken: 'pending-eco-token',
+    ecoRefreshToken: 'eco-refresh',
     ecoAuthenticated: false,
+    ecoRole: null,
     solarAccessToken: 'solar-token',
+    solarRefreshToken: 'solar-refresh',
     solarAuthenticated: true,
-  }), ['solarsense']);
-  assert.equal(fieldSessionSourceToken({
-    ecoAccessToken: 'pending-or-stale-eco-token',
+    solarRole: 'admin',
+  }), []);
+
+  const solarOnly = rankedFieldSessionSources({
+    ecoAccessToken: null,
+    ecoRefreshToken: null,
     ecoAuthenticated: false,
+    ecoRole: null,
     solarAccessToken: 'solar-token',
+    solarRefreshToken: 'solar-refresh',
     solarAuthenticated: true,
-  }), null);
+    solarRole: 'admin',
+  });
+  assert.deepEqual(solarOnly.map((source) => source.app), ['solarsense']);
+});
+
+test('Field session exchange skips a source without refresh binding and opens the next one', async () => {
+  const attempts: string[] = [];
+  const result = await requestFieldSessionFromSources([
+    {
+      app: 'ecoaudit',
+      accessToken: 'eco-access',
+      refreshToken: null,
+    },
+    {
+      app: 'solarsense',
+      accessToken: 'solar-access',
+      refreshToken: 'solar-refresh',
+    },
+  ], async (accessToken) => {
+    attempts.push(accessToken);
+    return installHubSession;
+  });
+
+  assert.deepEqual(attempts, ['solar-access']);
+  assert.equal(result?.sourceApp, 'solarsense');
+});
+
+test('Field session exchange automatically falls back when the preferred source fails', async () => {
+  const attempts: string[] = [];
+  const result = await requestFieldSessionFromSources([
+    {
+      app: 'ecoaudit',
+      accessToken: 'eco-access',
+      refreshToken: 'eco-refresh',
+    },
+    {
+      app: 'solarsense',
+      accessToken: 'solar-access',
+      refreshToken: 'solar-refresh',
+    },
+  ], async (accessToken) => {
+    attempts.push(accessToken);
+    if (accessToken === 'eco-access') throw new Error('Eco session revoked');
+    return installHubSession;
+  });
+
+  assert.deepEqual(attempts, ['eco-access', 'solar-access']);
+  assert.equal(result?.sourceApp, 'solarsense');
+});
+
+test('Field session fallback stops when logout invalidates the active attempt', async () => {
+  const attempts: string[] = [];
+  let current = true;
+  const result = await requestFieldSessionFromSources([
+    {
+      app: 'ecoaudit',
+      accessToken: 'eco-access',
+      refreshToken: 'eco-refresh',
+    },
+    {
+      app: 'solarsense',
+      accessToken: 'solar-access',
+      refreshToken: 'solar-refresh',
+    },
+  ], async (accessToken) => {
+    attempts.push(accessToken);
+    current = false;
+    throw new Error('Request completed after logout');
+  }, () => current);
+
+  assert.equal(result, null);
+  assert.deepEqual(attempts, ['eco-access']);
 });
 
 test('Field session exchange rejects a malformed auth envelope', async () => {

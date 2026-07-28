@@ -131,38 +131,64 @@ export function isPortalLoginUnavailable(error: unknown): boolean {
 
 export type FieldSessionSourceApp = 'ecoaudit' | 'solarsense';
 
-export function fieldSessionSourceOptions(input: {
+export type FieldSessionSourceCandidate = {
+  app: FieldSessionSourceApp;
+  accessToken: string;
+  refreshToken: string | null;
+};
+
+export function rankedFieldSessionSources(input: {
   ecoAccessToken: string | null;
+  ecoRefreshToken: string | null;
   ecoAuthenticated: boolean;
+  ecoRole: string | null;
   solarAccessToken: string | null;
+  solarRefreshToken: string | null;
   solarAuthenticated: boolean;
-}): FieldSessionSourceApp[] {
-  return [
+  solarRole: string | null;
+}): FieldSessionSourceCandidate[] {
+  // Wait for every populated source token to be verified before ranking. This
+  // prevents the faster /me request from provisioning Field with a weaker role
+  // while another signed-in source account is still resolving.
+  if (
+    (input.ecoAccessToken && !input.ecoAuthenticated)
+    || (input.solarAccessToken && !input.solarAuthenticated)
+  ) {
+    return [];
+  }
+
+  const candidates: Array<FieldSessionSourceCandidate & {
+    roleRank: number;
+    appRank: number;
+  }> = [
     ...(input.ecoAuthenticated && input.ecoAccessToken
-      ? ['ecoaudit' as const]
+      ? [{
+          app: 'ecoaudit' as const,
+          accessToken: input.ecoAccessToken,
+          refreshToken: input.ecoRefreshToken,
+          roleRank: input.ecoRole === 'admin' ? 1 : 0,
+          appRank: 0,
+        }]
       : []),
     ...(input.solarAuthenticated && input.solarAccessToken
-      ? ['solarsense' as const]
+      ? [{
+          app: 'solarsense' as const,
+          accessToken: input.solarAccessToken,
+          refreshToken: input.solarRefreshToken,
+          roleRank: input.solarRole === 'admin' ? 1 : 0,
+          appRank: 1,
+        }]
       : []),
   ];
-}
 
-/** Select one unambiguous existing source session for Field token exchange. */
-export function fieldSessionSourceToken(input: {
-  ecoAccessToken: string | null;
-  ecoAuthenticated: boolean;
-  solarAccessToken: string | null;
-  solarAuthenticated: boolean;
-}): string | null {
-  // If both token stores are populated, wait for both source sessions to
-  // resolve. Otherwise the faster /me request could win nondeterministically
-  // and provision Field from the wrong independent source account.
-  if (input.ecoAccessToken && input.solarAccessToken) return null;
-  const sources = fieldSessionSourceOptions(input);
-  if (sources.length !== 1) return null;
-  return sources[0] === 'ecoaudit'
-    ? input.ecoAccessToken
-    : input.solarAccessToken;
+  return candidates
+    .sort((left, right) =>
+      right.roleRank - left.roleRank || left.appRank - right.appRank)
+    .map((candidate) => ({
+      app: candidate.app,
+      accessToken: candidate.accessToken,
+      refreshToken: candidate.refreshToken,
+    }));
 }
 
 export async function requestPortalLogin(
@@ -257,6 +283,46 @@ export async function requestFieldSession(
     throw new PortalLoginResponseError('Invalid Field authentication response.');
   }
   return data as PortalLoginSession<'installhub'>;
+}
+
+type FieldSessionRequester = (
+  sourceAccessToken: string,
+  sourceRefreshToken: string,
+) => Promise<PortalLoginSession<'installhub'>>;
+
+/**
+ * Try verified source sessions in deterministic rank order. A source without a
+ * refresh token cannot satisfy the refresh-session binding and is skipped.
+ */
+export async function requestFieldSessionFromSources(
+  sources: readonly FieldSessionSourceCandidate[],
+  requester: FieldSessionRequester = requestFieldSession,
+  shouldContinue: () => boolean = () => true,
+): Promise<{
+  sourceApp: FieldSessionSourceApp;
+  session: PortalLoginSession<'installhub'>;
+} | null> {
+  let lastError: unknown;
+
+  for (const source of sources) {
+    if (!shouldContinue()) return null;
+    if (!source.refreshToken) continue;
+    try {
+      const result = {
+        sourceApp: source.app,
+        session: await requester(source.accessToken, source.refreshToken),
+      };
+      return shouldContinue() ? result : null;
+    } catch (error) {
+      if (!shouldContinue()) return null;
+      lastError = error;
+    }
+  }
+
+  if (lastError !== undefined) throw lastError;
+  throw new PortalLoginResponseError(
+    'No verified source session can open Field App.',
+  );
 }
 
 export function applyPortalLoginSessions(

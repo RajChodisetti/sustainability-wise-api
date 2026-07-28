@@ -5,7 +5,6 @@ import { usePathname, useRouter } from 'next/navigation';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { Button } from '@/components/ui/Button';
 import { Card, ErrorBanner, Spinner } from '@/components/ui/Card';
-import type { FieldSessionSourceApp } from '@/api/portalLogin';
 
 const PUBLIC_PATHS = new Set([
   '/login',
@@ -17,27 +16,13 @@ const PUBLIC_PATHS = new Set([
   '/installhub/login',
 ]);
 
-const SOURCE_LABELS: Record<FieldSessionSourceApp, string> = {
-  ecoaudit: 'Eco Audit',
-  solarsense: 'Solar Sense',
-};
-
-function FieldSessionChooser({
-  sources,
-  sourceUsers,
+function FieldSessionFailure({
   error,
-  onChoose,
+  onRetry,
 }: {
-  sources: FieldSessionSourceApp[];
-  sourceUsers: Record<
-    FieldSessionSourceApp,
-    { fullName?: string | null; email?: string | null; role?: string | null } | null
-  >;
   error: string | null;
-  onChoose: (source: FieldSessionSourceApp) => void;
+  onRetry: () => void;
 }) {
-  const hasMultipleSources = sources.length > 1;
-
   return (
     <main className="flex min-h-screen items-center justify-center bg-[var(--bg)] p-4 sm:p-8">
       <div className="w-full max-w-lg">
@@ -45,52 +30,18 @@ function FieldSessionChooser({
           Field App
         </p>
         <h1 className="text-3xl font-extrabold tracking-[-0.04em] text-[var(--text)]">
-          {hasMultipleSources
-            ? 'Choose which account opens Field App'
-            : 'Continue to Field App'}
+          Field App could not open automatically
         </h1>
         <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
-          {hasMultipleSources
-            ? 'You are signed in to two independent source accounts. Choose the one whose role and work identity should be used in Field App.'
-            : 'Use your existing signed-in account to open Field App.'}{' '}
-          No password is required.
+          Your portal account is still signed in. Retry the automatic Field
+          access setup; no password or account selection is required.
         </p>
 
         <Card className="mt-6 space-y-3 !p-5 sm:!p-6">
-          <div
-            className="space-y-3"
-            role="group"
-            aria-label="Choose a signed-in source account for Field App"
-          >
-            {sources.map((source) => {
-              const user = sourceUsers[source];
-              const identity = user?.fullName?.trim()
-                || user?.email?.trim()
-                || 'Signed-in account';
-              const role = user?.role === 'admin'
-                ? 'Administrator'
-                : 'Inspector';
-              return (
-                <Button
-                  key={source}
-                  variant="secondary"
-                  className="w-full !justify-between gap-4 text-left"
-                  onClick={() => onChoose(source)}
-                >
-                  <span className="min-w-0">
-                    <span className="block text-sm font-extrabold">
-                      Continue with {SOURCE_LABELS[source]}
-                    </span>
-                    <span className="mt-0.5 block truncate text-xs font-semibold text-[var(--text-sub)]">
-                      {identity} · {role}
-                    </span>
-                  </span>
-                  <span aria-hidden="true">→</span>
-                </Button>
-              );
-            })}
-          </div>
           {error ? <ErrorBanner message={error} /> : null}
+          <Button className="w-full" onClick={onRetry}>
+            Retry Field App
+          </Button>
         </Card>
       </div>
     </main>
@@ -99,15 +50,13 @@ function FieldSessionChooser({
 
 export function PortalAuthGate({ children }: { children: ReactNode }) {
   const {
-    eaUser,
-    ssUser,
     isAuthenticated,
     isLoading,
     isInstallHubAuthenticated,
     isInstallHubLoading,
-    installHubSourceOptions,
+    hasInstallHubSourceSession,
     installHubSessionError,
-    openInstallHubFromSource,
+    retryInstallHubSession,
   } = usePortalAuth();
   const pathname = usePathname();
   const router = useRouter();
@@ -120,11 +69,11 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
   const isRouteLoading = requiresInstallHub
     ? isInstallHubLoading
     : isLoading;
-  const canChooseInstallHubSource = (
+  const canRetryInstallHubSession = (
     requiresInstallHub
     && !isInstallHubAuthenticated
     && !isInstallHubLoading
-    && installHubSourceOptions.length > 0
+    && hasInstallHubSourceSession
   );
 
   useEffect(() => {
@@ -132,7 +81,7 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
       !isRouteLoading
       && !isRouteAuthenticated
       && !isPublic
-      && !canChooseInstallHubSource
+      && !canRetryInstallHubSession
     ) {
       router.replace(`/login?next=${encodeURIComponent(pathname || '/')}`);
     }
@@ -140,24 +89,19 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
     isRouteLoading,
     isRouteAuthenticated,
     isPublic,
-    canChooseInstallHubSource,
+    canRetryInstallHubSession,
     pathname,
     router,
   ]);
 
   if (isPublic) return <>{children}</>;
   if (isRouteLoading) return <Spinner fullPage label="Preparing your workspace…" />;
-  if (canChooseInstallHubSource) {
+  if (canRetryInstallHubSession) {
     return (
-      <FieldSessionChooser
-        sources={installHubSourceOptions}
-        sourceUsers={{
-          ecoaudit: eaUser,
-          solarsense: ssUser,
-        }}
+      <FieldSessionFailure
         error={installHubSessionError}
-        onChoose={(source) => {
-          void openInstallHubFromSource(source).catch(() => undefined);
+        onRetry={() => {
+          void retryInstallHubSession().catch(() => undefined);
         }}
       />
     );
