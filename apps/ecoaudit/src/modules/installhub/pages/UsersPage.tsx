@@ -10,6 +10,7 @@ import {
   ErrorBanner,
   PageHeader,
   Spinner,
+  StatCard,
 } from '@/components/ui/Card';
 import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
@@ -19,7 +20,7 @@ import {
   createUser,
   deactivateUser,
   getUser,
-  listUsers,
+  listUnifiedPortalUsers,
   updateUser,
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
@@ -28,15 +29,20 @@ import {
   InlineNotice,
 } from '@/modules/installhub/components/InstallHubUi';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
+import {
+  editableFieldMembership,
+  filterUnifiedPortalUsers,
+  membershipForApp,
+} from '@/modules/installhub/lib/unifiedUsers';
 import type {
   InstallHubRole,
   InstallHubUser,
   ManagedInstallHubUser,
+  UnifiedPortalApp,
+  UnifiedPortalMembership,
+  UnifiedPortalSyncStatus,
+  UnifiedPortalUser,
 } from '@/modules/installhub/types/domain';
-
-function accountLabel(user: ManagedInstallHubUser): string {
-  return user.fullName?.trim() || user.email;
-}
 
 function AdminRequired() {
   return (
@@ -48,18 +54,189 @@ function AdminRequired() {
   );
 }
 
+const portalAppLabels: Record<UnifiedPortalApp, string> = {
+  ecoaudit: 'Eco Audit',
+  solarsense: 'Solar Sense',
+  installhub: 'Field App',
+};
+
+function userLabel(user: UnifiedPortalUser): string {
+  return user.fullName?.trim() || user.displayEmail || 'Source-managed user';
+}
+
+function MembershipSummary({
+  membership,
+  isCurrent = false,
+}: {
+  membership?: UnifiedPortalMembership;
+  isCurrent?: boolean;
+}) {
+  if (!membership) {
+    return (
+      <span className="text-sm font-semibold text-[var(--muted)]">
+        No access
+      </span>
+    );
+  }
+
+  return (
+    <div className="min-w-28">
+      <p className="text-sm font-bold text-[var(--text)]">
+        {membership.role === 'admin' ? 'Administrator' : 'Inspector'}
+        {isCurrent ? (
+          <span className="ml-1.5 rounded-full bg-[var(--primary-soft)] px-2 py-0.5 text-[0.68rem] font-extrabold text-[var(--primary)]">
+            You
+          </span>
+        ) : null}
+      </p>
+      <p
+        className={`mt-1 flex items-center gap-1.5 text-xs font-bold ${
+          membership.isActive
+            ? 'text-[var(--green)]'
+            : 'text-[var(--red)]'
+        }`}
+      >
+        <span
+          aria-hidden="true"
+          className={`h-1.5 w-1.5 rounded-full ${
+            membership.isActive
+              ? 'bg-[var(--green)]'
+              : 'bg-[var(--red)]'
+          }`}
+        />
+        {membership.isActive ? 'Active' : 'Inactive'}
+      </p>
+      {membership.isSourceProjection ? (
+        <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+          From{' '}
+          {membership.sourceApp
+            ? portalAppLabels[membership.sourceApp]
+            : 'source app'}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function SyncBadge({
+  status,
+  possibleDuplicateCount,
+}: {
+  status: UnifiedPortalSyncStatus;
+  possibleDuplicateCount: number;
+}) {
+  const configs: Record<
+    UnifiedPortalSyncStatus,
+    { label: string; className: string }
+  > = {
+    synced: {
+      label: 'Synced',
+      className:
+        'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]',
+    },
+    field_only: {
+      label: 'Field only',
+      className:
+        'border-[var(--primary)]/25 bg-[var(--primary-soft)] text-[var(--primary)]',
+    },
+    drifted: {
+      label: 'Role or status drift',
+      className:
+        'border-[var(--amber)]/30 bg-[var(--amber-soft)] text-[var(--amber)]',
+    },
+    missing_projection: {
+      label: 'Missing Field access',
+      className:
+        'border-[var(--amber)]/30 bg-[var(--amber-soft)] text-[var(--amber)]',
+    },
+    orphaned_projection: {
+      label: 'Orphaned Field access',
+      className:
+        'border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]',
+    },
+    unlinked: {
+      label: 'Unlinked',
+      className:
+        'border-[var(--amber)]/30 bg-[var(--amber-soft)] text-[var(--amber)]',
+    },
+  };
+  const config = configs[status];
+
+  return (
+    <div>
+      <span
+        className={`inline-flex min-h-7 items-center rounded-full border px-2.5 py-1 text-xs font-extrabold ${config.className}`}
+      >
+        {config.label}
+      </span>
+      {possibleDuplicateCount > 0 ? (
+        <p className="mt-1.5 max-w-36 text-xs font-semibold leading-5 text-[var(--amber)]">
+          Possible match with {possibleDuplicateCount}{' '}
+          {possibleDuplicateCount === 1 ? 'other account' : 'other accounts'}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function UserIdentity({ user }: { user: UnifiedPortalUser }) {
+  return (
+    <div className="min-w-0">
+      <p className="font-extrabold text-[var(--text)]">{userLabel(user)}</p>
+      <p className="mt-1 break-all text-sm leading-5 text-[var(--text-sub)]">
+        {user.displayEmail ||
+          (user.syncStatus === 'orphaned_projection'
+            ? 'Source login unavailable'
+            : 'Login unavailable')}
+      </p>
+    </div>
+  );
+}
+
+function UserEditorAction({ user }: { user: UnifiedPortalUser }) {
+  const editable = editableFieldMembership(user);
+  if (editable) {
+    return (
+      <LinkButton
+        href={`/installhub/admin/users/${encodeURIComponent(editable.userId)}`}
+        variant="secondary"
+      >
+        Edit Field user
+      </LinkButton>
+    );
+  }
+
+  const fieldMembership = membershipForApp(user, 'installhub');
+  let managementLabel = 'Managed in its source app';
+  if (user.syncStatus === 'orphaned_projection') {
+    managementLabel = 'Source account unavailable';
+  } else if (fieldMembership?.isSourceProjection) {
+    managementLabel = `Managed from ${
+      fieldMembership.sourceApp
+        ? portalAppLabels[fieldMembership.sourceApp]
+        : 'source app'
+    }`;
+  }
+
+  return (
+    <p className="max-w-36 text-xs font-semibold leading-5 text-[var(--muted)]">
+      {managementLabel}
+    </p>
+  );
+}
+
 export function InstallHubUsersPage() {
   const { user: currentUser } = useInstallHubAuth();
   const [search, setSearch] = useState('');
   const isAdmin = currentUser?.role === 'admin';
   const query = useQuery({
-    queryKey: ['installhub', 'users'],
-    queryFn: listUsers,
+    queryKey: ['portal', 'unified-users'],
+    queryFn: listUnifiedPortalUsers,
     enabled: isAdmin,
   });
 
   if (!isAdmin) return <AdminRequired />;
-  if (query.isLoading) return <Spinner label="Loading InstallHub users…" />;
+  if (query.isLoading) return <Spinner label="Loading unified users…" />;
   if (query.error) {
     return (
       <div>
@@ -75,35 +252,100 @@ export function InstallHubUsersPage() {
     );
   }
   const users = query.data?.data ?? [];
-  const needle = search.trim().toLocaleLowerCase();
-  const filtered = users.filter((user) =>
-    !needle
-      ? true
-      : [user.fullName ?? '', user.email, user.role].some((value) =>
-          value.toLocaleLowerCase().includes(needle),
-        ),
-  );
+  const summary = query.data?.summary;
+  const identityCount = summary?.total ?? users.length;
+  const membershipCount = summary
+    ? Object.values(summary.byApp).reduce(
+        (total, appSummary) => total + appSummary.total,
+        0,
+      )
+    : users.reduce(
+        (total, user) => total + user.memberships.length,
+        0,
+      );
+  const activeCount =
+    summary?.active ??
+    users.filter((user) =>
+      user.memberships.some((membership) => membership.isActive),
+    ).length;
+  const adminCount =
+    summary?.admins ??
+    users.filter((user) =>
+      user.memberships.some((membership) => membership.role === 'admin'),
+    ).length;
+  const needsAttentionCount =
+    summary?.needsAttention ??
+    users.filter(
+      (user) =>
+        user.syncStatus !== 'synced' && user.syncStatus !== 'field_only',
+    ).length;
+  const filtered = filterUnifiedPortalUsers(users, search);
 
   return (
     <div>
       <Breadcrumbs
         items={[
           { label: 'InstallHub', href: '/installhub/dashboard' },
-          { label: 'User management' },
+          { label: 'Unified users' },
         ]}
       />
       <PageHeader
-        title="User management"
-        subtitle="Create accounts, assign roles, reset passwords, and control access to InstallHub cloud records."
+        title="Unified user directory"
+        subtitle="Review roles and access across Eco Audit, Solar Sense, and the Field App from one directory. Solar memberships remain visible here even when the Solar Sense application is hidden."
         actions={
           <LinkButton href="/installhub/admin/users/new">
             <Icon name="plus" size={17} />
-            Add user
+            Add Field user
           </LinkButton>
         }
       />
 
+      <div
+        className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5"
+        aria-label="Unified user summary"
+      >
+        <StatCard
+          label="Identities"
+          value={identityCount}
+          icon="users"
+        />
+        <StatCard
+          label="Memberships"
+          value={membershipCount}
+          icon="apps"
+        />
+        <StatCard
+          label="Active users"
+          value={activeCount}
+          icon="check"
+          tone="success"
+        />
+        <StatCard label="Administrators" value={adminCount} icon="shield" />
+        <StatCard
+          label="Needs attention"
+          value={needsAttentionCount}
+          icon="activity"
+          tone={needsAttentionCount ? 'warning' : 'success'}
+        />
+      </div>
+
       <Card className="mb-5 !p-4">
+        <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+          <label
+            className="text-sm font-extrabold text-[var(--text)]"
+            htmlFor="unified-user-search"
+          >
+            Search directory
+          </label>
+          <p
+            className="text-xs font-semibold text-[var(--text-sub)]"
+            role="status"
+            aria-live="polite"
+          >
+            {filtered.length} of {users.length}{' '}
+            {users.length === 1 ? 'identity' : 'identities'}
+          </p>
+        </div>
         <div className="relative">
           <Icon
             name="search"
@@ -111,11 +353,11 @@ export function InstallHubUsersPage() {
             className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)]"
           />
           <Input
+            id="unified-user-search"
             className="pl-10"
             type="search"
             value={search}
-            placeholder="Search name, email, or role"
-            aria-label="Search users"
+            placeholder="Search name, login, app, role, status, or sync state"
             onChange={(event) => setSearch(event.target.value)}
           />
         </div>
@@ -123,54 +365,161 @@ export function InstallHubUsersPage() {
 
       {filtered.length === 0 ? (
         <EmptyState
-          title={search ? 'No matching users' : 'No cloud users'}
+          title={search ? 'No matching users' : 'No directory users'}
           description={
             search
-              ? 'Try a different name, email address, or role.'
-              : 'Add the first InstallHub account.'
+              ? 'Try a different name, login, application, role, or status.'
+              : 'Add the first Field App account.'
           }
           icon="users"
         />
       ) : (
-        <div className="grid gap-3 lg:grid-cols-2">
-          {filtered.map((user) => {
-            const isCurrent = user.id === currentUser.id;
-            return (
-              <Card key={user.id} className="!p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-extrabold text-[var(--text)]">
-                      {accountLabel(user)}
-                    </p>
-                    <p className="mt-1 break-all text-sm text-[var(--text-sub)]">
-                      {user.email}
-                    </p>
-                  </div>
-                  <span
-                    className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-bold ${
-                      user.isActive
-                        ? 'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]'
-                        : 'border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]'
-                    }`}
+        <section aria-labelledby="application-access-heading">
+          <div className="mb-3">
+            <h2
+              id="application-access-heading"
+              className="text-lg font-extrabold text-[var(--text)]"
+            >
+              Application access
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
+              Each row is one directory identity. Roles and active status are
+              shown separately for every application membership.
+            </p>
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)] lg:block">
+            <table className="w-full min-w-[1020px] border-collapse text-left">
+              <caption className="sr-only">
+                Unified user roles and access status for Eco Audit, Solar
+                Sense, and the Field App
+              </caption>
+              <thead className="bg-[var(--surface2)] text-xs uppercase tracking-[0.06em] text-[var(--text-sub)]">
+                <tr>
+                  <th
+                    className="w-[23%] border-b border-[var(--border)] px-4 py-3 font-extrabold"
+                    scope="col"
                   >
-                    {user.isActive ? 'Active' : 'Inactive'}
-                  </span>
-                </div>
-                <p className="mt-3 text-xs font-semibold text-[var(--muted)]">
-                  {user.role === 'admin' ? 'Administrator' : 'Inspector'}
-                  {isCurrent ? ' · You' : ''}
-                </p>
-                <LinkButton
-                  className="mt-4 w-full"
-                  href={`/installhub/admin/users/${user.id}`}
-                  variant="secondary"
-                >
-                  Edit user
-                </LinkButton>
-              </Card>
-            );
-          })}
-        </div>
+                    User
+                  </th>
+                  {(['Eco Audit', 'Solar Sense', 'Field App'] as const).map(
+                    (label) => (
+                      <th
+                        key={label}
+                        className="w-[15%] border-b border-[var(--border)] px-4 py-3 font-extrabold"
+                        scope="col"
+                      >
+                        {label}
+                      </th>
+                    ),
+                  )}
+                  <th
+                    className="w-[13%] border-b border-[var(--border)] px-4 py-3 font-extrabold"
+                    scope="col"
+                  >
+                    Sync state
+                  </th>
+                  <th
+                    className="w-[19%] border-b border-[var(--border)] px-4 py-3 font-extrabold"
+                    scope="col"
+                  >
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((user) => {
+                  const fieldMembership = membershipForApp(user, 'installhub');
+                  return (
+                    <tr
+                      key={user.key}
+                      className="border-b border-[var(--border)] align-top last:border-0 hover:bg-[var(--surface2)]"
+                    >
+                      <th
+                        className="px-4 py-4 text-left font-normal"
+                        scope="row"
+                      >
+                        <UserIdentity user={user} />
+                      </th>
+                      <td className="px-4 py-4">
+                        <MembershipSummary
+                          membership={membershipForApp(user, 'ecoaudit')}
+                        />
+                      </td>
+                      <td className="px-4 py-4">
+                        <MembershipSummary
+                          membership={membershipForApp(user, 'solarsense')}
+                        />
+                      </td>
+                      <td className="px-4 py-4">
+                        <MembershipSummary
+                          membership={fieldMembership}
+                          isCurrent={fieldMembership?.userId === currentUser.id}
+                        />
+                      </td>
+                      <td className="px-4 py-4">
+                        <SyncBadge
+                          status={user.syncStatus}
+                          possibleDuplicateCount={user.possibleDuplicateCount}
+                        />
+                      </td>
+                      <td className="px-4 py-4">
+                        <UserEditorAction user={user} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="grid gap-3 lg:hidden">
+            {filtered.map((user) => {
+              const fieldMembership = membershipForApp(user, 'installhub');
+              return (
+                <Card key={user.key} className="!p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <UserIdentity user={user} />
+                    <SyncBadge
+                      status={user.syncStatus}
+                      possibleDuplicateCount={user.possibleDuplicateCount}
+                    />
+                  </div>
+                  <dl className="mt-4 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+                    {(
+                      [
+                        ['Eco Audit', 'ecoaudit'],
+                        ['Solar Sense', 'solarsense'],
+                        ['Field App', 'installhub'],
+                      ] as const
+                    ).map(([label, app]) => (
+                      <div
+                        key={app}
+                        className="grid grid-cols-[minmax(0,6.5rem)_1fr] gap-3 py-3"
+                      >
+                        <dt className="text-xs font-extrabold uppercase tracking-[0.06em] text-[var(--text-sub)]">
+                          {label}
+                        </dt>
+                        <dd>
+                          <MembershipSummary
+                            membership={membershipForApp(user, app)}
+                            isCurrent={
+                              app === 'installhub' &&
+                              fieldMembership?.userId === currentUser.id
+                            }
+                          />
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="mt-4">
+                    <UserEditorAction user={user} />
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        </section>
       )}
     </div>
   );
@@ -198,6 +547,14 @@ export function InstallHubUserEditorPage({ mode }: { mode: EditorMode }) {
   if (mode === 'edit' && !query.data) {
     return <ErrorBanner message="InstallHub user not found." />;
   }
+  if (mode === 'edit' && query.data?.sourceManaged) {
+    return (
+      <SourceManagedFieldUserDetails
+        user={query.data}
+        isCurrentUser={query.data.id === currentUser.id}
+      />
+    );
+  }
 
   return (
     <UserEditorForm
@@ -206,6 +563,100 @@ export function InstallHubUserEditorPage({ mode }: { mode: EditorMode }) {
       source={query.data}
       currentUser={currentUser}
     />
+  );
+}
+
+function SourceManagedFieldUserDetails({
+  user,
+  isCurrentUser,
+}: {
+  user: ManagedInstallHubUser;
+  isCurrentUser: boolean;
+}) {
+  const sourceName = user.sourceApp
+    ? portalAppLabels[user.sourceApp]
+    : 'source application';
+  const sourceUnavailable = user.sourceState === 'orphaned';
+
+  return (
+    <div className="mx-auto max-w-3xl">
+      <Breadcrumbs
+        items={[
+          {
+            label: 'User management',
+            href: '/installhub/admin/users',
+          },
+          { label: 'User details' },
+        ]}
+      />
+      <PageHeader
+        title={user.fullName?.trim() || user.email || 'Source-managed user'}
+        subtitle="Review this account's shared Field access. Its authoritative account remains in the source application."
+        actions={
+          <span
+            className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
+              user.isActive
+                ? 'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]'
+                : 'border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]'
+            }`}
+          >
+            {user.isActive ? 'Active' : 'Inactive'}
+          </span>
+        }
+      />
+
+      <InlineNotice>
+        {sourceUnavailable
+          ? 'The source account is unavailable. This inactive Field record is retained only for traceability and cannot be edited or used to sign in.'
+          : `This account is managed in ${sourceName}. Profile, role, status, and administrator password resets are read-only here; source changes update its shared Field access automatically.`}
+      </InlineNotice>
+
+      <Card className="mt-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-extrabold text-[var(--text)]">
+            Account details
+          </h2>
+          <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-2.5 py-1 text-xs font-bold text-[var(--text-sub)]">
+            Read only
+          </span>
+        </div>
+        <dl className="mt-4 divide-y divide-[var(--border)] border-y border-[var(--border)]">
+          {[
+            ['Full name', user.fullName?.trim() || 'Not provided'],
+            ['Login', user.email || 'Source account unavailable'],
+            [
+              'Role',
+              user.role === 'admin' ? 'Administrator' : 'Inspector',
+            ],
+            ['Status', user.isActive ? 'Active' : 'Inactive'],
+            ['Managed by', sourceUnavailable ? 'Source unavailable' : sourceName],
+          ].map(([label, value]) => (
+            <div
+              key={label}
+              className="grid gap-1 py-3 sm:grid-cols-[10rem_minmax(0,1fr)] sm:gap-4"
+            >
+              <dt className="text-xs font-extrabold uppercase tracking-[0.06em] text-[var(--text-sub)]">
+                {label}
+              </dt>
+              <dd className="break-all text-sm font-semibold text-[var(--text)]">
+                {value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <LinkButton href="/installhub/admin/users" variant="secondary">
+            Back to users
+          </LinkButton>
+          {isCurrentUser && !sourceUnavailable ? (
+            <LinkButton href="/installhub/settings/password">
+              Change my password
+            </LinkButton>
+          ) : null}
+        </div>
+      </Card>
+    </div>
   );
 }
 

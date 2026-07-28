@@ -35,6 +35,11 @@ export function InstallHubSettingsPage() {
   const { mode, setMode, isDark } = useTheme();
   const toast = useToast();
   const [health, setHealth] = useState<HealthState>('idle');
+  const sourceLabel = user?.sourceApp === 'ecoaudit'
+    ? 'Eco Audit'
+    : user?.sourceApp === 'solarsense'
+      ? 'Solar Sense'
+      : null;
 
   async function testConnection() {
     setHealth('checking');
@@ -69,9 +74,20 @@ export function InstallHubSettingsPage() {
                   label: 'Role',
                   value: user?.role === 'admin' ? 'Administrator' : 'Inspector',
                 },
+                ...(sourceLabel
+                  ? [{
+                      label: 'Account source',
+                      value: `${sourceLabel} (shared with Field App)`,
+                    }]
+                  : []),
               ]}
             />
           </div>
+          {sourceLabel ? (
+            <p className="mt-4 text-sm leading-6 text-[var(--text-sub)]">
+              Profile, role, and active status are managed in {sourceLabel}.
+            </p>
+          ) : null}
           <LinkButton
             className="mt-5 w-full sm:w-auto"
             href="/installhub/settings/password"
@@ -231,6 +247,11 @@ export function InstallHubPasswordPage() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [saving, setSaving] = useState(false);
+  const sourceLabel = user?.sourceApp === 'ecoaudit'
+    ? 'Eco Audit'
+    : user?.sourceApp === 'solarsense'
+      ? 'Solar Sense'
+      : null;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -254,7 +275,9 @@ export function InstallHubPasswordPage() {
     try {
       await changeUserPassword(user.id, { currentPassword, newPassword });
       window.alert(
-        'Password changed. Your existing InstallHub cloud sessions were revoked. Sign in again with the new password.',
+        sourceLabel
+          ? `Password changed for ${sourceLabel} and the Field App. Existing cloud refresh sessions for both apps were revoked. Sign in again with the new password.`
+          : 'Password changed. Your existing Field App refresh sessions were revoked. Sign in again with the new password.',
       );
       await logout();
       router.replace('/login');
@@ -275,7 +298,11 @@ export function InstallHubPasswordPage() {
       />
       <PageHeader
         title="Change your password"
-        subtitle="Confirm your current password. A successful change revokes other InstallHub refresh sessions."
+        subtitle={
+          sourceLabel
+            ? `This Field account is managed by ${sourceLabel}. Changing it updates the shared ${sourceLabel} credential and revokes refresh sessions in both apps.`
+            : 'Confirm your current password. A successful change revokes other Field App refresh sessions.'
+        }
       />
       <form onSubmit={(event) => void submit(event)}>
         <Card>

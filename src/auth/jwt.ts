@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import jwt from 'jsonwebtoken';
 import { config } from '../config.js';
 
@@ -23,7 +24,13 @@ export function signAccessToken(payload: AccessPayload): string {
 }
 
 export function signRefreshToken(payload: RefreshPayload): string {
-  return jwt.sign(payload, config.jwtRefreshSecret, { expiresIn: REFRESH_TTL });
+  // A unique JWT ID prevents two refresh tokens issued for the same user in
+  // the same second from becoming byte-for-byte identical. Existing tokens
+  // without a jti remain valid until their normal expiry.
+  return jwt.sign(payload, config.jwtRefreshSecret, {
+    expiresIn: REFRESH_TTL,
+    jwtid: randomUUID(),
+  });
 }
 
 export function verifyAccessToken(token: string): AccessPayload | null {

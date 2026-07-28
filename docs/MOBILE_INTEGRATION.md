@@ -22,6 +22,14 @@ migration build that supplies both
 `EXPO_PUBLIC_REGISTRATION_SECRET`; normal release builds ignore the secret and
 no registration credential is committed to source.
 
+The additive `unified_users` registry contains every Eco Audit, Solar Sense, and
+native Field account. Eco Audit and Solar Sense users receive source-managed
+Field access with the same role and active state. They sign in to Field through
+the unchanged `/v1/auth/login` contract with their current source credential and
+receive a normal `app: "installhub"` token; the response and `/v1/auth/me`
+include `sourceManaged: true` and `sourceApp`. Native Field accounts keep their
+existing login and return `sourceManaged: false`.
+
 The API owns a separate namespace:
 
 | Concern | Contract |
@@ -29,7 +37,7 @@ The API owns a separate namespace:
 | Routes | `/v1/installhub/*` plus shared `/v1/export/jobs/*` |
 | JWT app claim | `installhub` |
 | API-key prefix (administrative compatibility) | `sk_ih_live_*` |
-| Tables | `ih_users`, `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, `ih_form_submissions` |
+| Tables | Native accounts remain in `ih_users`; all three apps are mirrored in additive `unified_users`; Field data remains in `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions` |
 | Shared media registry | `photo_registry` rows with `app = installhub` |
 
 ### Sync endpoints
@@ -67,10 +75,20 @@ For backward compatibility, an absent stage is treated as complete.
 | `DELETE /v1/installhub/installations/:installationId` | creator or admin | Reversibly soft-remove an active Cloud Backup |
 | `DELETE /v1/installhub/installations/:installationId?purge=true` | creator or admin | Permanently delete a Cloud Backup tree, unreferenced originals, report files/jobs, and versions |
 
-User administration is scoped to `ih_users`. The API prevents an administrator
-from demoting/deactivating their own account and prevents removal of the last
-active InstallHub administrator. Role or active-state changes, password changes,
-and deactivation revoke outstanding InstallHub refresh tokens.
+Native user administration remains scoped to `ih_users`. The API prevents an
+administrator from demoting/deactivating their own account and prevents removal
+of the last active native InstallHub administrator. Role or active-state
+changes, password changes, and deactivation revoke outstanding InstallHub
+refresh tokens.
+
+Source-managed rows are returned by the same list/detail endpoints so installed
+clients remain compatible. The public view uses the source email/name and adds
+`sourceManaged`, `sourceApp`, and `sourceState`. Their profile, role, active
+state, administrator password reset, and deactivation are read-only in Field and
+must be changed in the source app. A source-managed user may change their own
+password after confirming the current password; this updates the authoritative
+source credential and revokes both source and Field refresh sessions. Active
+registry-managed users remain valid installation assignees.
 
 Assignment augments, rather than transfers, access: the creator and elevated
 users retain access. The assignee can pull/import the tree and access its
@@ -198,6 +216,20 @@ The EcoSense portal exposes the same server-backed InstallHub domain under
 `/installhub`. It keeps an isolated `installhub` JWT/refresh session and uses the
 same pull, full-snapshot push, exact photo-field upload, access, file/version,
 user, and durable PDF-job endpoints as the iOS app.
+
+Its Field user-management page reads `/v1/portal/users`, showing Eco Audit, Solar
+Sense, and Field role/status memberships from `unified_users` in one responsive
+matrix. Source-managed Field access is visible but read-only; only native
+Field-only rows link to the existing editor. Every application login route
+redirects to the portal's single `/login` page. The shared portal login is an
+additive facade over the existing per-app sessions and falls back to the legacy
+login calls only when the new endpoint is unavailable. If an Eco Audit or Solar
+Sense portal session already exists, `/v1/auth/field-session` creates the
+separate Field session after verifying both its source JWT and matching active
+source refresh session, without displaying another login page. If both
+independent source sessions are active, the portal presents an account chooser
+with no password fields and exchanges only the explicitly selected source
+session.
 
 The web workspace covers installation and zone editing, switchboards, embedded
 meters, site assets, all six schema-v2 form families, readable schema-v1 form

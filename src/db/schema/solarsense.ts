@@ -1,4 +1,12 @@
-import { pgTable, text, real, boolean, timestamp, jsonb, integer } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  real,
+  text,
+  timestamp,
+} from 'drizzle-orm/pg-core';
 
 const syncCols = {
   serverId: text('server_id'),

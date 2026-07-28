@@ -2,10 +2,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   cloudEmailForLogin,
+  explicitFieldEmailForLogin,
+  fieldBridgeIdentity,
   fleetBridgeIdentity,
+  selectFieldLoginAuthority,
   selectFleetLoginAuthority,
+  sourceIdentitiesForFieldLogin,
   sourceIdentitiesForFleetLogin,
   verifyActiveLogin,
+  verifyFieldSourceUser,
   verifyFleetSourceAdmin,
 } from './loginIdentity.js';
 
@@ -41,6 +46,73 @@ test('source-linked shadows have deterministic identities separate from human lo
   assert.match(ecoBridge.email, /^bridge-[a-f0-9]{32}@wattwatchers\.users\.local$/);
 });
 
+test('Field login resolves legacy aliases while retaining an explicit source hint', () => {
+  assert.deepEqual(sourceIdentitiesForFieldLogin(' Raj '), {
+    fieldEmail: 'raj@installhub.users.local',
+    sourceHint: null,
+    sources: [
+      { app: 'ecoaudit', email: 'raj@ecoaudit.users.local' },
+      { app: 'solarsense', email: 'raj@solarsense.users.local' },
+    ],
+  });
+  assert.deepEqual(sourceIdentitiesForFieldLogin('raj@ecoaudit.users.local'), {
+    fieldEmail: 'raj@installhub.users.local',
+    sourceHint: 'ecoaudit',
+    sources: [
+      { app: 'ecoaudit', email: 'raj@ecoaudit.users.local' },
+      { app: 'solarsense', email: 'raj@solarsense.users.local' },
+    ],
+  });
+  assert.deepEqual(sourceIdentitiesForFieldLogin('Admin@Example.com'), {
+    fieldEmail: 'admin@example.com',
+    sourceHint: null,
+    sources: [
+      { app: 'ecoaudit', email: 'admin@example.com' },
+      { app: 'solarsense', email: 'admin@example.com' },
+    ],
+  });
+});
+
+test('Field preserves exact legacy explicit emails without overriding a forced source', () => {
+  assert.equal(
+    explicitFieldEmailForLogin('raj'),
+    'raj@installhub.users.local',
+  );
+  assert.equal(
+    explicitFieldEmailForLogin('raj@ecoaudit.users.local'),
+    'raj@ecoaudit.users.local',
+  );
+  assert.equal(
+    explicitFieldEmailForLogin('raj@wattwatchers.users.local'),
+    'raj@wattwatchers.users.local',
+  );
+  assert.equal(
+    explicitFieldEmailForLogin('Admin@Example.com'),
+    'admin@example.com',
+  );
+  assert.equal(
+    explicitFieldEmailForLogin('Admin@Example.com', 'ecoaudit'),
+    null,
+  );
+});
+
+test('Field source identities match the shared registry namespace', () => {
+  const ecoBridge = fieldBridgeIdentity({ app: 'ecoaudit', id: 'source-user-1' });
+  assert.deepEqual(
+    ecoBridge,
+    fieldBridgeIdentity({ app: 'ecoaudit', id: 'source-user-1' }),
+  );
+  assert.notDeepEqual(
+    ecoBridge,
+    fieldBridgeIdentity({ app: 'solarsense', id: 'source-user-1' }),
+  );
+  assert.match(
+    ecoBridge.email,
+    /^unified-field-[a-f0-9]{32}@installhub\.users\.local$/,
+  );
+  assert.equal(ecoBridge.id, 'unified-field:ecoaudit:source-user-1');
+});
+
 test('a disabled explicit Fleet user remains denied even with the right password', async () => {
   let checkedHash = '';
   const valid = await verifyActiveLogin({
@@ -73,6 +145,21 @@ test('source-admin entitlement wins when the same credentials match an explicit 
   assert.equal(selectFleetLoginAuthority(true, sourceAdmin), 'source_admin');
   assert.equal(selectFleetLoginAuthority(true, null), 'explicit_fleet');
   assert.equal(selectFleetLoginAuthority(false, null), null);
+});
+
+test('an explicit Field identity retains authority over a source match', () => {
+  const sourceUser = {
+    app: 'ecoaudit' as const,
+    id: 'eco-user',
+    email: 'user@ecoaudit.users.local',
+    passwordHash: 'source-hash',
+    fullName: 'Eco User',
+    role: 'admin',
+    isActive: true,
+  };
+  assert.equal(selectFieldLoginAuthority(true, sourceUser), 'explicit_field');
+  assert.equal(selectFieldLoginAuthority(false, sourceUser), 'source_user');
+  assert.equal(selectFieldLoginAuthority(false, null), null);
 });
 
 test('only an active source administrator with the matching password is eligible', async () => {
@@ -135,4 +222,99 @@ test('inactive administrators and active non-admins cannot bridge into Fleet', a
   assert.equal(checkedHashes.length, 2);
   assert.ok(!checkedHashes.includes('inactive-admin-hash'));
   assert.ok(!checkedHashes.includes('active-inspector-hash'));
+});
+
+test('Field accepts active inspectors and preserves their source membership', async () => {
+  const matched = await verifyFieldSourceUser([
+    {
+      app: 'ecoaudit',
+      id: 'eco-inspector',
+      email: 'user@ecoaudit.users.local',
+      passwordHash: 'eco-hash',
+      fullName: 'Eco Inspector',
+      role: 'inspector',
+      isActive: true,
+    },
+    null,
+  ], 'correct', async (password, hash) => (
+    password === 'correct' && hash === 'eco-hash'
+  ));
+
+  assert.equal(matched?.id, 'eco-inspector');
+  assert.equal(matched?.role, 'inspector');
+});
+
+test('Field rejects an ambiguous credential across independent source identities', async () => {
+  const matched = await verifyFieldSourceUser([
+    {
+      app: 'ecoaudit',
+      id: 'eco-admin',
+      identityId: 'legacy:ecoaudit:eco-admin',
+      email: 'shared@ecoaudit.users.local',
+      passwordHash: 'shared-hash',
+      fullName: 'Eco Admin',
+      role: 'admin',
+      isActive: true,
+    },
+    {
+      app: 'solarsense',
+      id: 'solar-inspector',
+      identityId: 'legacy:solarsense:solar-inspector',
+      email: 'shared@solarsense.users.local',
+      passwordHash: 'shared-hash',
+      fullName: 'Solar Inspector',
+      role: 'inspector',
+      isActive: true,
+    },
+  ], 'shared-password', async (_password, hash) => hash === 'shared-hash');
+
+  assert.equal(matched, null);
+});
+
+test('an app-local Field login hint selects the exact source account', async () => {
+  const matched = await verifyFieldSourceUser([
+    {
+      app: 'ecoaudit',
+      id: 'eco-admin',
+      email: 'shared@ecoaudit.users.local',
+      passwordHash: 'shared-hash',
+      fullName: 'Eco Admin',
+      role: 'admin',
+      isActive: true,
+    },
+    {
+      app: 'solarsense',
+      id: 'solar-inspector',
+      email: 'shared@solarsense.users.local',
+      passwordHash: 'shared-hash',
+      fullName: 'Solar Inspector',
+      role: 'inspector',
+      isActive: true,
+    },
+  ], 'shared-password', async (_password, hash) => hash === 'shared-hash', 'ecoaudit');
+
+  assert.equal(matched?.id, 'eco-admin');
+  assert.equal(matched?.role, 'admin');
+});
+
+test('inactive Field source memberships never authenticate', async () => {
+  const checkedHashes: string[] = [];
+  const matched = await verifyFieldSourceUser([
+    {
+      app: 'ecoaudit',
+      id: 'inactive-user',
+      email: 'user@ecoaudit.users.local',
+      passwordHash: 'inactive-hash',
+      fullName: null,
+      role: 'admin',
+      isActive: false,
+    },
+    null,
+  ], 'correct', async (_password, hash) => {
+    checkedHashes.push(hash);
+    return true;
+  });
+
+  assert.equal(matched, null);
+  assert.ok(!checkedHashes.includes('inactive-hash'));
 });

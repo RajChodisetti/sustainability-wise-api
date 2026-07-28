@@ -79,6 +79,11 @@ export function getStoredJwt(): string | null {
   return localStorage.getItem(JWT_KEY);
 }
 
+export function getStoredRefreshToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem(REFRESH_KEY);
+}
+
 export function saveTokens(accessToken: string, refreshToken: string): void {
   localStorage.setItem(JWT_KEY, accessToken);
   localStorage.setItem(REFRESH_KEY, refreshToken);

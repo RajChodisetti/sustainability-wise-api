@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
-import { ihInstallations, ihUsers } from '../../db/schema/installhub.js';
+import { ihInstallations } from '../../db/schema/installhub.js';
+import { unifiedUsers } from '../../db/schema/shared.js';
 import { badRequest, notFound } from '../../utils/errors.js';
 import {
   assertInstallationAccess,
@@ -10,6 +11,34 @@ import {
   shouldPurgeQuery,
 } from './helpers.js';
 import { purgeInstallHubInstallationTree } from './purge.js';
+import {
+  presentUnifiedInstallHubUser,
+  unifiedInstallHubUserColumns,
+  type UnifiedInstallHubUserView,
+} from './users.js';
+
+type InstallationAssignment = Pick<
+  typeof ihInstallations.$inferSelect,
+  'id' | 'assignedInspectorUserId'
+>;
+export function buildInstallHubAssignmentResponse(
+  installation: InstallationAssignment,
+  assignedInspector?: UnifiedInstallHubUserView,
+) {
+  return {
+    installationId: installation.id,
+    assignedInspectorUserId: installation.assignedInspectorUserId,
+    assignedInspector: assignedInspector
+      ? presentUnifiedInstallHubUser(assignedInspector)
+      : null,
+  };
+}
+
+export function isAssignableInstallHubUser(
+  user: Pick<UnifiedInstallHubUserView, 'isActive' | 'deletedAt'>,
+): boolean {
+  return user.isActive && user.deletedAt === null;
+}
 
 async function loadInstallation(
   installationId: string,
@@ -34,22 +63,16 @@ async function assignmentResponse(
   installation: typeof ihInstallations.$inferSelect,
 ) {
   const [assignedInspector] = installation.assignedInspectorUserId
-    ? await db
-        .select({
-          id: ihUsers.id,
-          email: ihUsers.email,
-          fullName: ihUsers.fullName,
-          role: ihUsers.role,
-          isActive: ihUsers.isActive,
-        })
-        .from(ihUsers)
-        .where(eq(ihUsers.id, installation.assignedInspectorUserId))
+      ? await db
+        .select(unifiedInstallHubUserColumns)
+        .from(unifiedUsers)
+        .where(eq(
+          unifiedUsers.fieldUserId,
+          installation.assignedInspectorUserId,
+        ))
+        .limit(1)
     : [];
-  return {
-    installationId: installation.id,
-    assignedInspectorUserId: installation.assignedInspectorUserId,
-    assignedInspector: assignedInspector ?? null,
-  };
+  return buildInstallHubAssignmentResponse(installation, assignedInspector);
 }
 
 export async function installhubInstallationRoutes(
@@ -143,11 +166,14 @@ export async function installhubInstallationRoutes(
         : null;
     if (assignedInspectorUserId) {
       const [user] = await db
-        .select({ id: ihUsers.id, isActive: ihUsers.isActive })
-        .from(ihUsers)
-        .where(eq(ihUsers.id, assignedInspectorUserId));
+        .select(unifiedInstallHubUserColumns)
+        .from(unifiedUsers)
+        .where(eq(unifiedUsers.fieldUserId, assignedInspectorUserId))
+        .limit(1);
       if (!user) throw notFound('Assigned user');
-      if (!user.isActive) throw badRequest('Assigned user must be active');
+      if (!isAssignableInstallHubUser(user)) {
+        throw badRequest('Assigned user must be active');
+      }
     }
     const [updated] = await db
       .update(ihInstallations)

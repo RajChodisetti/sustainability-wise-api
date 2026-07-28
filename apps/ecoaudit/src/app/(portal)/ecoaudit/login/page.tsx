@@ -1,13 +1,11 @@
-'use client';
+import { redirect } from 'next/navigation';
+import { portalLoginRedirectPath } from '@/lib/portalNavigation';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Spinner } from '@/components/ui/Card';
-
-export default function RedirectToPortalLogin() {
-  const router = useRouter();
-  useEffect(() => {
-    router.replace('/login?next=%2Fecoaudit');
-  }, [router]);
-  return <Spinner fullPage label="Redirecting to sign in…" />;
+export default async function RedirectToPortalLogin({
+  searchParams,
+}: {
+  searchParams: Promise<{ next?: string | string[] }>;
+}) {
+  const { next } = await searchParams;
+  redirect(portalLoginRedirectPath(next, '/ecoaudit'));
 }

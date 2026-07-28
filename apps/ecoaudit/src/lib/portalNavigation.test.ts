@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   portalAppForPath,
+  portalLoginRedirectPath,
   portalNavigationScopeForPath,
+  safePortalLoginNext,
   safePortalNext,
 } from './portalNavigation';
 
@@ -39,6 +41,34 @@ test('portalAppForPath selects only app-local targets', () => {
   assert.equal(portalAppForPath('/fleet/devices'), 'wattwatchers');
   assert.equal(portalAppForPath('/scheduler'), null);
   assert.equal(portalAppForPath('//example.com/solar'), null);
+});
+
+test('safePortalLoginNext preserves deep links and rejects auth loops', () => {
+  assert.equal(
+    safePortalLoginNext('/installhub/admin/users?view=active', '/installhub'),
+    '/installhub/admin/users?view=active',
+  );
+  assert.equal(safePortalLoginNext('/login', '/installhub'), '/installhub');
+  assert.equal(safePortalLoginNext('/installhub/login', '/installhub'), '/installhub');
+  assert.equal(safePortalLoginNext('/solar/signup', '/solar'), '/solar');
+});
+
+test('portalLoginRedirectPath sends legacy app login URLs to the canonical login safely', () => {
+  assert.equal(
+    portalLoginRedirectPath('/installhub/admin/users', '/installhub'),
+    '/login?next=%2Finstallhub%2Fadmin%2Fusers',
+  );
+  assert.equal(
+    portalLoginRedirectPath('https://example.com/steal-session', '/installhub'),
+    '/login?next=%2Finstallhub',
+  );
+  assert.equal(
+    portalLoginRedirectPath(
+      ['/ecoaudit/dashboard', '/solar/dashboard'],
+      '/ecoaudit',
+    ),
+    '/login?next=%2Fecoaudit%2Fdashboard',
+  );
 });
 
 test('InstallHub is grouped under the Field App navigation scope', () => {

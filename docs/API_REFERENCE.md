@@ -16,9 +16,30 @@ where the token is either a JWT access token or a service account API key. Publi
 | Method | Path | Description |
 |---|---|---|
 | POST | `/v1/auth/login` | Email + password login. Returns JWT access + refresh tokens. |
+| POST | `/v1/auth/portal-login` | Additive portal login facade. Returns separate, app-scoped legacy auth envelopes in `sessions`; an optional `target` must succeed before secondary sessions are attempted. With `target`, `skipApps` avoids replacing already-active secondary portal sessions. |
+| POST | `/v1/auth/field-session` | With an existing Eco Audit or Solar Sense Bearer JWT and `{ "refreshToken": "<the matching active source refresh token>" }`, return a separate normal Field auth envelope without asking for credentials again. |
 | POST | `/v1/auth/refresh` | Rotate refresh token. Returns new JWT pair. |
 | POST | `/v1/auth/logout` | Revoke refresh token. |
 | GET | `/v1/auth/me` | Return current user info from token. |
+
+An Eco Audit or Solar Sense account also receives Field access from its
+`unified_users` registry row, with the exact same role and active state. The
+Field token still has `app: "installhub"` and uses the row's stable Field subject
+ID; it is not a cross-application bearer token. Field login rejects an
+unqualified credential when it matches two independent source accounts. Use the
+source-local Eco Audit/Solar Sense login address, a targeted portal login, or an
+authenticated `/field-session` exchange to select the intended source account.
+
+For a source-managed Field account, login and `/me` add:
+
+```json
+{ "sourceManaged": true, "sourceApp": "ecoaudit" }
+```
+
+Native Field accounts return `sourceManaged: false` and `sourceApp: null`.
+When both independent source sessions are already active in the portal, the
+user chooses Eco Audit or Solar Sense before this exchange; the portal never
+silently assigns Field ownership from whichever source responds first.
 
 ## API Keys
 
@@ -27,6 +48,16 @@ where the token is either a JWT access token or a service account API key. Publi
 | GET | `/v1/api-keys` | admin | List all non-revoked keys for your app |
 | POST | `/v1/api-keys` | admin | Create key — raw value returned once only |
 | DELETE | `/v1/api-keys/:id` | admin | Revoke key |
+
+## Unified portal users
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field admin JWT | Return the registry-backed three-app user directory, per-app role/status memberships, source state, and possible-duplicate hints |
+
+This endpoint selects public fields from `unified_users` and never returns or
+loads password hashes. Equal usernames/emails are surfaced as possible matches
+but are not automatically merged.
 
 ## Files
 

@@ -9,7 +9,7 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { AuthForm } from '@/components/auth/AuthForm';
 import { Spinner } from '@/components/ui/Card';
-import { portalAppForPath, safePortalNext } from '@/lib/portalNavigation';
+import { portalAppForPath, safePortalLoginNext } from '@/lib/portalNavigation';
 
 function LoginForm() {
   const {
@@ -27,7 +27,7 @@ function LoginForm() {
   } = usePortalAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = safePortalNext(searchParams.get('next'));
+  const next = safePortalLoginNext(searchParams.get('next'));
   const target = portalAppForPath(next);
   const isTargetAuthenticated =
     target === 'ecoaudit'
@@ -66,7 +66,6 @@ function LoginForm() {
     try {
       await login(username, password, target);
       router.replace(next);
-      router.refresh();
     } catch (err) {
       setError(
         target === 'solarsense'

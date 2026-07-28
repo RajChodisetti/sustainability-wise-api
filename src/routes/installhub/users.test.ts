@@ -76,6 +76,29 @@ test('password changes distinguish self-service from deliberate admin reset', ()
   );
 });
 
+test('synthetic source subjects use self-service only for their own Field session', () => {
+  const sourceAdminActor: AuthUser = {
+    userId: 'unified-field:ecoaudit:eco-admin',
+    app: 'installhub',
+    role: 'admin',
+    authType: 'jwt',
+  };
+  assert.equal(
+    installHubPasswordChangeMode(
+      'unified-field:ecoaudit:eco-admin',
+      sourceAdminActor,
+    ),
+    'self',
+  );
+  assert.equal(
+    installHubPasswordChangeMode(
+      'unified-field:solarsense:solar-user',
+      sourceAdminActor,
+    ),
+    'admin_reset',
+  );
+});
+
 test('inspectors cannot reset another InstallHub user password', () => {
   const inspectorActor: AuthUser = {
     userId: 'inspector-a',

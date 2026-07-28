@@ -10,6 +10,7 @@ import type {
   InstallHubExportJob,
   InstallHubPullResponse,
   ManagedInstallHubUser,
+  UnifiedPortalUsersResponse,
 } from '@/modules/installhub/types/domain';
 import {
   getStoredJwt,
@@ -169,6 +170,10 @@ export function downloadExportJob(jobId: string): Promise<Blob> {
 
 export function listUsers(): Promise<{ data: ManagedInstallHubUser[] }> {
   return installHubRequest('GET', '/v1/installhub/users');
+}
+
+export function listUnifiedPortalUsers(): Promise<UnifiedPortalUsersResponse> {
+  return installHubRequest('GET', '/v1/portal/users');
 }
 
 export function createUser(input: {

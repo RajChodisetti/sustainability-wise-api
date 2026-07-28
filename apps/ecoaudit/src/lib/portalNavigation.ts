@@ -8,6 +8,15 @@ export type PortalNavigationScope =
 
 const PORTAL_ORIGIN = 'https://portal.local';
 const UNSAFE_PATH_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\\]/;
+const PORTAL_AUTH_PATHS = new Set([
+  '/login',
+  '/signup',
+  '/ecoaudit/login',
+  '/ecoaudit/signup',
+  '/solar/login',
+  '/solar/signup',
+  '/installhub/login',
+]);
 
 function hasUnsafePathSyntax(value: string): boolean {
   return !value.startsWith('/') || value.startsWith('//') || UNSAFE_PATH_CHARACTERS.test(value);
@@ -51,6 +60,34 @@ export function safePortalNext(raw: string | null | undefined, fallback = '/'): 
   } catch {
     return fallback;
   }
+}
+
+function isPortalAuthPath(path: string): boolean {
+  const pathname = new URL(path, PORTAL_ORIGIN).pathname;
+  return PORTAL_AUTH_PATHS.has(pathname);
+}
+
+/**
+ * Resolve the post-login destination without allowing an external redirect or
+ * sending the user back into a login/signup route.
+ */
+export function safePortalLoginNext(
+  raw: string | string[] | null | undefined,
+  fallback = '/',
+): string {
+  const normalizedFallback = safePortalNext(fallback);
+  const safeFallback = isPortalAuthPath(normalizedFallback) ? '/' : normalizedFallback;
+  const requested = Array.isArray(raw) ? raw[0] : raw;
+  const next = safePortalNext(requested, safeFallback);
+  return isPortalAuthPath(next) ? safeFallback : next;
+}
+
+/** Build the canonical URL for the portal's only sign-in page. */
+export function portalLoginRedirectPath(
+  rawNext: string | string[] | null | undefined,
+  fallback = '/',
+): string {
+  return `/login?next=${encodeURIComponent(safePortalLoginNext(rawNext, fallback))}`;
 }
 
 export function portalAppForPath(path: string): PortalApp | null {

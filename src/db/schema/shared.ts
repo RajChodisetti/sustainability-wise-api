@@ -1,4 +1,57 @@
-import { index, jsonb, pgTable, text, timestamp, integer, uniqueIndex } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import {
+  boolean,
+  check,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core';
+
+/**
+ * Additive shared registry for every Eco Audit, Solar Sense, and Field origin
+ * account.
+ *
+ * Existing product user tables remain in place so released mobile clients can
+ * keep using their current login and user-management APIs. Database triggers
+ * mirror those rows here, and new shared functionality reads this one table.
+ * A source account's `fieldUserId` is its stable Field authorization subject;
+ * independent accounts that happen to share a username are never merged.
+ */
+export const unifiedUsers = pgTable('unified_users', {
+  id: text('id').primaryKey(),
+  originApp: text('origin_app').notNull(),
+  originUserId: text('origin_user_id').notNull(),
+  fieldUserId: text('field_user_id').notNull(),
+  email: text('email').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  fullName: text('full_name'),
+  role: text('role').notNull(),
+  isActive: boolean('is_active').notNull().default(true),
+  sourceCreatedAt: timestamp('source_created_at').notNull(),
+  sourceUpdatedAt: timestamp('source_updated_at').notNull(),
+  syncedAt: timestamp('synced_at').notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at'),
+  syncVersion: integer('sync_version').notNull().default(1),
+}, (table) => [
+  uniqueIndex('unified_users_origin_unique').on(table.originApp, table.originUserId),
+  uniqueIndex('unified_users_field_user_unique').on(table.fieldUserId),
+  index('unified_users_email_idx').on(table.email),
+  index('unified_users_app_role_active_idx').on(
+    table.originApp,
+    table.role,
+    table.isActive,
+  ),
+  check('unified_users_origin_app_check', sql`
+    ${table.originApp} IN ('ecoaudit', 'solarsense', 'installhub')
+  `),
+  check('unified_users_sync_version_check', sql`
+    ${table.syncVersion} > 0
+  `),
+]);
 
 export const apiKeys = pgTable('api_keys', {
   id: text('id').primaryKey(),

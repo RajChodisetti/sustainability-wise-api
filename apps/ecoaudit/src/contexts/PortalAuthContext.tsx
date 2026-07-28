@@ -6,13 +6,17 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getStoredJwt as getEaJwt,
+  getStoredRefreshToken as getEaRefreshToken,
   clearTokens as clearEaTokens,
+  saveTokens as saveEaTokens,
   subscribeAuthSession as subscribeEaAuthSession,
 } from '@/api/client';
 import {
@@ -23,7 +27,9 @@ import {
 } from '@/api/auth';
 import {
   getStoredJwt as getSsJwt,
+  getStoredRefreshToken as getSsRefreshToken,
   clearTokens as clearSsTokens,
+  saveTokens as saveSsTokens,
   subscribeAuthSession as subscribeSsAuthSession,
 } from '@solar/api/client';
 import {
@@ -35,6 +41,7 @@ import {
 import {
   getStoredJwt as getWwJwt,
   clearTokens as clearWwTokens,
+  saveTokens as saveWwTokens,
   subscribeAuthSession as subscribeWwAuthSession,
 } from '@/modules/fleet/api/client';
 import {
@@ -45,6 +52,7 @@ import {
 import {
   getStoredJwt as getIhJwt,
   clearTokens as clearIhTokens,
+  saveTokens as saveIhTokens,
   subscribeAuthSession as subscribeIhAuthSession,
 } from '@/modules/installhub/api/client';
 import {
@@ -58,6 +66,16 @@ import type { FleetUser } from '@/modules/fleet/types/domain';
 import type { InstallHubUser } from '@/modules/installhub/types/domain';
 import type { PortalApp } from '@/lib/portalNavigation';
 import { authQueryRetryDelayMs, shouldRetryAuthQuery } from '@/lib/authQuery';
+import {
+  applyPortalLoginSessions,
+  fieldSessionSourceOptions,
+  fieldSessionSourceToken,
+  isPortalLoginUnavailable,
+  requestFieldSession,
+  requestPortalLogin,
+  shouldApplyPortalLoginSession,
+  type FieldSessionSourceApp,
+} from '@/api/portalLogin';
 
 const EA_AUTH_QUERY_KEY = ['ecoaudit', 'auth', 'me'] as const;
 const SS_AUTH_QUERY_KEY = ['solar', 'auth', 'me'] as const;
@@ -92,6 +110,9 @@ type PortalAuthValue = {
   isSolarAuthenticated: boolean;
   isInstallHubAuthenticated: boolean;
   isWattwatchersAuthenticated: boolean;
+  installHubSourceOptions: FieldSessionSourceApp[];
+  installHubSessionError: string | null;
+  openInstallHubFromSource: (sourceApp: FieldSessionSourceApp) => Promise<void>;
   login: (username: string, password: string, target?: PortalApp | null) => Promise<void>;
   register: (input: { username: string; password: string; fullName: string }) => Promise<void>;
   logout: () => Promise<void>;
@@ -102,7 +123,17 @@ const PortalAuthContext = createContext<PortalAuthValue | null>(null);
 export function PortalAuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const eaToken = useSyncExternalStore(subscribeEaSessionSnapshot, getEaJwt, noServerSession);
+  const eaRefreshToken = useSyncExternalStore(
+    subscribeEaSessionSnapshot,
+    getEaRefreshToken,
+    noServerSession,
+  );
   const ssToken = useSyncExternalStore(subscribeSsSessionSnapshot, getSsJwt, noServerSession);
+  const ssRefreshToken = useSyncExternalStore(
+    subscribeSsSessionSnapshot,
+    getSsRefreshToken,
+    noServerSession,
+  );
   const ihToken = useSyncExternalStore(subscribeIhSessionSnapshot, getIhJwt, noServerSession);
   const wwToken = useSyncExternalStore(subscribeWwSessionSnapshot, getWwJwt, noServerSession);
   const isClient = useSyncExternalStore(
@@ -114,6 +145,13 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   const hasSs = Boolean(ssToken);
   const hasIh = Boolean(ihToken);
   const hasWw = Boolean(wwToken);
+  const [fieldSessionExchange, setFieldSessionExchange] = useState<{
+    token: string;
+    status: 'pending' | 'failed';
+    error: string | null;
+  } | null>(null);
+  const fieldSessionAttemptRef = useRef<string | null>(null);
+  const fieldSessionGenerationRef = useRef(0);
 
   useEffect(() => {
     const unsubscribeEa = subscribeEaAuthSession((event) => {
@@ -189,6 +227,22 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   });
 
   const login = useCallback(async (username: string, password: string, target?: PortalApp | null) => {
+    const existingSessions: Record<PortalApp, boolean> = {
+      ecoaudit: Boolean(
+        getEaJwt() || queryClient.getQueryData(EA_AUTH_QUERY_KEY),
+      ),
+      solarsense: Boolean(
+        getSsJwt() || queryClient.getQueryData(SS_AUTH_QUERY_KEY),
+      ),
+      installhub: Boolean(
+        getIhJwt() || queryClient.getQueryData(IH_AUTH_QUERY_KEY),
+      ),
+      wattwatchers: Boolean(
+        getWwJwt() || queryClient.getQueryData(WW_AUTH_QUERY_KEY),
+      ),
+    };
+    const shouldApplyBundledSession = (app: PortalApp) =>
+      shouldApplyPortalLoginSession(target, app, existingSessions[app]);
     const loginEco = async () => {
       const user = await eaLogin(username, password);
       queryClient.setQueryData(EA_AUTH_QUERY_KEY, user);
@@ -206,6 +260,46 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       queryClient.setQueryData(IH_AUTH_QUERY_KEY, user);
     };
 
+    try {
+      const response = await requestPortalLogin({
+        email: username,
+        password,
+        target: target ?? undefined,
+        skipApps: target
+          ? (Object.keys(existingSessions) as PortalApp[]).filter(
+              (app) => app !== target && existingSessions[app],
+            )
+          : undefined,
+      });
+      applyPortalLoginSessions(response, {
+        ecoaudit: (session) => {
+          if (!shouldApplyBundledSession('ecoaudit')) return;
+          saveEaTokens(session.accessToken, session.refreshToken);
+          queryClient.setQueryData(EA_AUTH_QUERY_KEY, session.user);
+        },
+        solarsense: (session) => {
+          if (!shouldApplyBundledSession('solarsense')) return;
+          saveSsTokens(session.accessToken, session.refreshToken);
+          queryClient.setQueryData(SS_AUTH_QUERY_KEY, session.user);
+        },
+        installhub: (session) => {
+          if (!shouldApplyBundledSession('installhub')) return;
+          saveIhTokens(session.accessToken, session.refreshToken);
+          queryClient.setQueryData(IH_AUTH_QUERY_KEY, session.user);
+        },
+        wattwatchers: (session) => {
+          if (!shouldApplyBundledSession('wattwatchers')) return;
+          saveWwTokens(session.accessToken, session.refreshToken);
+          queryClient.setQueryData(WW_AUTH_QUERY_KEY, session.user);
+        },
+      });
+      return;
+    } catch (error) {
+      if (!isPortalLoginUnavailable(error)) throw error;
+    }
+
+    // Rollback compatibility for API versions that predate the bundled login
+    // endpoint. Authentication failures and server errors must not fan out.
     if (target === 'ecoaudit') {
       const preserveSolarSession = Boolean(
         getSsJwt() || queryClient.getQueryData(SS_AUTH_QUERY_KEY),
@@ -313,7 +407,19 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   const logout = useCallback(async () => {
-    await Promise.allSettled([eaLogoutApi(), ssLogoutApi(), ihLogoutApi(), wwLogoutApi()]);
+    fieldSessionGenerationRef.current += 1;
+    fieldSessionAttemptRef.current = null;
+    setFieldSessionExchange(null);
+
+    // Start revocation while each client can still read its refresh token, then
+    // clear local state immediately. A slow network request must not leave the
+    // portal authenticated or allow an in-flight Field exchange to restore it.
+    const logoutRequests = [
+      eaLogoutApi(),
+      ssLogoutApi(),
+      ihLogoutApi(),
+      wwLogoutApi(),
+    ];
     clearEaTokens();
     clearSsTokens();
     clearIhTokens();
@@ -326,6 +432,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     queryClient.removeQueries({ queryKey: ['solar'] });
     queryClient.removeQueries({ queryKey: ['installhub'] });
     queryClient.removeQueries({ queryKey: ['wattwatchers'] });
+    await Promise.allSettled(logoutRequests);
   }, [queryClient]);
 
   const eaUser = (hasEa ? eaQuery.data ?? null : null) as CloudUser | null;
@@ -336,12 +443,162 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   const isSolarAuthenticated = Boolean(ssUser);
   const isInstallHubAuthenticated = Boolean(ihUser);
   const isWattwatchersAuthenticated = Boolean(wwUser);
+  const installHubSourceOptions = useMemo(
+    () => fieldSessionSourceOptions({
+      ecoAccessToken: eaToken,
+      ecoAuthenticated: isEcoAuthenticated,
+      solarAccessToken: ssToken,
+      solarAuthenticated: isSolarAuthenticated,
+    }),
+    [
+      eaToken,
+      ssToken,
+      isEcoAuthenticated,
+      isSolarAuthenticated,
+    ],
+  );
+  const sourceTokenForFieldSession = fieldSessionSourceToken({
+    ecoAccessToken: eaToken,
+    ecoAuthenticated: isEcoAuthenticated,
+    solarAccessToken: ssToken,
+    solarAuthenticated: isSolarAuthenticated,
+  });
+  const sourceRefreshTokenForFieldSession =
+    sourceTokenForFieldSession === eaToken
+      ? eaRefreshToken
+      : sourceTokenForFieldSession === ssToken
+        ? ssRefreshToken
+        : null;
+  const exchangeInstallHubSession = useCallback(async (
+    sourceToken: string,
+    sourceRefreshToken: string,
+  ) => {
+    const generation = fieldSessionGenerationRef.current + 1;
+    fieldSessionGenerationRef.current = generation;
+    fieldSessionAttemptRef.current = sourceToken;
+    setFieldSessionExchange({
+      token: sourceToken,
+      status: 'pending',
+      error: null,
+    });
+    try {
+      const session = await requestFieldSession(
+        sourceToken,
+        sourceRefreshToken,
+      );
+      if (
+        fieldSessionGenerationRef.current !== generation
+        || fieldSessionAttemptRef.current !== sourceToken
+      ) return;
+      saveIhTokens(session.accessToken, session.refreshToken);
+      queryClient.setQueryData(IH_AUTH_QUERY_KEY, session.user);
+    } catch (error) {
+      if (
+        fieldSessionGenerationRef.current === generation
+        && fieldSessionAttemptRef.current === sourceToken
+      ) {
+        setFieldSessionExchange({
+          token: sourceToken,
+          status: 'failed',
+          error: error instanceof Error && error.message.trim()
+            ? error.message
+            : 'Field access could not be opened from this account.',
+        });
+      }
+      throw error;
+    }
+  }, [queryClient]);
+
+  const openInstallHubFromSource = useCallback(async (
+    sourceApp: FieldSessionSourceApp,
+  ) => {
+    const sourceToken = sourceApp === 'ecoaudit' ? eaToken : ssToken;
+    const sourceRefreshToken = sourceApp === 'ecoaudit'
+      ? eaRefreshToken
+      : ssRefreshToken;
+    const sourceIsAuthenticated = sourceApp === 'ecoaudit'
+      ? isEcoAuthenticated
+      : isSolarAuthenticated;
+    if (!sourceToken || !sourceIsAuthenticated) {
+      throw new Error('That source session is no longer available.');
+    }
+    if (!sourceRefreshToken) {
+      const error = new Error(
+        'That source session needs to be renewed before it can open Field App.',
+      );
+      fieldSessionAttemptRef.current = sourceToken;
+      setFieldSessionExchange({
+        token: sourceToken,
+        status: 'failed',
+        error: error.message,
+      });
+      throw error;
+    }
+    await exchangeInstallHubSession(sourceToken, sourceRefreshToken);
+  }, [
+    eaToken,
+    eaRefreshToken,
+    ssToken,
+    ssRefreshToken,
+    isEcoAuthenticated,
+    isSolarAuthenticated,
+    exchangeInstallHubSession,
+  ]);
+
+  useEffect(() => {
+    if (
+      !sourceTokenForFieldSession
+      || !sourceRefreshTokenForFieldSession
+      || hasIh
+    ) return;
+    if (fieldSessionAttemptRef.current === sourceTokenForFieldSession) return;
+    void exchangeInstallHubSession(
+      sourceTokenForFieldSession,
+      sourceRefreshTokenForFieldSession,
+    )
+      .catch(() => undefined);
+  }, [
+    sourceTokenForFieldSession,
+    sourceRefreshTokenForFieldSession,
+    hasIh,
+    exchangeInstallHubSession,
+  ]);
+
+  useEffect(() => {
+    if (hasIh) fieldSessionAttemptRef.current = null;
+  }, [hasIh]);
+
+  const isFieldSessionProvisioning = Boolean(
+    !hasIh
+    && (
+      fieldSessionExchange?.status === 'pending'
+      || (
+        sourceTokenForFieldSession
+        && sourceRefreshTokenForFieldSession
+        && fieldSessionExchange?.token !== sourceTokenForFieldSession
+      )
+    ),
+  );
+  const hasPendingSourceAuthentication = Boolean(
+    !hasIh
+    && (
+      (hasEa && !eaUser)
+      || (hasSs && !ssUser)
+    ),
+  );
+  const installHubSessionError = fieldSessionExchange?.status === 'failed'
+    ? fieldSessionExchange.error
+    : null;
   // A stored token with no verified user is a pending session, including while
   // React Query is paused offline or retrying a transient failure. Only a
   // definitive 401/403 clears the token and allows a login redirect.
   const isEcoLoading = !isClient || (hasEa && !eaUser);
   const isSolarLoading = !isClient || (hasSs && !ssUser);
-  const isInstallHubLoading = !isClient || (hasIh && !ihUser);
+  const isInstallHubLoading =
+    !isClient
+    || (hasIh && !ihUser)
+    || isFieldSessionProvisioning
+    || hasPendingSourceAuthentication;
   const isWattwatchersLoading = !isClient || (hasWw && !wwUser);
   const isAuthenticated =
     isEcoAuthenticated ||
@@ -374,6 +631,9 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       isSolarAuthenticated,
       isInstallHubAuthenticated,
       isWattwatchersAuthenticated,
+      installHubSourceOptions,
+      installHubSessionError,
+      openInstallHubFromSource,
       login,
       register,
       logout,
@@ -393,6 +653,9 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       isSolarAuthenticated,
       isInstallHubAuthenticated,
       isWattwatchersAuthenticated,
+      installHubSourceOptions,
+      installHubSessionError,
+      openInstallHubFromSource,
       login,
       register,
       logout,
