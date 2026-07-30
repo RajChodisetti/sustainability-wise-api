@@ -13,6 +13,13 @@ export function resolveCompletionTiming(
   };
 }
 
+export function resolveReopenTiming(audit: Partial<AuditTiming>): AuditTiming {
+  return {
+    startedAt: audit.startedAt ?? null,
+    completedAt: null,
+  };
+}
+
 export function resolveSyncedAuditTiming(input: {
   status: string;
   incomingStartedAt: Date | null;

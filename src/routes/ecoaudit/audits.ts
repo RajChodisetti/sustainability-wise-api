@@ -30,7 +30,11 @@ import {
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
 import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
-import { resolveCompletionTiming, resolveSyncedAuditTiming } from './auditTiming.js';
+import {
+  resolveCompletionTiming,
+  resolveReopenTiming,
+  resolveSyncedAuditTiming,
+} from './auditTiming.js';
 import {
   ecoPhotoValues,
   ecoPhotoFieldReferences,
@@ -194,7 +198,7 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = request.body as JsonRecord;
-    if ('status' in body) throw badRequest('Use /complete to change status');
+    if ('status' in body) throw badRequest('Use /complete or /reopen to change status');
     const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
     const found = assertFound(audit, 'Audit');
     assertAuditAccess(found, request.user);
@@ -266,6 +270,28 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       status: 'Completed',
       startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
       completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
+      updatedAt: now,
+      syncStatus: 'local',
+    }).where(eq(eaAudits.id, id)).returning();
+    return reply.send(assertFound(updated, 'Audit'));
+  });
+
+  app.patch('/:id/reopen', {
+    schema: { tags: ['EcoAudit Audits'], security: [{ bearerAuth: [] }] },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
+    const found = assertFound(audit, 'Audit');
+    assertAuditAccess(found, request.user);
+    if (found.status === 'Draft') return reply.send(found);
+    if (found.status !== 'Completed') throw badRequest('Only completed audits can be reopened');
+
+    const now = new Date();
+    const timing = resolveReopenTiming(found);
+    const [updated] = await db.update(eaAudits).set({
+      status: 'Draft',
+      ...timing,
       updatedAt: now,
       syncStatus: 'local',
     }).where(eq(eaAudits.id, id)).returning();

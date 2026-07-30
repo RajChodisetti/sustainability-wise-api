@@ -4,7 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { completeAudit, deleteAudit, getAudit, startAudit } from '@/api/audits';
+import { completeAudit, deleteAudit, getAudit, reopenAudit, startAudit } from '@/api/audits';
 import { listZones } from '@/api/zones';
 import { listEquipment } from '@/api/equipment';
 import { cloudConnectionErrorMessage } from '@/api/client';
@@ -29,6 +29,7 @@ export default function AuditDetailPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [workspaceView, setWorkspaceView] = useState<'zones' | 'equipment'>('zones');
+  const [statusAction, setStatusAction] = useState<'complete' | 'reopen' | null>(null);
 
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
@@ -63,10 +64,9 @@ export default function AuditDetailPage() {
       .map((item) => ({ equipmentType, item }))
   ));
 
-  async function refresh() {
+  async function refreshStatus() {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['audit', auditId] }),
-      queryClient.invalidateQueries({ queryKey: ['zones', auditId] }),
       queryClient.invalidateQueries({ queryKey: ['audits'] }),
     ]);
   }
@@ -74,7 +74,7 @@ export default function AuditDetailPage() {
   async function handleStart() {
     try {
       await startAudit(auditId);
-      await refresh();
+      await refreshStatus();
       toast.success('Audit started. Timer is running.');
     } catch (e) {
       toast.error(cloudConnectionErrorMessage(e));
@@ -82,12 +82,31 @@ export default function AuditDetailPage() {
   }
 
   async function handleComplete() {
+    if (statusAction) return;
+    setStatusAction('complete');
     try {
       await completeAudit(auditId);
-      await refresh();
+      await refreshStatus();
       toast.success('Audit marked as completed.');
     } catch (e) {
       toast.error(cloudConnectionErrorMessage(e));
+    } finally {
+      setStatusAction(null);
+    }
+  }
+
+  async function handleReopen() {
+    if (statusAction) return;
+    if (!confirm('Change this audit to In Progress? This will unlock its details, zones, equipment, and photos for editing.')) return;
+    setStatusAction('reopen');
+    try {
+      await reopenAudit(auditId);
+      await refreshStatus();
+      toast.success('Audit changed to In Progress.');
+    } catch (e) {
+      toast.error(cloudConnectionErrorMessage(e));
+    } finally {
+      setStatusAction(null);
     }
   }
 
@@ -114,7 +133,24 @@ export default function AuditDetailPage() {
             <LinkButton href={`/ecoaudit/audits/${auditId}/photos`} variant="secondary"><Icon name="camera" size={17} />Photos</LinkButton>
             <LinkButton href={`/ecoaudit/audits/${auditId}/report`} variant="secondary"><Icon name="file-text" size={17} />Report PDF</LinkButton>
             {needsStart ? <Button variant="secondary" onClick={() => void handleStart()}>Start</Button> : null}
-            {!isCompleted ? <Button onClick={() => void handleComplete()}>Complete</Button> : null}
+            {!isCompleted ? (
+              <Button
+                onClick={() => void handleComplete()}
+                disabled={statusAction !== null}
+                aria-busy={statusAction === 'complete'}
+              >
+                {statusAction === 'complete' ? 'Completing…' : 'Complete'}
+              </Button>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={() => void handleReopen()}
+                disabled={statusAction !== null}
+                aria-busy={statusAction === 'reopen'}
+              >
+                {statusAction === 'reopen' ? 'Changing…' : 'Change to In Progress'}
+              </Button>
+            )}
             <Button variant="danger" onClick={() => void handleDelete()}>Delete</Button>
           </>
         }

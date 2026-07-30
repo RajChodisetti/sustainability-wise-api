@@ -40,6 +40,11 @@ import {
   reconcilePhotoCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
 import { canonicalEcoAuditPhotoFieldName } from './lightingPhotoField.js';
+import {
+  normalizeReportIdList,
+  orderReportItemsByZone,
+  orderReportZones,
+} from './reportOrder.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const LARGE_PDF_PHOTO_COUNT_THRESHOLD = 120;
@@ -491,9 +496,8 @@ body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;font-size:10.5p
 .zone-hdr{background:#1E3A8A;border-radius:8px 8px 0 0;padding:12px 16px;page-break-after:avoid;break-after:avoid;}
 .zone-hdr-inner{display:table;width:100%;}
 .zh-left{display:table-cell;vertical-align:middle;}
-.zh-num-wrap{display:inline-block;width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);text-align:center;line-height:26px;font-size:9pt;font-weight:800;color:#fff;margin-right:10px;vertical-align:middle;}
 .zh-name{display:inline;font-size:12pt;font-weight:800;color:#fff;vertical-align:middle;}
-.zh-desc{font-size:9pt;color:rgba(255,255,255,0.7);margin-top:4px;padding-left:36px;}
+.zh-desc{font-size:9pt;color:rgba(255,255,255,0.7);margin-top:4px;}
 .zh-right{display:table-cell;vertical-align:middle;text-align:right;font-size:8pt;font-weight:600;color:#93C5FD;white-space:nowrap;}
 .zone-section{margin-bottom:4px;}
 .zone-type-label{display:block;background:#EFF6FF;border-left:4px solid #1E3A8A;color:#1E3A8A;font-size:9.5pt;font-weight:800;padding:8px 14px;margin:10px 0 4px;letter-spacing:0.04em;text-transform:uppercase;page-break-after:avoid;break-after:avoid;}
@@ -579,15 +583,58 @@ type BodyArgs = {
   genDate: string;
 };
 
+export type EcoAuditReportOverview = {
+  executiveSummary: string;
+  selectedZoneCount: number;
+  totalPhotos: number;
+  switchboardCount: number;
+  hvacCount: number;
+  lightingCount: number;
+  solarCount: number;
+  forkliftCount: number;
+  hotWaterCount: number;
+  generalCount: number;
+  totalEquipment: number;
+};
+
 function zonePhotoCount(zoneId: string, photos: PhotoRow[], allEquipment: EquipmentItem[][]): number {
   const entityIds = new Set<string>([zoneId, ...allEquipment.flat().filter((x) => x.zoneId === zoneId).map((x) => x.id)]);
   return photos.filter((p) => entityIds.has(p.entityId) && p.remoteUrl).length;
 }
 
-function defaultExecutiveSummary(args: BodyArgs): string {
-  const itemCount = args.msList.length + args.addlSbList.length + args.hvacList.length + args.lightList.length
-    + args.solarList.length + args.forkliftList.length + args.hotWaterList.length + args.genWaterList.length + args.genElecList.length;
-  return `This energy audit report summarises findings for ${args.audit.siteName || 'the audited site'}, covering ${args.zones.length} zone${args.zones.length === 1 ? '' : 's'} and ${itemCount} captured item${itemCount === 1 ? '' : 's'}.`;
+function defaultExecutiveSummary(args: BodyArgs, zoneCount: number, itemCount: number): string {
+  return `This energy audit report summarises findings for ${args.audit.siteName || 'the audited site'}, covering ${zoneCount} zone${zoneCount === 1 ? '' : 's'} and ${itemCount} captured item${itemCount === 1 ? '' : 's'}.`;
+}
+
+export function buildEcoAuditReportOverview(
+  args: BodyArgs,
+  reportPhotos: PhotoRow[] = args.photos,
+): EcoAuditReportOverview {
+  const switchboardCount = args.msList.length + args.addlSbList.length;
+  const hvacCount = args.hvacList.length;
+  const lightingCount = args.lightList.length;
+  const solarCount = args.solarList.length;
+  const forkliftCount = args.forkliftList.length;
+  const hotWaterCount = args.hotWaterList.length;
+  const generalCount = args.genWaterList.length + args.genElecList.length;
+  const totalEquipment = switchboardCount + hvacCount + lightingCount + solarCount
+    + forkliftCount + hotWaterCount + generalCount;
+  const totalPhotos = reportPhotos.filter((photo) => photo.remoteUrl).length;
+  const selectedZoneCount = args.zones.length;
+
+  return {
+    executiveSummary: defaultExecutiveSummary(args, selectedZoneCount, totalEquipment),
+    selectedZoneCount,
+    totalPhotos,
+    switchboardCount,
+    hvacCount,
+    lightingCount,
+    solarCount,
+    forkliftCount,
+    hotWaterCount,
+    generalCount,
+    totalEquipment,
+  };
 }
 
 function defaultConsolidatedObservations(
@@ -711,12 +758,11 @@ function byZoneBody(args: BodyArgs): string {
 
   if (zoneBlocks.length === 0) return '<p class="empty-note">No selected zone items in this report.</p>';
 
-  return zoneBlocks.map((zone, zIdx) => {
+  return zoneBlocks.map((zone) => {
     return `<div class="zone-section">
       <div class="zone-hdr">
         <div class="zone-hdr-inner">
           <div class="zh-left">
-            <span class="zh-num-wrap">${zIdx + 1}</span>
             <span class="zh-name">${esc(zone.title)}</span>
             ${zone.description ? `<div class="zh-desc">${esc(zone.description)}</div>` : ''}
           </div>
@@ -753,6 +799,7 @@ type BuildAuditHtmlOptions = {
   includeEnd?: boolean;
   includeIntro?: boolean;
   introNoticeHtml?: string;
+  overview?: EcoAuditReportOverview;
 };
 
 // ── Full HTML builder ─────────────────────────────────────────────────────────────
@@ -760,37 +807,20 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
   const { audit, zones, mode, brandLogo, genDate, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList, photos } = args;
   const modeLabel = mode === 'by-zone' ? 'Report by Zone' : 'Report by Equipment';
   const statusLabel = audit.status === 'Completed' ? 'Completed' : 'In Progress';
-  const totalEquipment = msList.length + addlSbList.length + hvacList.length + lightList.length + solarList.length + forkliftList.length + hotWaterList.length + genWaterList.length + genElecList.length;
-  const totalPhotos = photos.filter((p) => p.remoteUrl).length;
   const consolidatedObservations = defaultConsolidatedObservations(hvacList, lightList, solarList, forkliftList, hotWaterList);
-  const executiveSummary = defaultExecutiveSummary(args);
-  const knownZoneIds = new Set(zones.map((zone) => zone.id));
-  const representedZones = new Set<string>();
-  [
-    ...zones.filter((zone) => photosForEntity(photos, zone.id, zone.photoDescs).length > 0).map((zone) => zone.id),
-    ...msList.map((item) => item.zoneId),
-    ...addlSbList.map((item) => item.zoneId),
-    ...hvacList.map((item) => item.zoneId),
-    ...lightList.map((item) => item.zoneId),
-    ...solarList.map((item) => item.zoneId),
-    ...forkliftList.map((item) => item.zoneId),
-    ...hotWaterList.map((item) => item.zoneId),
-    ...genWaterList.map((item) => item.zoneId),
-    ...genElecList.map((item) => item.zoneId),
-  ].forEach((zoneId) => representedZones.add(zoneId && knownZoneIds.has(zoneId) ? zoneId : '__unzoned__'));
-  const selectedZoneCount = representedZones.size;
+  const overview = options.overview ?? buildEcoAuditReportOverview(args);
 
   const statCells = [
-    { count: selectedZoneCount, label: 'Zones', always: true },
-    { count: totalPhotos, label: 'Photos', always: true },
-    { count: msList.length + addlSbList.length, label: 'Switchboards' },
-    { count: hvacList.length, label: 'HVAC' },
-    { count: lightList.length, label: 'Lighting' },
-    { count: solarList.length, label: 'Solar PV' },
-    { count: forkliftList.length, label: 'Forklift' },
-    { count: hotWaterList.length, label: 'Hot Water' },
-    { count: genWaterList.length + genElecList.length, label: 'General' },
-    { count: totalEquipment, label: 'Total', always: true },
+    { count: overview.selectedZoneCount, label: 'Zones', always: true },
+    { count: overview.totalPhotos, label: 'Photos', always: true },
+    { count: overview.switchboardCount, label: 'Switchboards' },
+    { count: overview.hvacCount, label: 'HVAC' },
+    { count: overview.lightingCount, label: 'Lighting' },
+    { count: overview.solarCount, label: 'Solar PV' },
+    { count: overview.forkliftCount, label: 'Forklift' },
+    { count: overview.hotWaterCount, label: 'Hot Water' },
+    { count: overview.generalCount, label: 'General' },
+    { count: overview.totalEquipment, label: 'Total', always: true },
   ]
     .filter((stat) => stat.always || stat.count > 0)
     .map((stat) => statPill(stat.count, stat.label))
@@ -847,7 +877,7 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
 
       <div class="exec-title">Executive Summary</div>
       <div class="exec-mode">${modeLabel}</div>
-      ${executiveSummary ? `<div class="exec-copy">${formatText(executiveSummary)}</div>` : ''}
+      ${overview.executiveSummary ? `<div class="exec-copy">${formatText(overview.executiveSummary)}</div>` : ''}
       <div class="stats"><div class="stats-row">${statCells}</div></div>
       ${options.introNoticeHtml ?? ''}
       `}
@@ -862,6 +892,19 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
   </tbody>
 </table>
 </body></html>`;
+}
+
+export function buildEcoAuditChunkHtml(
+  args: BodyArgs,
+  overview: EcoAuditReportOverview,
+  chunkIndex: number,
+  chunkCount: number,
+): string {
+  return buildAuditHtml(args, {
+    overview,
+    includeIntro: chunkIndex === 0,
+    includeEnd: chunkIndex === chunkCount - 1,
+  });
 }
 
 function photoCountForEntities(photos: PhotoRow[], entityIds: Set<string>): number {
@@ -959,7 +1002,7 @@ function buildEquipmentChunk<T extends EquipmentItem>(
   } as BodyArgs;
 }
 
-function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow[]): BodyArgs[] {
+export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow[]): BodyArgs[] {
   if (args.mode === 'by-zone') {
     const knownZoneIds = new Set(args.zones.map((zone) => zone.id));
     const zoneChunks = splitByPhotoTarget(args.zones, (zone) => {
@@ -1047,9 +1090,13 @@ function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow[]): Bo
 }
 
 async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Promise<Buffer> {
+  const overview = buildEcoAuditReportOverview(args, scopedPhotos);
   if (!shouldUsePhotoAppendix(scopedPhotos)) {
     const compressedPhotos = await prepareCompressedPdfPhotos(scopedPhotos);
-    return renderPdf(buildAuditHtml({ ...args, photos: compressedPhotos }));
+    return renderPdf(buildAuditHtml(
+      { ...args, photos: compressedPhotos },
+      { overview },
+    ));
   }
 
   console.info('[pdf] Using chunked EcoAudit inline render', {
@@ -1064,12 +1111,11 @@ async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Prom
   for (let index = 0; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     const compressedPhotos = await prepareCompressedPdfPhotos(chunk.photos);
-    pdfParts.push(await renderPdf(buildAuditHtml(
+    pdfParts.push(await renderPdf(buildEcoAuditChunkHtml(
       { ...chunk, photos: compressedPhotos },
-      {
-        includeIntro: index === 0,
-        includeEnd: index === chunks.length - 1,
-      },
+      overview,
+      index,
+      chunks.length,
     )));
   }
 
@@ -1100,9 +1146,14 @@ function zoneScopedWhere<T extends { auditId: unknown; deletedAt: unknown; zoneI
 // ── Route handler ─────────────────────────────────────────────────────────────────
 async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   const { auditId } = request.params as { auditId: string };
-  const body = (request.body ?? {}) as { zoneIds?: string[]; mode?: 'by-equipment' | 'by-zone' };
+  const body = (request.body ?? {}) as {
+    zoneIds?: string[];
+    zoneOrder?: string[];
+    mode?: 'by-equipment' | 'by-zone';
+  };
   const mode = body.mode === 'by-zone' ? 'by-zone' : 'by-equipment';
-  const requestedZoneIds = Array.isArray(body.zoneIds) ? body.zoneIds.filter(Boolean) : [];
+  const requestedZoneIds = normalizeReportIdList(body.zoneIds);
+  const requestedZoneOrder = normalizeReportIdList(body.zoneOrder);
 
   const [audit] = await db
     .select()
@@ -1117,9 +1168,16 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
   }
 
-  const zones = await db.select().from(eaZones).where(and(...zoneConditions));
+  const zoneRows = await db.select().from(eaZones)
+    .where(and(...zoneConditions))
+    .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
+  const zones = orderReportZones(
+    zoneRows,
+    requestedZoneOrder.length > 0 ? requestedZoneOrder : requestedZoneIds,
+  );
   const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((zone) => zone.id) : [];
   const restrictToZones = requestedZoneIds.length > 0;
+  const orderedZoneIds = zones.map((zone) => zone.id);
 
   const [
     mainSwitchboards,
@@ -1172,15 +1230,15 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     mode,
     brandLogo,
     genDate,
-    msList: mainSwitchboards as unknown as EquipmentItem[],
-    addlSbList: additionalSwitchboards as unknown as EquipmentItem[],
-    hvacList: hvacUnits as unknown as EquipmentItem[],
-    lightList: lightingSystems as unknown as EquipmentItem[],
-    solarList: solarPv as unknown as EquipmentItem[],
-    forkliftList: forkliftChargers as unknown as EquipmentItem[],
-    hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
-    genWaterList: generalWater as unknown as EquipmentItem[],
-    genElecList: generalElectricity as unknown as EquipmentItem[],
+    msList: orderReportItemsByZone(mainSwitchboards, orderedZoneIds) as unknown as EquipmentItem[],
+    addlSbList: orderReportItemsByZone(additionalSwitchboards, orderedZoneIds) as unknown as EquipmentItem[],
+    hvacList: orderReportItemsByZone(hvacUnits, orderedZoneIds) as unknown as EquipmentItem[],
+    lightList: orderReportItemsByZone(lightingSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    solarList: orderReportItemsByZone(solarPv, orderedZoneIds) as unknown as EquipmentItem[],
+    forkliftList: orderReportItemsByZone(forkliftChargers, orderedZoneIds) as unknown as EquipmentItem[],
+    hotWaterList: orderReportItemsByZone(hotWaterSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    genWaterList: orderReportItemsByZone(generalWater, orderedZoneIds) as unknown as EquipmentItem[],
+    genElecList: orderReportItemsByZone(generalElectricity, orderedZoneIds) as unknown as EquipmentItem[],
   }, scopedPhotos));
   if (pdf.byteLength > MAX_PDF_BYTES) {
     console.warn('[pdf] EcoAudit PDF exceeded preferred size limit; returning generated PDF anyway', {
@@ -1226,6 +1284,7 @@ export async function runEcoAuditPdfJob(
   auditId: string,
   mode: 'by-equipment' | 'by-zone',
   zoneIds: string[],
+  zoneOrder: string[],
   onPhase?: (phase: string) => void | Promise<void>,
 ): Promise<{ storageKey: string; remoteUrl: string }> {
   await onPhase?.('Fetching audit data…');
@@ -1239,14 +1298,22 @@ export async function runEcoAuditPdfJob(
   // trusted grant, but reconciliation cannot create a new generic grant here.
   await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId });
 
-  const requestedZoneIds = zoneIds.filter(Boolean);
+  const requestedZoneIds = normalizeReportIdList(zoneIds);
+  const requestedZoneOrder = normalizeReportIdList(zoneOrder);
   const zoneConditions: ReturnType<typeof eq>[] = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
   if (requestedZoneIds.length > 0) {
     zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
   }
-  const zones = await db.select().from(eaZones).where(and(...zoneConditions));
+  const zoneRows = await db.select().from(eaZones)
+    .where(and(...zoneConditions))
+    .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
+  const zones = orderReportZones(
+    zoneRows,
+    requestedZoneOrder.length > 0 ? requestedZoneOrder : requestedZoneIds,
+  );
   const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((z) => z.id) : [];
   const restrictToZones = requestedZoneIds.length > 0;
+  const orderedZoneIds = zones.map((zone) => zone.id);
 
   const [
     mainSwitchboards,
@@ -1301,15 +1368,15 @@ export async function runEcoAuditPdfJob(
     mode,
     brandLogo,
     genDate,
-    msList: mainSwitchboards as unknown as EquipmentItem[],
-    addlSbList: additionalSwitchboards as unknown as EquipmentItem[],
-    hvacList: hvacUnits as unknown as EquipmentItem[],
-    lightList: lightingSystems as unknown as EquipmentItem[],
-    solarList: solarPv as unknown as EquipmentItem[],
-    forkliftList: forkliftChargers as unknown as EquipmentItem[],
-    hotWaterList: hotWaterSystems as unknown as EquipmentItem[],
-    genWaterList: generalWater as unknown as EquipmentItem[],
-    genElecList: generalElectricity as unknown as EquipmentItem[],
+    msList: orderReportItemsByZone(mainSwitchboards, orderedZoneIds) as unknown as EquipmentItem[],
+    addlSbList: orderReportItemsByZone(additionalSwitchboards, orderedZoneIds) as unknown as EquipmentItem[],
+    hvacList: orderReportItemsByZone(hvacUnits, orderedZoneIds) as unknown as EquipmentItem[],
+    lightList: orderReportItemsByZone(lightingSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    solarList: orderReportItemsByZone(solarPv, orderedZoneIds) as unknown as EquipmentItem[],
+    forkliftList: orderReportItemsByZone(forkliftChargers, orderedZoneIds) as unknown as EquipmentItem[],
+    hotWaterList: orderReportItemsByZone(hotWaterSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    genWaterList: orderReportItemsByZone(generalWater, orderedZoneIds) as unknown as EquipmentItem[],
+    genElecList: orderReportItemsByZone(generalElectricity, orderedZoneIds) as unknown as EquipmentItem[],
   }, scopedPhotos);
 
   if (pdf.byteLength > MAX_PDF_BYTES) {
@@ -1353,6 +1420,7 @@ async function runEcoAuditPdfJobInBackground(
   auditId: string,
   mode: 'by-equipment' | 'by-zone',
   zoneIds: string[],
+  zoneOrder: string[],
 ): Promise<void> {
   try {
     await markJobRunning(jobId, 'Starting…');
@@ -1360,6 +1428,7 @@ async function runEcoAuditPdfJobInBackground(
       auditId,
       mode,
       zoneIds,
+      zoneOrder,
       (phase) => updateJobPhase(jobId, phase),
     );
     await completeJob(jobId, remoteUrl, storageKey);
@@ -1372,9 +1441,14 @@ async function runEcoAuditPdfJobInBackground(
 
 async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: FastifyReply) {
   const { auditId } = request.params as { auditId: string };
-  const body = (request.body ?? {}) as { zoneIds?: string[]; mode?: 'by-equipment' | 'by-zone' };
+  const body = (request.body ?? {}) as {
+    zoneIds?: string[];
+    zoneOrder?: string[];
+    mode?: 'by-equipment' | 'by-zone';
+  };
   const mode = body.mode === 'by-zone' ? 'by-zone' : 'by-equipment';
-  const zoneIds = Array.isArray(body.zoneIds) ? body.zoneIds.filter(Boolean) : [];
+  const zoneIds = normalizeReportIdList(body.zoneIds);
+  const zoneOrder = normalizeReportIdList(body.zoneOrder);
 
   const [audit] = await db
     .select()
@@ -1394,6 +1468,7 @@ async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: Fastif
     contentType: 'application/pdf',
     mode,
     zoneIds,
+    ...(zoneOrder.length > 0 ? { zoneOrder } : {}),
   };
   const activeJob = await findActiveExportJob({
     app: 'ecoaudit',
@@ -1418,7 +1493,7 @@ async function handleEcoAuditPdfJobCreate(request: FastifyRequest, reply: Fastif
   });
 
   void enqueueExportTask(
-    () => runEcoAuditPdfJobInBackground(jobId, auditId, mode, zoneIds),
+    () => runEcoAuditPdfJobInBackground(jobId, auditId, mode, zoneIds, zoneOrder),
   ).catch((error) => {
     console.error('[pdf-job] EcoAudit queue failed', {
       jobId,
@@ -1446,6 +1521,7 @@ const reportPdfRoute: RouteShorthandOptions = {
       properties: {
         mode: { type: 'string', enum: ['by-equipment', 'by-zone'], default: 'by-equipment' },
         zoneIds: { type: 'array', items: { type: 'string' } },
+        zoneOrder: { type: 'array', items: { type: 'string' } },
       },
     },
   },
@@ -1471,6 +1547,7 @@ export async function eaPdfRoutes(app: FastifyInstance): Promise<void> {
         properties: {
           mode: { type: 'string', enum: ['by-equipment', 'by-zone'], default: 'by-equipment' },
           zoneIds: { type: 'array', items: { type: 'string' } },
+          zoneOrder: { type: 'array', items: { type: 'string' } },
         },
       },
       response: {

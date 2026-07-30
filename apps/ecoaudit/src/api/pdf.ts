@@ -1,9 +1,15 @@
 import { request, requestBinary } from '@/api/client';
 import type { ExportArtifactType, ExportJobStatus, PdfJobStatus } from '@/types/domain';
 
+export type ReportPdfOptions = {
+  mode?: 'by-equipment' | 'by-zone';
+  zoneIds?: string[];
+  zoneOrder?: string[];
+};
+
 export function startReportPdfJob(
   auditId: string,
-  options?: { mode?: 'by-equipment' | 'by-zone'; zoneIds?: string[] },
+  options?: ReportPdfOptions,
 ): Promise<{ jobId: string }> {
   return request<{ jobId: string }>(
     'POST',
@@ -42,7 +48,7 @@ export async function downloadPdfJob(jobId: string): Promise<Blob> {
 
 export async function generateReportPdfSync(
   auditId: string,
-  options?: { mode?: 'by-equipment' | 'by-zone'; zoneIds?: string[] },
+  options?: ReportPdfOptions,
 ): Promise<Blob> {
   const buffer = await requestBinary(
     'POST',

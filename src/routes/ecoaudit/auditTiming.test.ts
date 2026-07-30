@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { resolveCompletionTiming, resolveSyncedAuditTiming } from './auditTiming.js';
+import {
+  resolveCompletionTiming,
+  resolveReopenTiming,
+  resolveSyncedAuditTiming,
+} from './auditTiming.js';
 
 test('completion preserves the first start and completion timestamps', () => {
   const startedAt = new Date('2026-01-01T01:00:00.000Z');
@@ -20,6 +24,28 @@ test('completion falls back to audit creation time and the current time', () => 
   assert.deepEqual(resolveCompletionTiming({ createdAt }, now), {
     startedAt: createdAt,
     completedAt: now,
+  });
+});
+
+test('reopening clears completion timing while preserving the original start', () => {
+  const startedAt = new Date('2026-01-01T01:00:00.000Z');
+
+  assert.deepEqual(resolveReopenTiming({
+    startedAt,
+    completedAt: new Date('2026-01-01T02:00:00.000Z'),
+  }), {
+    startedAt,
+    completedAt: null,
+  });
+});
+
+test('reopening an unstarted draft is idempotent', () => {
+  assert.deepEqual(resolveReopenTiming({
+    startedAt: null,
+    completedAt: null,
+  }), {
+    startedAt: null,
+    completedAt: null,
   });
 });
 

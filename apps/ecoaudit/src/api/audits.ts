@@ -25,6 +25,10 @@ export function completeAudit(id: string): Promise<Audit> {
   return request<Audit>('PATCH', `/v1/ecoaudit/audits/${encodeURIComponent(id)}/complete`);
 }
 
+export function reopenAudit(id: string): Promise<Audit> {
+  return request<Audit>('PATCH', `/v1/ecoaudit/audits/${encodeURIComponent(id)}/reopen`);
+}
+
 export function deleteAudit(id: string, purge = false): Promise<void> {
   return request<void>('DELETE', `/v1/ecoaudit/audits/${encodeURIComponent(id)}${purge ? '?purge=true' : ''}`);
 }
