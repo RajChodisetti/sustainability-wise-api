@@ -911,7 +911,10 @@ function photoCountForEntities(photos: PhotoRow[], entityIds: Set<string>): numb
   return photos.filter((photo) => entityIds.has(photo.entityId) && photo.remoteUrl).length;
 }
 
-function photosForEntities(photos: PhotoRow[], entityIds: Set<string>): PhotoRow[] {
+export function scopeEcoAuditReportPhotos(
+  photos: PhotoRow[],
+  entityIds: Set<string>,
+): PhotoRow[] {
   return photos.filter((photo) => entityIds.has(photo.entityId));
 }
 
@@ -974,7 +977,7 @@ function buildZoneChunk(args: BodyArgs, scopedPhotos: PhotoRow[], zones: Array<t
   return {
     ...emptyBodyArgs(args),
     zones,
-    photos: photosForEntities(scopedPhotos, entityIds),
+    photos: scopeEcoAuditReportPhotos(scopedPhotos, entityIds),
     msList,
     addlSbList,
     hvacList,
@@ -997,7 +1000,7 @@ function buildEquipmentChunk<T extends EquipmentItem>(
   return {
     ...emptyBodyArgs(args),
     zones: args.zones,
-    photos: photosForEntities(scopedPhotos, entityIds),
+    photos: scopeEcoAuditReportPhotos(scopedPhotos, entityIds),
     [key]: items,
   } as BodyArgs;
 }
@@ -1045,7 +1048,7 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
       chunks.push({
         ...emptyBodyArgs(args),
         zones: [],
-        photos: photosForEntities(scopedPhotos, unzonedEntityIds),
+        photos: scopeEcoAuditReportPhotos(scopedPhotos, unzonedEntityIds),
         msList: unzonedMs,
         addlSbList: unzonedAddl,
         hvacList: unzonedHvac,
@@ -1064,7 +1067,11 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
   const zonePhotoZones = args.zones.filter((zone) => photosForEntity(scopedPhotos, zone.id, zone.photoDescs).length > 0);
   for (const zones of splitByPhotoTarget(zonePhotoZones, (zone) => photosForEntity(scopedPhotos, zone.id, zone.photoDescs).length)) {
     const entityIds = new Set(zones.map((zone) => zone.id));
-    chunks.push({ ...emptyBodyArgs(args), zones, photos: photosForEntities(scopedPhotos, entityIds) });
+    chunks.push({
+      ...emptyBodyArgs(args),
+      zones,
+      photos: scopeEcoAuditReportPhotos(scopedPhotos, entityIds),
+    });
   }
 
   const addEquipmentChunks = <T extends EquipmentItem>(
@@ -1090,9 +1097,9 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
 }
 
 async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Promise<Buffer> {
-  const overview = buildEcoAuditReportOverview(args, scopedPhotos);
   if (!shouldUsePhotoAppendix(scopedPhotos)) {
     const compressedPhotos = await prepareCompressedPdfPhotos(scopedPhotos);
+    const overview = buildEcoAuditReportOverview(args, compressedPhotos);
     return renderPdf(buildAuditHtml(
       { ...args, photos: compressedPhotos },
       { overview },
@@ -1107,19 +1114,36 @@ async function renderEcoAuditPdf(args: BodyArgs, scopedPhotos: PhotoRow[]): Prom
   });
 
   const chunks = buildInlineEcoAuditChunks(args, scopedPhotos);
-  const pdfParts: Buffer[] = [];
-  for (let index = 0; index < chunks.length; index += 1) {
+  const baseOverview = buildEcoAuditReportOverview(args, []);
+  const continuationPdfParts: Buffer[] = [];
+  let renderedPhotoCount = 0;
+  for (let index = 1; index < chunks.length; index += 1) {
     const chunk = chunks[index];
     const compressedPhotos = await prepareCompressedPdfPhotos(chunk.photos);
-    pdfParts.push(await renderPdf(buildEcoAuditChunkHtml(
+    renderedPhotoCount += compressedPhotos.filter((photo) => photo.remoteUrl).length;
+    continuationPdfParts.push(await renderPdf(buildEcoAuditChunkHtml(
       { ...chunk, photos: compressedPhotos },
-      overview,
+      baseOverview,
       index,
       chunks.length,
     )));
   }
 
-  return mergePdfBuffers(pdfParts);
+  const firstChunk = chunks[0];
+  const firstCompressedPhotos = await prepareCompressedPdfPhotos(firstChunk.photos);
+  renderedPhotoCount += firstCompressedPhotos.filter((photo) => photo.remoteUrl).length;
+  const overview = {
+    ...baseOverview,
+    totalPhotos: renderedPhotoCount,
+  };
+  const firstPdfPart = await renderPdf(buildEcoAuditChunkHtml(
+    { ...firstChunk, photos: firstCompressedPhotos },
+    overview,
+    0,
+    chunks.length,
+  ));
+
+  return mergePdfBuffers([firstPdfPart, ...continuationPdfParts]);
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────────
@@ -1204,7 +1228,6 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   ]);
 
   const allowedPhotoEntityIds = new Set([
-    foundAudit.id,
     ...zones.map((zone) => zone.id),
     ...mainSwitchboards.map((x) => x.id),
     ...additionalSwitchboards.map((x) => x.id),
@@ -1216,9 +1239,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     ...generalWater.map((x) => x.id),
     ...generalElectricity.map((x) => x.id),
   ]);
-  const scopedPhotos = restrictToZones
-    ? photos.filter((photo) => allowedPhotoEntityIds.has(photo.entityId))
-    : photos;
+  const scopedPhotos = scopeEcoAuditReportPhotos(photos, allowedPhotoEntityIds);
 
   const brandLogo = await loadBrandLogo();
   const genDate = fmtDate(new Date().toISOString());
@@ -1340,7 +1361,6 @@ export async function runEcoAuditPdfJob(
   ]);
 
   const allowedPhotoEntityIds = new Set([
-    audit.id,
     ...zones.map((z) => z.id),
     ...mainSwitchboards.map((x) => x.id),
     ...additionalSwitchboards.map((x) => x.id),
@@ -1352,9 +1372,7 @@ export async function runEcoAuditPdfJob(
     ...generalWater.map((x) => x.id),
     ...generalElectricity.map((x) => x.id),
   ]);
-  const scopedPhotos = restrictToZones
-    ? photos.filter((p) => allowedPhotoEntityIds.has(p.entityId))
-    : photos;
+  const scopedPhotos = scopeEcoAuditReportPhotos(photos, allowedPhotoEntityIds);
 
   const brandLogo = await loadBrandLogo();
   const genDate = fmtDate(new Date().toISOString());

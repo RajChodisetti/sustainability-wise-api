@@ -20,7 +20,7 @@ export async function eaZoneRoutes(app: FastifyInstance): Promise<void> {
     assertAuditAccess(assertFound(audit, 'Audit'), request.user);
     const zones = await db.select().from(eaZones)
       .where(and(eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)))
-      .orderBy(asc(eaZones.createdAt));
+      .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
     return reply.send({ data: zones });
   });
 

@@ -4,6 +4,7 @@ import {
   buildEcoAuditChunkHtml,
   buildEcoAuditReportOverview,
   buildInlineEcoAuditChunks,
+  scopeEcoAuditReportPhotos,
 } from './pdf.js';
 
 type PdfBodyArgs = Parameters<typeof buildEcoAuditReportOverview>[0];
@@ -124,4 +125,32 @@ test('executive zone totals include empty zones in the selected report scope', (
 
   assert.equal(overview.selectedZoneCount, 2);
   assert.match(overview.executiveSummary, /covering 2 zones/);
+});
+
+test('report photo scope excludes deleted-owner, orphaned, and audit-level photos', () => {
+  const photos = [
+    photo('live-zone-photo', 'zone-a'),
+    photo('deleted-zone-photo', 'zone-deleted'),
+    photo('orphaned-equipment-photo', 'equipment-deleted'),
+    photo('audit-level-photo', 'audit-1'),
+  ];
+  const scopedPhotos = scopeEcoAuditReportPhotos(photos, new Set(['zone-a']));
+  const overview = buildEcoAuditReportOverview(
+    reportArgs([zone('zone-a', 'Zone A')], scopedPhotos),
+    scopedPhotos,
+  );
+
+  assert.deepEqual(scopedPhotos.map((item) => item.id), ['live-zone-photo']);
+  assert.equal(overview.totalPhotos, 1);
+});
+
+test('executive photo totals exclude images that could not be prepared for rendering', () => {
+  const renderablePhoto = photo('renderable-photo', 'zone-a');
+  const skippedPhoto = { ...photo('skipped-photo', 'zone-a'), remoteUrl: null };
+  const overview = buildEcoAuditReportOverview(
+    reportArgs([zone('zone-a', 'Zone A')], [renderablePhoto, skippedPhoto]),
+    [renderablePhoto, skippedPhoto],
+  );
+
+  assert.equal(overview.totalPhotos, 1);
 });
