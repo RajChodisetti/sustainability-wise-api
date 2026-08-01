@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, inArray, isNull, or } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
 import { photoRegistry } from '../../db/schema/shared.js';
@@ -45,6 +45,15 @@ function uploadUrl(sessionId: string): string {
 
 function assertUploadSessionFresh(createdAt: Date): void {
   if (Date.now() - createdAt.getTime() > 24 * 60 * 60 * 1000) throw badRequest('Upload session has expired');
+}
+
+export function photoUploadIdentityKey(input: {
+  auditId: string;
+  entityId: string;
+  fieldName: string;
+  checksum: string;
+}): string {
+  return JSON.stringify(['ecoaudit', input.auditId, input.entityId, input.fieldName, input.checksum]);
 }
 
 export function resolveSyncedPhotoMetadata(
@@ -129,36 +138,54 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const entityId = typeof body.entityId === 'string' && body.entityId.trim() ? body.entityId.trim() : auditId;
     const entityType = typeof body.entityType === 'string' && body.entityType.trim() ? body.entityType.trim() : 'audit';
 
-    // Check for duplicate only for the exact same record field. Other uses should still
-    // create their own DB/storage entry so scoped file browsing is complete.
-    const [duplicate] = await db.select().from(photoRegistry).where(and(
-      eq(photoRegistry.app, 'ecoaudit'),
-      eq(photoRegistry.checksum, checksum),
-      eq(photoRegistry.parentId, auditId),
-      eq(photoRegistry.entityId, entityId),
-      inArray(photoRegistry.fieldName, fieldNames),
-      eq(photoRegistry.status, 'confirmed'),
-    ));
-    if (duplicate?.remoteUrl) {
-      return reply.send({ sessionId: duplicate.id, uploadUrl: null, alreadyExists: true, remoteUrl: duplicate.remoteUrl });
-    }
+    const entityName = await loadEcoEntityName(audit, entityType, entityId);
+    const session = await db.transaction(async (tx) => {
+      // The prior check-then-insert raced when two sync cycles started together.
+      // A database advisory lock serializes this exact upload identity across all
+      // API processes without preventing the same bytes being used in another field.
+      const identity = photoUploadIdentityKey({ auditId, entityId, fieldName, checksum });
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${identity}))`);
+      const matches = await tx.select().from(photoRegistry).where(and(
+        eq(photoRegistry.app, 'ecoaudit'),
+        eq(photoRegistry.checksum, checksum),
+        eq(photoRegistry.parentId, auditId),
+        eq(photoRegistry.entityId, entityId),
+        inArray(photoRegistry.fieldName, fieldNames),
+      ));
+      const confirmed = matches.find((candidate) => candidate.status === 'confirmed' && candidate.remoteUrl);
+      if (confirmed?.remoteUrl) return { row: confirmed, alreadyExists: true };
+      const active = matches.find((candidate) =>
+        (candidate.status === 'pending' || candidate.status === 'uploaded')
+        && Date.now() - candidate.createdAt.getTime() <= 24 * 60 * 60 * 1000,
+      );
+      if (active) return { row: active, alreadyExists: false };
 
-    const sessionId = randomUUID();
-    const storageKey = makePhotoStorageKeyFromNames({
-      app: 'ecoaudit',
-      parentName: audit.siteName,
-      entityType,
-      entityName: await loadEcoEntityName(audit, entityType, entityId),
-      fieldName,
-      sessionId,
-      filename,
+      const sessionId = randomUUID();
+      const storageKey = makePhotoStorageKeyFromNames({
+        app: 'ecoaudit',
+        parentName: audit.siteName,
+        entityType,
+        entityName,
+        fieldName,
+        sessionId,
+        filename,
+      });
+      const [created] = await tx.insert(photoRegistry).values({
+        id: sessionId, checksum, remoteUrl: null, onedriveItemId: null, storageKey,
+        contentType: null, originalFilename: filename, app: 'ecoaudit', parentId: auditId,
+        entityType, entityId, fieldName, fileSizeBytes, status: 'pending',
+      }).returning();
+      if (!created) throw new Error('Photo upload session was not created');
+      return { row: created, alreadyExists: false };
     });
-    await db.insert(photoRegistry).values({
-      id: sessionId, checksum, remoteUrl: null, onedriveItemId: null, storageKey,
-      contentType: null, originalFilename: filename, app: 'ecoaudit', parentId: auditId,
-      entityType, entityId, fieldName, fileSizeBytes, status: 'pending',
+    if (session.alreadyExists && session.row.remoteUrl) {
+      return reply.send({ sessionId: session.row.id, uploadUrl: null, alreadyExists: true, remoteUrl: session.row.remoteUrl });
+    }
+    return reply.status(201).send({
+      sessionId: session.row.id,
+      uploadUrl: uploadUrl(session.row.id),
+      alreadyExists: false,
     });
-    return reply.status(201).send({ sessionId, uploadUrl: uploadUrl(sessionId), alreadyExists: false });
   });
 
   // PUT /upload/:sessionId — raw bytes, no auth
@@ -172,6 +199,9 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     if (!Buffer.isBuffer(body)) throw badRequest('Upload body must be raw bytes');
     const [session] = await db.select().from(photoRegistry).where(and(eq(photoRegistry.id, sessionId), eq(photoRegistry.app, 'ecoaudit')));
     const found = assertFound(session, 'Upload session');
+    if (found.status === 'uploaded' || found.status === 'confirmed') {
+      return reply.send({ ok: true, checksum: found.checksum, fileSizeBytes: found.fileSizeBytes });
+    }
     if (found.status !== 'pending') throw badRequest(`Upload session is ${found.status}`);
     assertUploadSessionFresh(found.createdAt);
     if (!found.storageKey) throw badRequest('Upload session has no storage key');

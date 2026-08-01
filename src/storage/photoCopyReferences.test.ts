@@ -14,6 +14,7 @@ const {
   actorCanAccessPhotoParent,
   genericPhotoCandidateIsAuthorized,
   planPhotoCopyReferenceReconciliation,
+  projectPhotosToCurrentReferences,
   solarAssessmentPhotoValues,
   solarAssessmentPhotoFieldReferences,
   solarSitePhotoFieldReferences,
@@ -205,6 +206,83 @@ test('InstallHub middle-photo removal preserves the shifted photo identity', () 
     add: [],
     remove: [],
   });
+});
+
+test('current photo projection removes a deleted row and emits a shifted photo once with its current field', () => {
+  const parentId = 'audit-1';
+  const entityId = 'switchboard-1';
+  const deleted = photo({
+    id: PHOTO_A,
+    parentId,
+    entityType: 'main_switchboard',
+    entityId,
+    fieldName: 'extraPhotos[0]',
+  });
+  const shifted = photo({
+    id: PHOTO_B,
+    parentId,
+    entityType: 'main_switchboard',
+    entityId,
+    fieldName: 'extraPhotos[1]',
+  });
+  const shiftedAlias = {
+    ...shifted,
+    fieldName: 'extraPhotos[0]',
+  };
+
+  const projected = projectPhotosToCurrentReferences({
+    app: 'ecoaudit',
+    parentId,
+    entities: [{
+      sourceEntityId: entityId,
+      targetEntityId: entityId,
+      targetEntityType: 'main_switchboard',
+      photoValues: [],
+      photoReferences: [{ photoId: PHOTO_B, targetFieldName: 'extraPhotos[0]' }],
+    }],
+    photos: [deleted, shifted, shiftedAlias],
+  });
+
+  assert.deepEqual(projected.map((row) => ({
+    id: row.id,
+    fieldName: row.fieldName,
+  })), [{
+    id: PHOTO_B,
+    fieldName: 'extraPhotos[0]',
+  }]);
+});
+
+test('current photo projection excludes duplicate upload rows not referenced by the record', () => {
+  const parentId = 'audit-1';
+  const entityId = 'zone-1';
+  const canonical = photo({
+    id: PHOTO_A,
+    parentId,
+    entityId,
+    fieldName: 'photos[0]',
+  });
+  const racedDuplicate = photo({
+    id: PHOTO_B,
+    parentId,
+    entityId,
+    fieldName: 'photos[0]',
+    checksum: canonical.checksum,
+  });
+
+  const projected = projectPhotosToCurrentReferences({
+    app: 'ecoaudit',
+    parentId,
+    entities: [{
+      sourceEntityId: entityId,
+      targetEntityId: entityId,
+      targetEntityType: 'zone',
+      photoValues: [],
+      photoReferences: [{ photoId: PHOTO_A, targetFieldName: 'photos[0]' }],
+    }],
+    photos: [canonical, racedDuplicate],
+  });
+
+  assert.deepEqual(projected.map((row) => row.id), [PHOTO_A]);
 });
 
 test('InstallHub amendments receive same-parent aliases for retained evidence', () => {

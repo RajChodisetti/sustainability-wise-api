@@ -15,7 +15,7 @@ import { loadEcoAuditByIdOrName, loadPhotoByIdOrName } from '../../services/stor
 import {
   deletePhotoUnlessReferenced,
   hasAccessibleCopyReference,
-  loadPhotosForParent,
+  loadCurrentPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
   type PhotoRow,
 } from '../../storage/photoCopyReferences.js';
@@ -80,7 +80,7 @@ async function runEcoAuditPhotoZipJob(
   try {
     await markJobRunning(jobId, 'Collecting photos...');
     const [photos, hierarchy] = await Promise.all([
-      loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
+      loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
       loadEcoAuditPhotoZipContext(auditId),
     ]);
     const storageKey = makeNamedStorageKeyForFilename({
@@ -124,7 +124,7 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
     const [photoRows, context] = await Promise.all([
-      loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
+      loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
       loadEcoAuditPhotoZipContext(audit.id),
     ]);
     const photos = photoRows.map((photo) => photoMetadata(photo, context));
@@ -148,7 +148,7 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
     assertAuditAccess(audit, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: audit.id, actor: request.user });
     const [photos, hierarchy] = await Promise.all([
-      loadPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
+      loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: audit.id }),
       loadEcoAuditPhotoZipContext(audit.id),
     ]);
     const archive = createPhotoZipStream(

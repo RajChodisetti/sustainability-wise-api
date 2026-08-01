@@ -341,6 +341,66 @@ export async function loadPhotosForParent(input: {
   return [...unique.values()].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 }
 
+/**
+ * Projects registry rows onto the exact photo references that are present in
+ * the parent's current records. Registry rows are immutable upload history;
+ * they are not, by themselves, evidence that a photo is still part of the
+ * current record after a deletion or array reorder.
+ */
+export function projectPhotosToCurrentReferences(input: {
+  app: PhotoApp;
+  parentId: string;
+  entities: CopiedPhotoEntity[];
+  photos: PhotoRow[];
+  includeUnconfirmed?: boolean;
+}): PhotoRow[] {
+  const photosById = new Map(input.photos.map((photo) => [photo.id.toLowerCase(), photo]));
+  const projected = new Map<string, PhotoRow>();
+
+  for (const entity of input.entities) {
+    const references = entity.photoReferences ?? [];
+    for (const reference of references) {
+      const photo = photosById.get(reference.photoId.toLowerCase());
+      if (
+        !photo
+        || photo.app !== input.app
+        || (!input.includeUnconfirmed && photo.status !== 'confirmed')
+        || (input.includeUnconfirmed && photo.status === 'failed')
+        || !photo.storageKey
+      ) continue;
+      const row = {
+        ...photo,
+        parentId: input.parentId,
+        entityType: entity.targetEntityType,
+        entityId: entity.targetEntityId,
+        fieldName: reference.targetFieldName,
+      };
+      projected.set([row.id, row.entityId, row.fieldName].join('\0'), row);
+    }
+  }
+
+  return [...projected.values()].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+}
+
+/**
+ * Loads only photos referenced by the current parent tree. Access remains
+ * constrained by loadPhotosForParent: a row must be owned by this parent or
+ * have an explicit copy reference before it can be projected.
+ */
+export async function loadCurrentPhotosForParent(input: {
+  app: PhotoApp;
+  parentId: string;
+  executor?: DbExecutor;
+  includeUnconfirmed?: boolean;
+}): Promise<PhotoRow[]> {
+  const executor = input.executor ?? db;
+  const [entities, photos] = await Promise.all([
+    currentPhotoEntities(executor, input.app, input.parentId),
+    loadPhotosForParent(input),
+  ]);
+  return projectPhotosToCurrentReferences({ ...input, entities, photos });
+}
+
 export async function linkCopiedPhotoReferences(input: {
   app: PhotoApp;
   sourceParentId: string;

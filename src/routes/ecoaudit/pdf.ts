@@ -36,7 +36,7 @@ import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
 import {
-  loadPhotosForParent,
+  loadCurrentPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
 import { canonicalEcoAuditPhotoFieldName } from './lightingPhotoField.js';
@@ -1224,7 +1224,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
+    loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
   ]);
 
   const allowedPhotoEntityIds = new Set([
@@ -1357,7 +1357,7 @@ export async function runEcoAuditPdfJob(
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    loadPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
+    loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
   ]);
 
   const allowedPhotoEntityIds = new Set([
