@@ -6,12 +6,12 @@ their mobile applications.
 
 | | |
 |---|---|
-| **Hosting** | DigitalOcean 2 GB Droplet, SYD1 (Sydney) |
-| **Database** | PostgreSQL 16 (self-hosted on droplet) |
-| **Photo storage** | Local disk via `LOCAL_FILE_STORAGE_ROOT` or DigitalOcean Spaces via `STORAGE_PROVIDER=spaces` |
+| **Hosting** | DigitalOcean Droplet, SYD1 (Sydney) |
+| **Database** | Managed PostgreSQL; exact production identity is held in the protected release target |
+| **Photo storage** | Private DigitalOcean Spaces with VM-local emergency/transition support |
+| **Secondary mirror** | Microsoft Graph OneDrive photo/PDF mirror, according to production policy |
 | **PDF generation** | Puppeteer / headless Chromium |
 | **Framework** | Fastify + TypeScript |
-| **Cost** | ~$15 USD / ~$23 AUD per month |
 
 ## Documentation
 
@@ -23,7 +23,9 @@ their mobile applications.
 - [Infrastructure](docs/INFRASTRUCTURE.md) — server setup, deployment, backup
 - [Mobile Integration](docs/MOBILE_INTEGRATION.md) — API contract for EcoAudit Pro and SolarSense
 - [OneDrive Photo Backup](docs/ONEDRIVE_PHOTO_BACKUP.md) — optional Microsoft Graph photo mirror
-- [Deployment Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md) — step-by-step DigitalOcean setup
+- [Production Release Runbook](docs/PRODUCTION_RELEASE_RUNBOOK.md) — canonical QA-to-production policy
+- [Production Release Checklist](docs/PRODUCTION_RELEASE_CHECKLIST.md) — copyable release record
+- [DigitalOcean Setup Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md) — initial infrastructure setup
 
 ## Project Structure
 
@@ -54,7 +56,11 @@ npm run db:migrate
 npm run dev
 ```
 
-For production deployment on DigitalOcean, follow the [Deployment Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md).
+For a QA-to-production promotion, follow the
+[Production Release Runbook](docs/PRODUCTION_RELEASE_RUNBOOK.md) and complete
+the [Production Release Checklist](docs/PRODUCTION_RELEASE_CHECKLIST.md). For
+initial DigitalOcean infrastructure setup, use the
+[DigitalOcean Setup Runbook](docs/OPTION3_DIGITALOCEAN_RUNBOOK.md).
 
 ## AI-Assisted Development
 

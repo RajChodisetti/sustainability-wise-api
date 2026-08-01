@@ -10,7 +10,6 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/sw-api}"
 ENV_FILE="${ENV_FILE:-${APP_DIR}/.env}"
-REMOTE_PATH="${BACKUP_REMOTE_PATH:-onedrive:SustainabilityWise/backups}"
 
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -18,6 +17,8 @@ if [[ -f "$ENV_FILE" ]]; then
   source "$ENV_FILE"
   set +a
 fi
+
+REMOTE_PATH="${BACKUP_REMOTE_PATH:-onedrive:SustainabilityWise/backups}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "DATABASE_URL is required via ${ENV_FILE} or environment" >&2

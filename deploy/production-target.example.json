@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "targetName": "production",
+  "templateNotice": "REPLACE_WITH_TARGET_REVIEW_RECORD",
+  "targetFile": {
+    "root": "/opt/sw-config/release-targets",
+    "mode": "0600",
+    "ownerUid": 1001,
+    "ownerGid": 1001,
+    "mustBeOutsideRelease": true,
+    "mustBeOutsideRepository": true
+  },
+  "environmentFile": {
+    "mode": "0600",
+    "ownerUid": 1001,
+    "ownerGid": 1001,
+    "mustBeOutsideRelease": true
+  },
+  "release": {
+    "root": "/opt/sw-releases",
+    "directoryShaPrefixLength": 7,
+    "requireDetachedHead": true
+  },
+  "api": {
+    "nodeEnv": "production",
+    "host": "127.0.0.1",
+    "port": 3000,
+    "publicBaseUrl": "https://api.example.invalid",
+    "maxUploadBytes": 52428800,
+    "rateLimitMax": 300,
+    "rateLimitWindowMs": 60000,
+    "puppeteerExecutablePath": "/usr/bin/chromium-browser"
+  },
+  "portal": {
+    "internalApiUrl": "http://127.0.0.1:3000",
+    "publicApiUrl": "https://api.example.invalid",
+    "port": 3210,
+    "registrationEnabled": false,
+    "allowRegistration": false
+  },
+  "database": {
+    "protocol": "postgresql:",
+    "hostname": "REPLACE_WITH_PRODUCTION_DATABASE_HOST",
+    "port": 25060,
+    "database": "sustainability_wise",
+    "username": "sw_api",
+    "parameters": {
+      "sslmode": "require"
+    },
+    "passwordSha256": "REPLACE_WITH_SHA256_FINGERPRINT"
+  },
+  "storage": {
+    "writeMode": "isolated",
+    "allowLegacyMode": false,
+    "allowLocalProvider": false,
+    "localFallbackRoot": "/var/lib/sustainability-wise-api/uploads",
+    "legacy": {
+      "provider": "spaces",
+      "localRoot": null,
+      "region": "syd1",
+      "endpoint": "https://syd1.digitaloceanspaces.com",
+      "bucket": "REPLACE_WITH_LEGACY_BUCKET",
+      "accessKeyIdSha256": "REPLACE_WITH_SHA256_FINGERPRINT",
+      "secretAccessKeySha256": "REPLACE_WITH_SHA256_FINGERPRINT"
+    },
+    "apps": {
+      "ecoaudit": {
+        "provider": "spaces",
+        "localRoot": null,
+        "region": "syd1",
+        "endpoint": "https://syd1.digitaloceanspaces.com",
+        "bucket": "REPLACE_WITH_ECOAUDIT_BUCKET",
+        "accessKeyIdSha256": "REPLACE_WITH_SHA256_FINGERPRINT",
+        "secretAccessKeySha256": "REPLACE_WITH_SHA256_FINGERPRINT"
+      },
+      "solarsense": {
+        "provider": "spaces",
+        "localRoot": null,
+        "region": "syd1",
+        "endpoint": "https://syd1.digitaloceanspaces.com",
+        "bucket": "REPLACE_WITH_SOLARSENSE_BUCKET",
+        "accessKeyIdSha256": "REPLACE_WITH_SHA256_FINGERPRINT",
+        "secretAccessKeySha256": "REPLACE_WITH_SHA256_FINGERPRINT"
+      },
+      "installhub": {
+        "provider": "spaces",
+        "localRoot": null,
+        "region": "syd1",
+        "endpoint": "https://syd1.digitaloceanspaces.com",
+        "bucket": "REPLACE_WITH_INSTALLHUB_BUCKET",
+        "accessKeyIdSha256": "REPLACE_WITH_SHA256_FINGERPRINT",
+        "secretAccessKeySha256": "REPLACE_WITH_SHA256_FINGERPRINT"
+      }
+    }
+  },
+  "oneDrive": {
+    "enabled": true,
+    "allowDisabled": false,
+    "backupRequired": false,
+    "tenantId": "REPLACE_WITH_AZURE_TENANT_ID",
+    "clientId": "REPLACE_WITH_AZURE_CLIENT_ID",
+    "clientSecretSha256": "REPLACE_WITH_SHA256_FINGERPRINT",
+    "userEmail": "REPLACE_WITH_ONEDRIVE_USER_EMAIL",
+    "photosFolder": "SustainabilityWise/photos",
+    "backupRemotePath": "onedrive:SustainabilityWise/backups"
+  },
+  "security": {
+    "secretSha256": {
+      "JWT_SECRET": "REPLACE_WITH_SHA256_FINGERPRINT",
+      "JWT_REFRESH_SECRET": "REPLACE_WITH_SHA256_FINGERPRINT",
+      "UPLOAD_CAPABILITY_SECRET": "REPLACE_WITH_SHA256_FINGERPRINT",
+      "FILE_CAPABILITY_SECRET": "REPLACE_WITH_SHA256_FINGERPRINT"
+    },
+    "registrationSecretSha256": {
+      "REGISTRATION_SECRET": null,
+      "ECOAUDIT_REGISTRATION_SECRET": null,
+      "SOLARSENSE_REGISTRATION_SECRET": null,
+      "INSTALLHUB_REGISTRATION_SECRET": null
+    },
+    "uploadCapabilityTtlSeconds": 900,
+    "fileCapabilityTtlSeconds": 300,
+    "allowLegacyUnsignedUploads": false,
+    "allowLegacyPublicFiles": false,
+    "enableApiDocs": false,
+    "protectApiDocs": true,
+    "corsOrigins": [],
+    "allowLocalBootstrap": false,
+    "allowLegacyBootstrapUpsert": false,
+    "allowLegacySharedRegistrationSecret": false,
+    "approveDangerousCompatibilityFlags": false
+  }
+}

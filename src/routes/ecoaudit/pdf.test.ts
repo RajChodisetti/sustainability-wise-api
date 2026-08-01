@@ -29,14 +29,18 @@ function zone(id: string, zoneName: string): PdfZone {
   };
 }
 
-function photo(id: string, entityId: string): PdfPhoto {
+function photo(
+  id: string,
+  entityId: string,
+  overrides: Partial<Pick<PdfPhoto, 'entityType' | 'fieldName'>> = {},
+): PdfPhoto {
   return {
     id,
     app: 'ecoaudit',
     parentId: 'audit-1',
-    entityType: 'zone',
+    entityType: overrides.entityType ?? 'zone',
     entityId,
-    fieldName: 'photos[0]',
+    fieldName: overrides.fieldName ?? 'photos[0]',
     checksum: `checksum-${id}`,
     onedriveItemId: null,
     originalFilename: `${id}.jpg`,
@@ -153,4 +157,81 @@ test('executive photo totals exclude images that could not be prepared for rende
   );
 
   assert.equal(overview.totalPhotos, 1);
+});
+
+test('zone and equipment photos remain in their owning PDF sections in both report modes', () => {
+  const zonePhotoUrl = 'https://files.example/zone-evidence.jpg';
+  const lightingPhotoUrl = 'https://files.example/lighting-evidence.jpg';
+  const reportZone = {
+    ...zone('zone-a', 'Zone A'),
+    photos: [zonePhotoUrl],
+    photoDescs: {
+      'photos.0': { name: 'Zone evidence' },
+    },
+  };
+  const lighting = {
+    id: 'lighting-a',
+    auditId: 'audit-1',
+    zoneId: reportZone.id,
+    lightType: 'LED High Bay',
+    photo: lightingPhotoUrl,
+    photoDescs: {
+      photo: { name: 'Lighting evidence' },
+    },
+  };
+  const photos = [
+    photo('zone-evidence', reportZone.id),
+    photo('lighting-evidence', lighting.id, {
+      entityType: 'lighting_system',
+      fieldName: 'photo',
+    }),
+  ];
+
+  for (const mode of ['by-zone', 'by-equipment'] as const) {
+    const args = {
+      ...reportArgs([reportZone], photos),
+      mode,
+      lightList: [lighting],
+    };
+    const overview = buildEcoAuditReportOverview(args, photos);
+    const chunks = buildInlineEcoAuditChunks(args, photos);
+    const htmlParts = chunks.map((chunk, index) => buildEcoAuditChunkHtml(
+      chunk,
+      overview,
+      index,
+      chunks.length,
+    ));
+
+    if (mode === 'by-zone') {
+      assert.equal(htmlParts.length, 1);
+      const html = htmlParts[0];
+      const zoneSection = html.indexOf('<span>Zone Photos</span>');
+      const zonePhoto = html.indexOf(zonePhotoUrl);
+      const lightingSection = html.indexOf(
+        '<div class="zone-type-label">Lighting Systems</div>',
+      );
+      const lightingPhoto = html.indexOf(lightingPhotoUrl);
+
+      assert.ok(zoneSection >= 0);
+      assert.ok(zoneSection < zonePhoto);
+      assert.ok(zonePhoto < lightingSection);
+      assert.ok(lightingSection < lightingPhoto);
+      assert.match(html.slice(zoneSection, lightingSection), /Zone evidence/);
+      assert.doesNotMatch(
+        html.slice(zoneSection, lightingSection),
+        /lighting-evidence|Lighting evidence/,
+      );
+      assert.match(html.slice(lightingSection), /Lighting evidence/);
+      continue;
+    }
+
+    assert.equal(htmlParts.length, 2);
+    assert.match(htmlParts[0], /<span class="sec-bar-name">Zone Photos<\/span>/);
+    assert.match(htmlParts[0], /zone-evidence\.jpg/);
+    assert.doesNotMatch(htmlParts[0], /lighting-evidence|Lighting evidence/);
+    assert.match(htmlParts[1], /<span class="sec-bar-name">Lighting Systems<\/span>/);
+    assert.match(htmlParts[1], /lighting-evidence\.jpg/);
+    assert.match(htmlParts[1], /Lighting evidence/);
+    assert.doesNotMatch(htmlParts[1], /zone-evidence|Zone evidence/);
+  }
 });

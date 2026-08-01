@@ -5,6 +5,13 @@ switched only to immutable release artifacts created from verified `main`
 commits. The portal listens on `127.0.0.1:3210`; the API remains on
 `127.0.0.1:3000`.
 
+The [QA to Production Release Runbook](PRODUCTION_RELEASE_RUNBOOK.md) is the
+canonical release policy, and the
+[Production Release Checklist](PRODUCTION_RELEASE_CHECKLIST.md) is the required
+release record. This document supplies the exact immutable build, process
+switch, loopback verification, and rollback commands. Do not use these commands
+without completing the gates in the canonical runbook.
+
 ## Deployment boundary
 
 - API: existing process on `127.0.0.1:3000`

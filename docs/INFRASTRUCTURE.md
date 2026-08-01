@@ -2,17 +2,29 @@
 
 ## Hosting
 
-| Component | Provider | Spec | Cost (USD/mo) |
-|---|---|---|---|
-| API Server + PostgreSQL + Puppeteer | DigitalOcean Droplet SYD1 | 2 GB RAM / 1 vCPU / 50 GB SSD | $12.00 |
-| Photo + PDF storage | Droplet local disk, `LOCAL_FILE_STORAGE_ROOT` | Uses included 50 GB SSD | $0 initially |
-| SSL certificate | Caddy via Let's Encrypt | Automatic | $0 |
-| DNS | DigitalOcean DNS | Free with Droplet | $0 |
-| Database backups | OneDrive (already paid) | Daily pg_dump gzip | $0 |
-| Weekly droplet snapshot | DigitalOcean | ~50 GB × $0.06/GB | ~$3.00 |
-| **Total** | | | **~$15 USD / ~$23 AUD** |
+Production currently separates runtime, database, primary object storage, and
+secondary backup/mirroring. Exact resource identities belong in the protected
+production target manifest described in
+[QA to Production Release Runbook](PRODUCTION_RELEASE_RUNBOOK.md); do not infer
+them from examples in this file.
 
-## Storage Budget
+| Component | Production role |
+|---|---|
+| DigitalOcean Droplet, SYD1 | Fastify API, EcoSense portal, Chromium, PM2, and Caddy |
+| Managed PostgreSQL | Authoritative application database |
+| Private DigitalOcean Spaces | Primary photo/PDF/object storage according to `STORAGE_WRITE_MODE` |
+| VM local root | Emergency/transition destination only when explicitly configured |
+| Microsoft Graph OneDrive | Optional secondary photo/PDF mirror |
+| `onedrive:` rclone remote | Separate database/upload backup destination |
+
+## Historical capacity baseline
+
+The figures below describe the original small-Droplet design, not an approved
+production target. Check the current DigitalOcean plan, disk metrics, managed
+database capacity, and Spaces usage before using them for an operational
+decision.
+
+### Storage budget
 
 ```
 Current 2 GB / 50 GB droplet practical budget:
@@ -31,7 +43,7 @@ long-term storage target at the current droplet size. Move to OneDrive/object
 storage before photo volume approaches 25 GB, or attach a larger volume.
 ```
 
-## Droplet RAM Budget
+### Droplet RAM budget
 
 ```
 Always-on:
@@ -112,10 +124,19 @@ bytes live on disk.
 
 For full-server disaster recovery:
 - Enable via DigitalOcean control panel: Droplet → Backups → Enable
-- Cost: ~$3/month (20% of droplet price)
-- Restores the entire disk including PostgreSQL data, uploaded files, Node.js app, and config
+- Confirm the current plan, retention, and latest successful snapshot
+- Restores the Droplet disk, application, and server configuration
+- Does **not** restore managed PostgreSQL, Spaces objects, or Microsoft Graph
+  OneDrive data; verify those recovery paths independently
 
 ## Deployment Workflow
+
+Use the [QA to Production Release Runbook](PRODUCTION_RELEASE_RUNBOOK.md) as the
+canonical policy and complete a copy of the
+[Production Release Checklist](PRODUCTION_RELEASE_CHECKLIST.md) for every
+deployment. Promotion means deploying the exact QA-approved `main` commit with
+the protected production environment; it never means copying QA data, storage,
+or credentials.
 
 ```bash
 # On the verified local main branch:

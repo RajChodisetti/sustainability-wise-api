@@ -666,6 +666,13 @@ Then rebuild both APKs using the release runbook. After installing the APKs:
 
 ## 15. Rollback
 
+This section covers an Option 3 infrastructure cutover. For a routine
+QA-to-production application release, follow the immutable-path rollback in the
+[QA to Production Release Runbook](PRODUCTION_RELEASE_RUNBOOK.md#11-roll-back)
+and record it in the
+[Production Release Checklist](PRODUCTION_RELEASE_CHECKLIST.md). Never check
+out another commit or reinstall dependencies inside a running release.
+
 If the new Droplet or managed DB fails during cutover:
 
 1. Point GoDaddy `api` DNS back to the old Droplet IP.
@@ -675,14 +682,12 @@ If the new Droplet or managed DB fails during cutover:
 
 If only the API release fails:
 
-```bash
-cd /opt/sw-api
-git log --oneline -5
-git checkout <last-known-good-commit>
-npm ci --omit=dev
-pm2 restart sw-api
-pm2 logs sw-api --lines 80
-```
+1. Use the previously recorded immutable API release path.
+2. Switch only `sw-api` back with the process-switch command in
+   `docs/ECOSENSE_PORTAL_DEPLOYMENT.md`.
+3. Verify database identity, migration compatibility, loopback/public health,
+   authenticated reads, files, thumbnails, and a small export.
+4. Preserve the failed release and logs for investigation.
 
 ## Acceptance Checklist
 
