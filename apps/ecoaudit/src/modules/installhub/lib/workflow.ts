@@ -383,6 +383,26 @@ export function canonicalMeterDevice(
       deviceNumber: meter.deviceNumber || null,
       lifecycleState: meter.lifecycleState || 'ACTIVE',
       channels,
+      commissioningData: {
+        classification: meter.classification !== undefined
+          ? meter.classification?.trim() || null
+          : prior?.commissioningData?.classification ?? null,
+        coverage: meter.coverage !== undefined
+          ? meter.coverage?.trim() || null
+          : prior?.commissioningData?.coverage ?? null,
+        prestart: structuredClone(
+          meter.wwPrestart ?? prior?.commissioningData?.prestart ?? {},
+        ),
+        switchboard: structuredClone(
+          meter.wwSwitchboard ?? prior?.commissioningData?.switchboard ?? {},
+        ),
+        verification: structuredClone(
+          meter.wwVerification ?? prior?.commissioningData?.verification ?? {},
+        ),
+        commissioning: structuredClone(
+          meter.wwCommissioning ?? prior?.commissioningData?.commissioning ?? {},
+        ),
+      },
       wwPhotos: meter.wwPhotos as Record<string, unknown> | undefined || prior?.wwPhotos || {},
       notes: meter.notes ?? prior?.notes ?? null,
   };

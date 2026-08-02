@@ -239,6 +239,72 @@ test('legacy meter projection uses friendly load labels without weakening canoni
   );
 });
 
+test('meter commissioning metadata normalizes and projects without losing field evidence', () => {
+  const tree = baseTree();
+  const meter = a3Meter();
+  meter.commissioningData = {
+    classification: 'Electricity meter',
+    coverage: 'Main incoming supply',
+    prestart: {
+      siteInduction: true,
+      safeAccess: true,
+      correctPpe: true,
+      livePointsAware: true,
+      canIsolate: true,
+      additionalHazards: false,
+      safeToProceed: true,
+    },
+    switchboard: {
+      name: 'Main Switchboard',
+      location: 'Plant room north wall',
+      firmware: 'QA',
+      antennaType: 'Internal',
+      signalStrength: 'Verified',
+    },
+    verification: {
+      voltageChecked: true,
+      polarityChecked: true,
+      communicationsOk: true,
+      notes: 'Three-phase mapping verified',
+    },
+    commissioning: {
+      deviceOnline: true,
+      channelsReporting: true,
+      labeled: true,
+      photosTaken: false,
+      notes: 'Commissioned in QA',
+    },
+  };
+  tree.meterDevices = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+
+  const normalized = normalizeInstallationTreeV2(tree);
+  assert.deepEqual(normalized.meterDevices[0].commissioningData, {
+    ...meter.commissioningData,
+    switchboard: {
+      ...meter.commissioningData.switchboard,
+      deviceSerial: null,
+      notes: null,
+    },
+  });
+  const projected = projectLegacyInstallationTree(normalized).electricalAssets[0].meters[0];
+  assert.equal(projected.classification, 'Electricity meter');
+  assert.equal(projected.coverage, 'Main incoming supply');
+  assert.equal(projected.wwPrestart.safeToProceed, true);
+  assert.equal(projected.wwSwitchboard.location, 'Plant room north wall');
+  assert.equal(projected.wwVerification.communicationsOk, true);
+  assert.equal(projected.wwCommissioning.channelsReporting, true);
+
+  const invalid = structuredClone(tree) as unknown as Record<string, unknown>;
+  const invalidMeter = (invalid.meterDevices as Array<Record<string, unknown>>)[0];
+  const invalidData = invalidMeter.commissioningData as Record<string, unknown>;
+  (invalidData.prestart as Record<string, unknown>).safeAccess = 'yes';
+  assert.throws(
+    () => normalizeInstallationTreeV2(invalid),
+    /commissioningData\.prestart\.safeAccess must be a boolean/,
+  );
+});
+
 test('v2 normalizer rejects legacy aliases, missing tags, and fabricated defaults', () => {
   const aliasedBoard = structuredClone(baseTree()) as unknown as Record<string, unknown>;
   const boards = aliasedBoard.electricalAssets as Array<Record<string, unknown>>;
@@ -1425,5 +1491,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.2');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.3');
 });

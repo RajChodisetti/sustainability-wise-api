@@ -141,6 +141,13 @@
       "when": 1785668262036,
       "tag": "0019_installhub_upload_base_revision",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785687470633,
+      "tag": "0020_installhub_meter_commissioning_data",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.2';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.3';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-01';
 export const DISPLAY_CODE_RULE_VERSION = 1;
@@ -198,6 +198,42 @@ export type MeterChannel = {
   deletedAt?: string | null;
 };
 
+export type MeterCommissioningData = {
+  classification?: string | null;
+  coverage?: string | null;
+  prestart?: {
+    siteInduction?: boolean;
+    safeAccess?: boolean;
+    correctPpe?: boolean;
+    livePointsAware?: boolean;
+    canIsolate?: boolean;
+    additionalHazards?: boolean;
+    safeToProceed?: boolean;
+  };
+  switchboard?: {
+    name?: string | null;
+    location?: string | null;
+    deviceSerial?: string | null;
+    firmware?: string | null;
+    antennaType?: string | null;
+    signalStrength?: string | null;
+    notes?: string | null;
+  };
+  verification?: {
+    voltageChecked?: boolean;
+    polarityChecked?: boolean;
+    communicationsOk?: boolean;
+    notes?: string | null;
+  };
+  commissioning?: {
+    deviceOnline?: boolean;
+    channelsReporting?: boolean;
+    labeled?: boolean;
+    photosTaken?: boolean;
+    notes?: string | null;
+  };
+};
+
 export type MeterDevice = {
   id: string;
   installationId: string;
@@ -210,6 +246,7 @@ export type MeterDevice = {
   serialNumber: string;
   displayName: DisplayCode;
   channels: MeterChannel[];
+  commissioningData?: MeterCommissioningData;
   wwPhotos?: Record<string, unknown>;
   notes?: string | null;
   createdAt?: string | null;
@@ -301,6 +338,8 @@ const READINESS_CANDIDATE_LIMIT = 50;
 const CUSTOM_LABEL_MAX_LENGTH = 120;
 const CAPABILITY_MAX_KEYS = 64;
 const CAPABILITY_MAX_SERIALIZED_BYTES = 8192;
+const METER_COMMISSIONING_TEXT_MAX_LENGTH = 4000;
+const METER_COMMISSIONING_DATA_MAX_SERIALIZED_BYTES = 16384;
 
 function boundedCandidateIds(ids: string[]): string[] {
   return [...ids].sort().slice(0, READINESS_CANDIDATE_LIMIT);
@@ -411,6 +450,91 @@ function boundedCapabilities(value: unknown, label: string): Record<string, unkn
   if (Buffer.byteLength(stableStringify(normalized), 'utf8') > CAPABILITY_MAX_SERIALIZED_BYTES) {
     throw new CanonicalInputError(
       `${label} must serialize to at most ${CAPABILITY_MAX_SERIALIZED_BYTES} bytes`,
+    );
+  }
+  return normalized;
+}
+
+function boundedMeterCommissioningText(value: unknown, label: string): string | null {
+  const result = optionalText(value);
+  if (result && result.length > METER_COMMISSIONING_TEXT_MAX_LENGTH) {
+    throw new CanonicalInputError(
+      `${label} must be at most ${METER_COMMISSIONING_TEXT_MAX_LENGTH} characters`,
+    );
+  }
+  return result;
+}
+
+function optionalBooleanField(
+  value: JsonRecord,
+  key: string,
+  label: string,
+): boolean | undefined {
+  if (!Object.prototype.hasOwnProperty.call(value, key) || value[key] === null) return undefined;
+  return booleanValue(value[key], `${label}.${key}`);
+}
+
+function optionalCommissioningSection(value: unknown, label: string): JsonRecord | undefined {
+  if (value === undefined || value === null) return undefined;
+  return record(value, label);
+}
+
+function parseMeterCommissioningData(
+  value: unknown,
+  label: string,
+): MeterCommissioningData | undefined {
+  if (value === undefined || value === null) return undefined;
+  const input = record(value, label);
+  const prestart = optionalCommissioningSection(input.prestart, `${label}.prestart`);
+  const switchboard = optionalCommissioningSection(input.switchboard, `${label}.switchboard`);
+  const verification = optionalCommissioningSection(input.verification, `${label}.verification`);
+  const commissioning = optionalCommissioningSection(input.commissioning, `${label}.commissioning`);
+  const normalized: MeterCommissioningData = {
+    classification: boundedMeterCommissioningText(input.classification, `${label}.classification`),
+    coverage: boundedMeterCommissioningText(input.coverage, `${label}.coverage`),
+    ...(prestart ? {
+      prestart: {
+        siteInduction: optionalBooleanField(prestart, 'siteInduction', `${label}.prestart`),
+        safeAccess: optionalBooleanField(prestart, 'safeAccess', `${label}.prestart`),
+        correctPpe: optionalBooleanField(prestart, 'correctPpe', `${label}.prestart`),
+        livePointsAware: optionalBooleanField(prestart, 'livePointsAware', `${label}.prestart`),
+        canIsolate: optionalBooleanField(prestart, 'canIsolate', `${label}.prestart`),
+        additionalHazards: optionalBooleanField(prestart, 'additionalHazards', `${label}.prestart`),
+        safeToProceed: optionalBooleanField(prestart, 'safeToProceed', `${label}.prestart`),
+      },
+    } : {}),
+    ...(switchboard ? {
+      switchboard: {
+        name: boundedMeterCommissioningText(switchboard.name, `${label}.switchboard.name`),
+        location: boundedMeterCommissioningText(switchboard.location, `${label}.switchboard.location`),
+        deviceSerial: boundedMeterCommissioningText(switchboard.deviceSerial, `${label}.switchboard.deviceSerial`),
+        firmware: boundedMeterCommissioningText(switchboard.firmware, `${label}.switchboard.firmware`),
+        antennaType: boundedMeterCommissioningText(switchboard.antennaType, `${label}.switchboard.antennaType`),
+        signalStrength: boundedMeterCommissioningText(switchboard.signalStrength, `${label}.switchboard.signalStrength`),
+        notes: boundedMeterCommissioningText(switchboard.notes, `${label}.switchboard.notes`),
+      },
+    } : {}),
+    ...(verification ? {
+      verification: {
+        voltageChecked: optionalBooleanField(verification, 'voltageChecked', `${label}.verification`),
+        polarityChecked: optionalBooleanField(verification, 'polarityChecked', `${label}.verification`),
+        communicationsOk: optionalBooleanField(verification, 'communicationsOk', `${label}.verification`),
+        notes: boundedMeterCommissioningText(verification.notes, `${label}.verification.notes`),
+      },
+    } : {}),
+    ...(commissioning ? {
+      commissioning: {
+        deviceOnline: optionalBooleanField(commissioning, 'deviceOnline', `${label}.commissioning`),
+        channelsReporting: optionalBooleanField(commissioning, 'channelsReporting', `${label}.commissioning`),
+        labeled: optionalBooleanField(commissioning, 'labeled', `${label}.commissioning`),
+        photosTaken: optionalBooleanField(commissioning, 'photosTaken', `${label}.commissioning`),
+        notes: boundedMeterCommissioningText(commissioning.notes, `${label}.commissioning.notes`),
+      },
+    } : {}),
+  };
+  if (Buffer.byteLength(stableStringify(normalized), 'utf8') > METER_COMMISSIONING_DATA_MAX_SERIALIZED_BYTES) {
+    throw new CanonicalInputError(
+      `${label} must serialize to at most ${METER_COMMISSIONING_DATA_MAX_SERIALIZED_BYTES} bytes`,
     );
   }
   return normalized;
@@ -809,6 +933,10 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       serialNumber: requiredText(item.serialNumber, `meterDevices[${index}].serialNumber`),
       displayName: parseDisplayCode(item.displayName, `meterDevices[${index}].displayName`),
       channels,
+      commissioningData: parseMeterCommissioningData(
+        item.commissioningData,
+        `meterDevices[${index}].commissioningData`,
+      ),
       wwPhotos: record(item.wwPhotos, `meterDevices[${index}].wwPhotos`),
       notes: optionalText(item.notes),
       createdAt: iso(item.createdAt),

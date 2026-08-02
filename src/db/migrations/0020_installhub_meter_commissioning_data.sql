@@ -1,0 +1,1 @@
+ALTER TABLE "ih_meter_devices" ADD COLUMN "commissioning_data" jsonb;

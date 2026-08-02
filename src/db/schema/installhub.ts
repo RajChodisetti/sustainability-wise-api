@@ -258,6 +258,7 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   displayCodeOverridden: boolean('display_code_overridden').notNull().default(false),
   displayCodeRuleVersion: integer('display_code_rule_version').notNull().default(1),
   displayCodeOverrideReason: text('display_code_override_reason'),
+  commissioningData: jsonb('commissioning_data').$type<Record<string, unknown>>(),
   wwPhotos: jsonb('ww_photos').notNull().default({}).$type<Record<string, unknown>>(),
   notes: text('notes'),
   createdAt: timestamp('created_at').notNull().defaultNow(),

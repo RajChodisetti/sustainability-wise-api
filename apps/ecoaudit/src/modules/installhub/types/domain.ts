@@ -69,6 +69,14 @@ export type MeterDevice = {
   deviceNumber?: string | null;
   lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
   channels: MeterDeviceChannel[];
+  commissioningData?: {
+    classification?: string | null;
+    coverage?: string | null;
+    prestart?: WattwatcherPrestart;
+    switchboard?: WattwatcherSwitchboard;
+    verification?: WattwatcherVerification;
+    commissioning?: WattwatcherCommissioning;
+  };
   wwPhotos?: Record<string, unknown>;
   notes?: string | null;
 };

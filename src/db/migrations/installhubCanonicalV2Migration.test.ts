@@ -19,6 +19,10 @@ const uploadBaseRevisionMigrationUrl = new URL(
   './0019_installhub_upload_base_revision.sql',
   import.meta.url,
 );
+const meterCommissioningDataMigrationUrl = new URL(
+  './0020_installhub_meter_commissioning_data.sql',
+  import.meta.url,
+);
 
 const expectedNewTables = [
   'ih_completion_idempotency',
@@ -118,5 +122,14 @@ test('upload confirmation revision migration is nullable and expand-only', async
 test('upload base revision migration is nullable and expand-only', async () => {
   const sql = await readFile(uploadBaseRevisionMigrationUrl, 'utf8');
   assert.match(sql, /ALTER TABLE "photo_registry" ADD COLUMN "base_tree_revision" integer/);
+  assert.doesNotMatch(sql, /NOT NULL|DROP TABLE|DROP COLUMN|TRUNCATE|UPDATE/i);
+});
+
+test('meter commissioning metadata migration is nullable and expand-only', async () => {
+  const sql = await readFile(meterCommissioningDataMigrationUrl, 'utf8');
+  assert.match(
+    sql,
+    /ALTER TABLE "ih_meter_devices" ADD COLUMN "commissioning_data" jsonb/,
+  );
   assert.doesNotMatch(sql, /NOT NULL|DROP TABLE|DROP COLUMN|TRUNCATE|UPDATE/i);
 });

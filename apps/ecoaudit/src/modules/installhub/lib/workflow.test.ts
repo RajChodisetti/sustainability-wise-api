@@ -206,6 +206,59 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.equal(typeof (wire.electricalAssets as Array<Record<string, unknown>>)[0].displayCode, 'object');
 });
 
+test('portal meter commissioning fields serialize into canonical round-trip metadata', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  meter.classification = 'Electricity meter';
+  meter.coverage = 'Main switchboard incoming supply';
+  meter.wwPrestart = {
+    siteInduction: true,
+    safeAccess: true,
+    correctPpe: true,
+    livePointsAware: true,
+    canIsolate: true,
+    additionalHazards: false,
+    safeToProceed: true,
+  };
+  meter.wwSwitchboard = {
+    name: 'Main Switchboard',
+    location: 'Plant room north wall',
+    firmware: 'QA',
+    antennaType: 'Internal',
+    signalStrength: 'Verified',
+  };
+  meter.wwVerification = {
+    voltageChecked: true,
+    polarityChecked: true,
+    communicationsOk: true,
+    notes: 'Three-phase mapping verified',
+  };
+  meter.wwCommissioning = {
+    deviceOnline: true,
+    channelsReporting: true,
+    labeled: true,
+    photosTaken: false,
+    notes: 'Commissioned in QA',
+  };
+  tree.electricalAssets[0].meters = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+  const canonical = syncMeterDevice(tree, tree.electricalAssets[0].id, meter);
+
+  assert.deepEqual(canonical.commissioningData, {
+    classification: 'Electricity meter',
+    coverage: 'Main switchboard incoming supply',
+    prestart: meter.wwPrestart,
+    switchboard: meter.wwSwitchboard,
+    verification: meter.wwVerification,
+    commissioning: meter.wwCommissioning,
+  });
+  const wire = serializeInstallationTree(tree);
+  assert.deepEqual(
+    (wire.meterDevices as Array<Record<string, unknown>>)[0].commissioningData,
+    canonical.commissioningData,
+  );
+});
+
 test('fresh portal creation serializes the complete canonical-v2 installation handshake', () => {
   const tree = createInstallationTree({
     clientName: 'Fresh Client',
