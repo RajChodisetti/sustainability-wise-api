@@ -371,6 +371,25 @@ function assetTypeLabel(code: string, custom: string | null | undefined): string
   }[code] ?? 'Other');
 }
 
+const METER_LOAD_TYPE_LABEL_BY_CODE: Record<string, string> = {
+  PV: 'Solar PV',
+  HVAC: 'HVAC',
+  LIGHTING: 'Lighting',
+  EV_CHARGER: 'EV Charger',
+  VEHICLE_HOIST: 'Vehicle Hoist',
+  FORKLIFT: 'Forklift Charger',
+  EXHAUST_FAN_SYSTEM: 'Exhaust Fan System',
+  POWER_OUTLET: 'General Power',
+  HEATER_GEYSER: 'Hot Water',
+};
+
+function meterChannelLoadTypeLabel(channel: MeterDevice['channels'][number]): string {
+  if (channel.purpose === 'MAIN_SUPPLY') return 'Mains Supply';
+  if (channel.purpose === 'SPARE') return 'Not Used';
+  if (channel.loadTypeCode === 'OTHER') return channel.customLoadTypeName?.trim() || 'Other';
+  return METER_LOAD_TYPE_LABEL_BY_CODE[channel.loadTypeCode ?? ''] ?? 'Not Used';
+}
+
 /**
  * Schema-v1 compatibility view. Canonical tables remain the sole v2 write
  * authority; array order is deterministic and never used as meter identity.
@@ -417,7 +436,7 @@ export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
             ordinal: channel.ordinal,
             purpose: channel.purpose,
             phaseLabel: channel.phaseLabel,
-            loadType: channel.loadTypeCode,
+            loadType: meterChannelLoadTypeLabel(channel),
             customLoadTypeName: channel.customLoadTypeName,
             rogowskiSize: channel.sensorRating,
             description: channel.description,

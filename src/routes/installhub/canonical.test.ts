@@ -58,6 +58,7 @@ import {
   buildCanonicalSnapshotPayload,
   canonicalSnapshotContentHash,
   canonicalSnapshotPayloadHashMatches,
+  projectLegacyInstallationTree,
   projectCanonicalMediaManifest,
   wwCommissioningFormMatchesMeter,
 } from './treeService.js';
@@ -214,6 +215,29 @@ function completedWwForm(
     ...(supersedesId ? { supersedesId } : {}),
   };
 }
+
+test('legacy meter projection uses friendly load labels without weakening canonical codes', () => {
+  const tree = baseTree();
+  const meter = a3Meter();
+  meter.channels = [
+    channel(1, 'MAIN_SUPPLY'),
+    { ...channel(2), loadTypeCode: 'LIGHTING' },
+    { ...channel(3), loadTypeCode: 'OTHER', customLoadTypeName: 'Refrigeration' },
+    channel(4, 'SPARE'),
+  ];
+  tree.meterDevices = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+
+  const legacy = projectLegacyInstallationTree(tree);
+  assert.deepEqual(
+    legacy.electricalAssets[0]?.meters[0]?.wwChannels.map((item) => item.loadType),
+    ['Mains Supply', 'Lighting', 'Refrigeration', 'Not Used'],
+  );
+  assert.deepEqual(
+    tree.meterDevices[0]?.channels.map((item) => item.loadTypeCode ?? null),
+    [null, 'LIGHTING', 'OTHER', null],
+  );
+});
 
 test('v2 normalizer rejects legacy aliases, missing tags, and fabricated defaults', () => {
   const aliasedBoard = structuredClone(baseTree()) as unknown as Record<string, unknown>;

@@ -434,6 +434,11 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
   tree.electricalAssets[0].meters = [meter];
   tree.electricalAssets[0].meterPresent = true;
   syncMeterDevice(tree, 'board-a', meter);
+  const canonicalMeter = tree.meterDevices?.find((item) => item.id === meter.id);
+  assert.deepEqual(
+    canonicalMeter?.channels.map((channel) => channel.loadTypeCode),
+    [null, null, null, 'LIGHTING', 'LIGHTING', 'LIGHTING'],
+  );
   assert.equal(tree.measurementAssignments?.length, 0);
   const unassignedChannels = localReadiness(tree).issues.filter((item) => item.code === 'CHANNEL_UNASSIGNED');
   assert.equal(unassignedChannels.length, 6);

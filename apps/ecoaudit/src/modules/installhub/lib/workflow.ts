@@ -316,17 +316,31 @@ export function meterChannelId(meterId: string, index: number): string {
 }
 
 function canonicalChannels(meter: Meter): MeterDeviceChannel[] {
-  return (meter.wwChannels || []).map((channel, index) => ({
-    id: channel.id || meterChannelId(meter.id, index),
-    ordinal: channel.ordinal || index + 1,
-    phaseLabel: channel.phaseLabel || null,
-    purpose: (channel.purpose as ChannelPurpose) || 'SPARE',
-    loadTypeCode: channel.loadType || null,
-    customLoadTypeName: channel.customLoadTypeName || null,
-    sensorRating: channel.rogowskiSize || channel.ctRatio || null,
-    description: channel.description || null,
-    capabilities: channel.capabilities || {},
-  }));
+  return (meter.wwChannels || []).map((channel, index) => {
+    const purpose = (channel.purpose as ChannelPurpose) || 'SPARE';
+    const rawLoadType = channel.loadType?.trim() || '';
+    const loadTypeCode = purpose === 'SUB_CIRCUIT' && rawLoadType
+      && rawLoadType !== 'Mains Supply' && rawLoadType !== 'Not Used'
+      ? (ASSET_LABEL_BY_CODE.has(rawLoadType)
+          ? rawLoadType
+          : ASSET_CODE_BY_LEGACY[rawLoadType] || 'OTHER')
+      : null;
+    const customLoadTypeName = loadTypeCode === 'OTHER'
+      ? channel.customLoadTypeName?.trim()
+        || (rawLoadType !== 'Other' && rawLoadType !== 'OTHER' ? rawLoadType : null)
+      : null;
+    return {
+      id: channel.id || meterChannelId(meter.id, index),
+      ordinal: channel.ordinal || index + 1,
+      phaseLabel: channel.phaseLabel || null,
+      purpose,
+      loadTypeCode,
+      customLoadTypeName,
+      sensorRating: channel.rogowskiSize || channel.ctRatio || null,
+      description: channel.description || null,
+      capabilities: channel.capabilities || {},
+    };
+  });
 }
 
 export function canonicalMeterDevice(
