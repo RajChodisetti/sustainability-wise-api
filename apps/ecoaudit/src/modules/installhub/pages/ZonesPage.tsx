@@ -9,7 +9,7 @@ import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
-import { Breadcrumbs, DefinitionList } from '@/modules/installhub/components/InstallHubUi';
+import { Breadcrumbs, DefinitionList, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
@@ -292,8 +292,42 @@ export function InstallHubZoneDetailPage() {
         ]} />
       </Card>
 
+      <RecordNavigation
+        title="Zone navigation"
+        description="Use the physical zone as the field-work hub, then open the exact electrical or site record you observed."
+        items={[
+          {
+            href: `/installhub/installations/${installationId}`,
+            icon: 'building',
+            label: 'Installation overview',
+            description: tree.installation.siteName,
+          },
+          {
+            href: '#zone-switchboards',
+            icon: 'zap',
+            label: 'Switchboards',
+            description: 'Boards and their installed meters',
+            meta: boards.length,
+          },
+          {
+            href: '#zone-site-assets',
+            icon: 'plug',
+            label: 'Site assets',
+            description: 'Equipment found in this zone',
+            meta: assets.length,
+          },
+          {
+            href: '#zone-evidence',
+            icon: 'camera',
+            label: 'Zone evidence',
+            description: 'Location photos and field evidence',
+            meta: zone.photos.length,
+          },
+        ]}
+      />
+
       <div className="mb-6 grid gap-5 xl:grid-cols-2">
-        <Card>
+        <Card id="zone-switchboards" tabIndex={-1} className="scroll-mt-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="font-extrabold text-[var(--text)]">Switchboards</h2>
@@ -322,7 +356,7 @@ export function InstallHubZoneDetailPage() {
           )}
         </Card>
 
-        <Card>
+        <Card id="zone-site-assets" tabIndex={-1} className="scroll-mt-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <h2 className="font-extrabold text-[var(--text)]">Site assets</h2>
@@ -338,7 +372,7 @@ export function InstallHubZoneDetailPage() {
                 <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                   <span>
                     <span className="block text-sm font-bold text-[var(--text)]">{asset.assetName}</span>
-                    <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {siteAssetMeteringState(asset).kind.replaceAll('_', ' ')} · {asset.meterChannels.length} channels</span>
+                    <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {siteAssetMeteringState(asset).kind.replaceAll('_', ' ')} · {asset.meterChannelIds?.length || asset.meterChannels?.length || 0} channels</span>
                   </span>
                   <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
                 </Link>
@@ -352,7 +386,7 @@ export function InstallHubZoneDetailPage() {
         </Card>
       </div>
 
-      <Card id="zone-evidence">
+      <Card id="zone-evidence" tabIndex={-1} className="scroll-mt-4">
         <h2 className="font-extrabold text-[var(--text)]">Zone evidence</h2>
         <EvidenceField
           label="Zone photos"

@@ -2,13 +2,14 @@
 /* eslint-disable react-hooks/set-state-in-effect -- initializes the keyed meter editor from its server query record */
 
 import { useEffect, useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
-import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
 import { ScannerInput } from '@/modules/installhub/components/ScannerInput';
 import {
   ConfirmDialog,
@@ -811,6 +812,52 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           onDiscard={() => void writer.discard()}
         />
       </div>
+      {saved ? (
+        <RecordNavigation
+          title="Meter navigation"
+          description="Open the physical location, installed switchboard, exact channels, assignments, commissioning, or evidence without retracing the full form."
+          items={[
+            {
+              href: `/installhub/installations/${installationId}/zones/${zoneId}`,
+              icon: 'map-pin',
+              label: 'Physical zone',
+              description: zone?.zoneName || 'Zone',
+            },
+            {
+              href: `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}`,
+              icon: 'zap',
+              label: 'Installed switchboard',
+              description: `${board.displayCode} — ${board.assetName}`,
+            },
+            {
+              href: '#meter-device',
+              icon: 'gauge',
+              label: 'Device details',
+              description: draft.deviceId || 'Identity and serial details',
+            },
+            {
+              href: '#meter-channels',
+              icon: 'plug',
+              label: 'Channels',
+              description: 'Purpose, load, phase, and sensor data',
+              meta: draft.wwChannels?.length ?? 0,
+            },
+            {
+              href: '#meter-assignments',
+              icon: 'arrow-right',
+              label: 'Channel assignments',
+              description: 'Exact measurement targets',
+              meta: assignmentDrafts.length,
+            },
+            {
+              href: '#meter-verification',
+              icon: 'check',
+              label: 'Verification',
+              description: 'Commissioning checks and evidence',
+            },
+          ]}
+        />
+      ) : null}
       {assetReturn ? (
         <div className="mb-5">
           <InlineNotice>
@@ -829,7 +876,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       ) : null}
 
       <form onSubmit={(event) => void save(event)} className="space-y-5">
-        <Card>
+        <Card id="meter-device" tabIndex={-1} className="scroll-mt-4">
           <h2 className="font-extrabold text-[var(--text)]">Device identity</h2>
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
@@ -951,7 +998,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         </Card>
 
         <Card>
-          <div id="meter-channels" tabIndex={-1}>
+          <div id="meter-channels" tabIndex={-1} className="scroll-mt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-extrabold text-[var(--text)]">Channels</h2>
@@ -962,11 +1009,24 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
             ) : null}
           </div>
           <FieldError message={errors.find((item) => item.id === 'meter-channels')?.message} />
+          {(draft.wwChannels?.length ?? 0) > 0 ? (
+            <nav aria-label="Meter channel shortcuts" className="mt-3 flex flex-wrap gap-2">
+              {(draft.wwChannels || []).map((channel, index) => (
+                <Link
+                  key={channel.id || index}
+                  href={`#meter-channel-${channel.ordinal || index + 1}`}
+                  className="inline-flex min-h-10 items-center rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-xs font-bold text-[var(--primary)] hover:border-[var(--primary)]"
+                >
+                  Channel {channel.ordinal || index + 1}
+                </Link>
+              ))}
+            </nav>
+          ) : null}
           <div className="mt-4 space-y-3">
             {(draft.wwChannels ?? []).map((channel, index) => (
-              <div key={index} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+              <div key={index} id={`meter-channel-${channel.ordinal || index + 1}`} tabIndex={-1} className="scroll-mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-[var(--text)]">Channel {index + 1}</h3>
+                  <h3 className="font-bold text-[var(--text)]">Channel {channel.ordinal || index + 1}</h3>
                   {draft.deviceType === 'Other' && !commissionedForm ? (
                     <Button variant="ghost" className="text-[var(--red)]" onClick={() => removeCustomChannel(index)}><Icon name="trash" size={16} />Remove</Button>
                   ) : null}
@@ -1150,7 +1210,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         </Card>
 
         <Card>
-          <div id="meter-assignments" tabIndex={-1}>
+          <div id="meter-assignments" tabIndex={-1} className="scroll-mt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-extrabold text-[var(--text)]">Channel assignments</h2>
@@ -1322,7 +1382,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           </div>
         </Card>
 
-        <Card>
+        <Card id="meter-verification" tabIndex={-1} className="scroll-mt-4">
           <h2 className="font-extrabold text-[var(--text)]">Verification & commissioning</h2>
           <div className="mt-3 grid gap-6 lg:grid-cols-2">
             <div>
@@ -1377,7 +1437,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       {!saved ? (
         <InlineNotice>Save the meter first, then capture evidence and create communications fault records.</InlineNotice>
       ) : (
-        <Card id="meter-evidence" className="mt-5">
+        <Card id="meter-evidence" tabIndex={-1} className="mt-5 scroll-mt-4">
           <h2 className="font-extrabold text-[var(--text)]">Meter evidence</h2>
           {photoFields.map(({ slot, label }) => {
             const uri = latest.wwPhotos?.[slot];

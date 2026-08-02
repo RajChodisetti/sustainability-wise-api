@@ -702,11 +702,20 @@ export function InstallHubCanonicalMeteringPage() {
           {visibleMeters.map((meter) => {
             const board = tree.electricalAssets.find((item) => item.id === meter.installedOnBoardId);
             const meterAssignments = assignments.filter((item) => item.meterId === meter.id);
+            const meterHref = board
+              ? `/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(board.zoneId)}/boards/${encodeURIComponent(board.id)}/meters/${encodeURIComponent(meter.id)}`
+              : null;
             return (
               <div key={meter.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div><h2 className="font-extrabold text-[var(--text)]">{meterDeviceName(meter)}</h2><p className="mt-1 text-xs text-[var(--text-sub)]">{meter.deviceModel} · {meter.serialNumber} · {board ? `${displayCodeValue(board)} — ${board.assetName}` : 'Missing board'}</p></div>
-                  {board ? <LinkButton href={`/installhub/installations/${installationId}/zones/${board.zoneId}/boards/${board.id}/meters/${meter.id}`} variant="secondary">Open device</LinkButton> : null}
+                  {meterHref ? (
+                    <div className="flex flex-wrap gap-2">
+                      <LinkButton href={meterHref} variant="secondary">Open device</LinkButton>
+                      <LinkButton href={`${meterHref}#meter-channels`} variant="secondary">Channels</LinkButton>
+                      <LinkButton href={`${meterHref}#meter-assignments`} variant="secondary">Assignments</LinkButton>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full min-w-[860px] text-left text-sm">
@@ -716,7 +725,7 @@ export function InstallHubCanonicalMeteringPage() {
                       const target = assignment ? measurementTargetDetails(tree, assignment.target) : null;
                       return (
                         <tr key={channel.id} className="border-b border-[var(--border)]">
-                          <td className="px-2 py-2 font-bold">{channel.ordinal} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span><span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span></td>
+                          <td className="px-2 py-2 font-bold">{meterHref ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channel.ordinal}`}>Channel {channel.ordinal}</Link> : `Channel ${channel.ordinal}`} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span><span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span></td>
                           <td className="px-2 py-2">{channel.purpose.replaceAll('_', ' ').toLowerCase()}</td>
                           <td className="px-2 py-2">{channel.customLoadTypeName || channel.loadTypeCode || '—'} · {channel.sensorRating || '—'}</td>
                           <td className="px-2 py-2">{assignment && target ? (

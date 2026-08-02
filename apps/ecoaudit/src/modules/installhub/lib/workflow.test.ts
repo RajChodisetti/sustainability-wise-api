@@ -209,6 +209,56 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.equal(typeof (wire.electricalAssets as Array<Record<string, unknown>>)[0].displayCode, 'object');
 });
 
+test('canonical asset assignments reconstruct the total legacy channel projection', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  const board = tree.electricalAssets[1];
+  board.meters = [meter];
+  board.meterPresent = true;
+  syncMeterDevice(tree, board.id, meter);
+  tree.measurementAssignments = [{
+    id: 'assignment-asset-a',
+    installationId: tree.installation.id,
+    meterId: meter.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: tree.siteAssets[0].id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  delete (tree.siteAssets[0] as Partial<typeof tree.siteAssets[0]>).meterChannels;
+  delete tree.siteAssets[0].meterChannelIds;
+
+  const normalized = ensureCanonicalTree(tree);
+  const asset = normalized.siteAssets[0];
+  assert.deepEqual(asset.meterChannelIds, ['meter-a:4']);
+  assert.deepEqual(asset.meterChannels.map((channel) => channel.channel), ['4']);
+  assert.equal(asset.meterChannels[0].description, 'LIGHTING');
+  assert.deepEqual(siteAssetMeteringState(asset), {
+    kind: 'METERED',
+    measurementAssignmentIds: ['assignment-asset-a'],
+  });
+  assert.equal(ensureCanonicalTree(normalized), normalized);
+  assert.deepEqual(asset.meterChannels.map((channel) => channel.channel), ['4']);
+});
+
+test('canonical assets without assignments safely default omitted legacy channel arrays', () => {
+  const tree = fixtureTree();
+  const asset = tree.siteAssets[0];
+  tree.measurementAssignments = [];
+  asset.meteringState = undefined;
+  asset.meterPresent = false;
+  asset.meterId = null;
+  asset.meterChannelIds = [];
+  asset.meterSwitchboardId = null;
+  asset.meterSwitchboardTbc = false;
+  delete (asset as Partial<typeof asset>).meterChannels;
+
+  assert.doesNotThrow(() => ensureCanonicalTree(tree));
+  assert.deepEqual(asset.meterChannels, []);
+  assert.deepEqual(siteAssetMeteringState(asset), { kind: 'TBC' });
+});
+
 test('portal meter commissioning fields serialize into canonical round-trip metadata', () => {
   const tree = fixtureTree();
   const meter = sixChannelMeter();

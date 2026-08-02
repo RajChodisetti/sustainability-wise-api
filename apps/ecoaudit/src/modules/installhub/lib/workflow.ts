@@ -216,7 +216,7 @@ export function siteAssetMeteringState(asset: SiteAsset): SiteAssetMeteringState
     !asset.meterSwitchboardId &&
     !asset.meterId &&
     !asset.meterChannelIds?.length &&
-    asset.meterChannels.length === 0
+    (asset.meterChannels?.length ?? 0) === 0
   ) {
     return { kind: 'TBC' };
   }
@@ -723,6 +723,11 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
   }
 
   for (const asset of tree.siteAssets) {
+    // Canonical v2 stores channel relationships in measurementAssignments.
+    // Keep the legacy editor projection total because older portal views and
+    // offline drafts still consume this compatibility field.
+    asset.meterChannelIds = asset.meterChannelIds || [];
+    asset.meterChannels = asset.meterChannels || [];
     const legacyTypeLabel = asset.assetType;
     const runtimeDisplay = asset.displayCode as unknown as string | DisplayCodeMetadata | null;
     if (typeof runtimeDisplay === 'object' && runtimeDisplay) {
@@ -751,7 +756,7 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
     const assignment = assignmentForAsset(tree, asset.id);
     if (assignment) {
       asset.meterId = assignment.meterId;
-      asset.meterChannelIds = assignment.channelIds;
+      asset.meterChannelIds = [...assignment.channelIds];
       asset.phaseMode = assignment.phaseMode;
       asset.measurementDirection = assignment.direction;
       asset.meteringState = {
@@ -759,6 +764,13 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
         measurementAssignmentIds: [assignment.id],
       };
       const meter = tree.meterDevices.find((item) => item.id === assignment.meterId);
+      asset.meterChannels = assignment.channelIds.map((channelId) => {
+        const channel = meter?.channels.find((item) => item.id === channelId);
+        return {
+          channel: channel ? String(channel.ordinal) : channelId,
+          description: channel?.description || channel?.loadTypeCode || '',
+        };
+      });
       asset.meterSwitchboardId = meter?.installedOnBoardId || null;
       asset.meterSwitchboardTbc = !meter;
       asset.meterPresent = true;

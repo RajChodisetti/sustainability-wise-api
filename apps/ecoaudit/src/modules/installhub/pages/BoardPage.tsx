@@ -9,7 +9,7 @@ import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
-import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
 import {
   ChoiceGroup,
   ConfirmDialog,
@@ -95,6 +95,17 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const forms = tree.formSubmissions.filter((item) => item.boardId === boardId);
   const draftSource = boardElectricalSource(draft);
   const sourceKind = draftSource.kind;
+  const parentBoard = draftSource.kind === 'BOARD'
+    ? tree.electricalAssets.find((item) => item.id === draftSource.boardId)
+    : undefined;
+  const downstreamBoards = tree.electricalAssets.filter((item) => {
+    const electricalSource = boardElectricalSource(item);
+    return item.id !== draft.id && electricalSource.kind === 'BOARD' && electricalSource.boardId === draft.id;
+  });
+  const suppliedAssets = tree.siteAssets.filter((item) => {
+    const electricalSource = assetElectricalSource(item);
+    return electricalSource.kind === 'BOARD' && electricalSource.boardId === draft.id;
+  });
   const dependencyPreview = boardDependencyPreview(tree, draft.id);
   const codeMeta = displayCodeMetadata(
     tree,
@@ -400,6 +411,53 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         />
       </div>
 
+      {saved ? (
+        <RecordNavigation
+          title="Switchboard navigation"
+          description="Move between this board's physical location, electrical parent and children, installed meters, and evidence."
+          items={[
+            {
+              href: `/installhub/installations/${installationId}/zones/${zoneId}`,
+              icon: 'map-pin',
+              label: 'Physical zone',
+              description: zone.zoneName,
+            },
+            ...(parentBoard ? [{
+              href: `/installhub/installations/${installationId}/zones/${parentBoard.zoneId}/boards/${parentBoard.id}`,
+              icon: 'zap' as const,
+              label: 'Electrical parent',
+              description: `${displayCodeValue(parentBoard)} — ${parentBoard.assetName}`,
+            }] : [{
+              href: '#board-supply',
+              icon: 'grid' as const,
+              label: sourceKind === 'GRID' ? 'Grid supply' : 'Supply to confirm',
+              description: sourceKind === 'GRID' ? primaryGridSupply(tree).name : 'Open the supply section',
+            }]),
+            {
+              href: '#board-relationships',
+              icon: 'plug',
+              label: 'Electrical children',
+              description: 'Downstream boards and supplied assets',
+              meta: downstreamBoards.length + suppliedAssets.length,
+            },
+            {
+              href: '#board-meters',
+              icon: 'gauge',
+              label: 'Installed meters',
+              description: 'Devices and their channels',
+              meta: latest.meters.length,
+            },
+            {
+              href: '#board-evidence',
+              icon: 'camera',
+              label: 'Switchboard evidence',
+              description: 'Board and location photos',
+              meta: (latest.photo ? 1 : 0) + latest.extraPhotos.length,
+            },
+          ]}
+        />
+      ) : null}
+
       <TreeDraftNavigationGuard active={!busy && !uploading && (hasLocalChanges || writer.hasPendingTree)} onDiscard={writer.discard} />
 
       <ErrorSummary errors={errors} />
@@ -609,8 +667,54 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         <InlineNotice>Save the switchboard first, then add meter records, evidence, and field forms.</InlineNotice>
       ) : (
         <>
+          <Card id="board-relationships" tabIndex={-1} className="mb-5 scroll-mt-4">
+            <div>
+              <h2 className="font-extrabold text-[var(--text)]">Electrical children</h2>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">These relationships follow electrical supply and may cross physical zones.</p>
+            </div>
+            <div className="mt-4 grid gap-5 xl:grid-cols-2">
+              <section aria-labelledby="downstream-switchboards-heading">
+                <h3 id="downstream-switchboards-heading" className="text-sm font-extrabold text-[var(--text)]">Downstream switchboards · {downstreamBoards.length}</h3>
+                {downstreamBoards.length ? (
+                  <div className="mt-2 space-y-2">
+                    {downstreamBoards.map((child) => {
+                      const childZone = tree.zones.find((item) => item.id === child.zoneId);
+                      return (
+                        <Link key={child.id} href={`/installhub/installations/${installationId}/zones/${child.zoneId}/boards/${child.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold text-[var(--text)]">{displayCodeValue(child)} — {child.assetName}</span>
+                            <span className="block truncate text-xs text-[var(--text-sub)]">{child.assetType} · {childZone?.zoneName || 'Unknown zone'}</span>
+                          </span>
+                          <Icon name="chevron-right" size={17} className="shrink-0 text-[var(--muted)]" />
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : <p className="mt-2 text-sm text-[var(--text-sub)]">No downstream switchboards.</p>}
+              </section>
+              <section aria-labelledby="supplied-assets-heading">
+                <h3 id="supplied-assets-heading" className="text-sm font-extrabold text-[var(--text)]">Supplied site assets · {suppliedAssets.length}</h3>
+                {suppliedAssets.length ? (
+                  <div className="mt-2 space-y-2">
+                    {suppliedAssets.map((asset) => {
+                      const assetZone = tree.zones.find((item) => item.id === asset.zoneId);
+                      return (
+                        <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${asset.zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-bold text-[var(--text)]">{displayCodeValue(asset)} — {asset.assetName}</span>
+                            <span className="block truncate text-xs text-[var(--text-sub)]">{asset.assetType} · {assetZone?.zoneName || 'Unknown zone'}</span>
+                          </span>
+                          <Icon name="chevron-right" size={17} className="shrink-0 text-[var(--muted)]" />
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : <p className="mt-2 text-sm text-[var(--text-sub)]">No site assets use this board as their confirmed supply.</p>}
+              </section>
+            </div>
+          </Card>
           <div className="mb-5 grid gap-5 xl:grid-cols-2">
-            <Card>
+            <Card id="board-meters" tabIndex={-1} className="scroll-mt-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h2 className="font-extrabold text-[var(--text)]">Meters</h2>
@@ -655,7 +759,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               )}
             </Card>
           </div>
-          <Card id="board-evidence">
+          <Card id="board-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Switchboard evidence</h2>
             <EvidenceField
               label="Main switchboard photo"

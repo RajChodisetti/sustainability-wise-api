@@ -59,6 +59,55 @@ export function WorkspaceLink({
   );
 }
 
+export type RecordNavigationItem = {
+  href: string;
+  icon: IconName;
+  label: string;
+  description: string;
+  meta?: string | number;
+};
+
+export function RecordNavigation({
+  title,
+  description,
+  items,
+}: {
+  title: string;
+  description: string;
+  items: RecordNavigationItem[];
+}) {
+  if (!items.length) return null;
+  return (
+    <Card className="mb-5 !p-4">
+      <div>
+        <h2 className="font-extrabold text-[var(--text)]">{title}</h2>
+        <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">{description}</p>
+      </div>
+      <nav aria-label={title} className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {items.map((item) => (
+          <Link
+            key={`${item.href}-${item.label}`}
+            href={item.href}
+            className="group flex min-h-14 items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 transition hover:border-[var(--primary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--primary)]"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--surface)] text-[var(--primary)]">
+              <Icon name={item.icon} size={18} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-extrabold text-[var(--text)]">{item.label}</span>
+                {item.meta !== undefined ? <span className="shrink-0 rounded-full bg-[var(--surface)] px-2 py-0.5 text-xs font-bold text-[var(--text-sub)]">{item.meta}</span> : null}
+              </span>
+              <span className="mt-0.5 block truncate text-xs text-[var(--text-sub)]">{item.description}</span>
+            </span>
+            <Icon name="chevron-right" size={16} className="shrink-0 text-[var(--muted)] group-hover:text-[var(--primary)]" />
+          </Link>
+        ))}
+      </nav>
+    </Card>
+  );
+}
+
 export function DefinitionList({
   items,
 }: {

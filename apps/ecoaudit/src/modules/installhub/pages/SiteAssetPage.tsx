@@ -9,7 +9,7 @@ import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
-import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
 import {
   ChoiceGroup,
   ConfirmDialog,
@@ -173,6 +173,15 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   ));
   const availableMeters = pinSelectedResult(matchingMeters, eligibleMeters, draft.meterId, (item) => item.id);
   const selectedMeter = meterDevices(tree).find((meter) => meter.id === draft.meterId);
+  const selectedSupplyBoard = draftSource.kind === 'BOARD'
+    ? tree.electricalAssets.find((board) => board.id === draftSource.boardId)
+    : undefined;
+  const selectedMeterBoard = tree.electricalAssets.find((board) => board.id === draft.meterSwitchboardId);
+  const selectedChannels = selectedMeter && selectedMeterBoard
+    ? selectedMeter.channels
+      .filter((channel) => (draft.meterChannelIds || []).includes(channel.id))
+      .sort((left, right) => left.ordinal - right.ordinal)
+    : [];
   const existingAssignment = measurementAssignments(tree).find(
     (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === draft.id,
   );
@@ -597,6 +606,56 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         />
       </div>
 
+      {saved ? (
+        <RecordNavigation
+          title="Site asset navigation"
+          description="Keep physical location, electrical supply, and measurement links distinct while moving directly to each related record."
+          items={[
+            {
+              href: `/installhub/installations/${installationId}/zones/${zoneId}`,
+              icon: 'map-pin',
+              label: 'Physical zone',
+              description: zone.zoneName,
+            },
+            ...(selectedSupplyBoard ? [{
+              href: `/installhub/installations/${installationId}/zones/${selectedSupplyBoard.zoneId}/boards/${selectedSupplyBoard.id}`,
+              icon: 'zap' as const,
+              label: 'Supplying switchboard',
+              description: `${displayCodeValue(selectedSupplyBoard)} — ${selectedSupplyBoard.assetName}`,
+            }] : [{
+              href: '#asset-supply',
+              icon: 'grid' as const,
+              label: draftSource.kind === 'GRID' ? 'Grid supply' : 'Supply to confirm',
+              description: draftSource.kind === 'GRID' ? primaryGridSupply(tree).name : 'Open the supply section',
+            }]),
+            ...(selectedMeter && selectedMeterBoard ? [{
+              href: `/installhub/installations/${installationId}/zones/${selectedMeterBoard.zoneId}/boards/${selectedMeterBoard.id}/meters/${selectedMeter.id}`,
+              icon: 'gauge' as const,
+              label: 'Metering device',
+              description: meterDeviceName(selectedMeter),
+            }] : [{
+              href: '#asset-metering',
+              icon: 'gauge' as const,
+              label: 'Metering relationship',
+              description: siteAssetMeteringState(draft).kind.replaceAll('_', ' '),
+            }]),
+            ...selectedChannels.map((channel) => ({
+              href: `/installhub/installations/${installationId}/zones/${selectedMeterBoard!.zoneId}/boards/${selectedMeterBoard!.id}/meters/${selectedMeter!.id}#meter-channel-${channel.ordinal}`,
+              icon: 'plug' as const,
+              label: `Channel ${channel.ordinal}`,
+              description: channel.description || channel.loadTypeCode || channel.purpose.replaceAll('_', ' ').toLowerCase(),
+            })),
+            {
+              href: '#asset-evidence',
+              icon: 'camera',
+              label: 'Site asset evidence',
+              description: 'Location and supporting photos',
+              meta: (latest.locationPhoto ? 1 : 0) + latest.extraPhotos.length,
+            },
+          ]}
+        />
+      ) : null}
+
       {resumeMessage ? <div className="mb-5"><InlineNotice tone="success">{resumeMessage}</InlineNotice></div> : null}
 
       <TreeDraftNavigationGuard
@@ -611,7 +670,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       <ErrorSummary errors={errors} />
 
       <form onSubmit={(event) => void save(event)}>
-        <Card className="mb-5">
+        <Card id="asset-identity" className="mb-5">
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
               <FieldLabel htmlFor="asset-name">Asset name *</FieldLabel>
@@ -902,7 +961,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         <InlineNotice>Save the site asset first, then add evidence and water/logger field forms.</InlineNotice>
       ) : (
         <>
-          <Card className="mb-5">
+          <Card id="asset-forms" className="mb-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div>
                 <h2 className="font-extrabold text-[var(--text)]">Field forms</h2>
@@ -924,7 +983,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               </div>
             )}
           </Card>
-          <Card id="asset-evidence">
+          <Card id="asset-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Site asset evidence</h2>
             <EvidenceField
               label="Location photo"
