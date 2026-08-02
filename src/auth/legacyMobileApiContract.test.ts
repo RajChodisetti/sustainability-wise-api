@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Fastify from 'fastify';
-import { buildApp } from '../app.js';
+import { buildApp, operationSummary } from '../app.js';
 import { db } from '../db/client.js';
 import {
   authenticate,
@@ -107,6 +107,13 @@ test('additive unified auth keeps every installed-mobile auth and user route', a
       true,
     );
   });
+});
+
+test('generated OpenAPI summaries display the brand without changing the route namespace', () => {
+  assert.equal(
+    operationSummary('post', '/v1/installhub/sync/push'),
+    'POST Field App Complete sync push',
+  );
 });
 
 test('legacy login keeps the email, password and app request contract', async () => {

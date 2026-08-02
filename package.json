@@ -1,7 +1,7 @@
 {
   "name": "sustainability-wise-api",
   "version": "1.0.0",
-  "description": "Unified API server for EcoAudit Pro, SolarSense, InstallHub, and Wattwatchers Fleet",
+  "description": "Unified API server for EcoAudit Pro, SolarSense, Field App Complete, and Wattwatchers Fleet",
   "type": "module",
   "engines": {
     "node": ">=20.9.0"
@@ -31,6 +31,7 @@
     "onedrive:smoke": "node --import tsx/esm scripts/onedrive-photo-smoke.ts",
     "storage:rename-to-names": "node --import tsx/esm scripts/storage-name-migration.ts",
     "storage:isolation-backfill": "node --import tsx/esm scripts/storage-isolation-backfill.ts",
+    "installhub:canonical-v2-backfill": "node --import tsx/esm scripts/installhub-canonical-v2-backfill.ts",
     "smoke:option3": "node --import tsx/esm scripts/option3-smoke.ts",
     "smoke:wattwatchers": "node --import tsx/esm scripts/wattwatchers-smoke.ts",
     "typecheck": "npm run api:typecheck && npm run web:typecheck",
@@ -44,9 +45,9 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/helmet": "^13.0.2",
     "@fastify/rate-limit": "^10.3.0",
-    "@fastify/static": "^9.1.3",
+    "@fastify/static": "^10.1.2",
     "@fastify/swagger": "^9.5.0",
-    "@fastify/swagger-ui": "^5.2.2",
+    "@fastify/swagger-ui": "^6.1.1",
     "archiver": "^8.0.0",
     "bcryptjs": "^3.0.2",
     "dotenv": "^16.5.0",

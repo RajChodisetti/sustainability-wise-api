@@ -5,6 +5,7 @@ import {
   installHubSyncCreatesRecordVersion,
   installationValuesFromPayload,
   parseInstallHubSyncStage,
+  parseInstallHubTreeSchemaMode,
 } from './sync.js';
 import {
   assertInstallationAccess,
@@ -119,6 +120,37 @@ test('InstallHub sync rejects unknown stages before persistence', () => {
   );
 });
 
+test('InstallHub sync fails closed for every declared non-v2 or mismatched tree schema', () => {
+  assert.equal(parseInstallHubTreeSchemaMode({ installation: {} }), 1);
+  assert.equal(parseInstallHubTreeSchemaMode({ installation: { treeSchemaVersion: 1 } }), 1);
+  assert.equal(parseInstallHubTreeSchemaMode({
+    treeSchemaVersion: 2,
+    installation: { treeSchemaVersion: 2 },
+  }), 2);
+
+  for (const payload of [
+    { treeSchemaVersion: 3, installation: { treeSchemaVersion: 3 } },
+    { installation: { treeSchemaVersion: 3 } },
+    { installation: { treeSchemaVersion: '2' } },
+    { treeSchemaVersion: 2, installation: { treeSchemaVersion: 3 } },
+    { treeSchemaVersion: 3, installation: { treeSchemaVersion: 2 } },
+    { treeSchemaVersion: '2', installation: { treeSchemaVersion: 2 } },
+    { treeSchemaVersion: 2, installation: { treeSchemaVersion: '2' } },
+    { treeSchemaVersion: 2, installation: {} },
+  ]) {
+    assert.throws(
+      () => parseInstallHubTreeSchemaMode(payload),
+      (error: unknown) => (
+        error instanceof Error
+        && 'statusCode' in error
+        && error.statusCode === 400
+        && 'detail' in error
+        && error.detail === 'unsupported_tree_schema'
+      ),
+    );
+  }
+});
+
 const completedHoneywellForm = {
   id: 'form-1',
   installationId: 'installation-1',
@@ -140,13 +172,15 @@ const completedHoneywellForm = {
   updatedAt: '2026-07-23T12:00:00.000Z',
 };
 
-test('InstallHub form mapping passes metadata/complete stage into evidence validation', () => {
-  assert.doesNotThrow(() => formValues(
-    completedHoneywellForm,
-    'installation-1',
-    undefined,
-    'metadata',
-  ));
+test('InstallHub never persists a new Completed form before complete evidence validation', () => {
+  assert.throws(
+    () => formValues(completedHoneywellForm, 'installation-1', undefined, 'metadata'),
+    (error: unknown) => (
+      error instanceof Error
+      && 'detail' in error
+      && error.detail === 'metadata_stage_cannot_complete_form'
+    ),
+  );
   assert.throws(
     () => formValues(completedHoneywellForm, 'installation-1'),
     (error: unknown) => (
@@ -175,8 +209,17 @@ test('InstallHub form mapping passes metadata/complete stage into evidence valid
       },
     ],
   };
+  assert.throws(
+    () => formValues(completed, 'installation-1', undefined, 'metadata'),
+    (error: unknown) => (
+      error instanceof Error
+      && 'detail' in error
+      && error.detail === 'metadata_stage_cannot_complete_form'
+    ),
+  );
   const values = formValues(completed, 'installation-1', undefined, 'complete');
   assert.equal(values.attachments.length, 2);
+  assert.doesNotThrow(() => formValues(completed, 'installation-1', values, 'metadata'));
 });
 
 test('InstallHub form mapping rejects non-array schema-v2 attachments', () => {

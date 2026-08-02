@@ -273,7 +273,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
   app.get('/v1/installhub/installations/:installationId/files', {
     schema: {
       tags: ['Files'],
-      summary: 'List stored InstallHub files for an installation',
+      summary: 'List stored Field App Complete files for an installation',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],
@@ -345,7 +345,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
   app.get('/v1/installhub/installations/:installationId/versions', {
     schema: {
       tags: ['Files'],
-      summary: 'List InstallHub installation versions',
+      summary: 'List Field App Complete installation versions',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],
@@ -363,7 +363,7 @@ export async function storageBrowserRoutes(app: FastifyInstance): Promise<void> 
   app.get('/v1/installhub/installations/:installationId/versions/:versionNumber', {
     schema: {
       tags: ['Files'],
-      summary: 'Get an InstallHub installation version',
+      summary: 'Get a Field App Complete installation version',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [authenticate, requireApp('installhub'), requireRole('inspector')],

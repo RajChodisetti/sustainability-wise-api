@@ -11,9 +11,9 @@ it.
 
 ---
 
-## InstallHub Mobile — Cloud Backup
+## Field App Complete Mobile — Cloud Backup
 
-InstallHub uses user JWT authentication, not a device API key. Login sends
+Field App Complete uses user JWT authentication, not a device API key. Login sends
 `app: "installhub"` to `/v1/auth/login`; access and rotated refresh tokens are
 stored in iOS Keychain through Expo SecureStore. The app may restore a cached
 session while offline. New-user bootstrap is available only in a controlled
@@ -23,11 +23,12 @@ migration build that supplies both
 no registration credential is committed to source.
 
 The additive `unified_users` registry contains every Eco Audit, Solar Sense, and
-native Field account. Eco Audit and Solar Sense users receive source-managed
-Field access with the same role and active state. They sign in to Field through
+native Field App Complete account. Eco Audit and Solar Sense users receive
+source-managed Field App Complete access with the same role and active state.
+They sign in to Field App Complete through
 the unchanged `/v1/auth/login` contract with their current source credential and
 receive a normal `app: "installhub"` token; the response and `/v1/auth/me`
-include `sourceManaged: true` and `sourceApp`. Native Field accounts keep their
+include `sourceManaged: true` and `sourceApp`. Native Field App Complete accounts keep their
 existing login and return `sourceManaged: false`.
 
 The API owns a separate namespace:
@@ -37,7 +38,7 @@ The API owns a separate namespace:
 | Routes | `/v1/installhub/*` plus shared `/v1/export/jobs/*` |
 | JWT app claim | `installhub` |
 | API-key prefix (administrative compatibility) | `sk_ih_live_*` |
-| Tables | Native accounts remain in `ih_users`; all three apps are mirrored in additive `unified_users`; Field data remains in `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions` |
+| Tables | Native accounts remain in `ih_users`; all three apps are mirrored in additive `unified_users`; Field App Complete data remains in `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions` |
 | Shared media registry | `photo_registry` rows with `app = installhub` |
 
 ### Sync endpoints
@@ -64,7 +65,7 @@ For backward compatibility, an absent stage is treated as complete.
 
 | Method and route | Access | Purpose |
 |---|---|---|
-| `GET /v1/installhub/users` | admin | List InstallHub users |
+| `GET /v1/installhub/users` | admin | List Field App Complete users |
 | `POST /v1/installhub/users` | admin | Create an `admin` or `inspector` |
 | `GET /v1/installhub/users/:id` | self or admin | Read one public user profile |
 | `PATCH /v1/installhub/users/:id` | admin | Change email, name, role, or active state |
@@ -77,17 +78,17 @@ For backward compatibility, an absent stage is treated as complete.
 
 Native user administration remains scoped to `ih_users`. The API prevents an
 administrator from demoting/deactivating their own account and prevents removal
-of the last active native InstallHub administrator. Role or active-state
-changes, password changes, and deactivation revoke outstanding InstallHub
+of the last active native Field App Complete administrator. Role or active-state
+changes, password changes, and deactivation revoke outstanding Field App Complete
 refresh tokens.
 
 Source-managed rows are returned by the same list/detail endpoints so installed
 clients remain compatible. The public view uses the source email/name and adds
 `sourceManaged`, `sourceApp`, and `sourceState`. Their profile, role, active
-state, administrator password reset, and deactivation are read-only in Field and
+state, administrator password reset, and deactivation are read-only in Field App Complete and
 must be changed in the source app. A source-managed user may change their own
 password after confirming the current password; this updates the authoritative
-source credential and revokes both source and Field refresh sessions. Active
+source credential and revokes both source and Field App Complete refresh sessions. Active
 registry-managed users remain valid installation assignees.
 
 Assignment augments, rather than transfers, access: the creator and elevated
@@ -101,7 +102,7 @@ original still referenced by another backed-up copy.
 
 Turning backup off is a separate preference from deleting server data. Mobile
 asks whether to keep the active server copy or soft-remove it. A soft-removed
-tree is restored under the same IDs when backup is re-enabled. InstallHub
+tree is restored under the same IDs when backup is re-enabled. Field App Complete
 backfills the retained-copy indicator for older local records from their
 successful sync watermark.
 
@@ -109,7 +110,7 @@ successful sync watermark.
 
 | Method and route | Purpose |
 |---|---|
-| `GET /v1/installhub/installations/:installationId/files` | List accessible confirmed originals and completed InstallHub report PDFs with storage metadata |
+| `GET /v1/installhub/installations/:installationId/files` | List accessible confirmed originals and completed Field App Complete report PDFs with storage metadata |
 | `GET /v1/installhub/installations/:installationId/versions` | List immutable full-snapshot version metadata |
 | `GET /v1/installhub/installations/:installationId/versions/:versionNumber` | Return one saved installation snapshot |
 
@@ -171,7 +172,7 @@ run reliably in Expo Go or the simulator.
 The mobile API URL defaults to `https://api.sustainabilitywise.com.au` and can be
 overridden with `EXPO_PUBLIC_SYNC_API_URL`. Release builds reject plaintext HTTP.
 SecureStore keys are `ih_cloud_jwt`, `ih_cloud_refresh`, and `ih_cloud_user`.
-InstallHub exposes `/pull` only through an explicit user-driven browser/import
+Field App Complete exposes `/pull` only through an explicit user-driven browser/import
 flow. It never silently overwrites local records: the selected tree is cloned
 with fresh IDs and the next `cpN` suffix.
 
@@ -210,22 +211,23 @@ duplicate attachment IDs, non-image attachments, malformed capture timestamps,
 and non-HTTP(S) attachment URIs. Drafts remain incrementally valid and schema-v1
 records keep their compatibility behavior.
 
-### InstallHub web portal counterpart
+### Field App Complete web portal counterpart
 
-The EcoSense portal exposes the same server-backed InstallHub domain under
+The EcoSense portal exposes the same server-backed Field App Complete domain under
 `/installhub`. It keeps an isolated `installhub` JWT/refresh session and uses the
 same pull, full-snapshot push, exact photo-field upload, access, file/version,
 user, and durable PDF-job endpoints as the iOS app.
 
-Its Field user-management page reads `/v1/portal/users`, showing Eco Audit, Solar
-Sense, and Field role/status memberships from `unified_users` in one responsive
-matrix. Source-managed Field access is visible but read-only; only native
-Field-only rows link to the existing editor. Every application login route
+Its Field App Complete user-management page reads `/v1/portal/users`, showing
+Eco Audit, Solar Sense, and Field App Complete role/status memberships from
+`unified_users` in one responsive matrix. Source-managed Field App Complete
+access is visible but read-only; only native Field App Complete-only rows link
+to the existing editor. Every application login route
 redirects to the portal's single `/login` page. The shared portal login is an
 additive facade over the existing per-app sessions and falls back to the legacy
 login calls only when the new endpoint is unavailable. If an Eco Audit or Solar
 Sense portal session already exists, `/v1/auth/field-session` creates the
-separate Field session after verifying both its source JWT and matching active
+separate Field App Complete session after verifying both its source JWT and matching active
 source refresh session, without displaying another login page. If both
 independent source sessions are active, the portal presents an account chooser
 with no password fields and exchanges only the explicitly selected source
@@ -371,7 +373,7 @@ the current bearer token; completed export links may instead use a short-lived
 HMAC capability generated by the API. Thumbnails are app-namespaced under
 `<app>/_thumbnails/v2` and remain bearer-authorized.
 
-InstallHub follows the same contract. Backup is opt-in per installation. A selected server tree is
+Field App Complete follows the same contract. Backup is opt-in per installation. A selected server tree is
 cloned locally with fresh IDs and a deterministic `<site> cpN` name, remains local-only by default,
 and is hidden from the main list until every required preview is ready. Creator, assigned inspector,
 or elevated access is required for both tree reads and thumbnail downloads. If an imported copy is

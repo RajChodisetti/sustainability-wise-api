@@ -5,7 +5,7 @@
 ```text
 EcoAudit mobile ---------\
 SolarSense mobile --------\
-Field mobile --------------> Caddy -> Fastify API (sw-api)
+Field App Complete mobile -> Caddy -> Fastify API (sw-api)
 EcoSense portal ----------/                |
 Fleet collector ----------/                +-> PostgreSQL 16
 Legacy Vite UI -----------/                +-> local or Spaces storage
@@ -29,7 +29,7 @@ OneDrive is an optional photo backup mirror, not the canonical API reference.
 ```
 POST /v1/auth/login { email, password, app }
   → Lookup user in the selected app namespace
-  → For Field, an explicit ih_users credential wins; otherwise verify an
+  → For Field App Complete, an explicit ih_users credential wins; otherwise verify an
     active Eco Audit/Solar Sense entry in the unified user registry
   → bcrypt.compare(password, hash)
   → signAccessToken({ userId, app, role })   15 min
@@ -41,12 +41,12 @@ The portal may call `POST /v1/auth/portal-login`. Its response is a collection o
 the same independent app-scoped login envelopes; it does not create a universal
 token. Installed clients and older portal/API deployments continue to use
 `/v1/auth/login` unchanged. When an authenticated Eco Audit or Solar Sense portal
-session opens Field, `POST /v1/auth/field-session` verifies its source JWT and
+session opens Field App Complete, `POST /v1/auth/field-session` verifies its source JWT and
 matching still-active source refresh session, then returns a separate normal
-Field auth envelope without displaying another credential form. This prevents a
-revoked source session from being extended through Field. If two independent
+Field App Complete auth envelope without displaying another credential form. This prevents a
+revoked source session from being extended through Field App Complete. If two independent
 source sessions are already active, the portal asks which signed-in account
-should supply Field identity and role; it never chooses one nondeterministically
+should supply Field App Complete identity and role; it never chooses one nondeterministically
 and still does not request a password.
 
 ### Token Refresh
@@ -58,9 +58,9 @@ POST /v1/auth/refresh { refreshToken }
   → Issue and store a unique replacement pair in the same transaction
 ```
 
-Source-account writes and Field refreshes share the lock order
+Source-account writes and Field App Complete refreshes share the lock order
 `authoritative source/native user → unified registry row → refresh token`. A
-role, password, or active-state change therefore cannot race a replacement Field
+role, password, or active-state change therefore cannot race a replacement Field App Complete
 refresh token back into validity.
 
 ### API Key Auth (App-to-App)
@@ -75,7 +75,7 @@ Authorization: Bearer sk_<app>_live_xxxxxxxxxxxxxxxxxxxx
 
 ## Unified users with namespace isolation
 
-Eco Audit, Solar Sense, Field, and Wattwatchers retain separate authorization
+Eco Audit, Solar Sense, Field App Complete, and Wattwatchers retain separate authorization
 namespaces:
 
 - Separate user tables (`ea_users`, `ss_users`, `ih_users`, `ww_users`)
@@ -85,26 +85,26 @@ namespaces:
 
 The additive `unified_users` table is the one cross-application user registry.
 Migration `0014` backfills exactly one registry row for every existing Eco Audit,
-Solar Sense, and native Field account, including inactive accounts. Each row
+Solar Sense, and native Field App Complete account, including inactive accounts. Each row
 retains its origin app/user ID, exact role and active state, profile fields,
-credential snapshot, and a stable Field subject ID. The legacy tables remain the
+credential snapshot, and a stable Field App Complete subject ID. The legacy tables remain the
 authoritative records so installed applications and their existing login and
 user-management APIs continue to work unchanged.
 
 Database triggers keep legacy writers compatible:
 
-- new and updated Eco Audit, Solar Sense, and native Field users are mirrored
+- new and updated Eco Audit, Solar Sense, and native Field App Complete users are mirrored
   into `unified_users` in the same database transaction;
 - source role, status, name, and credential changes update the registry row;
 - source role, status, credential, and deletion changes revoke both source and
-  linked Field refresh sessions;
+  linked Field App Complete refresh sessions;
 - source deletion leaves an inactive, traceable registry tombstone;
 - no Eco Audit or Solar Sense shadow row is inserted into `ih_users`.
 
 Independent source records are deliberately never auto-merged, even when their
 email or username is equal. This preserves audit ownership and provides a safe
 rollback path: older applications keep reading and writing their original user
-tables, while the additive registry supplies shared Field access and the unified
+tables, while the additive registry supplies shared Field App Complete access and the unified
 portal directory.
 
 ## Photo Upload Flow

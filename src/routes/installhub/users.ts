@@ -174,8 +174,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.get('/', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'List InstallHub users',
+      tags: ['Field App Complete Users'],
+      summary: 'List Field App Complete users',
       security: [{ bearerAuth: [] }],
     },
     preHandler: installHubAdmin,
@@ -191,8 +191,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.post('/', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'Create an InstallHub user',
+      tags: ['Field App Complete Users'],
+      summary: 'Create a Field App Complete user',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
@@ -245,8 +245,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.get('/:id', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'Get an InstallHub user',
+      tags: ['Field App Complete Users'],
+      summary: 'Get a Field App Complete user',
       security: [{ bearerAuth: [] }],
     },
     preHandler: installHubUser,
@@ -266,8 +266,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.patch('/:id', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'Update an InstallHub user',
+      tags: ['Field App Complete Users'],
+      summary: 'Update a Field App Complete user',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
@@ -300,7 +300,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         if (!registryUser) throw notFound('User');
         if (isSourceManagedInstallHubUser(registryUser)) {
           throw conflict(
-            'This Field account is managed by its source application. Update it in Eco Audit or Solar Sense.',
+            'This Field App Complete account is managed by its source application. Update it in Eco Audit or Solar Sense.',
           );
         }
 
@@ -336,7 +336,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
           throw badRequest('Cannot demote or deactivate your own account');
         }
         if (guard === 'last_admin') {
-          throw conflict('Cannot remove the last active InstallHub administrator');
+          throw conflict('Cannot remove the last active Field App Complete administrator');
         }
 
         const changes: Partial<typeof ihUsers.$inferInsert> = {
@@ -374,8 +374,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.patch('/:id/password', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'Change or administratively reset an InstallHub user password',
+      tags: ['Field App Complete Users'],
+      summary: 'Change or administratively reset a Field App Complete user password',
       description: 'Self-service changes require currentPassword. An administrator may reset another user without knowing that user password.',
       security: [{ bearerAuth: [] }],
       body: {
@@ -474,8 +474,8 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
 
   app.delete('/:id', {
     schema: {
-      tags: ['InstallHub Users'],
-      summary: 'Deactivate an InstallHub user',
+      tags: ['Field App Complete Users'],
+      summary: 'Deactivate a Field App Complete user',
       security: [{ bearerAuth: [] }],
     },
     preHandler: installHubAdmin,
@@ -494,7 +494,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       if (!registryUser) throw notFound('User');
       if (isSourceManagedInstallHubUser(registryUser)) {
         throw conflict(
-          'This Field account is managed by its source application. Deactivate it in Eco Audit or Solar Sense.',
+          'This Field App Complete account is managed by its source application. Deactivate it in Eco Audit or Solar Sense.',
         );
       }
 
@@ -521,7 +521,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         activeAdminCount: adminCount?.count ?? 0,
       });
       if (guard === 'last_admin') {
-        throw conflict('Cannot remove the last active InstallHub administrator');
+        throw conflict('Cannot remove the last active Field App Complete administrator');
       }
 
       await tx

@@ -4,9 +4,11 @@ import { buildApp } from './app.js';
 import { closeBrowser } from './pdf/renderer.js';
 import { closeDb } from './db/client.js';
 import { failInterruptedExportJobs } from './services/pdfJobService.js';
+import { drainStorageDeletionTasks } from './services/storageDeletionService.js';
 
 async function main() {
   await runMigrations();
+  await drainStorageDeletionTasks();
   await failInterruptedExportJobs();
 
   const app = await buildApp();

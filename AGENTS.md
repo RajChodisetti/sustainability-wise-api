@@ -37,8 +37,8 @@ all instruction files from this root down to every file you plan to edit.
 | Mobile clients | sibling repositories, not this repository | Expo applications |
 
 The folder name `apps/ecoaudit` is historical. It contains the shared EcoSense
-portal for EcoAudit, SolarSense, InstallHub, and Wattwatchers Fleet. The
-InstallHub field client remains `../installhub-mobile/`; its catalog, validation,
+portal for EcoAudit, SolarSense, Field App Complete, and Wattwatchers Fleet. The
+Field App Complete mobile client remains `../installhub-mobile/`; its catalog, validation,
 evidence captions, scanners, and report behavior are compatibility sources for
 the portal surface.
 

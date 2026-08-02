@@ -1,10 +1,10 @@
 import path from 'node:path';
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteShorthandOptions } from 'fastify';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql, type SQL } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { pdfJobs } from '../db/schema/shared.js';
 import { authenticate } from '../auth/middleware.js';
-import { forbidden, notFound } from '../utils/errors.js';
+import { badRequest, forbidden, notFound } from '../utils/errors.js';
 import {
   localFileSize,
   localFileStream,
@@ -13,6 +13,61 @@ import {
 import { exportJobParams, type ExportArtifactType } from '../services/pdfJobService.js';
 
 type ExportJob = typeof pdfJobs.$inferSelect;
+
+export type ExpectedReportProvenance = {
+  recordVersionNumber: number;
+  recordVersionPayloadHash: string;
+  reportSource: 'canonical-version' | 'diagnostic-live';
+};
+
+export function exportJobParamsMatchExpectedProvenance(
+  value: unknown,
+  expected: ExpectedReportProvenance,
+): boolean {
+  const params = exportJobParams(value);
+  return params.recordVersionNumber === expected.recordVersionNumber
+    && params.recordVersionPayloadHash === expected.recordVersionPayloadHash
+    && params.reportSource === expected.reportSource;
+}
+
+function expectedReportProvenance(query: {
+  recordVersionNumber?: unknown;
+  recordVersionPayloadHash?: unknown;
+  reportSource?: unknown;
+}): ExpectedReportProvenance | undefined {
+  const supplied = [
+    query.recordVersionNumber,
+    query.recordVersionPayloadHash,
+    query.reportSource,
+  ].filter((value) => value !== undefined).length;
+  if (supplied === 0) return undefined;
+  if (supplied !== 3) {
+    throw badRequest(
+      'recordVersionNumber, recordVersionPayloadHash, and reportSource must be supplied together',
+    );
+  }
+  const recordVersionNumber = Number(query.recordVersionNumber);
+  if (!Number.isInteger(recordVersionNumber) || recordVersionNumber < 1) {
+    throw badRequest('recordVersionNumber must be a positive integer');
+  }
+  if (
+    typeof query.recordVersionPayloadHash !== 'string'
+    || !query.recordVersionPayloadHash.trim()
+  ) {
+    throw badRequest('recordVersionPayloadHash must be a non-empty string');
+  }
+  if (
+    query.reportSource !== 'canonical-version'
+    && query.reportSource !== 'diagnostic-live'
+  ) {
+    throw badRequest('reportSource is invalid');
+  }
+  return {
+    recordVersionNumber,
+    recordVersionPayloadHash: query.recordVersionPayloadHash,
+    reportSource: query.reportSource,
+  };
+}
 
 function artifactMetadata(job: ExportJob): {
   artifactType: ExportArtifactType;
@@ -38,6 +93,19 @@ function artifactMetadata(job: ExportJob): {
 
 function serializeJob(job: ExportJob) {
   const metadata = artifactMetadata(job);
+  const params = exportJobParams(job.params);
+  const recordVersionNumber = typeof params.recordVersionNumber === 'number'
+    && Number.isInteger(params.recordVersionNumber)
+    && params.recordVersionNumber > 0
+    ? params.recordVersionNumber
+    : null;
+  const recordVersionPayloadHash = typeof params.recordVersionPayloadHash === 'string'
+    ? params.recordVersionPayloadHash
+    : null;
+  const reportSource = params.reportSource === 'canonical-version'
+    || params.reportSource === 'diagnostic-live'
+    ? params.reportSource
+    : null;
   return {
     id: job.id,
     status: job.status,
@@ -52,6 +120,9 @@ function serializeJob(job: ExportJob) {
     artifactType: metadata.artifactType,
     filename: metadata.filename,
     contentType: metadata.contentType,
+    recordVersionNumber,
+    recordVersionPayloadHash,
+    reportSource,
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
   };
@@ -74,7 +145,7 @@ async function loadAccessibleJob(request: FastifyRequest): Promise<ExportJob> {
 
 const statusRoute: RouteShorthandOptions = {
   schema: {
-    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'InstallHub PDF'],
+    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'Field App Complete PDF'],
     summary: 'Get export job status',
     description: 'Returns progress and download metadata for a PDF or ZIP export job.',
     security: [{ bearerAuth: [] }],
@@ -97,6 +168,14 @@ const statusRoute: RouteShorthandOptions = {
           artifactType: { type: 'string' },
           filename: { type: 'string' },
           contentType: { type: 'string' },
+          recordVersionNumber: { type: ['integer', 'null'] },
+          recordVersionPayloadHash: { type: ['string', 'null'] },
+          reportSource: {
+            anyOf: [
+              { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
+              { type: 'null' },
+            ],
+          },
           createdAt: { type: 'string' },
           updatedAt: { type: 'string' },
         },
@@ -112,7 +191,7 @@ async function statusHandler(request: FastifyRequest, reply: FastifyReply) {
 
 const downloadRoute: RouteShorthandOptions = {
   schema: {
-    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'InstallHub PDF'],
+    tags: ['Export Jobs', 'EcoAudit PDF', 'SolarSense PDF', 'Field App Complete PDF'],
     summary: 'Download a completed export job',
     description: 'Streams a completed PDF or ZIP. Returns 409 while the export is still running.',
     security: [{ bearerAuth: [] }],
@@ -153,26 +232,46 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
         properties: {
           entityId: { type: 'string' },
           artifactType: { type: 'string', enum: ['pdf', 'photos-zip'] },
+          recordVersionNumber: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
+          recordVersionPayloadHash: { type: 'string' },
+          reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
         },
       },
     },
     preHandler: [authenticate],
   }, async (request, reply) => {
-    const { entityId, artifactType } = request.query as {
+    const query = request.query as {
       entityId: string;
       artifactType: ExportArtifactType;
+      recordVersionNumber?: unknown;
+      recordVersionPayloadHash?: unknown;
+      reportSource?: unknown;
     };
+    const { entityId, artifactType } = query;
+    const expected = expectedReportProvenance(query);
+    const conditions: SQL[] = [
+      eq(pdfJobs.app, request.user.app),
+      eq(pdfJobs.entityId, entityId),
+      eq(pdfJobs.userId, request.user.userId),
+    ];
+    if (expected) {
+      conditions.push(
+        sql`${pdfJobs.params} ->> 'artifactType' = ${artifactType}`,
+        sql`${pdfJobs.params} ->> 'recordVersionNumber' = ${String(expected.recordVersionNumber)}`,
+        sql`${pdfJobs.params} ->> 'recordVersionPayloadHash' = ${expected.recordVersionPayloadHash}`,
+        sql`${pdfJobs.params} ->> 'reportSource' = ${expected.reportSource}`,
+      );
+    }
     const jobs = await db
       .select()
       .from(pdfJobs)
-      .where(and(
-        eq(pdfJobs.app, request.user.app),
-        eq(pdfJobs.entityId, entityId),
-        eq(pdfJobs.userId, request.user.userId),
-      ))
+      .where(and(...conditions))
       .orderBy(desc(pdfJobs.createdAt))
       .limit(50);
-    const job = jobs.find((candidate) => artifactMetadata(candidate).artifactType === artifactType);
+    const job = jobs.find((candidate) => (
+      artifactMetadata(candidate).artifactType === artifactType
+      && (!expected || exportJobParamsMatchExpectedProvenance(candidate.params, expected))
+    ));
     return reply.send({ job: job ? serializeJob(job) : null });
   });
 

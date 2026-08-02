@@ -501,7 +501,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   app.post('/field-session', {
     schema: {
       tags: ['Auth'],
-      summary: 'Create a Field session from the current source-app session',
+      summary: 'Create a Field App Complete session from the current source-app session',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',

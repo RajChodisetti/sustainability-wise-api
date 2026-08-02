@@ -1,6 +1,6 @@
 # Secure Files, Storage Isolation, and Bootstrap Migration
 
-This runbook covers Eco Audit Pro, Solar Sense, and InstallHub. It is designed
+This runbook covers Eco Audit Pro, Solar Sense, and Field App Complete. It is designed
 for an expand/backfill/contract rollout: every data move is copy-first,
 checksum-verified, reversible, and leaves the legacy source intact until an
 operator separately approves retirement.
@@ -11,7 +11,7 @@ operator separately approves retirement.
 PostgreSQL
 ├── ea_*  Eco Audit users and records
 ├── ss_*  Solar Sense users and records
-├── ih_*  InstallHub users and records
+├── ih_*  Field App Complete users and records
 └── shared registries
     ├── refresh_tokens.app
     ├── photo_registry.app
@@ -22,7 +22,7 @@ PostgreSQL
 Object storage
 ├── Eco Audit bucket/root      dedicated IAM credential
 ├── Solar Sense bucket/root    dedicated IAM credential
-└── InstallHub bucket/root     dedicated IAM credential
+└── Field App Complete bucket/root     dedicated IAM credential
 ```
 
 The three user tables are independent. A user or administrator in one table
@@ -99,7 +99,7 @@ the session.
 
 Release all three mobile apps and the portal with authenticated thumbnail and
 original-image reads. Eco Audit and Solar Sense full-resolution local-PDF
-fallbacks must send a bearer token; InstallHub thumbnails already do so.
+fallbacks must send a bearer token; Field App Complete thumbnails already do so.
 
 After the supported-version threshold is reached, set:
 
@@ -174,11 +174,11 @@ Turning backup off now asks the user to choose:
 Soft removal is intentionally reversible. Re-enabling backup upserts the same
 local record ID and clears the server deletion marker. Eco Audit and Solar Sense
 cache every referenced full-resolution original before removal; the operation
-aborts if any original cannot be retained locally. InstallHub never deletes its
+aborts if any original cannot be retained locally. Field App Complete never deletes its
 locally captured evidence after upload.
 
 Previously opted-out Eco Audit/Solar Sense records expose a retained copy when
-their existing `server_id` is present. InstallHub backfills
+their existing `server_id` is present. Field App Complete backfills
 `cloud_backup_retained` from the existing per-installation sync watermark.
 
 Permanent purge remains a separate, clearly destructive action in the remote
@@ -222,7 +222,7 @@ server-side admin script.
 ## Production release gate
 
 A deployment is not verified merely because local tests pass. The release
-commit must contain the InstallHub schema, routes, migrations, migration-journal
+commit must contain the Field App Complete schema, routes, migrations, migration-journal
 entry, storage backfill command, and this runbook. Before production:
 
 ```bash

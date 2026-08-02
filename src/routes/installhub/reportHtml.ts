@@ -53,6 +53,79 @@ export type InstallHubReportPhoto = {
   createdAt?: Date | string | null;
 };
 
+export type InstallHubCanonicalReport = {
+  reportSource: 'canonical-version' | 'diagnostic-live';
+  treeRevision: number;
+  recordVersionNumber: number | null;
+  snapshotPayloadHash: string | null;
+  mappingContentHash: string | null;
+  authoritative: boolean;
+  readyToComplete: boolean;
+  physicalLocations: Array<{
+    id: string;
+    name: string;
+    description?: string;
+  }>;
+  electricalNodes: Array<{
+    id: string;
+    kind: string;
+    name: string;
+    displayCode?: string;
+    physicalLocationId?: string;
+  }>;
+  supplyEdges: Array<{
+    sourceNodeId: string;
+    targetNodeId: string;
+    relationship: string;
+  }>;
+  unresolvedRelationships: Array<{
+    id: string;
+    subjectType: string;
+    subjectId: string;
+    relation: string;
+    missingEnd: string;
+    knownNodeId?: string;
+    reason: string;
+  }>;
+  assets: Array<{
+    id: string;
+    name: string;
+    displayCode: string;
+    typeLabel: string;
+    zoneId: string;
+    zoneName: string;
+    coverage: unknown;
+  }>;
+  meteringRows: Array<{
+    assignmentId: string;
+    meterDisplayName: string;
+    channelOrdinal: number | null;
+    target: unknown;
+    direction: string;
+  }>;
+  virtualMeterDefinitions: Array<{
+    id: string;
+    parentNodeId: string;
+    totalMeasurementAssignmentId: string;
+    subtractAssignmentIds: string[];
+    formula: string;
+    formulaVersion: number;
+    allocation: 'UNALLOCATED_RESIDUAL';
+    coverage: Array<{
+      assetId: string;
+      displayCode: string;
+      assetName: string;
+      zoneName: string;
+    }>;
+  }>;
+  readinessIssues: Array<{
+    code: string;
+    entityType: string;
+    entityId: string;
+    message: string;
+  }>;
+};
+
 export type ResolvedInstallHubFormPhoto = {
   attachmentIndex: number;
   slot: string;
@@ -83,6 +156,21 @@ export class MissingInstallHubReportEvidenceError extends Error {
   }
 }
 
+export function safeInstallHubReportFailure(error: unknown): {
+  code: 'missing_confirmed_evidence' | 'report_generation_failed';
+  publicMessage: string;
+} {
+  return error instanceof MissingInstallHubReportEvidenceError
+    ? {
+        code: 'missing_confirmed_evidence',
+        publicMessage: 'The report could not be generated because confirmed evidence is missing.',
+      }
+    : {
+        code: 'report_generation_failed',
+        publicMessage: 'The report could not be generated.',
+      };
+}
+
 const UUID_RE =
   /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
@@ -108,6 +196,7 @@ function createdAtValue(photo: InstallHubReportPhoto): number {
 export function resolveInstallHubFormPhotos(
   form: InstallHubReportForm,
   photos: InstallHubReportPhoto[],
+  options: { allowMissingEvidence?: boolean } = {},
 ): ResolvedInstallHubFormPhoto[] {
   const rowsByField = new Map<string, InstallHubReportPhoto[]>();
   for (const photo of photos) {
@@ -141,7 +230,7 @@ export function resolveInstallHubFormPhotos(
     }];
   });
 
-  if (missing.length > 0) {
+  if (missing.length > 0 && !options.allowMissingEvidence) {
     throw new MissingInstallHubReportEvidenceError(form.id, missing);
   }
   return resolved;
@@ -174,7 +263,7 @@ export function installHubReportNeedsChunks(
 
 function definitionFor(form: InstallHubReportForm): InstallHubReportDefinition {
   const definition = INSTALLHUB_REPORT_DEFINITION_BY_TYPE[form.formType];
-  if (!definition) throw new Error(`Unsupported InstallHub report type: ${form.formType}`);
+  if (!definition) throw new Error(`Unsupported Field App Complete report type: ${form.formType}`);
   return definition;
 }
 
@@ -436,7 +525,7 @@ function formCoverHtml(
   const definition = definitionFor(form);
   const primary = coverDetails(form);
   return `<div class="cover">
-    <div class="cover-eyebrow">Field installation record &middot; InstallHub</div>
+    <div class="cover-eyebrow">Field App Complete installation record</div>
     <h1 class="cover-title">${escapeHtml(definition.title)}</h1>
     <div class="cover-brand">
       <div class="cover-brand-label">Prepared by</div>
@@ -463,8 +552,8 @@ function installationCoverHtml(
   logoDataUri: string,
 ): string {
   return `<div class="cover">
-    <div class="cover-eyebrow">Installation record &middot; InstallHub</div>
-    <h1 class="cover-title">InstallHub Installation Pack</h1>
+    <div class="cover-eyebrow">Field App Complete installation record</div>
+    <h1 class="cover-title">Field App Complete Installation Pack</h1>
     <div class="cover-brand">
       <div class="cover-brand-label">Prepared by</div>
       <img class="cover-brand-logo" src="${escapeHtml(logoDataUri)}" alt="Sustainability Wise" />
@@ -544,7 +633,129 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .photo-caption{color:#64748B;font-size:7pt;line-height:1.3;margin-top:4px;overflow-wrap:anywhere;}
 .missing{color:#94A3B8;font-size:8.5pt;font-style:italic;border:1px dashed #CBD5E1;background:#F8FAFC;padding:10px 12px;}
 .end-block{margin-top:24px;padding:13px 16px;background:#1E3A8A;color:#FFFFFF;border-radius:7px;font-size:9pt;font-weight:700;}
+.canonical-section{page-break-before:always;break-before:page;margin-top:18px;}
+.canonical-table{width:100%;border-collapse:collapse;font-size:7.5pt;margin:7px 0 14px;}
+.canonical-table th,.canonical-table td{border:1px solid #CBD5E1;padding:5px 7px;text-align:left;vertical-align:top;overflow-wrap:anywhere;}
+.canonical-table th{color:#1E3A8A;background:#EFF6FF;font-weight:800;text-transform:uppercase;letter-spacing:.04em;}
+.canonical-meta{padding:8px 10px;background:#F8FAFC;border:1px solid #CBD5E1;font-size:7.5pt;overflow-wrap:anywhere;}
 `;
+}
+
+function compactJson(value: unknown): string {
+  if (!value || typeof value !== 'object') return String(value ?? '');
+  const source = value as Record<string, unknown>;
+  return `{${Object.keys(source).sort().map((key) => `${key}: ${String(source[key])}`).join(', ')}}`;
+}
+
+function canonicalReportHtml(report: InstallHubCanonicalReport): string {
+  const row = (values: unknown[]) => `<tr>${values.map((value) => `<td>${escapeHtml(value)}</td>`).join('')}</tr>`;
+  const physicalLocationNames = new Map(
+    report.physicalLocations.map((location) => [location.id, location.name]),
+  );
+  const physicalLocations = report.physicalLocations.length
+    ? report.physicalLocations.map((location) => row([
+        location.name, location.description ?? '', location.id,
+      ])).join('')
+    : row(['No physical zones recorded', '', '']);
+  const nodes = report.electricalNodes.map((node) => row([
+    node.kind,
+    node.displayCode ?? '',
+    node.name,
+    node.physicalLocationId
+      ? physicalLocationNames.get(node.physicalLocationId) ?? node.physicalLocationId
+      : '',
+    node.id,
+  ])).join('');
+  const edges = report.supplyEdges.map((edge) => row([
+    edge.relationship, edge.sourceNodeId, edge.targetNodeId,
+  ])).join('');
+  const unresolved = report.unresolvedRelationships.length
+    ? report.unresolvedRelationships.map((item) => row([
+        item.subjectType,
+        item.subjectId,
+        item.relation,
+        item.missingEnd,
+        item.knownNodeId ?? '',
+        item.reason,
+      ])).join('')
+    : row(['None', '', '', '', '', 'No unresolved electrical relationships.']);
+  const assets = report.assets.map((asset) => row([
+    asset.displayCode,
+    asset.name,
+    asset.typeLabel,
+    asset.zoneName,
+    compactJson(asset.coverage),
+    asset.id,
+  ])).join('');
+  const metering = report.meteringRows.map((item) => row([
+    item.meterDisplayName,
+    item.channelOrdinal ?? '',
+    item.direction,
+    compactJson(item.target),
+    item.assignmentId,
+  ])).join('');
+  const issues = report.readinessIssues.length
+    ? report.readinessIssues.map((issue) => row([
+        issue.code, issue.entityType, issue.entityId, issue.message,
+      ])).join('')
+    : row([
+        'READY',
+        'installation',
+        '',
+        report.reportSource === 'canonical-version'
+          ? 'No blocking readiness issues in the pinned version.'
+          : 'No current blocking readiness issues in this live diagnostic projection.',
+      ]);
+  const virtualMeters = report.virtualMeterDefinitions.length
+    ? report.virtualMeterDefinitions.map((definition) => row([
+        definition.id,
+        definition.parentNodeId,
+        definition.totalMeasurementAssignmentId,
+        definition.subtractAssignmentIds.join(', '),
+        definition.formula,
+        definition.formulaVersion,
+        definition.allocation,
+        definition.coverage.map((asset) => (
+          `${asset.displayCode} — ${asset.assetName} (${asset.zoneName})`
+        )).join('; '),
+      ])).join('')
+    : row([
+        'None', '', '', '', '', '', '',
+        report.reportSource === 'canonical-version'
+          ? 'No virtual residual coverage in this pinned version.'
+          : 'No virtual residual coverage in the current live projection.',
+      ]);
+  const canonicalVersionMeta = report.reportSource === 'canonical-version'
+    ? `Record version ${report.recordVersionNumber} &middot; Snapshot ${escapeHtml(report.snapshotPayloadHash)} &middot; Mapping ${escapeHtml(report.mappingContentHash)}`
+    : 'Live diagnostic projection &middot; Not pinned to a canonical record version or payload hash';
+  const authorityLabel = report.authoritative ? 'AUTHORITATIVE' : 'NON-AUTHORITATIVE';
+  const sectionTitle = report.reportSource === 'canonical-version'
+    ? 'Pinned canonical installation'
+    : 'Current installation diagnostic';
+  const virtualCaveat = report.reportSource === 'canonical-version'
+    ? 'The pinned formula subtracts the listed assignments from the pinned total assignment; changes made after this record version are not included.'
+    : 'The live formula uses the current mutable tree and may change after this report is generated.';
+  return `<div class="canonical-section">
+    <div class="section-bar">${sectionTitle}</div>
+    <div class="canonical-meta">Report source ${report.reportSource} &middot; ${authorityLabel} &middot; Tree revision ${report.treeRevision} &middot; Ready ${report.readyToComplete ? 'YES' : 'NO'} &middot; ${canonicalVersionMeta}</div>
+    <h3>Physical-zone summary</h3>
+    <table class="canonical-table"><thead><tr><th>Zone</th><th>Description</th><th>Stable ID</th></tr></thead><tbody>${physicalLocations}</tbody></table>
+    <h3>Electrical hierarchy</h3>
+    <table class="canonical-table"><thead><tr><th>Kind</th><th>Display</th><th>Name</th><th>Physical zone</th><th>Stable ID</th></tr></thead><tbody>${nodes}</tbody></table>
+    <h3>Supply relationships</h3>
+    <table class="canonical-table"><thead><tr><th>Relationship</th><th>Source</th><th>Target</th></tr></thead><tbody>${edges}</tbody></table>
+    <h3>Unresolved electrical relationships</h3>
+    <table class="canonical-table"><thead><tr><th>Subject</th><th>Stable ID</th><th>Relation</th><th>Missing end</th><th>Known node</th><th>Reason</th></tr></thead><tbody>${unresolved}</tbody></table>
+    <h3>All-assets coverage</h3>
+    <table class="canonical-table"><thead><tr><th>Display</th><th>Asset</th><th>Type</th><th>Physical zone</th><th>Coverage</th><th>Stable ID</th></tr></thead><tbody>${assets}</tbody></table>
+    <h3>Metering assignments</h3>
+    <table class="canonical-table"><thead><tr><th>Meter</th><th>Channel</th><th>Direction</th><th>Target</th><th>Assignment ID</th></tr></thead><tbody>${metering}</tbody></table>
+    <h3>Virtual-meter definitions</h3>
+    <p class="canonical-meta"><strong>UNALLOCATED_RESIDUAL caveat:</strong> each virtual value is a calculated remainder, not a direct meter reading. ${virtualCaveat}</p>
+    <table class="canonical-table"><thead><tr><th>Virtual ID</th><th>Parent node</th><th>Total assignment</th><th>Subtract assignments</th><th>Formula</th><th>Version</th><th>Allocation</th><th>Covered assets</th></tr></thead><tbody>${virtualMeters}</tbody></table>
+    <h3>Readiness</h3>
+    <table class="canonical-table"><thead><tr><th>Code</th><th>Entity</th><th>Stable ID</th><th>Message</th></tr></thead><tbody>${issues}</tbody></table>
+  </div>`;
 }
 
 export function buildInstallHubReportHtml(input: {
@@ -558,6 +769,7 @@ export function buildInstallHubReportHtml(input: {
   includeEnd: boolean;
   generatedLabel: string;
   summaryPhotoCount?: number;
+  canonicalReport?: InstallHubCanonicalReport;
 }): string {
   const formsById = new Map(input.forms.map((form) => [form.id, form]));
   const firstForm = input.forms[0];
@@ -618,8 +830,9 @@ export function buildInstallHubReportHtml(input: {
   <template data-pdf-footer data-left="SUSTAINABILITY WISE" data-right="${escapeHtml(input.generatedLabel)}" data-page-numbers="true"></template>
   <main class="content">
     ${intro}
+    ${input.includeIntro && input.canonicalReport ? canonicalReportHtml(input.canonicalReport) : ''}
     ${formBlocks}
-    ${input.includeEnd ? `<div class="end-block">Prepared by Sustainability Wise &middot; InstallHub report manifest v${INSTALLHUB_REPORT_MANIFEST_VERSION}</div>` : ''}
+    ${input.includeEnd ? `<div class="end-block">Prepared by Sustainability Wise &middot; Field App Complete report manifest v${INSTALLHUB_REPORT_MANIFEST_VERSION}</div>` : ''}
   </main>
 </body>
 </html>`;

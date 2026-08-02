@@ -35,7 +35,7 @@ export async function portalUserRoutes(app: FastifyInstance): Promise<void> {
   app.get('/users', {
     schema: {
       tags: ['Portal Users'],
-      summary: 'List the unified EcoAudit, SolarSense, and Field user directory',
+      summary: 'List the unified EcoAudit, SolarSense, and Field App Complete user directory',
       description: 'Returns independent identity records and their app memberships without exposing credentials or merging equal usernames.',
       security: [{ bearerAuth: [] }],
     },

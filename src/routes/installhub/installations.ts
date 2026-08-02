@@ -4,7 +4,7 @@ import { authenticate, requireApp, requireRole } from '../../auth/middleware.js'
 import { db } from '../../db/client.js';
 import { ihInstallations } from '../../db/schema/installhub.js';
 import { unifiedUsers } from '../../db/schema/shared.js';
-import { badRequest, notFound } from '../../utils/errors.js';
+import { badRequest, conflict, notFound } from '../../utils/errors.js';
 import {
   assertInstallationAccess,
   assertInstallationDeletionAccess,
@@ -80,8 +80,8 @@ export async function installhubInstallationRoutes(
 ): Promise<void> {
   app.delete('/:installationId', {
     schema: {
-      tags: ['InstallHub Installations'],
-      summary: 'Delete an InstallHub Cloud Backup',
+      tags: ['Field App Complete Installations'],
+      summary: 'Delete a Field App Complete Cloud Backup',
       description:
         'Soft-deletes by default. purge=true permanently removes the server tree, unreferenced originals, generated reports, and versions.',
       security: [{ bearerAuth: [] }],
@@ -104,6 +104,9 @@ export async function installhubInstallationRoutes(
     );
     const installation = await loadInstallation(installationId, purge);
     assertInstallationDeletionAccess(installation, request.user);
+    if (installation.status === 'Completed') {
+      throw conflict('installation_completed_reopen_required');
+    }
     if (purge) {
       await purgeInstallHubInstallationTree(installation.id);
       return reply.status(204).send();
@@ -121,8 +124,8 @@ export async function installhubInstallationRoutes(
 
   app.get('/:installationId/access', {
     schema: {
-      tags: ['InstallHub Installations'],
-      summary: 'Get InstallHub installation access assignment',
+      tags: ['Field App Complete Installations'],
+      summary: 'Get Field App Complete installation access assignment',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [
@@ -139,8 +142,8 @@ export async function installhubInstallationRoutes(
 
   app.patch('/:installationId/access', {
     schema: {
-      tags: ['InstallHub Installations'],
-      summary: 'Assign or clear access for another InstallHub user',
+      tags: ['Field App Complete Installations'],
+      summary: 'Assign or clear access for another Field App Complete user',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',

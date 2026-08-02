@@ -40,10 +40,10 @@ const tagMap: Record<string, string> = {
   'EcoAudit Photos': 'EcoAudit / Photos',
   'EcoAudit Sync': 'EcoAudit / Sync',
   'EcoAudit PDF': 'EcoAudit / PDF',
-  'InstallHub Users': 'InstallHub / Users',
-  'InstallHub Installations': 'InstallHub / Installations',
-  'InstallHub Sync': 'InstallHub / Sync',
-  'InstallHub PDF': 'InstallHub / PDF',
+  'Field App Complete Users': 'Field App Complete / Users',
+  'Field App Complete Installations': 'Field App Complete / Installations',
+  'Field App Complete Sync': 'Field App Complete / Sync',
+  'Field App Complete PDF': 'Field App Complete / PDF',
   'Wattwatchers Users': 'Wattwatchers / Users',
   'Wattwatchers Dashboard': 'Wattwatchers / Dashboard',
   'Wattwatchers Devices': 'Wattwatchers / Devices',
@@ -70,10 +70,10 @@ const orderedTags = [
   { name: 'EcoAudit / Photos', description: 'EcoAudit Pro synced photo listing, export, and deletion.' },
   { name: 'EcoAudit / Sync', description: 'EcoAudit Pro mobile sync and photo upload endpoints.' },
   { name: 'EcoAudit / PDF', description: 'EcoAudit Pro server-side report generation.' },
-  { name: 'InstallHub / Users', description: 'InstallHub user administration and password management.' },
-  { name: 'InstallHub / Installations', description: 'InstallHub installation ownership and shared-access controls.' },
-  { name: 'InstallHub / Sync', description: 'InstallHub mobile metadata and evidence backup.' },
-  { name: 'InstallHub / PDF', description: 'InstallHub server-side form and installation-pack generation.' },
+  { name: 'Field App Complete / Users', description: 'Field App Complete user administration and password management.' },
+  { name: 'Field App Complete / Installations', description: 'Field App Complete installation ownership and shared-access controls.' },
+  { name: 'Field App Complete / Sync', description: 'Field App Complete mobile metadata and evidence backup.' },
+  { name: 'Field App Complete / PDF', description: 'Field App Complete server-side form and installation-pack generation.' },
   { name: 'Wattwatchers / Users', description: 'Independent Wattwatchers Fleet portal access.' },
   { name: 'Wattwatchers / Dashboard', description: 'Fleet connectivity summaries and trends.' },
   { name: 'Wattwatchers / Devices', description: 'Current device state, history, and outages.' },
@@ -81,7 +81,7 @@ const orderedTags = [
   { name: 'Wattwatchers / Runs', description: 'Collector run history and diagnostics.' },
   { name: 'Wattwatchers / Reports', description: 'Daily Fleet reports and safe CSV exports.' },
   { name: 'Wattwatchers / Ingest', description: 'Idempotent service-account collector ingestion.' },
-  { name: 'Portal / Users', description: 'Unified EcoAudit, SolarSense, and Field user directory.' },
+  { name: 'Portal / Users', description: 'Unified EcoAudit, SolarSense, and Field App Complete user directory.' },
   { name: 'PDF Jobs', description: 'Async PDF job status polling and download.' },
   { name: 'Files', description: 'Stored photo and generated PDF downloads.' },
   { name: 'System', description: 'Public operational checks.' },
@@ -98,13 +98,17 @@ async function docsAuthPreHandler(request: FastifyRequest, reply: FastifyReply):
   await authenticate(request, reply);
 }
 
-function operationSummary(method: string, path: string): string {
+export function operationSummary(method: string, path: string): string {
   const normalized = path
     .replace(/^\/v1\//, '')
     .replace(/[{}]/g, '')
     .replace(/[/-]+/g, ' ')
     .trim();
-  return `${method.toUpperCase()} ${normalized || path}`;
+  const displayName = normalized.replace(
+    /^installhub(?=\s|$)/,
+    'Field App Complete',
+  );
+  return `${method.toUpperCase()} ${displayName || path}`;
 }
 
 function isPublicOperation(path: string): boolean {
@@ -277,7 +281,7 @@ export async function buildApp() {
     openapi: {
       info: {
         title: 'Sustainability Wise API',
-        description: 'Unified API for EcoAudit Pro, SolarSense, InstallHub, and Wattwatchers Fleet operations',
+        description: 'Unified API for EcoAudit Pro, SolarSense, Field App Complete, and Wattwatchers Fleet operations',
         version: '1.0.0',
       },
       servers: [{ url: config.publicBaseUrl, description: 'Configured API base URL' }],

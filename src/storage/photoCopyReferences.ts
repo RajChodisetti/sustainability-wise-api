@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq, inArray, isNull, ne, or } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import {
@@ -15,12 +15,13 @@ import {
   eaSolarPv,
   eaZones,
 } from '../db/schema/ecoaudit.js';
-import { photoCopyReferences, photoRegistry } from '../db/schema/shared.js';
+import { photoCopyReferences, photoRegistry, recordVersions } from '../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
 import {
   ihElectricalAssets,
   ihFormSubmissions,
   ihInstallations,
+  ihMeterDevices,
   ihSiteAssets,
   ihZones,
 } from '../db/schema/installhub.js';
@@ -215,6 +216,19 @@ export function installHubSiteAssetPhotoFieldReferences(
   return [
     ...referencesAt(record.locationPhoto, 'locationPhoto'),
     ...indexedReferences(record.extraPhotos, 'extraPhotos'),
+  ];
+}
+
+export function installHubMeterPhotoFieldReferences(
+  record: Record<string, unknown>,
+): PhotoFieldReference[] {
+  const photos = record.wwPhotos as Record<string, unknown> | undefined;
+  if (!photos) return [];
+  return [
+    ...referencesAt(photos.deviceInstalled ?? photos.device_installed, 'wwPhotos.deviceInstalled'),
+    ...referencesAt(photos.switchboardOverview ?? photos.switchboard_overview, 'wwPhotos.switchboardOverview'),
+    ...referencesAt(photos.labeling, 'wwPhotos.labeling'),
+    ...indexedReferences(photos.extra, 'wwPhotos.extra'),
   ];
 }
 
@@ -625,7 +639,7 @@ async function currentPhotoEntities(
   }
 
   if (app === 'installhub') {
-    const [zones, electricalAssets, siteAssets, forms] = await Promise.all([
+    const [zones, electricalAssets, siteAssets, meters, forms] = await Promise.all([
       executor.select().from(ihZones).where(and(
         eq(ihZones.installationId, parentId),
         isNull(ihZones.deletedAt),
@@ -637,6 +651,10 @@ async function currentPhotoEntities(
       executor.select().from(ihSiteAssets).where(and(
         eq(ihSiteAssets.installationId, parentId),
         isNull(ihSiteAssets.deletedAt),
+      )),
+      executor.select().from(ihMeterDevices).where(and(
+        eq(ihMeterDevices.installationId, parentId),
+        isNull(ihMeterDevices.deletedAt),
       )),
       executor.select().from(ihFormSubmissions).where(and(
         eq(ihFormSubmissions.installationId, parentId),
@@ -664,6 +682,13 @@ async function currentPhotoEntities(
         targetEntityType: 'site_asset',
         photoValues: [record.locationPhoto, record.extraPhotos],
         photoReferences: installHubSiteAssetPhotoFieldReferences(record),
+      })),
+      ...meters.map((record) => ({
+        sourceEntityId: record.id,
+        targetEntityId: record.id,
+        targetEntityType: 'meter_device',
+        photoValues: [record.wwPhotos],
+        photoReferences: installHubMeterPhotoFieldReferences(record),
       })),
       ...forms.map((record) => ({
         sourceEntityId: record.id,
@@ -915,6 +940,19 @@ async function claimPhotoRegistryRowForDeletion(
       .where(eq(photoCopyReferences.photoId, photo.id))
       .limit(1);
     if (reference) return null;
+    // Canonical versions pin immutable evidence in their media manifest. A
+    // mutable active record may release a photo reference, but the original
+    // bytes remain protected until the owning version is explicitly purged.
+    const [versionReference] = await tx
+      .select({ id: recordVersions.id })
+      .from(recordVersions)
+      .where(sql`EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(COALESCE(${recordVersions.snapshot}->'mediaManifest', '[]'::jsonb)) AS media
+        WHERE media->>'id' = ${photo.id}
+      )`)
+      .limit(1);
+    if (versionReference) return null;
     if (requireMissingOriginalParent && await originalParentExists(photo, executor)) return null;
     const [deleted] = await tx
       .delete(photoRegistry)

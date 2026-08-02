@@ -129,6 +129,11 @@ export const recordVersions = pgTable('record_versions', {
   entityType: text('entity_type').notNull(),
   entityId: text('entity_id').notNull(),
   versionNumber: integer('version_number').notNull(),
+  schemaVersion: integer('schema_version'),
+  canonicalizerVersion: text('canonicalizer_version'),
+  validatorVersion: text('validator_version'),
+  taxonomyVersion: text('taxonomy_version'),
+  payloadHash: text('payload_hash'),
   snapshot: jsonb('snapshot').notNull(),
   createdByUserId: text('created_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -151,3 +156,21 @@ export const pdfJobs = pgTable('pdf_jobs', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
+
+/**
+ * Durable outbox for storage deletion. Domain/registry rows and this task are
+ * committed atomically; physical bytes are removed only after that commit and
+ * unfinished tasks are replayed on startup.
+ */
+export const storageDeletionTasks = pgTable('storage_deletion_tasks', {
+  id: text('id').primaryKey(),
+  app: text('app').notNull(),
+  storageKey: text('storage_key').notNull(),
+  reason: text('reason').notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('storage_deletion_tasks_storage_key_unique').on(table.storageKey),
+  index('storage_deletion_tasks_app_created_idx').on(table.app, table.createdAt),
+]);

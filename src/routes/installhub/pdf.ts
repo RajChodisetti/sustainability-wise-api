@@ -45,12 +45,14 @@ import {
   planInstallHubPackChunks,
   photosForInstallHubFormSlice,
   resolveInstallHubFormPhotos,
+  safeInstallHubReportFailure,
   visibleInstallHubReportSectionIndexes,
   type InstallHubFormReportSlice,
   type InstallHubReportAttachment,
   type InstallHubReportForm,
   type InstallHubReportInstallation,
   type InstallHubReportPhoto,
+  type InstallHubCanonicalReport,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
 import {
@@ -58,6 +60,23 @@ import {
   INSTALLHUB_REPORT_MANIFEST_VERSION,
   type InstallHubReportFormType,
 } from './reportManifest.js';
+import {
+  canonicalEvidenceReferences,
+  canonicalCompletionReadiness,
+  loadCanonicalInstallationTree,
+  loadCanonicalRecordVersion,
+  type CanonicalRecordVersionSnapshot,
+} from './treeService.js';
+import {
+  installationReadiness,
+  type CanonicalFormSubmission,
+  type CanonicalInstallationTree,
+} from './canonical.js';
+import {
+  buildAllAssetsView,
+  buildElectricalTreeView,
+  buildMeteringView,
+} from './canonicalViews.js';
 
 const MAX_PDF_BYTES = 300 * 1024 * 1024;
 const brandLogoUrl = new URL('../../pdf/brand-logo.png', import.meta.url);
@@ -67,6 +86,197 @@ type InstallationRow = typeof ihInstallations.$inferSelect;
 type FormRow = typeof ihFormSubmissions.$inferSelect;
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type ReportMode = 'form' | 'installation-pack';
+
+export function pinnedPhotoMatchesManifest(
+  photo: Pick<PhotoRow, 'id' | 'checksum'>,
+  manifest: Pick<CanonicalRecordVersionSnapshot['mediaManifest'][number], 'id' | 'checksum'>,
+): boolean {
+  return photo.id.toLowerCase() === manifest.id.toLowerCase()
+    && photo.checksum === manifest.checksum;
+}
+
+export function requestedRecordVersion(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const result = Number(value);
+  if (!Number.isInteger(result) || result < 1) {
+    throw badRequest('recordVersionNumber must be a positive integer');
+  }
+  return result;
+}
+
+export function requestedLiveMode(value: unknown): boolean {
+  if (value === undefined || value === null || value === '') return false;
+  if (value === true || value === 'true') return true;
+  throw badRequest('liveMode must be true when requesting a non-authoritative live report');
+}
+
+export function assertPinnedOrExplicitLive(input: {
+  recordVersionNumber?: number;
+  liveMode: boolean;
+}): void {
+  if (input.recordVersionNumber !== undefined && input.liveMode) {
+    throw badRequest('Choose recordVersionNumber or liveMode, not both');
+  }
+  if (input.recordVersionNumber === undefined && !input.liveMode) {
+    throw badRequest('recordVersionNumber is required unless liveMode=true is explicitly requested');
+  }
+}
+
+export function assertAuthoritativeCanonicalSnapshot(
+  snapshot: Pick<CanonicalRecordVersionSnapshot, 'readiness'>,
+): void {
+  if (snapshot.readiness.eligibility.authoritativeReport !== true) {
+    throw badRequest(
+      'The selected record version is not eligible for an authoritative report. Resolve its pinned readiness issues or request liveMode=true for a diagnostic report.',
+    );
+  }
+}
+
+export function assertPinnedSnapshotProvenance(input: {
+  snapshot: Pick<CanonicalRecordVersionSnapshot, 'payloadHash' | 'readiness'>;
+  expectedPayloadHash: string;
+}): void {
+  if (!input.expectedPayloadHash || input.snapshot.payloadHash !== input.expectedPayloadHash) {
+    throw new Error('canonical_report_snapshot_provenance_mismatch');
+  }
+  assertAuthoritativeCanonicalSnapshot(input.snapshot);
+}
+
+function canonicalReportProjection(input: {
+  tree: CanonicalInstallationTree;
+  readiness: CanonicalRecordVersionSnapshot['readiness'];
+  electricalTree: CanonicalRecordVersionSnapshot['viewArtifacts']['electricalTree'];
+  allAssets: CanonicalRecordVersionSnapshot['viewArtifacts']['allAssets'];
+  metering: CanonicalRecordVersionSnapshot['viewArtifacts']['metering'];
+  reportSource: 'canonical-version' | 'diagnostic-live';
+  recordVersionNumber: number | null;
+  snapshotPayloadHash: string | null;
+  mappingContentHash: string | null;
+}): InstallHubCanonicalReport {
+  return {
+    reportSource: input.reportSource,
+    treeRevision: input.tree.installation.treeRevision,
+    recordVersionNumber: input.recordVersionNumber,
+    snapshotPayloadHash: input.snapshotPayloadHash,
+    mappingContentHash: input.mappingContentHash,
+    authoritative: input.reportSource === 'canonical-version'
+      && input.readiness.eligibility.authoritativeReport,
+    readyToComplete: input.readiness.readyToComplete,
+    physicalLocations: input.tree.zones.map((zone) => ({
+      id: zone.id,
+      name: zone.zoneName,
+      ...(zone.zoneDescription ? { description: zone.zoneDescription } : {}),
+    })),
+    electricalNodes: input.electricalTree.nodes.map((node) => ({
+      id: node.id,
+      kind: node.kind,
+      name: node.name,
+      ...('displayCode' in node ? { displayCode: node.displayCode } : {}),
+      ...('physicalLocationId' in node
+        ? { physicalLocationId: node.physicalLocationId }
+        : {}),
+    })),
+    supplyEdges: input.electricalTree.edges
+      .filter((edge) => edge.relationship === 'FED_FROM')
+      .map((edge) => ({
+        sourceNodeId: edge.sourceNodeId,
+        targetNodeId: edge.targetNodeId,
+        relationship: edge.relationship,
+      })),
+    unresolvedRelationships: input.electricalTree.unresolved.map((item) => ({
+      id: item.id,
+      subjectType: item.subjectType,
+      subjectId: item.subjectId,
+      relation: item.relation,
+      missingEnd: item.missingEnd,
+      ...(item.knownNodeId ? { knownNodeId: item.knownNodeId } : {}),
+      reason: item.reason,
+    })),
+    assets: input.allAssets.assets.map((asset) => ({
+      id: asset.id,
+      name: asset.name,
+      displayCode: asset.displayCode,
+      typeLabel: asset.typeLabel,
+      zoneId: asset.zoneId,
+      zoneName: asset.zoneName,
+      coverage: asset.coverage,
+    })),
+    meteringRows: input.metering.rows.map((row) => ({
+      assignmentId: row.assignmentId,
+      meterDisplayName: row.meterDisplayName,
+      channelOrdinal: row.channelOrdinal,
+      target: row.target,
+      direction: row.direction,
+    })),
+    virtualMeterDefinitions: input.tree.serverDerived.virtualMeterDefinitions.map((definition) => ({
+      id: definition.id,
+      parentNodeId: definition.parentNodeId,
+      totalMeasurementAssignmentId: definition.totalMeasurementAssignmentId,
+      subtractAssignmentIds: [...definition.subtractAssignmentIds],
+      formula: definition.subtractAssignmentIds.length
+        ? `TOTAL(${definition.totalMeasurementAssignmentId}) - SUM(${definition.subtractAssignmentIds.join(', ')})`
+        : `TOTAL(${definition.totalMeasurementAssignmentId})`,
+      formulaVersion: definition.formulaVersion,
+      allocation: definition.allocation,
+      coverage: input.allAssets.assets.flatMap((asset) => (
+        asset.coverage.kind === 'VIRTUAL'
+        && asset.coverage.virtualMeterId === definition.id
+          ? [{
+              assetId: asset.id,
+              displayCode: asset.displayCode,
+              assetName: asset.name,
+              zoneName: asset.zoneName,
+            }]
+          : []
+      )),
+    })),
+    readinessIssues: input.readiness.issues.map((issue) => ({
+      code: issue.code,
+      entityType: issue.entityType,
+      entityId: issue.entityId,
+      message: issue.message,
+    })),
+  };
+}
+
+export function pinnedCanonicalReport(
+  snapshot: CanonicalRecordVersionSnapshot,
+): InstallHubCanonicalReport {
+  return canonicalReportProjection({
+    tree: snapshot.installationTree,
+    readiness: snapshot.readiness,
+    electricalTree: snapshot.viewArtifacts.electricalTree,
+    allAssets: snapshot.viewArtifacts.allAssets,
+    metering: snapshot.viewArtifacts.metering,
+    reportSource: 'canonical-version',
+    recordVersionNumber: snapshot.installationTree.installation.recordVersionNumber,
+    snapshotPayloadHash: snapshot.payloadHash,
+    mappingContentHash: snapshot.viewArtifacts.mapping.contentHash,
+  });
+}
+
+export function liveDiagnosticCanonicalReport(
+  tree: CanonicalInstallationTree,
+  currentReadiness: CanonicalRecordVersionSnapshot['readiness'] = installationReadiness(tree),
+): InstallHubCanonicalReport {
+  const currentVersion = tree.installation.recordVersionNumber;
+  return canonicalReportProjection({
+    tree,
+    readiness: currentReadiness,
+    electricalTree: buildElectricalTreeView(tree, currentVersion),
+    allAssets: buildAllAssetsView(tree, currentVersion),
+    metering: buildMeteringView(tree, currentVersion),
+    reportSource: 'diagnostic-live',
+    recordVersionNumber: null,
+    snapshotPayloadHash: null,
+    mappingContentHash: null,
+  });
+}
+
+function generatedLabel(createdAt?: string): string {
+  const date = createdAt ? new Date(createdAt) : new Date();
+  return `Generated ${date.toLocaleDateString('en-AU', { timeZone: 'UTC' })}`;
+}
 
 function loadBrandLogo(): Promise<string> {
   brandLogoDataUriPromise ??= readFile(brandLogoUrl)
@@ -111,7 +321,7 @@ function reportAttachments(value: unknown): InstallHubReportAttachment[] {
 
 function reportForm(row: FormRow): InstallHubReportForm {
   if (!(row.formType in INSTALLHUB_REPORT_DEFINITION_BY_TYPE)) {
-    throw new Error(`Unsupported InstallHub report type: ${row.formType}`);
+    throw new Error(`Unsupported Field App Complete report type: ${row.formType}`);
   }
   return {
     id: row.id,
@@ -128,7 +338,26 @@ function reportForm(row: FormRow): InstallHubReportForm {
   };
 }
 
-function reportInstallation(row: InstallationRow): InstallHubReportInstallation {
+function canonicalReportForm(row: CanonicalFormSubmission): InstallHubReportForm {
+  if (!(row.formType in INSTALLHUB_REPORT_DEFINITION_BY_TYPE)) {
+    throw new Error(`Unsupported Field App Complete report type: ${row.formType}`);
+  }
+  return {
+    id: row.id,
+    installationId: row.installationId,
+    formType: row.formType as InstallHubReportFormType,
+    schemaVersion: row.schemaVersion,
+    status: row.status,
+    answers: row.answers,
+    attachments: reportAttachments(row.attachments),
+    completedAt: row.completedAt,
+    supersedesId: row.supersedesId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function reportInstallation(row: InstallHubReportInstallation): InstallHubReportInstallation {
   return {
     id: row.id,
     clientName: row.clientName,
@@ -273,23 +502,63 @@ function allFormSlices(
 async function renderInstallHubReport(args: {
   installation: InstallationRow;
   formRows: FormRow[];
+  pinnedSnapshot?: CanonicalRecordVersionSnapshot;
+  liveDiagnosticTree?: CanonicalInstallationTree;
+  liveDiagnosticReadiness?: CanonicalRecordVersionSnapshot['readiness'];
+  pinnedFormIds?: string[];
+  pinnedCreatedAt?: string;
   mode: ReportMode;
   onPhase?: (phase: string) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void | Promise<void>;
 }): Promise<Buffer> {
-  const installation = reportInstallation(args.installation);
-  const forms = args.formRows.map(reportForm);
+  const installation = args.pinnedSnapshot
+    ? reportInstallation(args.pinnedSnapshot.installationTree.installation)
+    : args.liveDiagnosticTree
+      ? reportInstallation(args.liveDiagnosticTree.installation)
+      : reportInstallation(args.installation);
+  const forms = args.pinnedSnapshot
+    ? args.pinnedSnapshot.installationTree.formSubmissions
+        .filter((form) => !args.pinnedFormIds || args.pinnedFormIds.includes(form.id))
+        .map(canonicalReportForm)
+    : args.liveDiagnosticTree && args.mode === 'installation-pack'
+      ? args.liveDiagnosticTree.formSubmissions.map(canonicalReportForm)
+      : args.formRows.map(reportForm);
   const formsById = new Map(forms.map((form) => [form.id, form]));
   const formIds = new Set(forms.map((form) => form.id));
-  const scopedPhotoRows = (await loadPhotosForParent({
+  const pinnedMediaById = args.pinnedSnapshot
+    ? new Map(args.pinnedSnapshot.mediaManifest.map((item) => [item.id.toLowerCase(), item]))
+    : null;
+  let scopedPhotoRows = (await loadPhotosForParent({
     app: 'installhub',
     parentId: installation.id,
-  })).filter((photo) => formIds.has(photo.entityId));
+  })).filter((photo) => (
+    formIds.has(photo.entityId)
+    && (!pinnedMediaById || (() => {
+      const manifest = pinnedMediaById.get(photo.id.toLowerCase());
+      return Boolean(manifest && pinnedPhotoMatchesManifest(photo, manifest));
+    })())
+  ));
+  if (args.pinnedSnapshot) {
+    const fieldByPhotoEntity = new Map<string, string>();
+    for (const reference of canonicalEvidenceReferences(args.pinnedSnapshot.installationTree)) {
+      const photoId = reference.uri.match(
+        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+      )?.[0]?.toLowerCase();
+      if (photoId) fieldByPhotoEntity.set(`${photoId}\0${reference.entityId}`, reference.fieldName);
+    }
+    scopedPhotoRows = scopedPhotoRows.map((photo) => ({
+      ...photo,
+      fieldName: fieldByPhotoEntity.get(`${photo.id.toLowerCase()}\0${photo.entityId}`)
+        ?? photo.fieldName,
+    }));
+  }
   const reportPhotoRows = scopedPhotoRows.map(reportPhoto);
   const resolvedByForm = new Map(
     forms.map((form) => [
       form.id,
-      resolveInstallHubFormPhotos(form, reportPhotoRows),
+      resolveInstallHubFormPhotos(form, reportPhotoRows, {
+        allowMissingEvidence: Boolean(args.liveDiagnosticTree),
+      }),
     ]),
   );
   const totals = installHubReportPhotoTotals(
@@ -313,7 +582,15 @@ async function renderInstallHubReport(args: {
   );
 
   const logoDataUri = await loadBrandLogo();
-  const generatedLabel = `Generated ${new Date().toLocaleDateString('en-AU')}`;
+  const reportGeneratedLabel = generatedLabel(args.pinnedCreatedAt);
+  const canonicalReport = args.pinnedSnapshot
+    ? pinnedCanonicalReport(args.pinnedSnapshot)
+    : args.liveDiagnosticTree
+      ? liveDiagnosticCanonicalReport(
+          args.liveDiagnosticTree,
+          args.liveDiagnosticReadiness,
+        )
+      : undefined;
   const parts: Buffer[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const slices = chunks[index];
@@ -332,8 +609,9 @@ async function renderInstallHubReport(args: {
       logoDataUri,
       includeIntro: index === 0,
       includeEnd: index === chunks.length - 1,
-      generatedLabel,
+      generatedLabel: reportGeneratedLabel,
       summaryPhotoCount: totals.count,
+      ...(canonicalReport ? { canonicalReport } : {}),
     });
     parts.push(await renderPdf(html));
     await args.onProgress?.(index + 1, chunks.length);
@@ -342,8 +620,8 @@ async function renderInstallHubReport(args: {
 }
 
 function reportFilename(
-  installation: InstallationRow,
-  form?: FormRow,
+  installation: Pick<InstallationRow, 'siteName'>,
+  form?: Pick<FormRow, 'formType'> | Pick<CanonicalFormSubmission, 'formType'>,
 ): string {
   const base = form
     ? INSTALLHUB_REPORT_DEFINITION_BY_TYPE[
@@ -356,29 +634,42 @@ function reportFilename(
 async function saveInstallHubReport(args: {
   installation: InstallationRow;
   formRows: FormRow[];
+  pinnedSnapshot?: CanonicalRecordVersionSnapshot;
+  liveDiagnosticTree?: CanonicalInstallationTree;
+  liveDiagnosticReadiness?: CanonicalRecordVersionSnapshot['readiness'];
+  pinnedFormIds?: string[];
+  pinnedCreatedAt?: string;
   mode: ReportMode;
   onPhase?: (phase: string) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void | Promise<void>;
 }): Promise<{ storageKey: string; remoteUrl: string }> {
   const pdf = await renderInstallHubReport(args);
   if (pdf.byteLength > MAX_PDF_BYTES) {
-    console.warn('[pdf] InstallHub PDF exceeded preferred size limit', {
+    console.warn('[pdf] Field App Complete PDF exceeded preferred size limit', {
       installationId: args.installation.id,
       actualSizeBytes: pdf.byteLength,
       preferredMaxSizeBytes: MAX_PDF_BYTES,
     });
   }
   await args.onPhase?.('Saving PDF');
+  const pinnedForms = args.pinnedSnapshot?.installationTree.formSubmissions.filter((form) => (
+    !args.pinnedFormIds || args.pinnedFormIds.includes(form.id)
+  ));
+  const reportForm = args.mode === 'form'
+    ? args.formRows[0] ?? pinnedForms?.[0]
+    : undefined;
+  const reportInstallation = args.pinnedSnapshot?.installationTree.installation
+    ?? args.installation;
   const filename = reportFilename(
-    args.installation,
-    args.mode === 'form' ? args.formRows[0] : undefined,
+    reportInstallation,
+    reportForm,
   );
   const storageKey = makePdfStorageKeyFromName({
     app: 'installhub',
-    parentName: args.installation.siteName,
+    parentName: reportInstallation.siteName,
     fieldName:
       args.mode === 'form'
-        ? `form-${args.formRows[0]?.id ?? 'report'}-pdf`
+        ? `form-${reportForm?.id ?? 'report'}-pdf`
         : 'installation-pack-pdf',
     sessionId: randomUUID(),
     filename,
@@ -397,23 +688,58 @@ async function runInstallHubPdfJob(args: {
   installationId: string;
   formIds: string[];
   mode: ReportMode;
+  recordVersionNumber?: number;
+  recordVersionPayloadHash?: string;
+  reportSource: 'canonical-version' | 'diagnostic-live';
 }): Promise<void> {
   try {
     await markJobRunning(args.jobId, 'Starting');
     const installation = await loadInstallation(args.installationId);
-    // The authenticated route has already established access. Background
-    // reconciliation may remap existing trusted grants but cannot create one.
-    await reconcilePhotoCopyReferencesForParent({
-      app: 'installhub',
-      parentId: installation.id,
-    });
-    const forms = await loadCompletedForms(
-      installation.id,
-      args.mode === 'form' ? args.formIds : (args.formIds.length ? args.formIds : undefined),
-    );
+    const pinned = args.reportSource === 'diagnostic-live'
+      ? null
+      : await loadCanonicalRecordVersion({
+          installationId: installation.id,
+          versionNumber: args.recordVersionNumber!,
+        });
+    if (args.reportSource === 'canonical-version' && !pinned) {
+      throw new Error(`Canonical record version ${args.recordVersionNumber} was not found`);
+    }
+    if (pinned) {
+      assertPinnedSnapshotProvenance({
+        snapshot: pinned.snapshot,
+        expectedPayloadHash: args.recordVersionPayloadHash ?? '',
+      });
+    }
+    const liveDiagnosticTree = args.reportSource === 'diagnostic-live'
+      ? await loadCanonicalInstallationTree(installation.id)
+      : undefined;
+    const liveDiagnosticReadiness = liveDiagnosticTree
+      ? await canonicalCompletionReadiness({ tree: liveDiagnosticTree, executor: db })
+      : undefined;
+    // Legacy jobs retain current reconciliation behavior. Pinned jobs consume
+    // only the immutable version manifest and never remap live references.
+    if (!pinned) {
+      await reconcilePhotoCopyReferencesForParent({
+        app: 'installhub',
+        parentId: installation.id,
+      });
+    }
+    const forms = pinned || (liveDiagnosticTree && args.mode === 'installation-pack')
+      ? []
+      : await loadCompletedForms(
+          installation.id,
+          args.mode === 'form' ? args.formIds : (args.formIds.length ? args.formIds : undefined),
+        );
     const result = await saveInstallHubReport({
       installation,
       formRows: forms,
+      ...(pinned ? {
+        pinnedSnapshot: pinned.snapshot,
+        pinnedFormIds: args.formIds,
+        pinnedCreatedAt: pinned.createdAt,
+      } : {}),
+      ...(liveDiagnosticTree ? { liveDiagnosticTree } : {}),
+      ...(liveDiagnosticReadiness ? { liveDiagnosticReadiness } : {}),
       mode: args.mode,
       onPhase: (phase) => updateJobPhase(args.jobId, phase),
       onProgress: (current, total) =>
@@ -426,12 +752,13 @@ async function runInstallHubPdfJob(args: {
     });
     await completeJob(args.jobId, result.remoteUrl, result.storageKey);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await failJob(args.jobId, message);
-    console.error('[pdf-job] InstallHub job failed', {
+    const failure = safeInstallHubReportFailure(error);
+    await failJob(args.jobId, failure.publicMessage);
+    console.error('[pdf-job] Field App Complete job failed', {
       jobId: args.jobId,
       installationId: args.installationId,
-      error: message,
+      errorCode: failure.code,
+      recordVersionNumber: args.recordVersionNumber ?? null,
     });
   }
 }
@@ -450,9 +777,20 @@ function sourceUpdatedAt(
 async function queueInstallHubPdfJob(args: {
   request: FastifyRequest;
   installation: InstallationRow;
-  forms: FormRow[];
+  forms: Array<FormRow | CanonicalFormSubmission>;
   mode: ReportMode;
+  recordVersionNumber?: number;
+  recordVersionPayloadHash?: string;
+  recordVersionSnapshot?: CanonicalRecordVersionSnapshot;
+  liveMode: boolean;
 }) {
+  if (!args.liveMode && (
+    args.recordVersionNumber === undefined
+    || !args.recordVersionPayloadHash
+    || !args.recordVersionSnapshot
+  )) {
+    throw badRequest('Canonical reports require an exact record version and payload hash');
+  }
   const entityId =
     args.mode === 'form'
       ? args.forms[0]?.id
@@ -462,37 +800,76 @@ async function queueInstallHubPdfJob(args: {
   const params: ExportJobParams = {
     artifactType: 'pdf',
     filename: reportFilename(
-      args.installation,
+      args.recordVersionSnapshot?.installationTree.installation ?? args.installation,
       args.mode === 'form' ? args.forms[0] : undefined,
     ),
     contentType: 'application/pdf',
     reportMode: args.mode,
+    reportSource: args.liveMode
+      ? 'diagnostic-live'
+      : 'canonical-version',
     rendererVersion: INSTALLHUB_REPORT_MANIFEST_VERSION,
     formIds,
-    sourceUpdatedAt: sourceUpdatedAt(args.installation, args.forms),
+    sourceUpdatedAt: args.recordVersionPayloadHash
+      ?? sourceUpdatedAt(args.installation, args.forms as FormRow[]),
+    ...(args.recordVersionNumber === undefined
+      ? {}
+      : {
+          recordVersionNumber: args.recordVersionNumber,
+          recordVersionPayloadHash: args.recordVersionPayloadHash,
+        }),
   };
-  const active = await findActiveExportJob({
-    app: 'installhub',
-    entityId,
-    userId: args.request.user.userId,
-    params,
-  });
-  if (active) return { jobId: active.id, reused: true };
-
   const jobId = randomUUID();
-  await db.insert(pdfJobs).values({
-    id: jobId,
-    app: 'installhub',
-    entityId,
-    entityType:
-      args.mode === 'form' ? 'form_submission' : 'installation',
-    userId: args.request.user.userId,
-    params,
-    status: 'queued',
-    phase: 'Queued',
-    createdAt: new Date(),
-    updatedAt: new Date(),
+  const queued = await db.transaction(async (tx) => {
+    // The same installation row lock is used by completion and purge. A job
+    // either commits before purge (and blocks it as active) or observes the
+    // tombstoned/deleted installation and cannot become orphaned.
+    const [locked] = await tx
+      .select({ id: ihInstallations.id })
+      .from(ihInstallations)
+      .where(and(
+        eq(ihInstallations.id, args.installation.id),
+        isNull(ihInstallations.deletedAt),
+      ))
+      .for('update')
+      .limit(1);
+    if (!locked) throw notFound('Installation');
+    const active = await findActiveExportJob({
+      app: 'installhub',
+      entityId,
+      userId: args.request.user.userId,
+      params,
+      executor: tx,
+    });
+    if (active) return {
+      jobId: active.id,
+      reused: true as const,
+      recordVersionNumber: args.recordVersionNumber ?? null,
+      recordVersionPayloadHash: args.recordVersionPayloadHash ?? null,
+      reportSource: args.liveMode ? 'diagnostic-live' as const : 'canonical-version' as const,
+    };
+    await tx.insert(pdfJobs).values({
+      id: jobId,
+      app: 'installhub',
+      entityId,
+      entityType:
+        args.mode === 'form' ? 'form_submission' : 'installation',
+      userId: args.request.user.userId,
+      params,
+      status: 'queued',
+      phase: 'Queued',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return {
+      jobId,
+      reused: false as const,
+      recordVersionNumber: args.recordVersionNumber ?? null,
+      recordVersionPayloadHash: args.recordVersionPayloadHash ?? null,
+      reportSource: args.liveMode ? 'diagnostic-live' as const : 'canonical-version' as const,
+    };
   });
+  if (queued.reused) return queued;
 
   void enqueueExportTask(() =>
     runInstallHubPdfJob({
@@ -500,15 +877,20 @@ async function queueInstallHubPdfJob(args: {
       installationId: args.installation.id,
       formIds,
       mode: args.mode,
+      recordVersionNumber: args.recordVersionNumber,
+      recordVersionPayloadHash: args.recordVersionPayloadHash,
+      reportSource: args.liveMode ? 'diagnostic-live' : 'canonical-version',
     }),
   ).catch((error) => {
-    console.error('[pdf-job] InstallHub queue failed', {
+    const failure = safeInstallHubReportFailure(error);
+    console.error('[pdf-job] Field App Complete queue failed', {
       jobId,
       installationId: args.installation.id,
-      error: error instanceof Error ? error.message : String(error),
+      errorCode: failure.code,
+      recordVersionNumber: args.recordVersionNumber ?? null,
     });
   });
-  return { jobId, reused: false };
+  return queued;
 }
 
 const protectedPdfRoute = [
@@ -520,10 +902,10 @@ const protectedPdfRoute = [
 export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
   app.post('/installations/:installationId/forms/:formId/report/pdf/jobs', {
     schema: {
-      tags: ['InstallHub PDF'],
-      summary: 'Start an async InstallHub form PDF job',
+      tags: ['Field App Complete PDF'],
+      summary: 'Start an async Field App Complete form PDF job',
       description:
-        'Queues a Sustainability Wise form PDF from a completed, backed-up InstallHub form.',
+        'Queues a Sustainability Wise form PDF from a completed, backed-up Field App Complete form.',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
@@ -533,12 +915,22 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
           formId: { type: 'string' },
         },
       },
+      querystring: {
+        type: 'object',
+        properties: {
+          recordVersionNumber: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
+          liveMode: { anyOf: [{ type: 'boolean' }, { type: 'string' }] },
+        },
+      },
       response: {
         202: {
           type: 'object',
           properties: {
             jobId: { type: 'string' },
             reused: { type: 'boolean' },
+            recordVersionNumber: { type: ['integer', 'null'] },
+            recordVersionPayloadHash: { type: ['string', 'null'] },
+            reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
           },
         },
       },
@@ -551,24 +943,46 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
     };
     const installation = await loadInstallation(installationId);
     assertInstallationAccess(installation, request.user);
-    const forms = await loadCompletedForms(installation.id, [formId]);
-    await reconcilePhotoCopyReferencesForParent({
-      app: 'installhub',
-      parentId: installation.id,
-      actor: request.user,
-    });
+    const query = request.query as {
+      recordVersionNumber?: unknown;
+      liveMode?: unknown;
+    };
+    const recordVersionNumber = requestedRecordVersion(query.recordVersionNumber);
+    const liveMode = requestedLiveMode(query.liveMode);
+    assertPinnedOrExplicitLive({ recordVersionNumber, liveMode });
+    const pinned = recordVersionNumber === undefined
+      ? null
+      : await loadCanonicalRecordVersion({ installationId, versionNumber: recordVersionNumber });
+    if (recordVersionNumber !== undefined && !pinned) throw notFound('Installation record version');
+    if (pinned) assertAuthoritativeCanonicalSnapshot(pinned.snapshot);
+    const forms = pinned
+      ? pinned.snapshot.installationTree.formSubmissions.filter((form) => form.id === formId)
+      : await loadCompletedForms(installation.id, [formId]);
+    if (forms.length !== 1) throw badRequest('Selected form submission was not found in the record version');
+    if (forms[0].status !== 'Completed') throw badRequest(`Form ${formId} must be Completed before PDF generation`);
+    if (!pinned) {
+      await reconcilePhotoCopyReferencesForParent({
+        app: 'installhub',
+        parentId: installation.id,
+        actor: request.user,
+      });
+    }
     return reply.status(202).send(await queueInstallHubPdfJob({
       request,
       installation,
       forms,
       mode: 'form',
+      recordVersionNumber,
+      recordVersionPayloadHash: pinned?.snapshot.payloadHash,
+      recordVersionSnapshot: pinned?.snapshot,
+      liveMode,
     }));
   });
 
   app.post('/installations/:installationId/report/pdf/jobs', {
     schema: {
-      tags: ['InstallHub PDF'],
-      summary: 'Start an async InstallHub installation-pack PDF job',
+      tags: ['Field App Complete PDF'],
+      summary: 'Start an async Field App Complete installation-pack PDF job',
       description:
         'Queues an installation summary and selected or all completed form submissions.',
       security: [{ bearerAuth: [] }],
@@ -587,6 +1001,8 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
             items: { type: 'string' },
             uniqueItems: true,
           },
+          recordVersionNumber: { type: 'integer', minimum: 1 },
+          liveMode: { type: 'boolean' },
         },
       },
       response: {
@@ -595,6 +1011,9 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
           properties: {
             jobId: { type: 'string' },
             reused: { type: 'boolean' },
+            recordVersionNumber: { type: ['integer', 'null'] },
+            recordVersionPayloadHash: { type: ['string', 'null'] },
+            reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
           },
         },
       },
@@ -602,7 +1021,11 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
     preHandler: protectedPdfRoute,
   }, async (request, reply) => {
     const { installationId } = request.params as { installationId: string };
-    const body = (request.body ?? {}) as { formSubmissionIds?: unknown };
+    const body = (request.body ?? {}) as {
+      formSubmissionIds?: unknown;
+      recordVersionNumber?: unknown;
+      liveMode?: unknown;
+    };
     const selectedIds = Array.isArray(body.formSubmissionIds)
       ? [...new Set(
           body.formSubmissionIds.filter(
@@ -613,17 +1036,37 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
     const installation = await loadInstallation(installationId);
     assertInstallationAccess(installation, request.user);
-    const forms = await loadCompletedForms(installation.id, selectedIds);
-    await reconcilePhotoCopyReferencesForParent({
-      app: 'installhub',
-      parentId: installation.id,
-      actor: request.user,
-    });
+    const recordVersionNumber = requestedRecordVersion(body.recordVersionNumber);
+    const liveMode = requestedLiveMode(body.liveMode);
+    assertPinnedOrExplicitLive({ recordVersionNumber, liveMode });
+    const pinned = recordVersionNumber === undefined
+      ? null
+      : await loadCanonicalRecordVersion({ installationId, versionNumber: recordVersionNumber });
+    if (recordVersionNumber !== undefined && !pinned) throw notFound('Installation record version');
+    if (pinned) assertAuthoritativeCanonicalSnapshot(pinned.snapshot);
+    const pinnedForms = pinned?.snapshot.installationTree.formSubmissions.filter((form) => (
+      form.status === 'Completed' && (!selectedIds || selectedIds.includes(form.id))
+    ));
+    if (pinned && selectedIds && pinnedForms?.length !== selectedIds.length) {
+      throw badRequest('One or more selected form submissions were not found in the record version');
+    }
+    const forms = pinnedForms ?? await loadCompletedForms(installation.id, selectedIds);
+    if (!pinned) {
+      await reconcilePhotoCopyReferencesForParent({
+        app: 'installhub',
+        parentId: installation.id,
+        actor: request.user,
+      });
+    }
     return reply.status(202).send(await queueInstallHubPdfJob({
       request,
       installation,
       forms,
       mode: 'installation-pack',
+      recordVersionNumber,
+      recordVersionPayloadHash: pinned?.snapshot.payloadHash,
+      recordVersionSnapshot: pinned?.snapshot,
+      liveMode,
     }));
   });
 }

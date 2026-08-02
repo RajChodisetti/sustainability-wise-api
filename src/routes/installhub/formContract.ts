@@ -697,13 +697,13 @@ export function validateInstallHubFormContract(input: {
   if (!INSTALLHUB_FORM_TYPES.includes(
     input.formType as (typeof INSTALLHUB_FORM_TYPES)[number],
   )) {
-    throw badRequest(`Unsupported InstallHub formType: ${input.formType}`);
+    throw badRequest(`Unsupported Field App Complete formType: ${input.formType}`);
   }
   if (![1, 2].includes(input.schemaVersion)) {
-    throw badRequest(`Unsupported InstallHub schemaVersion: ${input.schemaVersion}`);
+    throw badRequest(`Unsupported Field App Complete schemaVersion: ${input.schemaVersion}`);
   }
   if (!['Draft', 'Completed'].includes(input.status)) {
-    throw badRequest('InstallHub form status must be Draft or Completed');
+    throw badRequest('Field App Complete form status must be Draft or Completed');
   }
   if (
     (input.formType === 'ww-installation' || input.formType === 'sums-logger')

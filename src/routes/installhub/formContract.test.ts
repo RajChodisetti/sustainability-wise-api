@@ -384,7 +384,7 @@ test('rejects unknown types, invalid versions/statuses and non-string answers', 
       status: 'Draft',
       answers: {},
     }),
-    detailMatches(/Unsupported InstallHub formType/),
+    detailMatches(/Unsupported Field App Complete formType/),
   );
   assert.throws(
     () => validateInstallHubFormContract({

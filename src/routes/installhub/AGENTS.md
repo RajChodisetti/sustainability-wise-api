@@ -1,6 +1,6 @@
-# InstallHub Backend Contract
+# Field App Complete Backend Contract
 
-InstallHub routes are mounted at `/v1/installhub` and require the `installhub`
+Field App Complete routes are mounted at `/v1/installhub` and require the `installhub`
 auth namespace. Protected sync operations require at least the `inspector` role,
 and inspector records remain scoped to their own or explicitly assigned installations.
 
@@ -50,5 +50,5 @@ deletion semantics, upload responses, and auth behavior backward compatible for 
 Permanent Cloud Backup purge is limited to the creator or an elevated user, must reject active PDF
 jobs, and must preserve immutable originals that another backed-up copy still references.
 
-Run API typecheck/tests and the InstallHub mobile typecheck/tests for contract
+Run API typecheck/tests and the Field App Complete mobile typecheck/tests for contract
 changes.

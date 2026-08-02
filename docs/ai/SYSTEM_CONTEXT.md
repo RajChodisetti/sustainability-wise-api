@@ -18,7 +18,7 @@ Inspectors capture sites and rooftop assessments with nested switchboards,
 appendix items, and photos. Completed records sync from mobile and produce site
 pack PDFs and photo ZIP exports. Admins can view all records and manage users.
 
-### InstallHub
+### Field App Complete
 
 Field installers capture installations, zones, electrical boards and embedded
 meters, site assets, commissioning forms, and photos. The mobile app remains the
@@ -28,13 +28,13 @@ admin-visible trees for explicit local-copy import. Imported copies receive
 fresh entity IDs and deterministic `cp1`, `cp2`, ... names while retaining
 source installation/form IDs and immutable original evidence references.
 
-InstallHub administrators manage users and assign one active user access to a
+Field App Complete administrators manage users and assign one active user access to a
 backed-up installation. The iOS app also exposes API/sync diagnostics and
 protected local storage cleanup. Original evidence and form data are never part
 of the generated-report or imported-preview cache-clearing operations.
 
-The EcoSense portal exposes InstallHub beneath the shared Field App destination
-at `/field`, with the cloud-first InstallHub workspace at `/installhub`. It
+The EcoSense portal exposes Field App Complete beneath the shared Field App Complete destination
+at `/field`, with the cloud-first Field App Complete workspace at `/installhub`. It
 works directly against accessible API trees and mirrors the iOS hierarchy,
 commissioning forms, evidence capture, data/TBC resolution, metering table,
 reports, cloud files and versions, access controls, user
@@ -58,7 +58,7 @@ the Fleet namespace and admin role.
 ```text
 EcoAudit mobile ---------\
 SolarSense mobile --------> Fastify API -> PostgreSQL
-InstallHub mobile --------/       |       -> per-app local/Spaces destinations
+Field App Complete mobile -/       |       -> per-app local/Spaces destinations
 EcoSense web portal -------------/       -> Chromium PDF renderer
 Collector service ---------------/
 
@@ -83,7 +83,7 @@ versions still constrain compatibility in this repository.
 |---|---|---|---|---|
 | EcoAudit | `/v1/ecoaudit` | `ecoaudit` | `ea_*` | `src/app/(portal)/ecoaudit`, `src/api` |
 | SolarSense | `/v1/solarsense` | `solarsense` | `ss_*` | `src/app/(portal)/solar`, `src/modules/solar` |
-| InstallHub | `/v1/installhub` | `installhub` | `ih_*` | `src/app/(portal)/installhub`, `src/modules/installhub` |
+| Field App Complete | `/v1/installhub` | `installhub` | `ih_*` | `src/app/(portal)/installhub`, `src/modules/installhub` |
 | Fleet | `/v1/wattwatchers` | `wattwatchers` | `ww_*` | `src/app/(portal)/fleet`, `src/modules/fleet` |
 
 JWTs and API keys carry an `app` claim. That claim is a security boundary, not a
@@ -97,7 +97,7 @@ expiry. Production object storage uses a distinct root/bucket and least-privileg
 credential for each mobile app; `legacy` and `dual` modes exist only to support
 the verified migration in `docs/SECURE_STORAGE_MIGRATION.md`.
 
-### InstallHub route map
+### Field App Complete route map
 
 ```text
 /v1/installhub/
@@ -128,19 +128,19 @@ the verified migration in `docs/SECURE_STORAGE_MIGRATION.md`.
 ```
 
 User-list/create/update/deactivate and installation access mutation require an
-InstallHub admin. A user may read their own profile and change their own password
-with the current password; an admin can reset another user's password. InstallHub
+Field App Complete admin. A user may read their own profile and change their own password
+with the current password; an admin can reset another user's password. Field App Complete
 installation, file, version, report-source and import reads use creator,
 assigned-inspector, or elevated access. Export status/download additionally
 checks the job app and owner, with admin override.
 Permanent installation purge is narrower: only the creator or an elevated
-actor may delete a Cloud Backup, and an active InstallHub PDF job blocks it.
+actor may delete a Cloud Backup, and an active Field App Complete PDF job blocks it.
 
-Every successful changed InstallHub `syncStage: "complete"` full-snapshot push
+Every successful changed Field App Complete `syncStage: "complete"` full-snapshot push
 creates an immutable installation version. A `syncStage: "metadata"` staging
 push is persisted for upload-session parent validation but is not versioned;
 an absent stage is treated as legacy complete. `/files` combines confirmed
-originals with completed InstallHub form/pack report artifacts; it does not
+originals with completed Field App Complete form/pack report artifacts; it does not
 expose device-local paths.
 
 The six current schema-v2 form families are WW Installation, Comms
@@ -151,7 +151,7 @@ Used` requires an empty rating, while a real load requires an exact A3RM
 Rogowski or A6M CT choice. These conditions are shared by API validation and
 the server report manifest.
 
-InstallHub PDF start routes accept only completed backed-up forms and return a
+Field App Complete PDF start routes accept only completed backed-up forms and return a
 durable job ID. The renderer resolves exact confirmed attachment originals,
 uses the Sustainability Wise A4 format, and chunks above 120 photos or 120 MiB
 raw evidence at semantic section boundaries (about 50 photos per rendered part)

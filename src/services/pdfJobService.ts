@@ -62,8 +62,10 @@ export async function findActiveExportJob(args: {
   entityId: string;
   userId: string;
   params: ExportJobParams;
+  executor?: Pick<typeof db, 'select'>;
 }): Promise<{ id: string } | null> {
-  const [job] = await db
+  const executor = args.executor ?? db;
+  const [job] = await executor
     .select({ id: pdfJobs.id })
     .from(pdfJobs)
     .where(and(

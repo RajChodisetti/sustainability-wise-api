@@ -234,6 +234,10 @@ export const config = {
     'ALLOW_LEGACY_SHARED_REGISTRATION_SECRET',
     false,
   ),
+  installhubCanonicalV2Enabled: optionalBool(
+    'INSTALLHUB_CANONICAL_V2_ENABLED',
+    !isProduction,
+  ),
   rateLimit: {
     max: optionalInt('RATE_LIMIT_MAX', 300),
     timeWindowMs: optionalInt('RATE_LIMIT_WINDOW_MS', 60_000),

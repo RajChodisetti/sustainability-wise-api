@@ -64,9 +64,9 @@ EcoAudit photo ZIP paths follow the mobile report inventory hierarchy. The
 come from zone and equipment records, never entity UUIDs. Duplicate captions get
 deterministic numeric suffixes and all path segments are archive-safe.
 
-### InstallHub PDF jobs
+### Field App Complete PDF jobs
 
-InstallHub queues reports through:
+Field App Complete queues reports through:
 
 ```text
 POST /v1/installhub/installations/:installationId/forms/:formId/report/pdf/jobs
@@ -84,7 +84,7 @@ app-scoped and owner-scoped, with admin override; download returns 409 until the
 job is complete. Active equivalent work is reused, and clients persist/poll the
 job instead of applying a fixed overall timeout.
 
-The versioned InstallHub report manifest is the shared source for server form
+The versioned Field App Complete report manifest is the shared source for server form
 labels, order and conditional visibility across the six schema-v2 form families
 and the readable schema-v1 A3RM/A6M forms. Server reports use the Sustainability
 Wise A4 theme and confirmed original evidence. Resolve every attachment by its
@@ -97,7 +97,7 @@ Compress originals, render parts sequentially, and merge them into one PDF.
 Individual forms and installation packs must follow the same manifest, evidence,
 branding, storage, and durable-job rules.
 
-InstallHub stored-artifact and snapshot reads are:
+Field App Complete stored-artifact and snapshot reads are:
 
 ```text
 GET /v1/installhub/installations/:installationId/files
@@ -105,13 +105,13 @@ GET /v1/installhub/installations/:installationId/versions
 GET /v1/installhub/installations/:installationId/versions/:versionNumber
 ```
 
-Files include accessible confirmed originals and completed InstallHub report
+Files include accessible confirmed originals and completed Field App Complete report
 artifacts. Versions are immutable complete full sync snapshots and are added
 only when a complete or legacy-unstaged push differs from the latest stable
 snapshot; metadata-stage pushes are excluded. All three routes use creator,
 assigned-inspector, or elevated access.
 
-### InstallHub portal
+### Field App Complete portal
 
 The portal workspace lives under `/installhub` and uses the `installhub` auth
 namespace and separate `ih_web_jwt`/`ih_web_refresh` browser keys. Portal
@@ -135,7 +135,7 @@ sync and CRUD operations cannot assign another creator or access another user's
 parent. Fleet viewer access is read-only; collector ingestion requires
 `service_account`; user administration requires `admin`.
 
-InstallHub account and access endpoints are part of that boundary:
+Field App Complete account and access endpoints are part of that boundary:
 
 ```text
 GET    /v1/installhub/users                         admin
@@ -149,11 +149,11 @@ GET    /v1/installhub/installations/:installationId/access   creator, assignee o
 PATCH  /v1/installhub/installations/:installationId/access   admin
 ```
 
-The access patch assigns one active InstallHub user or clears the assignment
+The access patch assigns one active Field App Complete user or clears the assignment
 with `assignedInspectorUserId: null`; it does not transfer ownership. User
 mutations cannot remove the last active admin or let an admin demote/deactivate
 themself. Password, role, active-state and deactivation changes revoke affected
-InstallHub refresh tokens.
+Field App Complete refresh tokens.
 
 Assigned-only access does not authorize permanent Cloud Backup deletion. Purge
 must reject active PDF jobs, release copied-parent references, preserve
@@ -168,7 +168,7 @@ for sync and photo upload; draft records are not. Preserve stable completion
 timestamps and idempotent upsert behavior. Copy/import and sync endpoints must
 apply the same canonical field normalization as portal CRUD.
 
-InstallHub uses one complete installation tree per push. Mobile backup is opt-in per installation;
+Field App Complete uses one complete installation tree per push. Mobile backup is opt-in per installation;
 new and migrated local records are not eligible until the user enables it. Pull/import visibility
 is creator, assigned inspector, or elevated access. Imports are fresh-ID local copies with
 deterministic `cpN` names and immutable original media URLs; only 400 px authenticated thumbnails
@@ -186,7 +186,7 @@ durable media queue to the current exact installation references so removed or
 replaced failed uploads cannot block the final snapshot. A `file://` or
 `content://` URI must never be persisted by the API.
 
-InstallHub deduplication is exact and scoped by app, installation, entity type,
+Field App Complete deduplication is exact and scoped by app, installation, entity type,
 entity ID, field name, and SHA-256 checksum. Upload-session creation and
 confirmation require owner access to both the installation and referenced
 entity. The raw upload URL carries a short-lived HMAC capability bound to app,
@@ -199,11 +199,11 @@ file capability. Stable `remoteUrl` values are references, not public access
 grants. Never log a capability query string.
 
 Object writes support `legacy`, `dual`, and `isolated` modes. In isolated mode
-Eco Audit, Solar Sense, and InstallHub must use distinct roots/buckets and
+Eco Audit, Solar Sense, and Field App Complete must use distinct roots/buckets and
 least-privilege credentials. Migration is copy-first and SHA-256 verified; read
 fallback keeps rollback possible. Derived thumbnails use app-scoped v2 keys.
 
-InstallHub has six user-facing schema-v2 form families: WW Installation,
+Field App Complete has six user-facing schema-v2 form families: WW Installation,
 Comms Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS
 Logger. Schema-v1 A3RM/A6M installation types remain accepted for installed-data
 compatibility but are not new-form choices. Completed WW and Communications
@@ -231,7 +231,7 @@ both barcode and QR values.
 - Renames require data movement and compatibility handling, not just a TypeScript
   rename.
 - JSON migrations preserve canonical values when both keys exist.
-- Shared-table changes require EcoAudit, SolarSense, InstallHub, and Fleet impact
+- Shared-table changes require EcoAudit, SolarSense, Field App Complete, and Fleet impact
   review.
 - Production deploy order is migration first only when old code tolerates the
   new schema; otherwise use an expand/migrate/contract sequence across releases.

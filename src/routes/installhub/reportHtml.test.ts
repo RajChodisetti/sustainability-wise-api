@@ -9,10 +9,12 @@ import {
   installHubReportPhotoTotals,
   planInstallHubFormReportSlices,
   resolveInstallHubFormPhotos,
+  safeInstallHubReportFailure,
   visibleInstallHubReportSectionIndexes,
   type InstallHubReportForm,
   type InstallHubReportInstallation,
   type InstallHubReportPhoto,
+  type InstallHubCanonicalReport,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
 import {
@@ -255,6 +257,19 @@ test('missing backed evidence fails with the exact attachment identities', () =>
   );
 });
 
+test('live diagnostic drafts tolerate missing evidence instead of aborting rendering', () => {
+  const draft = form({
+    status: 'Draft',
+    attachments: [{
+      slot: 'water.completed_photo',
+      uri: 'file:///device-only/unconfirmed.jpg',
+    }],
+  });
+  assert.deepEqual(resolveInstallHubFormPhotos(draft, [], {
+    allowMissingEvidence: true,
+  }), []);
+});
+
 test('large-report thresholds are strict and photo totals deduplicate originals', () => {
   const shared = resolved(0, 'water.lcd_photo');
   const totals = installHubReportPhotoTotals([
@@ -366,7 +381,8 @@ test('HTML uses the Sustainability Wise A4 frame, contains photos, and escapes d
   assert.doesNotMatch(html, /2026-07-26T12:00:00\.000Z/);
   assert.match(html, /23\/07\/2026/);
   assert.match(html, /<span>125<\/span>Evidence photos/);
-  assert.match(html, /InstallHub report manifest v1/);
+  assert.match(html, /Field App Complete installation record/);
+  assert.match(html, /Field App Complete report manifest v1/);
 });
 
 test('HTML renders escaped attachment captions and falls back to the evidence label', () => {
@@ -499,4 +515,175 @@ test('communications replacement-only fields stay out of non-replacement reports
     })),
     /WW Onboarding App completed for the new device/,
   );
+});
+
+test('report failures never persist evidence ids, URLs, or storage paths', () => {
+  const secret = 'https://files.example/private/11111111-1111-4111-8111-111111111111?token=secret';
+  const failure = safeInstallHubReportFailure(new Error(secret));
+  assert.deepEqual(failure, {
+    code: 'report_generation_failed',
+    publicMessage: 'The report could not be generated.',
+  });
+  assert.equal(JSON.stringify(failure).includes('11111111'), false);
+  assert.equal(JSON.stringify(failure).includes('token'), false);
+});
+
+test('pinned canonical report HTML is deterministic and includes authoritative sections', () => {
+  const canonicalReport: InstallHubCanonicalReport = {
+    reportSource: 'canonical-version',
+    treeRevision: 12,
+    recordVersionNumber: 7,
+    snapshotPayloadHash: 'snapshot-hash-7',
+    mappingContentHash: 'mapping-hash-7',
+    authoritative: true,
+    readyToComplete: true,
+    physicalLocations: [{
+      id: 'zone-plant',
+      name: 'Plant room',
+      description: 'Main electrical services',
+    }],
+    electricalNodes: [{
+      id: 'board-1',
+      kind: 'BOARD',
+      name: 'Main board',
+      displayCode: 'SITE-MSB-001',
+      physicalLocationId: 'zone-plant',
+    }],
+    supplyEdges: [{
+      sourceNodeId: 'grid-1',
+      targetNodeId: 'board-1',
+      relationship: 'FED_FROM',
+    }],
+    unresolvedRelationships: [],
+    assets: [{
+      id: 'asset-1',
+      name: 'Air conditioner',
+      displayCode: 'SITE-HVAC-001',
+      typeLabel: 'AC / HVAC',
+      zoneId: 'zone-plant',
+      zoneName: 'Plant room',
+      coverage: { kind: 'VIRTUAL', virtualMeterId: 'virtual-1' },
+    }],
+    meteringRows: [{
+      assignmentId: 'assignment-1',
+      meterDisplayName: 'SITE-A3RM-001',
+      channelOrdinal: 1,
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
+      direction: 'CONSUMPTION',
+    }],
+    virtualMeterDefinitions: [{
+      id: 'virtual-1',
+      parentNodeId: 'board-1',
+      totalMeasurementAssignmentId: 'assignment-total',
+      subtractAssignmentIds: ['assignment-1'],
+      formula: 'TOTAL(assignment-total) - SUM(assignment-1)',
+      formulaVersion: 1,
+      allocation: 'UNALLOCATED_RESIDUAL',
+      coverage: [{
+        assetId: 'asset-1',
+        displayCode: 'SITE-HVAC-001',
+        assetName: 'Air conditioner',
+        zoneName: 'Plant room',
+      }],
+    }],
+    readinessIssues: [],
+  };
+  const render = () => buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport,
+  });
+  const first = render();
+  const second = render();
+  assert.equal(first, second);
+  assert.match(first, /Pinned canonical installation/);
+  assert.match(first, /Report source canonical-version/);
+  assert.doesNotMatch(first, /NON-AUTHORITATIVE/);
+  assert.match(first, /Physical-zone summary/);
+  assert.match(first, /Plant room/);
+  assert.match(first, /Electrical hierarchy/);
+  assert.match(first, /All-assets coverage/);
+  assert.match(first, /Metering assignments/);
+  assert.match(first, /Virtual-meter definitions/);
+  assert.match(first, /TOTAL\(assignment-total\) - SUM\(assignment-1\)/);
+  assert.match(first, /UNALLOCATED_RESIDUAL caveat/);
+  assert.match(first, /calculated remainder, not a direct meter reading/);
+  assert.match(first, /Readiness/);
+  assert.match(first, /snapshot-hash-7/);
+  assert.match(first, /mapping-hash-7/);
+  assert.match(first, /Generated 01\/08\/2026/);
+});
+
+test('live diagnostic HTML labels mutable data and shows draft forms, blockers, and unresolved TBC relationships', () => {
+  const draftForm = form({ id: 'draft-form', status: 'Draft' });
+  const diagnosticReport: InstallHubCanonicalReport = {
+    reportSource: 'diagnostic-live',
+    treeRevision: 13,
+    recordVersionNumber: null,
+    snapshotPayloadHash: null,
+    mappingContentHash: null,
+    authoritative: false,
+    readyToComplete: false,
+    physicalLocations: [{ id: 'zone-1', name: 'Plant room' }],
+    electricalNodes: [{
+      id: 'board-tbc',
+      kind: 'BOARD',
+      name: 'Unresolved board',
+      displayCode: 'SITE-MSB-001',
+      physicalLocationId: 'zone-1',
+    }],
+    supplyEdges: [],
+    unresolvedRelationships: [{
+      id: 'unresolved-board-tbc',
+      subjectType: 'BOARD',
+      subjectId: 'board-tbc',
+      relation: 'SUPPLY',
+      missingEnd: 'SOURCE',
+      reason: 'TBC',
+    }],
+    assets: [],
+    meteringRows: [],
+    virtualMeterDefinitions: [],
+    readinessIssues: [{
+      code: 'SUPPLY_TBC',
+      entityType: 'board',
+      entityId: 'board-tbc',
+      message: 'Electrical supply remains TBC.',
+    }],
+  };
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    installation: { ...installation, status: 'Draft' },
+    forms: [draftForm],
+    slices: [{
+      formId: draftForm.id,
+      sectionIndexes: visibleInstallHubReportSectionIndexes(draftForm),
+      continuation: false,
+      photoCount: 0,
+    }],
+    resolvedByForm: new Map([[draftForm.id, []]]),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport: diagnosticReport,
+  });
+
+  assert.match(html, /Current installation diagnostic/);
+  assert.match(html, /Report source diagnostic-live/);
+  assert.match(html, /NON-AUTHORITATIVE/);
+  assert.match(html, /Not pinned to a canonical record version or payload hash/);
+  assert.match(html, /SUPPLY_TBC/);
+  assert.match(html, /Unresolved electrical relationships/);
+  assert.match(html, />TBC</);
+  assert.match(html, /Submission draft-form .* Draft/);
+  assert.doesNotMatch(html, /snapshot-hash/);
+  assert.doesNotMatch(html, /Pinned canonical installation/);
 });
