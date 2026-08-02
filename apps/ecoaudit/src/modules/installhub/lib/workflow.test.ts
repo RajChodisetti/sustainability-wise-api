@@ -32,9 +32,15 @@ import {
 } from '@/modules/installhub/hooks/useInstallationTree';
 import {
   createBoard,
+  clearInstallationCreateAttempt,
   createInstallationTree,
   createSiteAsset,
   createZone,
+  installationCreateFailureDisposition,
+  installationCreateAttempt,
+  installationCreateAttemptSessionKey,
+  persistInstallationCreateAttempt,
+  restoreInstallationCreateAttempt,
 } from '@/modules/installhub/lib/model';
 import type {
   FormSubmission,
@@ -45,6 +51,7 @@ import type {
   Meter,
 } from '@/modules/installhub/types/domain';
 import {
+  applyAuthoritativeTreeRevision,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
   boardTypeCode,
@@ -52,6 +59,7 @@ import {
   displayCodeMetadata,
   ensureCanonicalTree,
   generatedDisplayCode,
+  installationDisplayCodePrefix,
   localMappingExport,
   localReadiness,
   meterDependencyPreview,
@@ -69,6 +77,12 @@ import {
   syncMeterDevice,
   validBoardParents,
 } from './workflow';
+
+test('historical site codes use the shared bounded display-code prefix', () => {
+  assert.equal(installationDisplayCodePrefix('Legacy Site Code / 2024'), 'LEGACY-SITE-CODE');
+  assert.equal(installationDisplayCodePrefix('---'), 'SITE');
+  assert.equal(installationDisplayCodePrefix('123456789012345-678'), '123456789012345');
+});
 
 const user: InstallHubUser = {
   id: 'user-1',
@@ -157,6 +171,18 @@ function sixChannelMeter(): Meter {
   };
 }
 
+test('authoritative upload revisions advance every portal CAS field together', () => {
+  const tree = fixtureTree();
+  assert.equal(applyAuthoritativeTreeRevision(tree, 9), 9);
+  assert.equal(tree.baseTreeRevision, 9);
+  assert.equal(tree.treeRevision, 9);
+  assert.equal(tree.installation.treeRevision, 9);
+  assert.throws(
+    () => applyAuthoritativeTreeRevision(tree, undefined),
+    /authoritative installation revision/,
+  );
+});
+
 test('portal canonicalization mirrors the golden v2 wire shape and legacy taxonomy aliases', () => {
   const tree = fixtureTree();
   assert.equal(tree.treeSchemaVersion, 2);
@@ -178,6 +204,182 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.ok(Array.isArray(wire.meterDevices));
   assert.ok(Array.isArray(wire.measurementAssignments));
   assert.equal(typeof (wire.electricalAssets as Array<Record<string, unknown>>)[0].displayCode, 'object');
+});
+
+test('fresh portal creation serializes the complete canonical-v2 installation handshake', () => {
+  const tree = createInstallationTree({
+    clientName: 'Fresh Client',
+    siteName: 'Fresh Site',
+    siteAddress: '1 New Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-02',
+    siteCode: 'fresh-1',
+    timezone: 'Australia/Sydney',
+  }, user);
+  const wire = serializeInstallationTree(tree);
+  const installation = wire.installation as Record<string, unknown>;
+
+  assert.equal(wire.treeSchemaVersion, 2);
+  assert.equal(wire.baseTreeRevision, 0);
+  assert.equal(installation.treeSchemaVersion, 2);
+  assert.equal(installation.treeRevision, 0);
+  assert.equal(installation.recordVersionNumber, 0);
+  assert.equal(installation.externalKey, null);
+  assert.equal(installation.siteCode, 'FRESH-1');
+});
+
+test('fresh portal create keeps one exact installation snapshot across an ambiguous retry', async () => {
+  const input = {
+    clientName: 'Fresh Client',
+    siteName: 'Fresh Site',
+    siteAddress: '1 New Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-02',
+    siteCode: 'FRESH-1',
+    timezone: 'Australia/Sydney',
+  };
+  const first = installationCreateAttempt(null, input, user);
+  const firstWire = JSON.stringify(serializeInstallationTree(first));
+  await assert.rejects(
+    submitAndConfirmInstallationTree(first.installation.id, first, 'metadata', {
+      save: async () => { throw new Error('response lost after submit'); },
+      get: async () => { assert.fail('A failed submit response cannot begin confirmation.'); },
+    }),
+    /response lost/,
+  );
+
+  const retry = installationCreateAttempt(first, {
+    ...input,
+    siteName: 'A changed field must not allocate a duplicate ID',
+  }, user);
+  assert.strictEqual(retry, first);
+  assert.equal(retry.installation.id, first.installation.id);
+  assert.equal(JSON.stringify(serializeInstallationTree(retry)), firstWire);
+
+  let saves = 0;
+  let pulls = 0;
+  const unconfirmed = await submitAndConfirmInstallationTree(
+    retry.installation.id,
+    retry,
+    'metadata',
+    {
+      save: async () => {
+        saves += 1;
+        return {
+          installationId: retry.installation.id,
+          treeRevision: 1,
+          versionNumber: null,
+        };
+      },
+      get: async () => {
+        pulls += 1;
+        throw new Error('confirmation pull unavailable');
+      },
+    },
+  );
+  assert.equal(unconfirmed.kind, 'SAVED_UNCONFIRMED');
+  assert.equal(saves, 1);
+  assert.equal(pulls, 1);
+});
+
+test('fresh portal create survives only a valid same-tab retry owned by the signed-in user', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const tree = createInstallationTree({
+    clientName: 'Fresh Client',
+    siteName: 'Fresh Site',
+    siteAddress: '1 New Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-02',
+    siteCode: 'FRESH-1',
+    timezone: 'Australia/Sydney',
+  }, user);
+
+  assert.equal(persistInstallationCreateAttempt(tree, user.id, storage), true);
+  const storageKey = installationCreateAttemptSessionKey(user.id);
+  const encoded = values.get(storageKey);
+  assert.ok(encoded);
+  const restored = restoreInstallationCreateAttempt(user.id, storage);
+  assert.deepEqual(restored, tree);
+  assert.notStrictEqual(restored, tree);
+
+  assert.equal(restoreInstallationCreateAttempt('another-user', storage), null);
+  assert.equal(values.has(storageKey), true);
+
+  assert.equal(persistInstallationCreateAttempt(tree, user.id, storage), true);
+  assert.equal(clearInstallationCreateAttempt(user.id, tree.installation.id, storage), true);
+  assert.equal(values.has(storageKey), false);
+});
+
+test('fresh portal create fails closed when tab storage is invalid or unavailable', () => {
+  const values = new Map<string, string>([[
+    installationCreateAttemptSessionKey(user.id),
+    '{not valid json',
+  ]]);
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  assert.equal(restoreInstallationCreateAttempt(user.id, storage), null);
+  assert.equal(values.has(installationCreateAttemptSessionKey(user.id)), false);
+
+  const tree = createInstallationTree({
+    clientName: 'Fresh Client',
+    siteName: 'Fresh Site',
+    siteAddress: '1 New Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-02',
+    timezone: 'Australia/Sydney',
+  }, user);
+  assert.equal(persistInstallationCreateAttempt(tree, user.id, {
+    getItem: () => null,
+    setItem: () => { throw new Error('quota unavailable'); },
+    removeItem: () => undefined,
+  }), false);
+});
+
+test('stale create cleanup cannot remove a newer same-owner installation attempt', () => {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  const tree = createInstallationTree({
+    clientName: 'Fresh Client',
+    siteName: 'Fresh Site',
+    siteAddress: '1 New Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-02',
+    timezone: 'Australia/Sydney',
+  }, user);
+  assert.equal(persistInstallationCreateAttempt(tree, user.id, storage), true);
+  assert.equal(
+    clearInstallationCreateAttempt(user.id, 'an-older-installation-id', storage),
+    false,
+  );
+  assert.deepEqual(restoreInstallationCreateAttempt(user.id, storage), tree);
+  assert.equal(clearInstallationCreateAttempt(user.id, tree.installation.id, storage), true);
+  assert.equal(restoreInstallationCreateAttempt(user.id, storage), null);
+});
+
+test('fresh portal create retains every automatic failure until explicit reconciliation or discard', () => {
+  assert.equal(installationCreateFailureDisposition(null), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(0), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(408), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(500), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(503), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(409), 'RECONCILE');
+  assert.equal(installationCreateFailureDisposition(400), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(401), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(404), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(422), 'RETAIN');
+  assert.equal(installationCreateFailureDisposition(429), 'RETAIN');
 });
 
 test('generated display codes retain underscores, refresh only while provisional, and stay stable once confirmed', () => {

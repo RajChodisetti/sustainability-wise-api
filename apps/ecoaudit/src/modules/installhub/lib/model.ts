@@ -29,6 +29,55 @@ export function todayIso(): string {
   return nowIso().slice(0, 10);
 }
 
+export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
+export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+
+export function isValidInstallationSiteCode(value: string): boolean {
+  const normalized = value.trim().toUpperCase();
+  return normalized.length >= 1
+    && normalized.length <= INSTALLATION_SITE_CODE_MAX_LENGTH
+    && INSTALLATION_SITE_CODE_PATTERN.test(normalized);
+}
+
+export function canonicalSiteCode(siteName: string, explicit?: string | null): string {
+  const supplied = explicit?.trim();
+  if (supplied) {
+    const normalized = supplied.toUpperCase();
+    if (!isValidInstallationSiteCode(normalized)) {
+      throw new Error(
+        'Site code must be 1-16 letters/digits, with single hyphens only between groups.',
+      );
+    }
+    return normalized;
+  }
+  return siteName
+    .normalize('NFKD')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map((part) => part[0] ?? '')
+    .join('')
+    .slice(0, 8)
+    .toUpperCase() || 'SITE';
+}
+
+/** Preserve an existing authoritative code byte-for-byte unless the user
+ * deliberately changes it. Historical installations may predate the current
+ * bounded contract and must remain editable without silently renaming all
+ * established display-code identity. */
+export function canonicalSiteCodeForWrite(
+  siteName: string,
+  explicit: string | null | undefined,
+  authoritativeSiteCode?: string | null,
+): string {
+  if (
+    typeof authoritativeSiteCode === 'string'
+    && authoritativeSiteCode.trim()
+    && explicit === authoritativeSiteCode
+  ) return authoritativeSiteCode;
+  return canonicalSiteCode(siteName, explicit);
+}
+
 export function cloneTree(tree: InstallationTree): InstallationTree {
   return structuredClone(tree);
 }
@@ -51,14 +100,18 @@ export function createInstallationTree(
     treeSchemaVersion: 2,
     baseTreeRevision: 0,
     treeRevision: 0,
+    recordVersionNumber: 0,
     installation: {
       id: installationId,
+      treeSchemaVersion: 2,
+      treeRevision: 0,
+      recordVersionNumber: 0,
       clientName: input.clientName.trim(),
       siteName: input.siteName.trim(),
       siteAddress: input.siteAddress.trim(),
       inspectorName: input.inspectorName.trim(),
       auditDate: input.auditDate,
-      siteCode: input.siteCode?.trim() || null,
+      siteCode: canonicalSiteCode(input.siteName, input.siteCode),
       timezone: input.timezone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       externalKey: null,
       status: 'Draft',
@@ -83,6 +136,177 @@ export function createInstallationTree(
     formSubmissions: [],
     serverDerived: { virtualMeterDefinitions: [] },
   };
+}
+
+/** Reuses the exact first-create snapshot until the server has acknowledged it. */
+export function installationCreateAttempt(
+  pending: InstallationTree | null,
+  input: Parameters<typeof createInstallationTree>[0],
+  user: InstallHubUser,
+): InstallationTree {
+  return pending ?? createInstallationTree(input, user);
+}
+
+export type InstallationCreateFailureDisposition = 'RETAIN' | 'RECONCILE';
+
+/**
+ * Network, timeout, and server failures are ambiguous. A conflict must be
+ * reconciled by installation ID because the first request may have committed
+ * and then changed. Every other automatic failure retains the exact request:
+ * a later rejection cannot prove an earlier invocation did not commit.
+ */
+export function installationCreateFailureDisposition(
+  status: number | null | undefined,
+): InstallationCreateFailureDisposition {
+  if (status === 409) return 'RECONCILE';
+  return 'RETAIN';
+}
+
+type InstallationCreateAttemptStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
+
+type InstallationCreateAttemptEnvelope = {
+  version: 1;
+  ownerUserId: string;
+  tree: InstallationTree;
+};
+
+export const INSTALLATION_CREATE_ATTEMPT_SESSION_KEY =
+  'installhub:new-installation:create-attempt:v1';
+
+export function installationCreateAttemptSessionKey(ownerUserId: string): string {
+  return `${INSTALLATION_CREATE_ATTEMPT_SESSION_KEY}:${encodeURIComponent(ownerUserId)}`;
+}
+
+function defaultCreateAttemptStorage(): InstallationCreateAttemptStorage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isRestorableInstallationCreateAttempt(
+  value: unknown,
+  ownerUserId: string,
+): value is InstallationCreateAttemptEnvelope {
+  if (!isRecord(value) || value.version !== 1 || value.ownerUserId !== ownerUserId) return false;
+  const tree = value.tree;
+  if (!isRecord(tree) || !isRecord(tree.installation) || !isRecord(tree.serverDerived)) return false;
+  const installation = tree.installation;
+  const emptyCollections = [
+    tree.zones,
+    tree.electricalAssets,
+    tree.siteAssets,
+    tree.meterDevices,
+    tree.measurementAssignments,
+    tree.formSubmissions,
+    tree.serverDerived.virtualMeterDefinitions,
+  ];
+  if (!emptyCollections.every((items) => Array.isArray(items) && items.length === 0)) return false;
+  if (!Array.isArray(tree.gridSupplies) || tree.gridSupplies.length !== 1) return false;
+  const gridSupply = tree.gridSupplies[0];
+  if (!isRecord(gridSupply)) return false;
+  const requiredText = [
+    installation.id,
+    installation.clientName,
+    installation.siteName,
+    installation.siteAddress,
+    installation.inspectorName,
+    installation.auditDate,
+    installation.siteCode,
+    installation.timezone,
+    installation.createdAt,
+    installation.updatedAt,
+    gridSupply.id,
+    gridSupply.name,
+  ];
+  return requiredText.every((item) => typeof item === 'string' && item.length > 0)
+    && tree.treeSchemaVersion === 2
+    && tree.baseTreeRevision === 0
+    && tree.treeRevision === 0
+    && tree.recordVersionNumber === 0
+    && installation.treeSchemaVersion === 2
+    && installation.treeRevision === 0
+    && installation.recordVersionNumber === 0
+    && installation.externalKey === null
+    && installation.status === 'Draft'
+    && installation.createdByUserId === ownerUserId
+    && installation.syncStatus === 'local'
+    && installation.deletedAt === null
+    && gridSupply.installationId === installation.id
+    && gridSupply.isDefault === true;
+}
+
+/** Stores the exact non-media first-create snapshot in this browser tab before POST. */
+export function persistInstallationCreateAttempt(
+  tree: InstallationTree,
+  ownerUserId: string,
+  storage: InstallationCreateAttemptStorage | null = defaultCreateAttemptStorage(),
+): boolean {
+  if (!storage) return false;
+  const envelope: InstallationCreateAttemptEnvelope = { version: 1, ownerUserId, tree };
+  if (!isRestorableInstallationCreateAttempt(envelope, ownerUserId)) return false;
+  try {
+    storage.setItem(installationCreateAttemptSessionKey(ownerUserId), JSON.stringify(envelope));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Restores only a valid first-create snapshot owned by the signed-in user. */
+export function restoreInstallationCreateAttempt(
+  ownerUserId: string,
+  storage: InstallationCreateAttemptStorage | null = defaultCreateAttemptStorage(),
+): InstallationTree | null {
+  if (!storage) return null;
+  try {
+    const storageKey = installationCreateAttemptSessionKey(ownerUserId);
+    const encoded = storage.getItem(storageKey);
+    if (!encoded) return null;
+    const envelope: unknown = JSON.parse(encoded);
+    if (!isRestorableInstallationCreateAttempt(envelope, ownerUserId)) {
+      storage.removeItem(storageKey);
+      return null;
+    }
+    return envelope.tree;
+  } catch {
+    try {
+      storage.removeItem(installationCreateAttemptSessionKey(ownerUserId));
+    } catch {
+      // Storage may be unavailable; there is no safe recovery action to take.
+    }
+    return null;
+  }
+}
+
+export function clearInstallationCreateAttempt(
+  ownerUserId: string,
+  expectedInstallationId?: string,
+  storage: InstallationCreateAttemptStorage | null = defaultCreateAttemptStorage(),
+): boolean {
+  if (!storage) return false;
+  try {
+    const storageKey = installationCreateAttemptSessionKey(ownerUserId);
+    if (expectedInstallationId) {
+      const encoded = storage.getItem(storageKey);
+      if (!encoded) return true;
+      const envelope: unknown = JSON.parse(encoded);
+      if (
+        isRestorableInstallationCreateAttempt(envelope, ownerUserId)
+        && envelope.tree.installation.id !== expectedInstallationId
+      ) return false;
+    }
+    storage.removeItem(storageKey);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function touchTree(tree: InstallationTree): InstallationTree {

@@ -92,6 +92,10 @@ export const photoRegistry = pgTable('photo_registry', {
   fieldName: text('field_name').notNull(),
   fileSizeBytes: integer('file_size_bytes'),
   status: text('status').notNull().default('pending'),
+  /** InstallHub CAS base captured when the upload session was created. */
+  baseTreeRevision: integer('base_tree_revision'),
+  /** Exact installation CAS revision created by InstallHub confirmation. */
+  confirmedTreeRevision: integer('confirmed_tree_revision'),
   uploadedAt: timestamp('uploaded_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });

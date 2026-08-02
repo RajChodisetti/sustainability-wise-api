@@ -1,12 +1,86 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  assertInstallHubSiteCodeWriteAllowed,
   formValues,
+  deriveInstallHubSiteCode,
   installHubSyncCreatesRecordVersion,
   installationValuesFromPayload,
+  parseInstallHubUploadBaseTreeRevision,
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
+  prepareCanonicalInstallHubWrite,
 } from './sync.js';
+
+test('site-code rule matches the canonical eight-initial cross-client fixtures', () => {
+  assert.deepEqual([
+    deriveInstallHubSiteCode('Warehouse'),
+    deriveInstallHubSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf'),
+    deriveInstallHubSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel'),
+    deriveInstallHubSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India'),
+  ], ['W', 'ABCDEFG', 'ABCDEFGH', 'ABCDEFGH']);
+});
+
+test('site-code write policy grandfathers only the exact authoritative legacy value', () => {
+  const isSiteCodeError = (error: unknown) => Boolean(
+    error
+    && typeof error === 'object'
+    && 'detail' in error
+    && typeof error.detail === 'string'
+    && error.detail.startsWith('installation.siteCode must be 1-16')
+  );
+  const historical = 'Legacy Site Code / 2024';
+  assert.doesNotThrow(() => assertInstallHubSiteCodeWriteAllowed(historical, historical));
+  const paddedHistorical = ` ${historical} `;
+  assert.doesNotThrow(() => (
+    assertInstallHubSiteCodeWriteAllowed(paddedHistorical, paddedHistorical)
+  ));
+  assert.doesNotThrow(() => assertInstallHubSiteCodeWriteAllowed('SYD-WH1', historical));
+  assert.throws(
+    () => assertInstallHubSiteCodeWriteAllowed(historical),
+    isSiteCodeError,
+  );
+  assert.throws(
+    () => assertInstallHubSiteCodeWriteAllowed('Different Legacy Code', historical),
+    isSiteCodeError,
+  );
+  assert.throws(
+    () => assertInstallHubSiteCodeWriteAllowed(historical, paddedHistorical),
+    isSiteCodeError,
+  );
+});
+
+test('upload revision parser supports an explicit compatibility window', () => {
+  assert.equal(parseInstallHubUploadBaseTreeRevision(undefined, false), undefined);
+  assert.equal(parseInstallHubUploadBaseTreeRevision(7, true), 7);
+  assert.throws(
+    () => parseInstallHubUploadBaseTreeRevision(undefined, true),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'client_upgrade_required: upload baseTreeRevision'
+    ),
+  );
+  for (const required of [false, true]) {
+    for (const invalid of [null, '', '7', ' ', 1.5, -1]) {
+      assert.throws(
+        () => parseInstallHubUploadBaseTreeRevision(invalid, required),
+        (error: unknown) => Boolean(
+          error
+          && typeof error === 'object'
+          && 'detail' in error
+          && error.detail === 'baseTreeRevision must be a non-negative integer'
+        ),
+      );
+    }
+  }
+});
+import { normalizeInstallationTreeV2 } from './canonical.js';
+import {
+  assertCompletedFormsImmutable,
+  retainCompletedFormsDuringMetadata,
+} from './treeService.js';
 import {
   assertInstallationAccess,
   assertInstallationDeletionAccess,
@@ -120,12 +194,61 @@ test('InstallHub sync rejects unknown stages before persistence', () => {
   );
 });
 
+test('metadata retains an already-completed form only when every immutable field matches', () => {
+  const completed = {
+    id: 'form-1',
+    installationId: 'installation-1',
+    formType: 'generic',
+    schemaVersion: 2,
+    status: 'Completed',
+    zoneId: 'zone-1',
+    answers: { result: 'accepted' },
+    attachments: [{
+      id: 'attachment-1',
+      uri: '/v1/installhub/photos/photo-1',
+    }],
+    completedAt: '2026-08-02T01:00:00.000Z',
+    createdAt: '2026-08-02T00:00:00.000Z',
+    updatedAt: '2026-08-02T01:00:00.000Z',
+  };
+  const staged = {
+    ...completed,
+    status: 'Draft',
+    completedAt: null,
+    updatedAt: '2026-08-02T02:00:00.000Z',
+  };
+
+  const retained = retainCompletedFormsDuringMetadata({
+    existing: [completed],
+    incoming: [staged],
+  });
+  assert.equal(retained[0], completed);
+  assert.doesNotThrow(() => assertCompletedFormsImmutable({
+    existing: [completed],
+    incoming: retained,
+  }));
+
+  const changed = retainCompletedFormsDuringMetadata({
+    existing: [completed],
+    incoming: [{ ...staged, answers: { result: 'changed' } }],
+  });
+  assert.equal(changed[0]?.status, 'Draft');
+  assert.throws(
+    () => assertCompletedFormsImmutable({ existing: [completed], incoming: changed }),
+    /COMPLETED_FORM_IMMUTABLE:form-1/,
+  );
+});
+
 test('InstallHub sync fails closed for every declared non-v2 or mismatched tree schema', () => {
   assert.equal(parseInstallHubTreeSchemaMode({ installation: {} }), 1);
   assert.equal(parseInstallHubTreeSchemaMode({ installation: { treeSchemaVersion: 1 } }), 1);
   assert.equal(parseInstallHubTreeSchemaMode({
     treeSchemaVersion: 2,
     installation: { treeSchemaVersion: 2 },
+  }), 2);
+  assert.equal(parseInstallHubTreeSchemaMode({
+    treeSchemaVersion: 2,
+    installation: {},
   }), 2);
 
   for (const payload of [
@@ -136,7 +259,6 @@ test('InstallHub sync fails closed for every declared non-v2 or mismatched tree 
     { treeSchemaVersion: 3, installation: { treeSchemaVersion: 2 } },
     { treeSchemaVersion: '2', installation: { treeSchemaVersion: 2 } },
     { treeSchemaVersion: 2, installation: { treeSchemaVersion: '2' } },
-    { treeSchemaVersion: 2, installation: {} },
   ]) {
     assert.throws(
       () => parseInstallHubTreeSchemaMode(payload),
@@ -148,6 +270,221 @@ test('InstallHub sync fails closed for every declared non-v2 or mismatched tree 
         && error.detail === 'unsupported_tree_schema'
       ),
     );
+  }
+});
+
+function freshCanonicalWrite(
+  installationId: string,
+  installation: Record<string, unknown>,
+  baseTreeRevision: number | undefined = 0,
+) {
+  return {
+    syncStage: 'metadata' as const,
+    treeSchemaVersion: 2,
+    ...(baseTreeRevision === undefined ? {} : { baseTreeRevision }),
+    installation: {
+      id: installationId,
+      treeSchemaVersion: 2,
+      clientName: 'Fresh Client',
+      siteName: 'Fresh Site',
+      siteAddress: '1 New Road',
+      inspectorName: 'Installer One',
+      auditDate: '2026-08-02',
+      status: 'Draft',
+      createdAt: '2026-08-02T00:00:00.000Z',
+      updatedAt: '2026-08-02T00:00:00.000Z',
+      ...installation,
+    },
+    gridSupplies: [{
+      id: `grid_${installationId}_primary`,
+      installationId,
+      name: 'Grid supply',
+      isDefault: true,
+    }],
+    zones: [],
+    electricalAssets: [],
+    siteAssets: [],
+    meterDevices: [],
+    measurementAssignments: [],
+    formSubmissions: [],
+    serverDerived: { virtualMeterDefinitions: [] },
+  };
+}
+
+test('canonical create preparation accepts exact portal and mobile first-sync shapes', () => {
+  const portal = prepareCanonicalInstallHubWrite(freshCanonicalWrite('portal-new', {
+    externalKey: null,
+    siteCode: 'FRESH-1',
+    timezone: 'Australia/Sydney',
+    treeRevision: 0,
+    recordVersionNumber: 0,
+  }), undefined, 'ih_portal_server');
+  const normalizedPortal = normalizeInstallationTreeV2(portal);
+  assert.equal(normalizedPortal.installation.externalKey, 'ih_portal_server');
+  assert.equal(normalizedPortal.installation.treeRevision, 0);
+  assert.equal(normalizedPortal.installation.recordVersionNumber, 0);
+
+  // Exact first-sync omissions from mobile buildBackupPayload for an imported
+  // copy: local identity, no nested tree revision, and null record version.
+  const mobile = prepareCanonicalInstallHubWrite(freshCanonicalWrite('mobile-copy', {
+    externalKey: 'local:mobile-copy',
+    siteCode: undefined,
+    timezone: 'Australia/Sydney',
+    recordVersionNumber: null,
+  }, undefined), undefined, 'ih_mobile_server');
+  const normalizedMobile = normalizeInstallationTreeV2(mobile);
+  assert.equal(normalizedMobile.installation.externalKey, 'ih_mobile_server');
+  assert.equal(normalizedMobile.installation.siteCode, 'FS');
+  assert.equal(normalizedMobile.installation.treeRevision, 0);
+  assert.equal(normalizedMobile.installation.recordVersionNumber, 0);
+
+  const importedWithSourceIdentity = prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('imported-copy', {
+      externalKey: 'ih_source-installation',
+      siteCode: 'COPY',
+      timezone: 'Australia/Sydney',
+      treeRevision: 0,
+      recordVersionNumber: 0,
+    }),
+    undefined,
+    'ih_fresh-copy-identity',
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(importedWithSourceIdentity).installation.externalKey,
+    'ih_fresh-copy-identity',
+  );
+});
+
+test('canonical update preparation hydrates server metadata but preserves top-level CAS', () => {
+  const staleMobileWrite = freshCanonicalWrite('mobile-existing', {
+    externalKey: 'local:mobile-existing',
+    siteCode: null,
+    timezone: null,
+    treeRevision: 42,
+    recordVersionNumber: null,
+  }, 42);
+  const prepared = prepareCanonicalInstallHubWrite(staleMobileWrite, {
+    externalKey: 'ih_authoritative',
+    siteCode: 'SERVER',
+    timezone: 'Australia/Brisbane',
+    treeRevision: 43,
+    recordVersionNumber: 7,
+  }, 'unused');
+  const normalized = normalizeInstallationTreeV2(prepared);
+  assert.equal(prepared.baseTreeRevision, 42);
+  assert.equal(normalized.installation.externalKey, 'ih_authoritative');
+  assert.equal(normalized.installation.siteCode, 'SERVER');
+  assert.equal(normalized.installation.timezone, 'Australia/Brisbane');
+  assert.equal(normalized.installation.treeRevision, 43);
+  assert.equal(normalized.installation.recordVersionNumber, 7);
+
+  const historicalCode = 'Legacy Site Code / 2024';
+  const historicalPrepared = prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('legacy-existing', {
+      externalKey: 'ih_legacy',
+      siteCode: null,
+      timezone: 'Australia/Brisbane',
+      treeRevision: 9,
+      recordVersionNumber: 2,
+    }, 9),
+    {
+      externalKey: 'ih_legacy',
+      siteCode: historicalCode,
+      timezone: 'Australia/Brisbane',
+      treeRevision: 9,
+      recordVersionNumber: 2,
+    },
+    'unused',
+  );
+  assertInstallHubSiteCodeWriteAllowed(
+    historicalPrepared.installation?.siteCode,
+    historicalCode,
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(historicalPrepared).installation.siteCode,
+    historicalCode,
+  );
+
+  const whitespaceLocal = prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('mobile-existing', {
+      externalKey: '  LOCAL:mobile-existing  ',
+      siteCode: null,
+      timezone: null,
+      treeRevision: 42,
+      recordVersionNumber: 7,
+    }, 42),
+    {
+      externalKey: 'ih_authoritative',
+      siteCode: 'SERVER',
+      timezone: 'Australia/Brisbane',
+      treeRevision: 43,
+      recordVersionNumber: 7,
+    },
+    'unused',
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(whitespaceLocal).installation.externalKey,
+    'ih_authoritative',
+  );
+
+  const importedReplay = prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('mobile-existing', {
+      externalKey: 'ih_source_installation',
+      siteCode: 'SERVER',
+      timezone: 'Australia/Brisbane',
+      treeRevision: 0,
+      recordVersionNumber: 0,
+    }, undefined),
+    {
+      externalKey: 'ih_authoritative',
+      siteCode: 'SERVER',
+      timezone: 'Australia/Brisbane',
+      treeRevision: 1,
+      recordVersionNumber: 0,
+    },
+    'unused',
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(importedReplay).installation.externalKey,
+    'ih_authoritative',
+  );
+
+  const identityReplacement = prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('mobile-existing', {
+      externalKey: 'ih_source_installation',
+      siteCode: 'SERVER',
+      timezone: 'Australia/Brisbane',
+      treeRevision: 1,
+      recordVersionNumber: 0,
+    }, 1),
+    {
+      externalKey: 'ih_authoritative',
+      siteCode: 'SERVER',
+      timezone: 'Australia/Brisbane',
+      treeRevision: 1,
+      recordVersionNumber: 0,
+    },
+    'unused',
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(identityReplacement).installation.externalKey,
+    'ih_source_installation',
+  );
+});
+
+test('canonical write preparation keeps explicit invalid metadata fail-closed', () => {
+  for (const installation of [
+    { treeRevision: '0', recordVersionNumber: 0 },
+    { treeRevision: 0, recordVersionNumber: -1 },
+    { treeRevision: 0, recordVersionNumber: 0, timezone: 42 },
+    { treeRevision: 0, recordVersionNumber: 0, externalKey: 42 },
+  ]) {
+    const prepared = prepareCanonicalInstallHubWrite(
+      freshCanonicalWrite('invalid-create', installation),
+      undefined,
+      'ih_invalid_never_persisted',
+    );
+    assert.throws(() => normalizeInstallationTreeV2(prepared));
   }
 });
 

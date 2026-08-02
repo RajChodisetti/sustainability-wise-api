@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
@@ -32,6 +32,7 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
+import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 
 export function InstallHubInstallationDetailPage() {
@@ -46,6 +47,11 @@ export function InstallHubInstallationDetailPage() {
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
+
+  useEffect(() => {
+    if (!user || query.data?.installation.id !== installationId) return;
+    clearInstallationCreateAttempt(user.id, installationId);
+  }, [installationId, query.data, user]);
 
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;

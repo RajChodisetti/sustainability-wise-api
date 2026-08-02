@@ -11,6 +11,14 @@ const ownershipFenceMigrationUrl = new URL(
   './0017_installhub_child_ownership_fence.sql',
   import.meta.url,
 );
+const uploadConfirmationRevisionMigrationUrl = new URL(
+  './0018_installhub_upload_confirmation_revision.sql',
+  import.meta.url,
+);
+const uploadBaseRevisionMigrationUrl = new URL(
+  './0019_installhub_upload_base_revision.sql',
+  import.meta.url,
+);
 
 const expectedNewTables = [
   'ih_completion_idempotency',
@@ -96,4 +104,19 @@ test('canonical child installation ownership is immutable across every child tab
     );
   }
   assert.doesNotMatch(sql, /DROP TABLE|DROP COLUMN|TRUNCATE/i);
+});
+
+test('upload confirmation revision migration is nullable and expand-only', async () => {
+  const sql = await readFile(uploadConfirmationRevisionMigrationUrl, 'utf8');
+  assert.match(
+    sql,
+    /ALTER TABLE "photo_registry" ADD COLUMN "confirmed_tree_revision" integer/,
+  );
+  assert.doesNotMatch(sql, /NOT NULL|DROP TABLE|DROP COLUMN|TRUNCATE|UPDATE/i);
+});
+
+test('upload base revision migration is nullable and expand-only', async () => {
+  const sql = await readFile(uploadBaseRevisionMigrationUrl, 'utf8');
+  assert.match(sql, /ALTER TABLE "photo_registry" ADD COLUMN "base_tree_revision" integer/);
+  assert.doesNotMatch(sql, /NOT NULL|DROP TABLE|DROP COLUMN|TRUNCATE|UPDATE/i);
 });

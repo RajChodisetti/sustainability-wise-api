@@ -17,6 +17,7 @@ import type {
   UnifiedPortalUsersResponse,
 } from '@/modules/installhub/types/domain';
 import {
+  applyAuthoritativeTreeRevision,
   normalizeInstallationTree,
   serializeInstallationTree,
 } from '@/modules/installhub/lib/workflow';
@@ -206,28 +207,41 @@ export async function uploadInstallationPhoto(
   identity: PhotoIdentity,
   file: File,
 ): Promise<string> {
-  await saveInstallationTree(tree, 'metadata');
+  const metadata = await saveInstallationTree(tree, 'metadata');
+  const baseTreeRevision = applyAuthoritativeTreeRevision(tree, metadata.treeRevision);
   const bytes = await file.arrayBuffer();
   const checksum = sha256(bytes);
-  const duplicate = await installHubRequest<{ exists: boolean; remoteUrl?: string }>(
+  const duplicate = await installHubRequest<{
+    exists: boolean;
+    remoteUrl?: string;
+    treeRevision?: number;
+  }>(
     'POST',
     '/v1/installhub/sync/check-photo',
-    { ...identity, checksum },
+    { ...identity, baseTreeRevision, checksum },
   );
-  if (duplicate.exists && duplicate.remoteUrl) return duplicate.remoteUrl;
+  if (duplicate.exists && duplicate.remoteUrl) {
+    applyAuthoritativeTreeRevision(tree, duplicate.treeRevision);
+    return duplicate.remoteUrl;
+  }
 
   const session = await installHubRequest<{
     sessionId: string;
     uploadUrl: string | null;
     alreadyExists: boolean;
     remoteUrl?: string;
+    treeRevision?: number;
   }>('POST', '/v1/installhub/sync/create-upload-session', {
     ...identity,
+    baseTreeRevision,
     checksum,
     filename: file.name || `${identity.fieldName}.jpg`,
     fileSizeBytes: file.size,
   });
-  if (session.alreadyExists && session.remoteUrl) return session.remoteUrl;
+  if (session.alreadyExists && session.remoteUrl) {
+    applyAuthoritativeTreeRevision(tree, session.treeRevision);
+    return session.remoteUrl;
+  }
   if (!session.uploadUrl) throw new Error('The API did not return an upload URL.');
 
   await uploadInstallHubBytes(
@@ -235,11 +249,12 @@ export async function uploadInstallationPhoto(
     bytes,
     file.type || 'image/jpeg',
   );
-  const confirmed = await installHubRequest<{ remoteUrl: string }>(
+  const confirmed = await installHubRequest<{ remoteUrl: string; treeRevision: number }>(
     'POST',
     '/v1/installhub/sync/confirm-upload',
     { sessionId: session.sessionId, checksum },
   );
+  applyAuthoritativeTreeRevision(tree, confirmed.treeRevision);
   return confirmed.remoteUrl;
 }
 

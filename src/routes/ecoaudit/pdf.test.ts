@@ -49,6 +49,8 @@ function photo(
     storageKey: `ecoaudit/audit-1/${id}.jpg`,
     remoteUrl: `https://files.example/${id}.jpg`,
     status: 'confirmed',
+    baseTreeRevision: null,
+    confirmedTreeRevision: null,
     uploadedAt: generatedAt,
     createdAt: generatedAt,
   };

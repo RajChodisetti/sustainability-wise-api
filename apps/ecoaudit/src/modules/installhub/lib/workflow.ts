@@ -229,18 +229,22 @@ export function displayCodeValue(
   return entity.displayCodeMeta?.value || entity.displayCode || '';
 }
 
-function normalizePrefix(value: string): string {
-  return value
+export function installationDisplayCodePrefix(value: string): string {
+  const prefix = value
+    .normalize('NFKD')
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, 16);
+    .slice(0, 16)
+    .replace(/-+$/g, '');
+  return prefix || 'SITE';
 }
 
 export function installationSiteCode(tree: InstallationTree): string {
-  const explicit = normalizePrefix(tree.installation.siteCode || '');
-  if (explicit) return explicit;
+  if (tree.installation.siteCode?.trim()) {
+    return installationDisplayCodePrefix(tree.installation.siteCode);
+  }
   const words = tree.installation.siteName.match(/[A-Za-z0-9]+/g) || [];
   const initials = words.map((word) => word[0]).join('').toUpperCase().slice(0, 8);
   return initials || 'SITE';
@@ -725,6 +729,19 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
   return tree;
 }
 
+export function applyAuthoritativeTreeRevision(
+  tree: InstallationTree,
+  value: unknown,
+): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error('The API did not return an authoritative installation revision.');
+  }
+  tree.treeRevision = value;
+  tree.baseTreeRevision = value;
+  tree.installation.treeRevision = value;
+  return value;
+}
+
 export function normalizeInstallationTree(input: InstallationTree): InstallationTree {
   return ensureCanonicalTree(structuredClone(input));
 }
@@ -732,6 +749,14 @@ export function normalizeInstallationTree(input: InstallationTree): Installation
 export function serializeInstallationTree(input: InstallationTree): Record<string, unknown> {
   const tree = ensureCanonicalTree(structuredClone(input));
   const wire = structuredClone(tree) as unknown as Record<string, unknown>;
+  wire.installation = {
+    ...tree.installation,
+    treeSchemaVersion: 2,
+    treeRevision: tree.treeRevision ?? tree.installation.treeRevision ?? 0,
+    recordVersionNumber: tree.recordVersionNumber
+      ?? tree.installation.recordVersionNumber
+      ?? 0,
+  };
   wire.electricalAssets = tree.electricalAssets.map((board) => ({
     ...board,
     displayCode: board.displayCodeMeta,

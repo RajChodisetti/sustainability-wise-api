@@ -218,6 +218,9 @@ export type UnifiedPortalUsersResponse = {
 
 export type Installation = {
   id: string;
+  treeSchemaVersion?: 2;
+  treeRevision?: number;
+  recordVersionNumber?: number;
   serverId?: string | null;
   clientName: string;
   siteName: string;

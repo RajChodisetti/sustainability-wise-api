@@ -15,6 +15,7 @@ import {
 } from '@/modules/installhub/api/installhub';
 import { cloneTree, touchTree } from '@/modules/installhub/lib/model';
 import {
+  applyAuthoritativeTreeRevision,
   ensureCanonicalTree,
   localElectricalTree,
   localMappingExport,
@@ -372,10 +373,7 @@ export async function submitAndConfirmInstallationTree(
   },
 ): Promise<InstallationTreeWriteOutcome> {
   const result = await transport.save(next, syncStage);
-  if (typeof result.treeRevision === 'number') {
-    next.treeRevision = result.treeRevision;
-    next.baseTreeRevision = result.treeRevision;
-  }
+  if (result.treeRevision !== undefined) applyAuthoritativeTreeRevision(next, result.treeRevision);
   if (typeof result.recordVersionNumber === 'number') {
     next.recordVersionNumber = result.recordVersionNumber;
   } else if (typeof result.versionNumber === 'number') {

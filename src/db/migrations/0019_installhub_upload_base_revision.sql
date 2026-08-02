@@ -1,0 +1,1 @@
+ALTER TABLE "photo_registry" ADD COLUMN "base_tree_revision" integer;

@@ -46,6 +46,8 @@ function photo(overrides: Partial<PhotoRow> & Pick<PhotoRow, 'id'>): PhotoRow {
     fieldName: 'photos_0',
     fileSizeBytes: 100,
     status: 'confirmed',
+    baseTreeRevision: null,
+    confirmedTreeRevision: null,
     uploadedAt: new Date('2026-01-01T00:00:00Z'),
     createdAt: new Date('2026-01-01T00:00:00Z'),
     ...rest,

@@ -4,9 +4,12 @@ import {
   CanonicalInputError,
   allocateDisplayCodes,
   assertStructurallySafeTree,
+  canonicalPayloadHash,
   canonicalTreeMutationFingerprint,
   deriveVirtualMeterDefinitions,
   installationReadiness,
+  installationDisplayCodePrefix,
+  isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
   type CanonicalFormSubmission,
   type CanonicalInstallationTree,
@@ -15,6 +18,30 @@ import {
   type MeterChannel,
   type MeterDevice,
 } from './canonical.js';
+
+test('canonical site-code contract accepts only bounded uppercase groups', () => {
+  for (const valid of ['W', 'SYD-WH1', '123', 'ABCDEFGHIJKLMNOP']) {
+    assert.equal(isValidInstallationSiteCode(valid), true);
+  }
+  for (const invalid of ['bad', 'BAD SITE', 'BAD!', '-BAD', 'BAD-', 'BAD--SITE', 'ABCDEFGHIJKLMNOPQ']) {
+    assert.equal(isValidInstallationSiteCode(invalid), false);
+  }
+});
+
+test('historical site codes project to one bounded display-code prefix without mutation', () => {
+  assert.equal(installationDisplayCodePrefix('Legacy Site Code / 2024'), 'LEGACY-SITE-CODE');
+  assert.equal(installationDisplayCodePrefix('---'), 'SITE');
+  assert.equal(installationDisplayCodePrefix('123456789012345-678'), '123456789012345');
+});
+
+test('canonicalizer preserves a non-empty historical site code for immutable replay', () => {
+  const tree = baseTree();
+  tree.installation.siteCode = ' Legacy Site Code / 2024 ';
+  assert.equal(
+    normalizeInstallationTreeV2(tree).installation.siteCode,
+    ' Legacy Site Code / 2024 ',
+  );
+});
 import {
   buildAllAssetsView,
   buildElectricalTreeView,
@@ -29,6 +56,8 @@ import {
 import {
   assertCommissionedMetersRequireAmendment,
   buildCanonicalSnapshotPayload,
+  canonicalSnapshotContentHash,
+  canonicalSnapshotPayloadHashMatches,
   projectCanonicalMediaManifest,
   wwCommissioningFormMatchesMeter,
 } from './treeService.js';
@@ -532,6 +561,16 @@ test('display allocation is deterministic, installation-wide, and never reuses c
   const newRuleClaims = allocateDisplayCodes({ tree: newRuleEntity, existingClaims: claims });
   assert.equal(newRuleClaims[0].entityId, 'board-new-rule');
   assert.equal(newRuleClaims[0].ruleVersion, 99);
+});
+
+test('historical site code stays unchanged while new display codes use the bounded prefix', () => {
+  const tree = baseTree();
+  tree.installation.siteCode = 'Legacy Site Code / 2024';
+  tree.electricalAssets[0].displayCode = display('');
+  tree.siteAssets = [];
+  allocateDisplayCodes({ tree, existingClaims: [] });
+  assert.equal(tree.installation.siteCode, 'Legacy Site Code / 2024');
+  assert.equal(tree.electricalAssets[0].displayCode.value, 'LEGACY-SITE-CODE-MSB-001');
 });
 
 test('readiness enforces exact A3/A6 ordinals, grouping, purpose, and WW context', () => {
@@ -1237,6 +1276,8 @@ test('snapshot manifest pins only exact currently referenced confirmed remote ev
     fieldName,
     fileSizeBytes: 123,
     status: 'confirmed',
+    baseTreeRevision: null,
+    confirmedTreeRevision: null,
     uploadedAt: new Date('2026-08-01T00:00:00.000Z'),
     createdAt: new Date('2026-08-01T00:00:00.000Z'),
   });
@@ -1332,4 +1373,33 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
   ]);
   assert.match(first.installationTree.zones[0].photos[0], /^urn:installhub:photo:/);
   assert.equal(JSON.stringify(first).includes('https://files.example.test'), false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(first.installationTree, 'baseTreeRevision'),
+    false,
+  );
+  const storedShape = JSON.parse(JSON.stringify(first)) as typeof first;
+  assert.equal(canonicalSnapshotPayloadHashMatches(storedShape), true);
+
+  const { payloadHash: _payloadHash, ...storedWithoutHash } = storedShape;
+  const legacyWithoutHash = {
+    ...storedWithoutHash,
+    canonicalizerVersion: 'installation-canonical-v2.1',
+    installationTree: {
+      ...storedWithoutHash.installationTree,
+      baseTreeRevision: undefined,
+    },
+  };
+  const legacySnapshot = {
+    ...storedShape,
+    canonicalizerVersion: 'installation-canonical-v2.1',
+    payloadHash: canonicalPayloadHash(legacyWithoutHash),
+  };
+  const legacyBeforeVerification = JSON.stringify(legacySnapshot);
+  assert.equal(canonicalSnapshotPayloadHashMatches(legacySnapshot), true);
+  assert.equal(
+    canonicalSnapshotContentHash(legacySnapshot),
+    canonicalSnapshotContentHash(storedShape),
+  );
+  assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.2');
 });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, isNull, notInArray, or } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
@@ -45,14 +45,17 @@ import {
 import {
   CanonicalInputError,
   canonicalTreeMutationFingerprint,
+  deriveSiteCode,
   installationReadiness,
+  isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
 } from './canonical.js';
 import {
-  insertCanonicalRecordVersion,
+  ensureCanonicalRecordVersion,
   isCanonicalChildOwnershipDatabaseError,
   loadCanonicalInstallationTree,
   projectLegacyInstallationTree,
+  retainCompletedFormsDuringMetadata,
   replaceCanonicalInstallationChildren,
   type InstallHubExecutor,
 } from './treeService.js';
@@ -84,10 +87,10 @@ export function parseInstallHubTreeSchemaMode(body: {
   // Legacy payloads historically carried version 1 only on the nested row.
   // Preserve that shape, but never interpret any other nested declaration as v1.
   if (!topLevelDeclared && body.installation?.treeSchemaVersion === 1) return 1;
-  if (
-    body.treeSchemaVersion !== 2
-    || body.installation?.treeSchemaVersion !== 2
-  ) {
+  if (body.treeSchemaVersion !== 2) {
+    throw badRequest('unsupported_tree_schema');
+  }
+  if (nestedDeclared && body.installation?.treeSchemaVersion !== 2) {
     throw badRequest('unsupported_tree_schema');
   }
   return 2;
@@ -111,6 +114,118 @@ export function installHubSyncCreatesRecordVersion(
   return syncStage !== 'metadata';
 }
 
+type CanonicalInstallationAuthority = {
+  externalKey: string;
+  siteCode: string;
+  timezone: string;
+  treeRevision: number;
+  recordVersionNumber: number;
+};
+
+function isMissingCanonicalValue(value: unknown): boolean {
+  return value === undefined
+    || value === null
+    || (typeof value === 'string' && !value.trim());
+}
+
+function isProvisionalExternalKey(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase().startsWith('local:');
+}
+
+function canonicalServerInteger(value: unknown, authoritativeValue: number): unknown {
+  if (value == null) return authoritativeValue;
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+    return authoritativeValue;
+  }
+  return value;
+}
+
+/**
+ * Supplies only server-owned/defaulted values needed to normalize a canonical
+ * create or a mobile follow-up write. Explicit invalid client values remain in
+ * place so the canonical normalizer rejects them. Every create receives a new
+ * server identity. Existing missing/local keys converge to server authority.
+ * A base-zero/omitted first-create replay also converges before fingerprinting
+ * so an imported copy can recover an ambiguous response after the server has
+ * replaced its source identity. Canonical identity replacement remains
+ * fail-closed for ordinary existing-tree updates.
+ */
+export function prepareCanonicalInstallHubWrite(
+  body: PushBody,
+  authority: CanonicalInstallationAuthority | undefined,
+  generatedExternalKey: string,
+): PushBody {
+  if (!body.installation) throw badRequest('installation is required');
+  const installation = body.installation;
+  const siteName = requiredString(installation, 'siteName');
+  const siteCode = authority?.siteCode?.trim()
+    ? authority.siteCode
+    : deriveInstallHubSiteCode(siteName);
+  const timezone = authority?.timezone ?? 'Australia/Sydney';
+  const externalKey = authority?.externalKey ?? generatedExternalKey;
+  const suppliedExternalKey = installation.externalKey;
+  const firstCreateReplay = Boolean(authority)
+    && (body.baseTreeRevision === undefined || body.baseTreeRevision === 0);
+  const preparedExternalKey = authority
+    ? (
+        isMissingCanonicalValue(suppliedExternalKey)
+        || isProvisionalExternalKey(suppliedExternalKey)
+        || (firstCreateReplay && (typeof suppliedExternalKey === 'string' || suppliedExternalKey == null))
+          ? externalKey
+          : suppliedExternalKey
+      )
+    : (typeof suppliedExternalKey === 'string' || suppliedExternalKey == null
+        ? externalKey
+        : suppliedExternalKey);
+  return {
+    ...body,
+    installation: {
+      ...installation,
+      treeSchemaVersion: installation.treeSchemaVersion ?? 2,
+      externalKey: preparedExternalKey,
+      siteCode: installation.siteCode === undefined || installation.siteCode === null
+        ? siteCode
+        : installation.siteCode,
+      timezone: isMissingCanonicalValue(installation.timezone)
+        ? timezone
+        : installation.timezone,
+      treeRevision: canonicalServerInteger(
+        installation.treeRevision,
+        authority?.treeRevision ?? 0,
+      ),
+      recordVersionNumber: canonicalServerInteger(
+        installation.recordVersionNumber,
+        authority?.recordVersionNumber ?? 0,
+      ),
+    },
+  };
+}
+
+/**
+ * Grandfathers only the exact non-empty site code already owned by this
+ * installation. Fresh values and deliberate edits must satisfy the current
+ * bounded contract; callers may never silently derive a replacement for an
+ * existing code because generated display-code identity depends on it.
+ */
+export function assertInstallHubSiteCodeWriteAllowed(
+  siteCode: unknown,
+  authoritativeSiteCode?: string | null,
+): void {
+  if (typeof siteCode !== 'string' || !siteCode.trim()) {
+    throw badRequest('installation.siteCode is required');
+  }
+  if (
+    typeof authoritativeSiteCode === 'string'
+    && authoritativeSiteCode.trim()
+    && siteCode === authoritativeSiteCode
+  ) return;
+  if (!isValidInstallationSiteCode(siteCode)) {
+    throw badRequest(
+      'installation.siteCode must be 1-16 uppercase letters/digits, with single hyphens only between groups',
+    );
+  }
+}
+
 function uploadUrl(sessionId: string): string {
   return createConfiguredUploadUrl(
     `${config.publicBaseUrl}/v1/installhub/sync/upload/${sessionId}`,
@@ -130,6 +245,8 @@ function requireParentId(item: JsonRecord, installationId: string): void {
   if (parentId !== installationId) throw badRequest('Child installationId does not match installation');
 }
 
+export const deriveInstallHubSiteCode = deriveSiteCode;
+
 export function installationValuesFromPayload(
   payload: JsonRecord,
   actor: { userId: string; role: string },
@@ -137,15 +254,7 @@ export function installationValuesFromPayload(
 ) {
   const id = requiredString(payload, 'id');
   const siteName = requiredString(payload, 'siteName');
-  const derivedSiteCode = siteName
-    .normalize('NFKD')
-    .replace(/[^a-zA-Z0-9]+/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .map((part) => part[0] ?? '')
-    .join('')
-    .slice(0, 8)
-    .toUpperCase() || 'SITE';
+  const derivedSiteCode = deriveInstallHubSiteCode(siteName);
   return {
     id,
     serverId: existing?.serverId ?? optionalString(payload, 'serverId') ?? randomUUID(),
@@ -153,7 +262,10 @@ export function installationValuesFromPayload(
     updatedAt: dateOrNow(payload.updatedAt),
     deletedAt: optionalDate(payload.deletedAt),
     externalKey: existing?.externalKey ?? `ih_${randomUUID()}`,
-    siteCode: existing?.siteCode ?? optionalString(payload, 'siteCode')?.toUpperCase() ?? derivedSiteCode,
+    siteCode: existing?.siteCode ?? (() => {
+      const supplied = optionalString(payload, 'siteCode')?.trim().toUpperCase();
+      return supplied && isValidInstallationSiteCode(supplied) ? supplied : derivedSiteCode;
+    })(),
     timezone: optionalString(payload, 'timezone') ?? existing?.timezone ?? 'Australia/Sydney',
     treeSchemaVersion: existing?.treeSchemaVersion ?? 1,
     treeRevision: existing?.treeRevision ?? 0,
@@ -256,6 +368,20 @@ export function assertInstallHubUploadFieldName(
     || /^wwPhotos\.extra\[\d+]$/.test(fieldName)
   ) return;
   throw badRequest('Unsupported meter_device photo fieldName');
+}
+
+export function parseInstallHubUploadBaseTreeRevision(
+  value: unknown,
+  required = config.installhubUploadRevisionCasRequired,
+): number | undefined {
+  if (value === undefined) {
+    if (required) throw conflict('client_upgrade_required: upload baseTreeRevision');
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw badRequest('baseTreeRevision must be a non-negative integer');
+  }
+  return value;
 }
 
 function zoneValues(item: JsonRecord, installationId: string, existing?: typeof ihZones.$inferSelect) {
@@ -402,6 +528,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
     const installationId = requiredString(body, 'installationId');
+    const baseTreeRevision = parseInstallHubUploadBaseTreeRevision(body.baseTreeRevision);
+    if (baseTreeRevision === undefined) {
+      request.log.warn({ installationId, endpoint: 'check-photo' },
+        'Accepted deprecated InstallHub upload request without baseTreeRevision');
+    }
     const entityType = requiredString(body, 'entityType');
     const entityId = requiredString(body, 'entityId');
     const fieldName = requiredString(body, 'fieldName');
@@ -409,7 +540,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
     await loadAccessibleInstallation(installationId, request);
     await loadUploadEntity(installationId, entityType, entityId);
 
-    const [existing] = await db.select().from(photoRegistry).where(and(
+    const duplicateIdentity = [
       eq(photoRegistry.app, 'installhub'),
       eq(photoRegistry.checksum, checksum),
       eq(photoRegistry.parentId, installationId),
@@ -417,12 +548,25 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       eq(photoRegistry.entityId, entityId),
       eq(photoRegistry.fieldName, fieldName),
       eq(photoRegistry.status, 'confirmed'),
-    ));
+    ] as const;
+    const [existing] = await db.select().from(photoRegistry).where(
+      baseTreeRevision === undefined
+        ? and(...duplicateIdentity)
+        : and(
+            ...duplicateIdentity,
+            or(
+              eq(photoRegistry.baseTreeRevision, baseTreeRevision),
+              eq(photoRegistry.confirmedTreeRevision, baseTreeRevision),
+            ),
+            isNotNull(photoRegistry.confirmedTreeRevision),
+          ),
+    );
     return reply.send({
       exists: Boolean(existing),
       remoteUrl: existing?.remoteUrl,
       fileSizeBytes: existing?.fileSizeBytes,
       photoId: existing?.id,
+      treeRevision: existing?.confirmedTreeRevision,
     });
   });
 
@@ -433,6 +577,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
     const body = request.body as JsonRecord;
     const checksum = requiredString(body, 'checksum');
     const installationId = requiredString(body, 'installationId');
+    const baseTreeRevision = parseInstallHubUploadBaseTreeRevision(body.baseTreeRevision);
+    if (baseTreeRevision === undefined) {
+      request.log.warn({ installationId, endpoint: 'create-upload-session' },
+        'Accepted deprecated InstallHub upload request without baseTreeRevision');
+    }
     const entityType = requiredString(body, 'entityType');
     const entityId = requiredString(body, 'entityId');
     const fieldName = requiredString(body, 'fieldName');
@@ -456,8 +605,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       if (lockedInstallation.status === 'Completed') {
         throw conflict('installation_completed_reopen_required');
       }
+      const effectiveBaseTreeRevision = baseTreeRevision ?? lockedInstallation.treeRevision;
       const entity = await loadUploadEntity(installationId, entityType, entityId, tx);
-      const [duplicate] = await tx.select().from(photoRegistry).where(and(
+      const duplicateIdentity = [
         eq(photoRegistry.app, 'installhub'),
         eq(photoRegistry.checksum, checksum),
         eq(photoRegistry.parentId, installationId),
@@ -465,8 +615,26 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         eq(photoRegistry.entityId, entityId),
         eq(photoRegistry.fieldName, fieldName),
         eq(photoRegistry.status, 'confirmed'),
-      ));
+      ] as const;
+      const [duplicate] = await tx.select().from(photoRegistry).where(
+        baseTreeRevision === undefined
+          ? and(...duplicateIdentity)
+          : and(
+              ...duplicateIdentity,
+              or(
+                eq(photoRegistry.baseTreeRevision, baseTreeRevision),
+                eq(photoRegistry.confirmedTreeRevision, baseTreeRevision),
+              ),
+              isNotNull(photoRegistry.confirmedTreeRevision),
+            ),
+      );
       if (duplicate?.remoteUrl) {
+        if (
+          baseTreeRevision !== undefined
+          && !Number.isSafeInteger(duplicate.confirmedTreeRevision)
+        ) {
+          throw conflict('upload_confirmation_revision_unavailable');
+        }
         return {
           statusCode: 200,
           body: {
@@ -474,8 +642,15 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             uploadUrl: null,
             alreadyExists: true,
             remoteUrl: duplicate.remoteUrl,
+            treeRevision: duplicate.confirmedTreeRevision ?? lockedInstallation.treeRevision,
           },
         };
+      }
+      if (
+        baseTreeRevision !== undefined
+        && lockedInstallation.treeRevision !== baseTreeRevision
+      ) {
+        throw conflict('snapshot_conflict');
       }
 
       const sessionId = randomUUID();
@@ -500,6 +675,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         fieldName,
         fileSizeBytes,
         status: 'pending',
+        baseTreeRevision: effectiveBaseTreeRevision,
       });
       return {
         statusCode: 201,
@@ -641,7 +817,36 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         );
         if (locked.checksum !== checksum) throw badRequest('Checksum does not match session');
         if (locked.status === 'confirmed' && locked.remoteUrl) {
-          return { remoteUrl: locked.remoteUrl, treeRevision: installation.treeRevision };
+          if (!Number.isSafeInteger(locked.confirmedTreeRevision)) {
+            if (config.installhubUploadRevisionCasRequired) {
+              throw conflict('upload_confirmation_revision_unavailable');
+            }
+            request.log.warn({ sessionId, installationId: installation.id },
+              'Replayed deprecated InstallHub confirmation without a pinned revision');
+            return {
+              remoteUrl: locked.remoteUrl,
+              treeRevision: installation.treeRevision,
+            };
+          }
+          return {
+            remoteUrl: locked.remoteUrl,
+            treeRevision: locked.confirmedTreeRevision,
+          };
+        }
+        const effectiveBaseTreeRevision = Number.isSafeInteger(locked.baseTreeRevision)
+          ? locked.baseTreeRevision!
+          : config.installhubUploadRevisionCasRequired
+            ? undefined
+            : installation.treeRevision;
+        if (!Number.isSafeInteger(locked.baseTreeRevision) && effectiveBaseTreeRevision !== undefined) {
+          request.log.warn({ sessionId, installationId: installation.id },
+            'Bound deprecated InstallHub upload session at confirmation time');
+        }
+        if (
+          effectiveBaseTreeRevision === undefined
+          || installation.treeRevision !== effectiveBaseTreeRevision
+        ) {
+          throw conflict('snapshot_conflict');
         }
         if (installation.status === 'Completed') {
           throw conflict('installation_completed_reopen_required');
@@ -661,17 +866,19 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             });
         mirroredDrivePath = oneDriveBackup?.drivePath ?? null;
         const confirmedAt = new Date();
+        const nextRevision = effectiveBaseTreeRevision + 1;
         const [confirmed] = await tx.update(photoRegistry).set({
           status: 'confirmed',
           remoteUrl,
           onedriveItemId: oneDriveBackup?.itemId ?? locked.onedriveItemId,
           uploadedAt: confirmedAt,
+          baseTreeRevision: effectiveBaseTreeRevision,
+          confirmedTreeRevision: nextRevision,
         }).where(and(
           eq(photoRegistry.id, sessionId),
           eq(photoRegistry.status, 'uploaded'),
         )).returning();
         if (!confirmed) throw conflict('upload_confirmation_conflict');
-        const nextRevision = installation.treeRevision + 1;
         const [revised] = await tx.update(ihInstallations).set({
           treeRevision: nextRevision,
           updatedAt: confirmedAt,
@@ -684,6 +891,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         if (!revised) throw conflict('snapshot_conflict');
         return { remoteUrl, treeRevision: nextRevision };
       });
+      // The database row and mirror are now committed. Compensation below is
+      // only for aborted transactions, never for a response transport error.
+      mirroredDrivePath = null;
       return reply.send(outcome);
     } catch (error) {
       if (mirroredDrivePath && config.oneDrive.enabled) {
@@ -726,9 +936,53 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         );
       }
 
+      const installationId = requiredString(body.installation, 'id');
+      const [existingInstallation] = await db.select().from(ihInstallations)
+        .where(and(
+          eq(ihInstallations.id, installationId),
+          isNull(ihInstallations.deletedAt),
+        ));
+      const expectedExistingInstallation = Boolean(existingInstallation);
+      if (existingInstallation) {
+        assertInstallationAccess(existingInstallation, request.user);
+      } else if (body.baseTreeRevision !== undefined && body.baseTreeRevision !== 0) {
+        throw conflict('snapshot_conflict');
+      }
+
+      const now = new Date();
+      const serverExternalKey = existingInstallation?.externalKey ?? `ih_${randomUUID()}`;
+      const normalizationInput = prepareCanonicalInstallHubWrite(
+        body,
+        existingInstallation
+          ? {
+              externalKey: existingInstallation.externalKey,
+              siteCode: existingInstallation.siteCode,
+              timezone: existingInstallation.timezone,
+              treeRevision: existingInstallation.treeRevision,
+              recordVersionNumber: existingInstallation.recordVersionNumber,
+            }
+          : undefined,
+        serverExternalKey,
+      );
+      if (
+        existingInstallation
+        && normalizationInput.installation?.siteCode !== existingInstallation.siteCode
+      ) {
+        if (body.baseTreeRevision === undefined) {
+          throw conflict('baseTreeRevision_required');
+        }
+        if (body.baseTreeRevision !== existingInstallation.treeRevision) {
+          throw conflict('snapshot_conflict');
+        }
+      }
+      assertInstallHubSiteCodeWriteAllowed(
+        normalizationInput.installation?.siteCode,
+        existingInstallation?.siteCode,
+      );
+
       let incomingTree;
       try {
-        incomingTree = normalizeInstallationTreeV2(body);
+        incomingTree = normalizeInstallationTreeV2(normalizationInput);
       } catch (error) {
         if (error instanceof CanonicalInputError) {
           if (error.code === 'display_code_conflict') throw conflict(error.code);
@@ -736,6 +990,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         }
         throw error;
       }
+      const externalKeyConflict = incomingTree.installation.externalKey !== serverExternalKey;
       for (const form of incomingTree.formSubmissions) {
         validateInstallHubFormContract({
           formType: form.formType,
@@ -746,25 +1001,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
           syncStage: form.status === 'Completed' ? 'complete' : syncStage,
         });
       }
-      const installationId = incomingTree.installation.id;
-      const [existingInstallation] = await db.select().from(ihInstallations)
-        .where(and(
-          eq(ihInstallations.id, installationId),
-          isNull(ihInstallations.deletedAt),
-        ));
-      const expectedExistingInstallation = Boolean(existingInstallation);
-      if (existingInstallation) {
-        assertInstallationAccess(existingInstallation, request.user);
-        if (body.baseTreeRevision === undefined) throw conflict('baseTreeRevision_required');
-        if (existingInstallation.status === 'Completed') {
-          throw conflict('installation_completed_reopen_required');
-        }
-      } else if (body.baseTreeRevision !== undefined && body.baseTreeRevision !== 0) {
-        throw conflict('snapshot_conflict');
-      }
-
-      const now = new Date();
-      incomingTree.installation.externalKey = existingInstallation?.externalKey ?? `ih_${randomUUID()}`;
+      incomingTree.installation.externalKey = serverExternalKey;
       incomingTree.installation.siteCode = incomingTree.installation.siteCode
         || existingInstallation?.siteCode
         || 'SITE';
@@ -798,8 +1035,20 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
           }
           if (current) {
             assertInstallationAccess(current, request.user);
-            if (current.status === 'Completed') {
-              throw conflict('installation_completed_reopen_required');
+            if (incomingTree.installation.siteCode !== current.siteCode) {
+              if (body.baseTreeRevision === undefined) {
+                throw conflict('baseTreeRevision_required');
+              }
+              if (body.baseTreeRevision !== current.treeRevision) {
+                throw conflict('snapshot_conflict');
+              }
+            }
+            assertInstallHubSiteCodeWriteAllowed(
+              incomingTree.installation.siteCode,
+              current.siteCode,
+            );
+            if (incomingTree.installation.siteCode === current.siteCode) {
+              incomingTree.installation.siteCode = current.siteCode;
             }
             incomingTree.installation.externalKey = current.externalKey;
             incomingTree.installation.treeRevision = current.treeRevision;
@@ -807,6 +1056,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             const currentTree = await loadCanonicalInstallationTree(installationId, tx);
             if (!currentTree) throw notFound('Installation');
             if (syncStage === 'metadata') {
+              incomingTree.formSubmissions = retainCompletedFormsDuringMetadata({
+                existing: currentTree.formSubmissions,
+                incoming: incomingTree.formSubmissions,
+              });
               const priorCompleted = new Set(currentTree.formSubmissions
                 .filter((form) => form.status === 'Completed')
                 .map((form) => form.id));
@@ -820,13 +1073,33 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               canonicalTreeMutationFingerprint(currentTree)
               === canonicalTreeMutationFingerprint(incomingTree)
             ) {
+              const recordVersionNumber = installHubSyncCreatesRecordVersion(syncStage)
+                ? await ensureCanonicalRecordVersion({
+                    executor: tx,
+                    tree: currentTree,
+                    userId: request.user.userId,
+                  })
+                : current.recordVersionNumber;
               return {
                 treeRevision: current.treeRevision,
-                recordVersionNumber: current.recordVersionNumber,
+                recordVersionNumber,
                 readiness: installationReadiness(currentTree),
               };
             }
-            if (body.baseTreeRevision === undefined || current.treeRevision !== body.baseTreeRevision) {
+            if (current.status === 'Completed') {
+              throw conflict('installation_completed_reopen_required');
+            }
+            // A legacy imported mobile copy may have durably received the
+            // accepted revision before its replacement server identity. Let
+            // an exact no-op replay recover, but never let that key authorize
+            // an actual mutation of the canonical record.
+            if (externalKeyConflict) {
+              throw conflict('external_key_conflict');
+            }
+            if (body.baseTreeRevision === undefined) {
+              throw conflict('baseTreeRevision_required');
+            }
+            if (current.treeRevision !== body.baseTreeRevision) {
               throw conflict('snapshot_conflict');
             }
             const nextRevision = current.treeRevision + 1;
@@ -891,14 +1164,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
           if (!persisted) throw new Error('Canonical installation disappeared during transaction');
           let recordVersionNumber = persisted.installation.recordVersionNumber;
           if (installHubSyncCreatesRecordVersion(syncStage)) {
-            recordVersionNumber += 1;
-            persisted.installation.recordVersionNumber = recordVersionNumber;
-            await tx.update(ihInstallations).set({ recordVersionNumber })
-              .where(eq(ihInstallations.id, installationId));
-            await insertCanonicalRecordVersion({
+            recordVersionNumber = await ensureCanonicalRecordVersion({
               executor: tx,
               tree: persisted,
-              versionNumber: recordVersionNumber,
               userId: request.user.userId,
             });
           }

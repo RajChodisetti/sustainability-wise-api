@@ -1,0 +1,1 @@
+ALTER TABLE "photo_registry" ADD COLUMN "confirmed_tree_revision" integer;

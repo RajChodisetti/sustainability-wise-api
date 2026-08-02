@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.1';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.2';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-01';
 export const DISPLAY_CODE_RULE_VERSION = 1;
+export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
+export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 export const VIRTUAL_METER_FORMULA_VERSION = 1;
 
 export const BOARD_TYPE_CODES = [
@@ -488,6 +490,28 @@ export function deriveSiteCode(siteName: string): string {
   return (initials || fallback || 'SITE').slice(0, 8);
 }
 
+export function isValidInstallationSiteCode(value: string): boolean {
+  return value.length >= 1
+    && value.length <= INSTALLATION_SITE_CODE_MAX_LENGTH
+    && INSTALLATION_SITE_CODE_PATTERN.test(value);
+}
+
+/**
+ * Historical site codes stay authoritative, but newly generated entity codes
+ * need one bounded cross-client prefix. This projection never writes back to
+ * the installation record.
+ */
+export function installationDisplayCodePrefix(value: string): string {
+  const prefix = value
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, INSTALLATION_SITE_CODE_MAX_LENGTH)
+    .replace(/-+$/g, '');
+  return prefix || 'SITE';
+}
+
 function parseDisplayCode(value: unknown, label: string): DisplayCode {
   const raw = record(value, label);
   const code = stringValue(raw.value, `${label}.value`);
@@ -577,10 +601,15 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
   if (item.treeSchemaVersion !== INSTALLATION_TREE_SCHEMA_VERSION) {
     throw new CanonicalInputError('installation.treeSchemaVersion must be 2');
   }
-  const siteCode = requiredText(item.siteCode, 'installation.siteCode');
-  if (siteCode !== siteCode.toUpperCase()) {
-    throw new CanonicalInputError('installation.siteCode must be uppercase');
+  if (typeof item.siteCode !== 'string' || !item.siteCode.trim()) {
+    throw new CanonicalInputError('installation.siteCode is required');
   }
+  const siteCode = item.siteCode;
+  // Persisted canonical-v2 rows predate the bounded site-code contract. The
+  // authenticated sync boundary validates every new code or deliberate change;
+  // the canonicalizer itself must remain able to read, hash, complete and
+  // exactly replay a non-empty historical value without renaming display-code
+  // identity underneath it.
   return {
     id: requiredText(item.id, 'installation.id'),
     externalKey: requiredText(item.externalKey, 'installation.externalKey'),
@@ -2141,8 +2170,9 @@ export function allocateDisplayCodes(input: {
   ].sort((left, right) => `${left.entityType}:${left.entityId}`.localeCompare(`${right.entityType}:${right.entityId}`));
 
   for (const entity of entities) {
+    const sitePrefix = installationDisplayCodePrefix(input.tree.installation.siteCode);
     const generatedPrefix = normalizeDisplayCode(
-      `${input.tree.installation.siteCode}-${entity.typeCode}-`,
+      `${sitePrefix}-${entity.typeCode}-`,
     );
     const priorClaimsForEntity = claims.filter((claim) => (
       claim.entityType === entity.entityType && claim.entityId === entity.entityId
@@ -2187,7 +2217,7 @@ export function allocateDisplayCodes(input: {
       do {
         sequence = (nextByType.get(entity.typeCode) ?? 0) + 1;
         nextByType.set(entity.typeCode, sequence);
-        displayCode = `${input.tree.installation.siteCode}-${entity.typeCode}-${String(sequence).padStart(3, '0')}`;
+        displayCode = `${sitePrefix}-${entity.typeCode}-${String(sequence).padStart(3, '0')}`;
       } while (claimed.has(normalizeDisplayCode(displayCode)));
       entity.display.value = displayCode;
       entity.display.generatedValue = displayCode;
@@ -2196,7 +2226,7 @@ export function allocateDisplayCodes(input: {
       generated = true;
     }
     if (sequence === null && generated) {
-      const escapedSite = input.tree.installation.siteCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const escapedSite = sitePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const escapedType = entity.typeCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const match = new RegExp(`^${escapedSite}-${escapedType}-(\\d+)$`, 'i').exec(displayCode);
       if (match) {

@@ -504,6 +504,34 @@ export function assertCompletedFormsImmutable(input: {
   }
 }
 
+/**
+ * Mobile metadata intentionally stages every local Completed form as Draft so
+ * only the final pass can commission a new form. Once that exact form is
+ * already immutable on the server, restore the existing Completed row when
+ * all other retained semantics match. Any changed answer, link, or evidence
+ * remains Draft and is rejected by the immutable-form fence below.
+ */
+export function retainCompletedFormsDuringMetadata(input: {
+  existing: CanonicalFormSubmission[];
+  incoming: CanonicalFormSubmission[];
+}): CanonicalFormSubmission[] {
+  const existingById = new Map(input.existing.map((form) => [form.id, form]));
+  return input.incoming.map((form) => {
+    const existing = existingById.get(form.id);
+    if (!existing || existing.status !== 'Completed' || form.status !== 'Draft') {
+      return form;
+    }
+    const restored: CanonicalFormSubmission = {
+      ...form,
+      status: 'Completed',
+      completedAt: existing.completedAt,
+    };
+    return retainedFormFingerprint(existing) === retainedFormFingerprint(restored)
+      ? existing
+      : form;
+  });
+}
+
 function commissionedMeterFingerprint(meter: MeterDevice | undefined): string {
   if (!meter) return 'deleted';
   return stableStringify({
@@ -1551,7 +1579,10 @@ export function buildCanonicalSnapshotPayload(input: {
     `${left.entityType}:${left.entityId}:${left.fieldName}:${left.id}`
       .localeCompare(`${right.entityType}:${right.entityId}:${right.fieldName}:${right.id}`)
   ));
-  canonicalTree.baseTreeRevision = undefined;
+  // Snapshot hashes must be computed over the exact JSON shape PostgreSQL
+  // stores. An enumerable `undefined` hashes as null in stableStringify but is
+  // dropped by JSON/JSONB, making the immutable version unreadable on reload.
+  delete canonicalTree.baseTreeRevision;
   canonicalTree.serverDerived.virtualMeterDefinitions = deriveVirtualMeterDefinitions(canonicalTree);
   const recordVersionNumber = canonicalTree.installation.recordVersionNumber;
   const withoutHash = {
@@ -1573,6 +1604,54 @@ export function buildCanonicalSnapshotPayload(input: {
     },
   };
   return { ...withoutHash, payloadHash: canonicalPayloadHash(withoutHash) };
+}
+
+function canonicalSnapshotWithoutPayloadHash(
+  snapshot: CanonicalRecordVersionSnapshot,
+): Omit<CanonicalRecordVersionSnapshot, 'payloadHash'> {
+  const { payloadHash: _payloadHash, ...withoutHash } = snapshot;
+  return withoutHash;
+}
+
+export function canonicalSnapshotContentHash(
+  snapshot: CanonicalRecordVersionSnapshot,
+): string {
+  const withoutHash = canonicalSnapshotWithoutPayloadHash(snapshot);
+  // v2.2 changed only JSON/hash canonicalization. Treat an otherwise exact
+  // v2.1 pin as the same immutable content so retry never creates a version
+  // solely to repair historical hash provenance.
+  const comparable = withoutHash.canonicalizerVersion === 'installation-canonical-v2.1'
+    ? { ...withoutHash, canonicalizerVersion: INSTALLATION_CANONICALIZER_VERSION }
+    : withoutHash;
+  return canonicalPayloadHash(comparable);
+}
+
+/**
+ * Accepts the exact stored hash plus one bounded historical defect: v2.1
+ * snapshots were hashed with an enumerable undefined baseTreeRevision before
+ * JSONB dropped that key. Historical rows stay immutable; new rows never use
+ * this compatibility shape.
+ */
+export function canonicalSnapshotPayloadHashMatches(
+  snapshot: CanonicalRecordVersionSnapshot,
+): boolean {
+  const withoutHash = canonicalSnapshotWithoutPayloadHash(snapshot);
+  if (canonicalPayloadHash(withoutHash) === snapshot.payloadHash) return true;
+  if (
+    snapshot.canonicalizerVersion !== 'installation-canonical-v2.1'
+    || Object.prototype.hasOwnProperty.call(
+      withoutHash.installationTree,
+      'baseTreeRevision',
+    )
+  ) return false;
+  const legacyWithoutHash = {
+    ...withoutHash,
+    installationTree: {
+      ...withoutHash.installationTree,
+      baseTreeRevision: undefined,
+    },
+  };
+  return canonicalPayloadHash(legacyWithoutHash) === snapshot.payloadHash;
 }
 
 export async function makeCanonicalSnapshot(input: {
@@ -1654,16 +1733,64 @@ export async function loadCanonicalRecordVersion(input: {
   ) {
     throw new Error('canonical_snapshot_invalid');
   }
-  const { payloadHash, ...withoutHash } = raw as CanonicalRecordVersionSnapshot;
-  if (canonicalPayloadHash(withoutHash) !== payloadHash || (row.payloadHash && row.payloadHash !== payloadHash)) {
+  const snapshot = raw as CanonicalRecordVersionSnapshot;
+  if (
+    !canonicalSnapshotPayloadHashMatches(snapshot)
+    || (row.payloadHash && row.payloadHash !== snapshot.payloadHash)
+  ) {
     throw new Error('canonical_snapshot_hash_mismatch');
   }
   // Never run a historical snapshot through the current canonicalizer or
   // derivation code: its pinned labels, virtuals and readiness are immutable.
-  const snapshot = raw as CanonicalRecordVersionSnapshot;
   return {
     versionNumber: row.versionNumber,
     createdAt: row.createdAt.toISOString(),
     snapshot,
   };
+}
+
+/**
+ * Pins one immutable version for the current canonical snapshot. Replaying
+ * the same complete request returns the existing version; metadata mutations
+ * that occurred after the last pin create exactly one newer version.
+ */
+export async function ensureCanonicalRecordVersion(input: {
+  executor: InstallHubExecutor;
+  tree: CanonicalInstallationTree;
+  userId: string;
+}): Promise<number> {
+  const currentVersion = input.tree.installation.recordVersionNumber;
+  if (!Number.isSafeInteger(currentVersion) || currentVersion < 0) {
+    throw new Error('canonical_record_version_invalid');
+  }
+  if (currentVersion > 0) {
+    const pinned = await loadCanonicalRecordVersion({
+      installationId: input.tree.installation.id,
+      versionNumber: currentVersion,
+      executor: input.executor,
+    });
+    if (!pinned) throw new Error('canonical_snapshot_missing');
+    const currentSnapshot = await makeCanonicalSnapshot({
+      tree: input.tree,
+      executor: input.executor,
+    });
+    if (
+      canonicalSnapshotContentHash(currentSnapshot)
+      === canonicalSnapshotContentHash(pinned.snapshot)
+    ) {
+      return currentVersion;
+    }
+  }
+
+  const nextVersion = currentVersion + 1;
+  input.tree.installation.recordVersionNumber = nextVersion;
+  await input.executor.update(ihInstallations).set({ recordVersionNumber: nextVersion })
+    .where(eq(ihInstallations.id, input.tree.installation.id));
+  await insertCanonicalRecordVersion({
+    executor: input.executor,
+    tree: input.tree,
+    versionNumber: nextVersion,
+    userId: input.userId,
+  });
+  return nextVersion;
 }

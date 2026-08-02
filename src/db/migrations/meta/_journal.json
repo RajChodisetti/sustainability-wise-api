@@ -127,6 +127,20 @@
       "when": 1785640000000,
       "tag": "0017_installhub_child_ownership_fence",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1785667612488,
+      "tag": "0018_installhub_upload_confirmation_revision",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1785668262036,
+      "tag": "0019_installhub_upload_base_revision",
+      "breakpoints": true
     }
   ]
 }

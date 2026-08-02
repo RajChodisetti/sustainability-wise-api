@@ -238,6 +238,12 @@ export const config = {
     'INSTALLHUB_CANONICAL_V2_ENABLED',
     !isProduction,
   ),
+  // Production starts in the additive compatibility window so the API can be
+  // deployed before the minimum iOS version is enforced. QA/test are strict.
+  installhubUploadRevisionCasRequired: optionalBool(
+    'INSTALLHUB_UPLOAD_REVISION_CAS_REQUIRED',
+    !isProduction,
+  ),
   rateLimit: {
     max: optionalInt('RATE_LIMIT_MAX', 300),
     timeWindowMs: optionalInt('RATE_LIMIT_WINDOW_MS', 60_000),

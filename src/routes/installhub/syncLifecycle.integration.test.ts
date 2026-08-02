@@ -159,6 +159,7 @@ test('purge serializes ahead of v1/v2 sync and every upload lifecycle stage', {
       payload: {
         checksum: createHash('sha256').update(createBody).digest('hex'),
         installationId: createInstallation.id,
+        baseTreeRevision: 1,
         entityType: 'installation',
         entityId: createInstallation.id,
         fieldName: 'photos[0]',

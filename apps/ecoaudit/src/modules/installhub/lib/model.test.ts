@@ -3,6 +3,8 @@ import test from 'node:test';
 import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
 import {
   applyDraftFormSnapshot,
+  canonicalSiteCode,
+  canonicalSiteCodeForWrite,
   createAmendment,
   createBoard,
   createFormSubmission,
@@ -20,6 +22,35 @@ const user: InstallHubUser = {
   fullName: 'Installer One',
   role: 'admin',
 };
+
+test('site-code rule matches the canonical eight-initial cross-client fixtures', () => {
+  assert.deepEqual([
+    canonicalSiteCode('Warehouse'),
+    canonicalSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf'),
+    canonicalSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel'),
+    canonicalSiteCode('Alpha Bravo Charlie Delta Echo Foxtrot Golf Hotel India'),
+  ], ['W', 'ABCDEFG', 'ABCDEFGH', 'ABCDEFGH']);
+  assert.equal(canonicalSiteCode('Warehouse', 'syd-wh1'), 'SYD-WH1');
+  for (const invalid of ['BAD SITE', 'BAD!', '-BAD', 'BAD-', 'BAD--SITE', 'ABCDEFGHIJKLMNOPQ']) {
+    assert.throws(() => canonicalSiteCode('Warehouse', invalid), /Site code must be/);
+  }
+});
+
+test('site-code editing preserves only the unchanged authoritative historical value', () => {
+  const historical = ' Legacy Site Code / 2024 ';
+  assert.equal(
+    canonicalSiteCodeForWrite('Warehouse', historical, historical),
+    historical,
+  );
+  assert.equal(
+    canonicalSiteCodeForWrite('Warehouse', 'syd-wh1', historical),
+    'SYD-WH1',
+  );
+  assert.throws(
+    () => canonicalSiteCodeForWrite('Warehouse', 'Different Legacy Code', historical),
+    /Site code must be/,
+  );
+});
 
 function fixtureTree() {
   return createInstallationTree(
