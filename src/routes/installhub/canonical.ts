@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
 export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.1';
-export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.1';
+export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-01';
 export const DISPLAY_CODE_RULE_VERSION = 1;
 export const VIRTUAL_METER_FORMULA_VERSION = 1;
@@ -46,6 +46,7 @@ export type ReadinessIssueCode =
   | 'METER_CAPABILITY_REQUIRED'
   | 'METER_BOARD_MISMATCH'
   | 'CHANNEL_NOT_FOUND'
+  | 'CHANNEL_UNASSIGNED'
   | 'CHANNEL_DUPLICATE_ASSIGNMENT'
   | 'CHANNEL_PURPOSE_CONFLICT'
   | 'PHASE_GROUP_INVALID'
@@ -1114,7 +1115,17 @@ function graphIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
   const issues: ReadinessIssue[] = [];
   const boardById = new Map(tree.electricalAssets.map((board) => [board.id, board]));
   const supplyIds = new Set(tree.gridSupplies.map((supply) => supply.id));
-  const candidates = tree.electricalAssets.map((board) => board.id).sort();
+  const sourceCandidateIds = (entity: CanonicalBoard | CanonicalSiteAsset): string[] => {
+    const boardIds = tree.electricalAssets
+      .filter((candidate) => {
+        if (!boardById.has(entity.id)) return true;
+        if (candidate.id === entity.id) return false;
+        return !isBoardOnUpstreamPath(entity.id, candidate.electricalSource, boardById);
+      })
+      .map((board) => board.id);
+    const gridIds = tree.gridSupplies.map((supply) => supply.id).sort();
+    return [...gridIds, ...boardIds.sort()].slice(0, READINESS_CANDIDATE_LIMIT);
+  };
   if (tree.gridSupplies.length === 0 || tree.gridSupplies.filter((supply) => supply.isDefault).length !== 1) {
     issues.push({
       code: 'GRID_SUPPLY_INVALID',
@@ -1135,7 +1146,7 @@ function graphIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         entityId: entity.id,
         field: 'electricalSource',
         message: 'Electrical supply must be reconciled before completion.',
-        candidateIds: boundedCandidateIds(candidates.filter((id) => id !== entity.id)),
+        candidateIds: sourceCandidateIds(entity),
       });
     } else if (entity.electricalSource.kind === 'GRID' && !supplyIds.has(entity.electricalSource.gridSupplyId)) {
       issues.push({
@@ -1145,6 +1156,7 @@ function graphIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         entityId: entity.id,
         field: 'electricalSource.gridSupplyId',
         message: 'Grid supply does not exist in this installation.',
+        candidateIds: tree.gridSupplies.map((supply) => supply.id).sort().slice(0, READINESS_CANDIDATE_LIMIT),
       });
     } else if (entity.electricalSource.kind === 'BOARD' && !boardById.has(entity.electricalSource.boardId)) {
       issues.push({
@@ -1154,6 +1166,7 @@ function graphIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         entityId: entity.id,
         field: 'electricalSource.boardId',
         message: 'Source board does not exist in this installation.',
+        candidateIds: sourceCandidateIds(entity),
       });
     }
   }
@@ -1445,16 +1458,20 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
       });
     }
     if (assignmentPurposes.has('MAIN_SUPPLY')) {
-      if (assignment.target.kind !== 'BOARD' && assignment.target.kind !== 'GRID_BOUNDARY') {
+      if (
+        assignment.target.kind !== 'BOARD'
+        && assignment.target.kind !== 'GRID_BOUNDARY'
+        && assignment.target.kind !== 'TBC'
+      ) {
         issues.push({
           code: 'CHANNEL_PURPOSE_CONFLICT',
           severity: 'ERROR',
           entityType: 'measurement_assignment',
           entityId: assignment.id,
           field: 'target',
-          message: 'MAIN_SUPPLY channels must target a board or Grid boundary.',
+          message: 'MAIN_SUPPLY channels must target their installed board, a Grid boundary, or explicit TBC.',
         });
-      } else if (assignment.status === 'CONFIRMED') {
+      } else if (assignment.target.kind !== 'TBC' && assignment.status === 'CONFIRMED') {
         const boundaryId = assignment.target.kind === 'BOARD'
           ? assignment.target.boardId
           : assignment.target.gridSupplyId;
@@ -1489,17 +1506,43 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
       assignmentsByAsset.set(assignment.target.siteAssetId, existing);
     } else if (meter && assignment.target.kind === 'BOARD') {
       const target = boardById.get(assignment.target.boardId);
-      if (target && meter.installedOnBoardId !== target.id
-        && !isBoardOnUpstreamPath(meter.installedOnBoardId, target.electricalSource, boardById)) {
+      const mainSupplyTargetsAnotherBoard = assignmentPurposes.has('MAIN_SUPPLY')
+        && meter.installedOnBoardId !== assignment.target.boardId;
+      const subCircuitTargetsInstalledBoard = assignmentPurposes.has('SUB_CIRCUIT')
+        && meter.installedOnBoardId === assignment.target.boardId;
+      if (mainSupplyTargetsAnotherBoard || subCircuitTargetsInstalledBoard || (
+        target
+        && meter.installedOnBoardId !== target.id
+        && !isBoardOnUpstreamPath(meter.installedOnBoardId, target.electricalSource, boardById)
+      )) {
         issues.push({
           code: 'METER_BOARD_MISMATCH',
           severity: 'ERROR',
           entityType: 'measurement_assignment',
           entityId: assignment.id,
           field: 'meterId',
-          message: 'Meter installation board must lie on the measured board electrical path.',
+          message: mainSupplyTargetsAnotherBoard
+            ? 'MAIN_SUPPLY channels targeting a board must measure the board where the meter is installed.'
+            : subCircuitTargetsInstalledBoard
+              ? 'SUB_CIRCUIT channels must target a downstream board or site asset.'
+            : 'Meter installation board must lie on the measured board electrical path.',
         });
       }
+    }
+  }
+
+  for (const meter of tree.meterDevices) {
+    for (const channel of meter.channels) {
+      if (channel.purpose === 'SPARE' || assignedChannel.has(channel.id)) continue;
+      issues.push({
+        code: 'CHANNEL_UNASSIGNED',
+        severity: 'ERROR',
+        entityType: 'channel',
+        entityId: channel.id,
+        field: 'measurementAssignments',
+        message: 'Every non-spare meter channel must belong to exactly one measurement assignment.',
+        candidateIds: [meter.id],
+      });
     }
   }
 

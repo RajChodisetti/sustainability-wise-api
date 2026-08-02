@@ -185,7 +185,7 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
             </div>
             <div>
               <FieldLabel>Site timezone *</FieldLabel>
-              <Input value={form.timezone} required placeholder="e.g. Australia/Sydney" onChange={(event) => updateForm({ timezone: event.target.value })} />
+              <Input id="installation-timezone" value={form.timezone} required placeholder="e.g. Australia/Sydney" onChange={(event) => updateForm({ timezone: event.target.value })} />
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">

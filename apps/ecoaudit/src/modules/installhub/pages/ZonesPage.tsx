@@ -14,7 +14,32 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createZone, nowIso, removeZone } from '@/modules/installhub/lib/model';
+import { zoneElectricalSummary } from '@/modules/installhub/lib/electricalPresentation';
+import { siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
 import { useToast } from '@/contexts/ToastContext';
+
+const ZONE_RECORD_PAGE_SIZE = 50;
+
+function zonePageItems<T>(items: T[], page: number): T[] {
+  return items.slice(page * ZONE_RECORD_PAGE_SIZE, (page + 1) * ZONE_RECORD_PAGE_SIZE);
+}
+
+function ZoneListPager({ page, total, onPage }: { page: number; total: number; onPage: (page: number) => void }) {
+  if (total <= ZONE_RECORD_PAGE_SIZE) return null;
+  const lastPage = Math.max(0, Math.ceil(total / ZONE_RECORD_PAGE_SIZE) - 1);
+  const safePage = Math.min(page, lastPage);
+  return (
+    <nav className="mt-3 flex flex-wrap items-center justify-between gap-2" aria-label="Zone record pages">
+      <p className="text-xs font-semibold text-[var(--text-sub)]">
+        {safePage * ZONE_RECORD_PAGE_SIZE + 1}–{Math.min((safePage + 1) * ZONE_RECORD_PAGE_SIZE, total)} of {total}
+      </p>
+      <div className="flex gap-2">
+        <Button variant="secondary" disabled={safePage === 0} onClick={() => onPage(safePage - 1)}>Previous</Button>
+        <Button variant="secondary" disabled={safePage >= lastPage} onClick={() => onPage(safePage + 1)}>Next</Button>
+      </div>
+    </nav>
+  );
+}
 
 export function InstallHubZonesPage() {
   const { installationId } = useParams<{ installationId: string }>();
@@ -43,6 +68,7 @@ export function InstallHubZonesPage() {
           {tree.zones.map((zone) => {
             const boards = tree.electricalAssets.filter((item) => item.zoneId === zone.id);
             const assets = tree.siteAssets.filter((item) => item.zoneId === zone.id);
+            const electricalSummary = zoneElectricalSummary(tree, zone.id);
             return (
               <Link key={zone.id} href={`/installhub/installations/${installationId}/zones/${zone.id}`} className="block">
                 <Card className="interactive-card h-full">
@@ -57,6 +83,12 @@ export function InstallHubZonesPage() {
                     <span>{boards.length} switchboards</span>
                     <span>{assets.length} site assets</span>
                     <span>{zone.photos.length} photos</span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2" aria-label={`${zone.zoneName} electrical status`}>
+                    <span className="rounded-full bg-[var(--green-soft)] px-2.5 py-1 text-xs font-bold text-[var(--green)]">{electricalSummary.metered} Metered</span>
+                    <span className="rounded-full bg-[var(--surface2)] px-2.5 py-1 text-xs font-bold text-[var(--text-sub)]">{electricalSummary.unmetered} Unmetered</span>
+                    <span className="rounded-full bg-[var(--amber-soft)] px-2.5 py-1 text-xs font-bold text-[var(--text)]">{electricalSummary.tbc} TBC</span>
+                    <span className="rounded-full bg-[var(--red-soft)] px-2.5 py-1 text-xs font-bold text-[var(--red)]">{electricalSummary.unresolved} unresolved</span>
                   </div>
                 </Card>
               </Link>
@@ -153,6 +185,10 @@ export function InstallHubZoneDetailPage() {
   const router = useRouter();
   const toast = useToast();
   const [uploading, setUploading] = useState(false);
+  const [boardSearch, setBoardSearch] = useState('');
+  const [assetSearch, setAssetSearch] = useState('');
+  const [boardPage, setBoardPage] = useState(0);
+  const [assetPage, setAssetPage] = useState(0);
 
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -161,6 +197,15 @@ export function InstallHubZoneDetailPage() {
   if (!tree || !zone) return <ErrorBanner message="Zone not found." />;
   const boards = tree.electricalAssets.filter((item) => item.zoneId === zoneId);
   const assets = tree.siteAssets.filter((item) => item.zoneId === zoneId);
+  const normalizedBoardSearch = boardSearch.trim().toLocaleLowerCase('en-AU');
+  const normalizedAssetSearch = assetSearch.trim().toLocaleLowerCase('en-AU');
+  const filteredBoards = [...boards]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .filter((board) => !normalizedBoardSearch || `${board.displayCode} ${board.assetName} ${board.assetType}`.toLocaleLowerCase('en-AU').includes(normalizedBoardSearch));
+  const filteredAssets = [...assets]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .filter((asset) => !normalizedAssetSearch || `${asset.displayCode || ''} ${asset.assetName} ${asset.assetType}`.toLocaleLowerCase('en-AU').includes(normalizedAssetSearch));
+  const electricalSummary = zoneElectricalSummary(tree, zoneId);
   const currentZone = zone;
 
   async function upload(files: File[]) {
@@ -240,6 +285,10 @@ export function InstallHubZoneDetailPage() {
           { label: 'Switchboards', value: boards.length },
           { label: 'Site assets', value: assets.length },
           { label: 'Zone photos', value: zone.photos.length },
+          { label: 'Metered assets', value: electricalSummary.metered },
+          { label: 'Unmetered assets', value: electricalSummary.unmetered },
+          { label: 'Metering TBC', value: electricalSummary.tbc },
+          { label: 'Unresolved relationships', value: electricalSummary.unresolved },
         ]} />
       </Card>
 
@@ -252,9 +301,11 @@ export function InstallHubZoneDetailPage() {
             </div>
             <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/new`}><Icon name="plus" size={16} />Add</LinkButton>
           </div>
-          {boards.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No switchboards in this zone.</p> : (
+          {boards.length ? <Input type="search" value={boardSearch} placeholder="Search switchboard code, name, or type" aria-label="Search switchboards in this zone" onChange={(event) => { setBoardSearch(event.target.value); setBoardPage(0); }} /> : null}
+          {boards.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No switchboards in this zone.</p> : filteredBoards.length ? (
+            <>
             <div className="space-y-2">
-              {boards.map((board) => (
+              {zonePageItems(filteredBoards, boardPage).map((board) => (
                 <Link key={board.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/${board.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                   <span>
                     <span className="block text-sm font-bold text-[var(--text)]">{board.assetName}</span>
@@ -264,6 +315,10 @@ export function InstallHubZoneDetailPage() {
                 </Link>
               ))}
             </div>
+            <ZoneListPager page={boardPage} total={filteredBoards.length} onPage={setBoardPage} />
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-[var(--text-sub)]">No switchboards match this search.</p>
           )}
         </Card>
 
@@ -275,23 +330,29 @@ export function InstallHubZoneDetailPage() {
             </div>
             <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/assets/new`}><Icon name="plus" size={16} />Add</LinkButton>
           </div>
-          {assets.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No site assets in this zone.</p> : (
+          {assets.length ? <Input type="search" value={assetSearch} placeholder="Search site-asset name or type" aria-label="Search site assets in this zone" onChange={(event) => { setAssetSearch(event.target.value); setAssetPage(0); }} /> : null}
+          {assets.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No site assets in this zone.</p> : filteredAssets.length ? (
+            <>
             <div className="space-y-2">
-              {assets.map((asset) => (
+              {zonePageItems(filteredAssets, assetPage).map((asset) => (
                 <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                   <span>
                     <span className="block text-sm font-bold text-[var(--text)]">{asset.assetName}</span>
-                    <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {asset.meterChannels.length} channels</span>
+                    <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {siteAssetMeteringState(asset).kind.replaceAll('_', ' ')} · {asset.meterChannels.length} channels</span>
                   </span>
                   <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
                 </Link>
               ))}
             </div>
+            <ZoneListPager page={assetPage} total={filteredAssets.length} onPage={setAssetPage} />
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-[var(--text-sub)]">No site assets match this search.</p>
           )}
         </Card>
       </div>
 
-      <Card>
+      <Card id="zone-evidence">
         <h2 className="font-extrabold text-[var(--text)]">Zone evidence</h2>
         <EvidenceField
           label="Zone photos"

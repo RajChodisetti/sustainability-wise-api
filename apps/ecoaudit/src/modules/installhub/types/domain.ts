@@ -89,6 +89,7 @@ export type ReadinessIssue = {
   entityType:
     | 'installation'
     | 'grid_supply'
+    | 'zone'
     | 'board'
     | 'site_asset'
     | 'meter'
@@ -524,6 +525,8 @@ export type ElectricalTreeReadModel = {
     typeLabel?: string;
     physicalLocationId?: string;
     coverageState?: string;
+    parentNodeId?: string;
+    formulaVersion?: number;
   }>;
   edges: Array<{
     id: string;

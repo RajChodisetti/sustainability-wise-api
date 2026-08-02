@@ -2,7 +2,7 @@
 /* eslint-disable react-hooks/set-state-in-effect -- initializes the keyed asset editor from its server query record */
 
 import Link from 'next/link';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
@@ -22,6 +22,14 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
+import {
+  assetMeterDraftKey,
+  parseAssetMeterDraftSnapshot,
+  pinSelectedResult,
+  shouldClearAssetMeterDraft,
+  ASSET_METER_DRAFT_KEY_PREFIX,
+  type AssetMeterDraftSnapshot,
+} from '@/modules/installhub/lib/electricalPresentation';
 import type {
   ElectricalSourceKind,
   MeasurementDirection,
@@ -63,18 +71,58 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const [uploading, setUploading] = useState(false);
   const [boardSearch, setBoardSearch] = useState('');
   const [meterBoardSearch, setMeterBoardSearch] = useState('');
+  const [meterSearch, setMeterSearch] = useState('');
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingMeteringKind, setPendingMeteringKind] = useState<MeteringStateKind | null>(null);
+  const [detourHref, setDetourHref] = useState<string | null>(null);
+  const [resumeMessage, setResumeMessage] = useState<string | null>(null);
+  const [activeResumeDraftKey, setActiveResumeDraftKey] = useState<string | null>(null);
+  const initializedEditorRef = useRef<string | null>(null);
 
   const source = query.data?.siteAssets.find((item) => item.id === assetId);
   useEffect(() => {
-    if (mode === 'new') {
-      setDraft((current) => current ?? createSiteAsset(installationId, zoneId));
-    } else if (source) {
-      setDraft(structuredClone(source));
+    const editorKey = `${installationId}:${zoneId}:${mode}:${assetId || 'new'}`;
+    if (initializedEditorRef.current === editorKey) return;
+    if (mode === 'edit' && !source) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const resumeDraftKey = params.get('resumeDraftKey');
+    const createdMeterId = params.get('createdMeterId');
+    const stored = resumeDraftKey?.startsWith(ASSET_METER_DRAFT_KEY_PREFIX)
+      ? window.sessionStorage.getItem(resumeDraftKey)
+      : null;
+    const snapshot = parseAssetMeterDraftSnapshot(stored, {
+      installationId,
+      zoneId,
+      mode,
+      ...(mode === 'edit' && assetId ? { assetId } : {}),
+    });
+    if (snapshot) {
+      const restored = structuredClone(snapshot.draft);
+      restored.meterSwitchboardId = snapshot.meterBoardId;
+      if (createdMeterId) {
+        restored.meterId = createdMeterId;
+        restored.meterChannelIds = [];
+        restored.meterChannels = [];
+      }
+      setDraft(restored);
+      setResumeMessage(createdMeterId
+        ? 'Device added. Your site asset draft was restored; choose the exact channels to finish the mapping.'
+        : 'Your site asset draft was restored.');
+      setActiveResumeDraftKey(resumeDraftKey!);
+      window.setTimeout(() => document.getElementById('asset-meter')?.focus(), 0);
+    } else if (mode === 'new') {
+      setDraft(createSiteAsset(installationId, zoneId));
+    } else {
+      setDraft(structuredClone(source!));
     }
+    initializedEditorRef.current = editorKey;
   }, [assetId, installationId, mode, source, zoneId]);
+
+  useEffect(() => {
+    if (detourHref) router.push(detourHref);
+  }, [detourHref, router]);
 
   if (query.isLoading || !draft) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -95,19 +143,35 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     draft.id,
   );
   const normalizedBoardSearch = boardSearch.trim().toLowerCase();
-  const sourceBoards = tree.electricalAssets.filter((board) => {
+  const allSourceBoards = [...tree.electricalAssets].sort((left, right) => left.id.localeCompare(right.id));
+  const matchingSourceBoards = allSourceBoards.filter((board) => {
     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
     return !normalizedBoardSearch || `${displayCodeValue(board)} ${board.assetName} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedBoardSearch);
-  }).sort((left, right) => left.id.localeCompare(right.id)).slice(0, 100);
+  });
+  const sourceBoards = pinSelectedResult(
+    matchingSourceBoards,
+    allSourceBoards,
+    draftSource.kind === 'BOARD' ? draftSource.boardId : null,
+    (item) => item.id,
+  );
   const eligibleMeterBoards = meterBoardsForAsset(tree, draft);
   const normalizedMeterBoardSearch = meterBoardSearch.trim().toLowerCase();
-  const filteredMeterBoards = eligibleMeterBoards.filter((board) => {
+  const matchingMeterBoards = eligibleMeterBoards.filter((board) => {
     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
     return !normalizedMeterBoardSearch || `${displayCodeValue(board)} ${board.assetName} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedMeterBoardSearch);
-  }).sort((left, right) => left.id.localeCompare(right.id)).slice(0, 100);
-  const availableMeters = meterDevices(tree).filter(
+  }).sort((left, right) => left.id.localeCompare(right.id));
+  const filteredMeterBoards = pinSelectedResult(matchingMeterBoards, eligibleMeterBoards, draft.meterSwitchboardId, (item) => item.id);
+  const eligibleMeters = meterDevices(tree).filter(
     (meter) => meter.lifecycleState !== 'INACTIVE' && (!draft.meterSwitchboardId || meter.installedOnBoardId === draft.meterSwitchboardId),
-  ).sort((left, right) => left.id.localeCompare(right.id)).slice(0, 100);
+  ).sort((left, right) => left.id.localeCompare(right.id));
+  const normalizedMeterSearch = meterSearch.trim().toLocaleLowerCase('en-AU');
+  const matchingMeters = eligibleMeters.filter((meter) => (
+    !normalizedMeterSearch
+    || `${meterDeviceName(meter)} ${meter.deviceModel} ${meter.serialNumber} ${meter.id}`
+      .toLocaleLowerCase('en-AU')
+      .includes(normalizedMeterSearch)
+  ));
+  const availableMeters = pinSelectedResult(matchingMeters, eligibleMeters, draft.meterId, (item) => item.id);
   const selectedMeter = meterDevices(tree).find((meter) => meter.id === draft.meterId);
   const existingAssignment = measurementAssignments(tree).find(
     (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === draft.id,
@@ -123,6 +187,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       usedChannelOwners.set(channelId, owner);
     }
   }
+  const selectedChannelCount = draft.meterChannelIds?.length || 0;
+  const selectedPhaseMode = draft.phaseMode || 'SINGLE_PHASE';
+  const requiredChannelCount = selectedPhaseMode === 'SINGLE_PHASE'
+    ? 1
+    : selectedPhaseMode === 'THREE_PHASE'
+      ? 3
+      : null;
+  const channelGroupComplete = requiredChannelCount === null
+    ? selectedChannelCount > 0
+    : selectedChannelCount === requiredChannelCount;
+  const channelGroupAnnouncement = `${selectedPhaseMode.replaceAll('_', ' ').toLowerCase()} requires ${requiredChannelCount ?? 'one or more'} channel${requiredChannelCount === 1 ? '' : 's'}. ${selectedChannelCount} selected. ${channelGroupComplete ? 'Channel group complete.' : 'Channel group incomplete.'}`;
   const hasLocalChanges = mode === 'new'
     || Boolean(source && JSON.stringify(draft) !== JSON.stringify(source));
 
@@ -206,6 +281,16 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         if (index >= 0) next.siteAssets[index] = value;
         else next.siteAssets.push(value);
       });
+      if (activeResumeDraftKey && shouldClearAssetMeterDraft('ASSET_SAVE_CONFIRMED')) {
+        clearActiveResumeDraft();
+        if (saved) {
+          try {
+            window.history.replaceState(window.history.state, '', window.location.pathname);
+          } catch {
+            // The saved asset is authoritative even if URL cleanup is blocked.
+          }
+        }
+      }
       setErrors([]);
       toast.success(saved ? 'Site asset saved.' : 'Site asset created.');
       if (!saved) {
@@ -424,6 +509,50 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     } : current);
   }
 
+  function addDeviceToMeterBoard() {
+    const meterBoardId = currentDraft.meterSwitchboardId;
+    const meterBoard = tree.electricalAssets.find((item) => item.id === meterBoardId);
+    if (!meterBoardId || !meterBoard) {
+      toast.error('Choose the switchboard where the device will be installed first.');
+      return;
+    }
+    const resumeDraftKey = activeResumeDraftKey || assetMeterDraftKey(installationId, currentDraft.id);
+    const snapshot: AssetMeterDraftSnapshot = {
+      version: 1,
+      installationId,
+      zoneId,
+      mode,
+      assetId: currentDraft.id,
+      meterBoardId,
+      capturedAt: new Date().toISOString(),
+      draft: structuredClone(currentDraft),
+    };
+    try {
+      window.sessionStorage.setItem(resumeDraftKey, JSON.stringify(snapshot));
+    } catch {
+      toast.error('The site asset draft could not be held for the device detour. Save the asset and try again.');
+      return;
+    }
+    const params = new URLSearchParams({
+      returnAssetMode: mode,
+      returnAssetZoneId: zoneId,
+      returnAssetId: currentDraft.id,
+      resumeDraftKey,
+    });
+    setDetourHref(`/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(meterBoard.zoneId)}/boards/${encodeURIComponent(meterBoard.id)}/meters/new?${params.toString()}`);
+  }
+
+  function clearActiveResumeDraft() {
+    if (!activeResumeDraftKey) return;
+    try {
+      window.sessionStorage.removeItem(activeResumeDraftKey);
+    } catch {
+      // A confirmed write/discard must not be reported as failed because the
+      // browser refused best-effort cleanup of recovery-only storage.
+    }
+    setActiveResumeDraftKey(null);
+  }
+
   function toggleChannel(channelId: string, checked: boolean) {
     setDraft((current) => {
       if (!current) return current;
@@ -468,7 +597,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         />
       </div>
 
-      <TreeDraftNavigationGuard active={!busy && !uploading && (hasLocalChanges || writer.hasPendingTree)} onDiscard={writer.discard} />
+      {resumeMessage ? <div className="mb-5"><InlineNotice tone="success">{resumeMessage}</InlineNotice></div> : null}
+
+      <TreeDraftNavigationGuard
+        active={!detourHref && !busy && !uploading && (hasLocalChanges || writer.hasPendingTree || Boolean(activeResumeDraftKey))}
+        onDiscard={async () => {
+          if (activeResumeDraftKey && shouldClearAssetMeterDraft('EXPLICIT_DISCARD')) {
+            clearActiveResumeDraft();
+          }
+          await writer.discard();
+        }}
+      />
       <ErrorSummary errors={errors} />
 
       <form onSubmit={(event) => void save(event)}>
@@ -530,7 +669,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             </div>
           </div>
 
-          <div className="mt-6 border-t border-[var(--border)] pt-2">
+          <div id="asset-supply" tabIndex={-1} className="mt-6 border-t border-[var(--border)] pt-2">
             <ChoiceGroup<ElectricalSourceKind>
               label="What supplies this asset?"
               hint="This electrical relationship may cross physical zones."
@@ -594,7 +733,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             {draftSource.kind === 'TBC' ? <InlineNotice>Unresolved supply will appear in reconciliation and block completion.</InlineNotice> : null}
           </div>
 
-          <div className="mt-6 border-t border-[var(--border)] pt-2">
+          <div id="asset-metering" tabIndex={-1} className="mt-6 border-t border-[var(--border)] pt-2">
             <ChoiceGroup<MeteringStateKind>
               label="How is this asset measured?"
               hint="Do not infer metering from missing fields; record the observed state explicitly."
@@ -626,6 +765,15 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                 </Select>
                 <FieldError message={errors.find((item) => item.id === 'asset-meter-board')?.message} />
 
+                <FieldLabel htmlFor="asset-meter-search">Find an exact metering device</FieldLabel>
+                <Input
+                  id="asset-meter-search"
+                  type="search"
+                  value={meterSearch}
+                  disabled={!draft.meterSwitchboardId}
+                  placeholder="Search name, model, serial, or stable ID"
+                  onChange={(event) => setMeterSearch(event.target.value)}
+                />
                 <FieldLabel htmlFor="asset-meter">Exact metering device *</FieldLabel>
                 <Select
                   id="asset-meter"
@@ -638,8 +786,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   {availableMeters.map((meter) => <option key={meter.id} value={meter.id}>{meterDeviceName(meter)} · {meter.deviceModel} · {meter.serialNumber || 'No serial'}</option>)}
                 </Select>
                 <FieldError message={errors.find((item) => item.id === 'asset-meter')?.message} />
+                <FieldHint>Showing {availableMeters.length} of {eligibleMeters.length} eligible devices. Refine the search to reach any device; the current selection remains visible.</FieldHint>
                 {draft.meterSwitchboardId && availableMeters.length === 0 ? (
                   <FieldHint>No active metering devices are installed on this switchboard.</FieldHint>
+                ) : null}
+                {draft.meterSwitchboardId ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Button variant="secondary" disabled={Boolean(detourHref) || busy} onClick={addDeviceToMeterBoard}>
+                      <Icon name="plus" size={16} />{detourHref ? 'Opening device editor…' : 'Add device to this board'}
+                    </Button>
+                    <p className="text-xs leading-5 text-[var(--text-sub)]">Your current asset draft will be restored here after the device is saved.</p>
+                  </div>
                 ) : null}
 
                 <ChoiceGroup<PhaseMode>
@@ -667,24 +824,26 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   onChange={(value) => set('measurementDirection', value)}
                 />
 
-                <fieldset id="asset-channels" className="mt-5" tabIndex={-1}>
+                <fieldset id="asset-channels" className="mt-5" tabIndex={-1} aria-describedby="asset-channel-group-status">
                   <legend className="text-sm font-bold text-[var(--text)]">Measured channels *</legend>
                   <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Only non-spare channels on the selected device can be assigned.</p>
+                  <p id="asset-channel-group-status" className="mt-1 text-xs font-semibold text-[var(--text-sub)]" role="status" aria-live="polite" aria-atomic="true">{channelGroupAnnouncement}</p>
                   {!selectedMeter ? <p className="mt-3 text-sm text-[var(--text-sub)]">Choose a device to see its channels.</p> : (
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       {selectedMeter.channels.map((channel) => {
                         const owner = usedChannelOwners.get(channel.id);
                         const unavailable = channel.purpose === 'SPARE' || Boolean(owner);
+                        const unavailableReasonId = unavailable ? `asset-channel-${channel.id.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}-reason` : undefined;
                         return (
                           <div key={channel.id} className={`rounded-xl border px-3 py-2 ${unavailable ? 'border-[var(--border)] bg-[var(--surface)] opacity-65' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>
                             <Checkbox
                               label={`Channel ${channel.ordinal} — ${channel.description || channel.loadTypeCode || channel.purpose.replaceAll('_', ' ').toLowerCase()}`}
                               checked={(draft.meterChannelIds || []).includes(channel.id)}
                               disabled={unavailable}
+                              ariaDescribedBy={unavailableReasonId}
                               onChange={(checked) => toggleChannel(channel.id, checked)}
                             />
-                            {channel.purpose === 'SPARE' ? <p className="pl-8 text-xs text-[var(--text-sub)]">Marked spare on the device.</p> : null}
-                            {owner ? <p className="pl-8 text-xs font-semibold text-[var(--amber)]">Already assigned to {owner}.</p> : null}
+                            {unavailable ? <p id={unavailableReasonId} className="pl-8 text-xs font-semibold text-[var(--amber)]">Unavailable: {channel.purpose === 'SPARE' ? 'marked spare on the device' : `already assigned to ${owner}`}.</p> : null}
                           </div>
                         );
                       })}
@@ -765,7 +924,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               </div>
             )}
           </Card>
-          <Card>
+          <Card id="asset-evidence">
             <h2 className="font-extrabold text-[var(--text)]">Site asset evidence</h2>
             <EvidenceField
               label="Location photo"

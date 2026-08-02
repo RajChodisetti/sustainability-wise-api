@@ -23,6 +23,7 @@ import {
 } from './canonicalViews.js';
 import {
   paginateReadiness,
+  readinessEntityIdsForZone,
   searchCanonicalCandidates,
 } from './canonicalPagination.js';
 import {
@@ -993,6 +994,84 @@ test('standard A3RM spare channels use model-defined capabilities', () => {
   )), false);
 });
 
+test('main-supply assignments allow explicit TBC but cannot target a downstream board', () => {
+  const draft = baseTree();
+  const draftMeter = a3Meter();
+  draftMeter.channels = [
+    { ...channel(1, 'MAIN_SUPPLY'), sensorRating: '3000A - 9cm' },
+    channel(2, 'SPARE'),
+    channel(3, 'SPARE'),
+  ];
+  draft.electricalAssets[0].meterPresent = true;
+  draft.meterDevices = [draftMeter];
+  draft.measurementAssignments = [{
+    id: 'assignment-main-tbc',
+    installationId: draft.installation.id,
+    meterId: draftMeter.id,
+    channelIds: [draftMeter.channels[0].id],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+  draft.formSubmissions = [completedWwForm('form-1', draftMeter)];
+  const draftIssues = installationReadiness(draft).issues.filter(
+    (issue) => issue.entityId === 'assignment-main-tbc',
+  );
+  assert.ok(draftIssues.some((issue) => issue.code === 'MEASUREMENT_TARGET_TBC'));
+  assert.equal(
+    draftIssues.some((issue) => issue.code === 'CHANNEL_PURPOSE_CONFLICT'),
+    false,
+  );
+
+  const wrongBoard = structuredClone(draft);
+  wrongBoard.electricalAssets.push({
+    ...wrongBoard.electricalAssets[0],
+    id: 'board-2',
+    assetName: 'Child board',
+    displayCode: display('ACME-DB-001'),
+    typeCode: 'DB',
+    electricalSource: { kind: 'BOARD', boardId: 'board-1' },
+    meterPresent: false,
+  });
+  wrongBoard.measurementAssignments[0] = {
+    ...wrongBoard.measurementAssignments[0],
+    id: 'assignment-main-child-board',
+    target: { kind: 'BOARD', boardId: 'board-2' },
+    status: 'CONFIRMED',
+  };
+  assert.ok(installationReadiness(wrongBoard).issues.some((issue) => (
+    issue.code === 'METER_BOARD_MISMATCH'
+    && issue.entityId === 'assignment-main-child-board'
+  )));
+
+  const subCircuitAtInstalledBoard = structuredClone(draft);
+  subCircuitAtInstalledBoard.meterDevices[0].channels[0] = {
+    ...channel(1, 'SUB_CIRCUIT'),
+    sensorRating: '3000A - 9cm',
+  };
+  subCircuitAtInstalledBoard.measurementAssignments[0] = {
+    ...subCircuitAtInstalledBoard.measurementAssignments[0],
+    id: 'assignment-subcircuit-installed-board',
+    target: { kind: 'BOARD', boardId: 'board-1' },
+    status: 'CONFIRMED',
+  };
+  assert.ok(installationReadiness(subCircuitAtInstalledBoard).issues.some((issue) => (
+    issue.code === 'METER_BOARD_MISMATCH'
+    && issue.entityId === 'assignment-subcircuit-installed-board'
+  )));
+
+  const unassignedActiveChannel = structuredClone(draft);
+  unassignedActiveChannel.meterDevices[0].channels[1] = {
+    ...channel(2, 'SUB_CIRCUIT'),
+    sensorRating: '3000A - 9cm',
+  };
+  assert.ok(installationReadiness(unassignedActiveChannel).issues.some((issue) => (
+    issue.code === 'CHANNEL_UNASSIGNED'
+    && issue.entityId === 'channel-2'
+  )));
+});
+
 test('high-card readiness and candidate search stay deterministically bounded and paginated', () => {
   const tree = baseTree();
   tree.siteAssets = [];
@@ -1052,6 +1131,56 @@ test('high-card readiness and candidate search stay deterministically bounded an
   assert.equal(searched.issuePage.total, 5_000);
   assert.equal(searched.issues.length, 0);
   assert.equal(searched.issuePage.nextOffset, null);
+});
+
+test('readiness paging filters the full result set by severity, type, and physical zone before slicing', () => {
+  const tree = baseTree();
+  const zoneEntityIds = readinessEntityIdsForZone(tree, 'zone-1');
+  assert.ok(zoneEntityIds.has('board-1'));
+  const base = installationReadiness(tree);
+  const filtered = paginateReadiness({
+    ...base,
+    issues: [
+      {
+        code: 'FORM_INCOMPLETE', severity: 'ERROR', entityType: 'board', entityId: 'board-1',
+        message: 'Zone-scoped blocking board issue.',
+      },
+      {
+        code: 'SUPPLY_TBC', severity: 'WARNING', entityType: 'board', entityId: 'board-1',
+        message: 'Wrong severity.',
+      },
+      {
+        code: 'FORM_INCOMPLETE', severity: 'ERROR', entityType: 'site_asset', entityId: 'asset-outside-zone',
+        message: 'Wrong type and zone.',
+      },
+    ],
+  }, {
+    severity: 'ERROR', entityType: 'board', entityIds: zoneEntityIds, limit: 1,
+  });
+  assert.deepEqual(filtered.issues.map((issue) => issue.entityId), ['board-1']);
+  assert.equal(filtered.issuePage.total, 1);
+  assert.equal(filtered.issuePage.nextOffset, null);
+});
+
+test('supply reconciliation candidates include Grid and exclude a board self and descendants', () => {
+  const tree = baseTree();
+  tree.electricalAssets.push({
+    ...tree.electricalAssets[0],
+    id: 'board-child',
+    assetName: 'Child board',
+    displayCode: display('ACME-DB-001'),
+    typeCode: 'DB',
+    electricalSource: { kind: 'BOARD', boardId: 'board-1' },
+    meterPresent: false,
+  });
+  tree.electricalAssets[0].electricalSource = { kind: 'TBC' };
+  const issue = installationReadiness(tree).issues.find((candidate) => (
+    candidate.code === 'SUPPLY_TBC' && candidate.entityId === 'board-1'
+  ));
+  assert.ok(issue);
+  assert.ok(issue.candidateIds?.includes('grid-1'));
+  assert.equal(issue.candidateIds?.includes('board-1'), false);
+  assert.equal(issue.candidateIds?.includes('board-child'), false);
 });
 
 test('blank immutable external key blocks completion', () => {

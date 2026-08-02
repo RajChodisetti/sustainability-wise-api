@@ -19,9 +19,11 @@ import {
   localElectricalTree,
   localMappingExport,
   localReadiness,
+  measurementAssignments,
+  meterDevices,
 } from '@/modules/installhub/lib/workflow';
 import { InstallHubApiError } from '@/modules/installhub/api/client';
-import type { InstallationTree } from '@/modules/installhub/types/domain';
+import type { InstallationTree, ReadinessIssue } from '@/modules/installhub/types/domain';
 
 export const installationTreesKey = ['installhub', 'installations'] as const;
 export const INSTALLHUB_TREES_QUERY_KEY = installationTreesKey;
@@ -55,7 +57,49 @@ export type InstallationReadinessQuery = {
   offset?: number;
   limit?: number;
   q?: string;
+  severity?: 'ERROR' | 'WARNING';
+  entityType?: string;
+  zoneId?: string;
 };
+
+function readinessIssueZoneIds(tree: InstallationTree, issue: ReadinessIssue): Set<string> {
+  const zoneIds = new Set<string>();
+  const addZone = (zoneId: string | null | undefined) => {
+    if (zoneId) zoneIds.add(zoneId);
+  };
+  if (issue.entityType === 'board') {
+    addZone(tree.electricalAssets.find((item) => item.id === issue.entityId)?.zoneId);
+    return zoneIds;
+  }
+  if (issue.entityType === 'site_asset') {
+    addZone(tree.siteAssets.find((item) => item.id === issue.entityId)?.zoneId);
+    return zoneIds;
+  }
+  if (issue.entityType === 'form') {
+    addZone(tree.formSubmissions.find((item) => item.id === issue.entityId)?.zoneId);
+    return zoneIds;
+  }
+  const devices = meterDevices(tree);
+  const assignment = issue.entityType === 'measurement_assignment'
+    ? measurementAssignments(tree).find((item) => item.id === issue.entityId)
+    : null;
+  const device = issue.entityType === 'meter'
+    ? devices.find((item) => item.id === issue.entityId)
+    : issue.entityType === 'channel'
+      ? devices.find((item) => item.channels.some((channel) => channel.id === issue.entityId))
+      : issue.entityType === 'measurement_assignment'
+        ? devices.find((item) => item.id === assignment?.meterId)
+        : null;
+  addZone(tree.electricalAssets.find((item) => item.id === device?.installedOnBoardId)?.zoneId);
+  if (assignment?.target.kind === 'BOARD') {
+    const targetBoardId = assignment.target.boardId;
+    addZone(tree.electricalAssets.find((item) => item.id === targetBoardId)?.zoneId);
+  } else if (assignment?.target.kind === 'SITE_ASSET') {
+    const targetSiteAssetId = assignment.target.siteAssetId;
+    addZone(tree.siteAssets.find((item) => item.id === targetSiteAssetId)?.zoneId);
+  }
+  return zoneIds;
+}
 
 export function localReadinessPage(
   tree: InstallationTree,
@@ -63,10 +107,13 @@ export function localReadinessPage(
 ) {
   const readiness = localReadiness(tree);
   const query = options.q?.trim().toLocaleLowerCase('en-AU') ?? '';
-  const filtered = readiness.issues.filter((issue) => !query || (
-    `${issue.code} ${issue.message} ${issue.entityType} ${issue.entityId} ${issue.field ?? ''}`
+  const filtered = readiness.issues.filter((issue) => (
+    (!query || `${issue.code} ${issue.message} ${issue.entityType} ${issue.entityId} ${issue.field ?? ''}`
       .toLocaleLowerCase('en-AU')
-      .includes(query)
+      .includes(query))
+    && (!options.severity || issue.severity === options.severity)
+    && (!options.entityType || issue.entityType === options.entityType)
+    && (!options.zoneId || readinessIssueZoneIds(tree, issue).has(options.zoneId))
   ));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 100), 250));
@@ -97,6 +144,9 @@ export function useInstallationReadiness(
       options.offset ?? 0,
       options.limit ?? 100,
       options.q?.trim() ?? '',
+      options.severity ?? 'all-severities',
+      options.entityType?.trim() ?? 'all-entities',
+      options.zoneId?.trim() ?? 'all-zones',
     ],
     enabled: Boolean(installationId && treeQuery.data),
     queryFn: async () => {

@@ -22,6 +22,7 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
+import { pinSelectedResult } from '@/modules/installhub/lib/electricalPresentation';
 import type { ElectricalAsset, ElectricalSourceKind } from '@/modules/installhub/types/domain';
 import {
   BOARD_TYPE_OPTIONS,
@@ -79,13 +80,18 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const currentDraft = draft;
   const allAvailableParents = validBoardParents(tree, draft.id);
   const normalizedSearch = parentSearch.trim().toLowerCase();
-  const availableParents = allAvailableParents.filter((item) => {
+  const matchingParents = allAvailableParents.filter((item) => {
     if (!normalizedSearch) return true;
     const itemZone = tree.zones.find((candidate) => candidate.id === item.zoneId);
     return `${displayCodeValue(item)} ${item.assetName} ${item.assetType} ${itemZone?.zoneName || ''}`
       .toLowerCase()
       .includes(normalizedSearch);
-  }).slice(0, 100);
+  });
+  const sourceForParentSelection = boardElectricalSource(draft);
+  const selectedParentId = sourceForParentSelection.kind === 'BOARD'
+    ? sourceForParentSelection.boardId
+    : null;
+  const availableParents = pinSelectedResult(matchingParents, allAvailableParents, selectedParentId, (item) => item.id);
   const forms = tree.formSubmissions.filter((item) => item.boardId === boardId);
   const draftSource = boardElectricalSource(draft);
   const sourceKind = draftSource.kind;
@@ -473,7 +479,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             </div>
           </div>
 
-          <div className="mt-6 border-t border-[var(--border)] pt-2">
+          <div id="board-supply" tabIndex={-1} className="mt-6 border-t border-[var(--border)] pt-2">
             <ChoiceGroup<ElectricalSourceKind>
               label="What supplies this switchboard?"
               hint="Choose the confirmed electrical source. Physical zone and electrical parent are separate relationships."
@@ -549,15 +555,17 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             ) : null}
           </div>
 
-          <ChoiceGroup<'YES' | 'NO'>
-            label="Is a metering device installed on this switchboard?"
-            value={draft.meterPresent || draft.meters.some((meter) => meter.lifecycleState !== 'INACTIVE') ? 'YES' : 'NO'}
-            options={[
-              { value: 'YES', label: 'Yes', description: 'Capture the installed device and channels after saving.' },
-              { value: 'NO', label: 'No', description: 'This switchboard has no installed meter.' },
-            ]}
-            onChange={chooseMeterPresent}
-          />
+          <div id="board-meter-presence" tabIndex={-1}>
+            <ChoiceGroup<'YES' | 'NO'>
+              label="Is a metering device installed on this switchboard?"
+              value={draft.meterPresent || draft.meters.some((meter) => meter.lifecycleState !== 'INACTIVE') ? 'YES' : 'NO'}
+              options={[
+                { value: 'YES', label: 'Yes', description: 'Capture the installed device and channels after saving.' },
+                { value: 'NO', label: 'No', description: 'This switchboard has no installed meter.' },
+              ]}
+              onChange={chooseMeterPresent}
+            />
+          </div>
 
           <FieldLabel htmlFor="board-subcircuits">Sub-circuits description</FieldLabel>
           <Textarea id="board-subcircuits" value={draft.subCircuitsDescription ?? ''} onChange={(event) => set('subCircuitsDescription', event.target.value)} />
@@ -647,7 +655,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               )}
             </Card>
           </div>
-          <Card>
+          <Card id="board-evidence">
             <h2 className="font-extrabold text-[var(--text)]">Switchboard evidence</h2>
             <EvidenceField
               label="Main switchboard photo"

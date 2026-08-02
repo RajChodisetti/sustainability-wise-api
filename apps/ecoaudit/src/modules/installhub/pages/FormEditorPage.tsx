@@ -13,6 +13,7 @@ import {
   Spinner,
 } from '@/components/ui/Card';
 import {
+  FieldError,
   FieldHint,
   FieldLabel,
   Input,
@@ -39,23 +40,30 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import {
   Breadcrumbs,
+  DefinitionList,
   InlineNotice,
 } from '@/modules/installhub/components/InstallHubUi';
 import { ScannerInput } from '@/modules/installhub/components/ScannerInput';
 import {
+  ErrorSummary,
   SaveStateNotice,
   TreeDraftNavigationGuard,
+  focusWorkflowErrorTarget,
 } from '@/modules/installhub/components/WorkflowUi';
 import {
   FORM_DEFINITION_BY_TYPE,
   answersAfterChange,
+  formValidationIssues,
   isFieldVisible,
   isSectionVisible,
   optionsForField,
   requiredProgress,
-  validateForm,
   type FormFieldDefinition,
 } from '@/modules/installhub/forms/catalog';
+import {
+  canonicalWwBoardAnswers,
+  isWwCanonicalBoardAnswer,
+} from '@/modules/installhub/forms/canonicalContext';
 import {
   useInstallationTree,
   useTreeWriter,
@@ -67,12 +75,29 @@ import {
   nowIso,
   syncOperationalMeter,
 } from '@/modules/installhub/lib/model';
-import { syncMeterDevice } from '@/modules/installhub/lib/workflow';
+import {
+  boardElectricalSource,
+  boardTypeLabel,
+  displayCodeValue,
+  meterDeviceName,
+  meterDevices,
+  syncMeterDevice,
+} from '@/modules/installhub/lib/workflow';
 import type {
   FormAttachment,
   FormSubmission,
   InstallHubReportProvenance,
 } from '@/modules/installhub/types/domain';
+
+type FormCompletionError = {
+  id: string;
+  fieldKey?: string;
+  message: string;
+};
+
+function formFieldTargetId(fieldKey: string): string {
+  return `form-field-${fieldKey.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
 
 export function InstallHubFormEditorPage() {
   const { installationId, formId } = useParams<{
@@ -94,17 +119,19 @@ export function InstallHubFormEditorPage() {
   const [saving, setSaving] = useState(false);
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [completing, setCompleting] = useState(false);
+  const [completionErrors, setCompletionErrors] = useState<FormCompletionError[]>([]);
 
   const source = query.data?.formSubmissions.find(
     (item) => item.id === formId,
   );
   useEffect(() => {
     if (!source || initializedFor === source.id) return;
-    setAnswers(structuredClone(source.answers));
+    setAnswers(canonicalWwBoardAnswers(query.data!, source, source.answers));
     setAttachments(structuredClone(source.attachments));
     setInitializedFor(source.id);
     setDirty(false);
-  }, [initializedFor, source]);
+    setCompletionErrors([]);
+  }, [initializedFor, query.data, source]);
 
   const readOnly = source?.status === 'Completed';
   const latestDraftRef = useRef({
@@ -113,6 +140,8 @@ export function InstallHubFormEditorPage() {
     dirty,
     initializedFor,
     readOnly,
+    tree: query.data,
+    source,
   });
   useEffect(() => {
     latestDraftRef.current = {
@@ -121,8 +150,10 @@ export function InstallHubFormEditorPage() {
       dirty,
       initializedFor,
       readOnly,
+      tree: query.data,
+      source,
     };
-  }, [answers, attachments, dirty, initializedFor, readOnly]);
+  }, [answers, attachments, dirty, initializedFor, query.data, readOnly, source]);
 
   useEffect(() => {
     const warnBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -141,12 +172,15 @@ export function InstallHubFormEditorPage() {
       ) {
         return;
       }
+      const flushAnswers = latest.tree && latest.source
+        ? canonicalWwBoardAnswers(latest.tree, latest.source, latest.answers)
+        : latest.answers;
       void writerRef.current
         .mutate((tree) => {
           applyDraftFormSnapshot(
             tree,
             formId,
-            latest.answers,
+            flushAnswers,
             latest.attachments,
           );
         }, 'metadata')
@@ -161,6 +195,9 @@ export function InstallHubFormEditorPage() {
 
   useEffect(() => {
     if (!dirty || readOnly || initializedFor !== formId) return;
+    const normalizedAnswers = query.data && source
+      ? canonicalWwBoardAnswers(query.data, source, answers)
+      : answers;
     const timeout = window.setTimeout(() => {
       setSaving(true);
       void writerRef.current
@@ -168,11 +205,14 @@ export function InstallHubFormEditorPage() {
           applyDraftFormSnapshot(
             tree,
             formId,
-            answers,
+            normalizedAnswers,
             attachments,
           );
         }, 'metadata')
-        .then(() => setDirty(false))
+        .then(() => {
+          setAnswers(normalizedAnswers);
+          setDirty(false);
+        })
         .catch((error) =>
           toast.error(installHubConnectionErrorMessage(error)),
         )
@@ -185,7 +225,9 @@ export function InstallHubFormEditorPage() {
     dirty,
     formId,
     initializedFor,
+    query.data,
     readOnly,
+    source,
     toast,
   ]);
 
@@ -203,6 +245,7 @@ export function InstallHubFormEditorPage() {
     return <Spinner label="Loading field form…" />;
   }
   const tree = query.data!;
+  const currentForm = source;
   const definition = FORM_DEFINITION_BY_TYPE[source.formType];
   const progress = requiredProgress(definition, answers, attachments);
   const supportsLocation = definition.sections.some((section) =>
@@ -211,8 +254,27 @@ export function InstallHubFormEditorPage() {
         field.key === 'site.latitude' || field.key === 'site.longitude',
     ),
   );
+  const canonicalBoard = source.formType === 'ww-installation' && source.boardId
+    ? tree.electricalAssets.find((item) => item.id === source.boardId)
+    : null;
+  const canonicalBoardZone = canonicalBoard
+    ? tree.zones.find((item) => item.id === canonicalBoard.zoneId)
+    : null;
+  const canonicalMeter = source.formType === 'ww-installation' && source.meterId
+    ? meterDevices(tree).find((item) => item.id === source.meterId)
+    : null;
+  const canonicalSupply = canonicalBoard ? boardElectricalSource(canonicalBoard) : null;
+  const canonicalSupplyLabel = canonicalSupply?.kind === 'GRID'
+    ? tree.gridSupplies?.find((item) => item.id === canonicalSupply.gridSupplyId)?.name || `Missing Grid supply ${canonicalSupply.gridSupplyId}`
+    : canonicalSupply?.kind === 'BOARD'
+      ? (() => {
+          const parent = tree.electricalAssets.find((item) => item.id === canonicalSupply.boardId);
+          return parent ? `${displayCodeValue(parent)} — ${parent.assetName}` : `Missing switchboard ${canonicalSupply.boardId}`;
+        })()
+      : 'To be confirmed';
 
   function change(key: string, value: string) {
+    if (isWwCanonicalBoardAnswer(currentForm, key)) return;
     const result = answersAfterChange(definition, answers, key, value);
     setAnswers(result.answers);
     if (result.hiddenPhotoSlots.length) {
@@ -221,11 +283,13 @@ export function InstallHubFormEditorPage() {
         current.filter((item) => !hidden.has(item.slot)),
       );
     }
+    setCompletionErrors((current) => current.filter((item) => item.fieldKey !== key));
     setDirty(true);
   }
 
   async function saveDraft(showToast = true) {
     if (readOnly) return;
+    const normalizedAnswers = canonicalWwBoardAnswers(tree, currentForm, answers);
     setSaving(true);
     try {
       await writer.mutate((next) => {
@@ -233,13 +297,14 @@ export function InstallHubFormEditorPage() {
           !applyDraftFormSnapshot(
             next,
             formId,
-            answers,
+            normalizedAnswers,
             attachments,
           )
         ) {
           throw new Error('This form can no longer be edited.');
         }
       }, 'metadata');
+      setAnswers(normalizedAnswers);
       setDirty(false);
       if (showToast) toast.success('Draft saved.');
     } catch (error) {
@@ -255,6 +320,7 @@ export function InstallHubFormEditorPage() {
     files: File[],
   ) {
     setUploadingSlot(field.key);
+    const normalizedAnswers = canonicalWwBoardAnswers(tree, currentForm, answers);
     try {
       let nextAttachments: FormAttachment[] = [];
       await writer.mutate(async (next) => {
@@ -264,7 +330,7 @@ export function InstallHubFormEditorPage() {
         if (!target || target.status === 'Completed') {
           throw new Error('This form can no longer be edited.');
         }
-        target.answers = structuredClone(answers);
+        target.answers = structuredClone(normalizedAnswers);
         target.attachments = structuredClone(attachments);
         for (const file of files) {
           const index = target.attachments.length;
@@ -286,6 +352,8 @@ export function InstallHubFormEditorPage() {
         nextAttachments = structuredClone(target.attachments);
       }, 'metadata');
       setAttachments(nextAttachments);
+      setAnswers(normalizedAnswers);
+      setCompletionErrors((current) => current.filter((item) => item.fieldKey !== field.key));
       setDirty(false);
       toast.success(
         `${files.length} evidence photo${files.length === 1 ? '' : 's'} uploaded.`,
@@ -298,18 +366,29 @@ export function InstallHubFormEditorPage() {
   }
 
   async function completeForm() {
+    const normalizedAnswers = canonicalWwBoardAnswers(tree, currentForm, answers);
     const candidate: FormSubmission = {
       ...source!,
-      answers,
+      answers: normalizedAnswers,
       attachments,
     };
-    const errors = validateForm(candidate);
+    const errors: FormCompletionError[] = formValidationIssues(candidate).map((issue) => ({
+      id: formFieldTargetId(issue.fieldKey),
+      fieldKey: issue.fieldKey,
+      message: issue.message,
+    }));
+    if (currentForm.formType === 'ww-installation' && (!canonicalBoard || !canonicalMeter)) {
+      errors.unshift({
+        id: 'form-canonical-context',
+        message: 'Link this WW form to a valid switchboard and meter before completion.',
+      });
+    }
+    setCompletionErrors(errors);
     if (errors.length) {
-      toast.error(
-        `Required items missing: ${errors.slice(0, 4).join('; ')}${
-          errors.length > 4 ? `; and ${errors.length - 4} more` : ''
-        }`,
-      );
+      window.setTimeout(() => {
+        focusWorkflowErrorTarget(errors[0].id);
+      }, 50);
+      toast.error('Check the highlighted form fields before completion.');
       return;
     }
     setCompleting(true);
@@ -321,7 +400,7 @@ export function InstallHubFormEditorPage() {
         if (!target || target.status === 'Completed') {
           throw new Error('This form is already completed.');
         }
-        target.answers = structuredClone(answers);
+        target.answers = structuredClone(normalizedAnswers);
         target.attachments = structuredClone(attachments);
         target.status = 'Completed';
         target.completedAt = nowIso();
@@ -339,6 +418,9 @@ export function InstallHubFormEditorPage() {
           ? `Form completed. Version ${confirmed.recordVersionNumber} is confirmed and the record is now read-only.`
           : 'Form completed. The record is now read-only.',
       );
+      if (currentForm.formType === 'ww-installation' && canonicalBoard && canonicalMeter) {
+        router.replace(`/installhub/installations/${installationId}/zones/${canonicalBoard.zoneId}/boards/${canonicalBoard.id}/meters/${canonicalMeter.id}#meter-assignments`);
+      }
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -440,6 +522,38 @@ export function InstallHubFormEditorPage() {
         }
       />
 
+      {source.formType === 'ww-installation' ? (
+        canonicalBoard ? (
+          <Card id="form-canonical-context" className="mb-5">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-extrabold text-[var(--text)]">Canonical switchboard context</h2>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Read-only installation identity used by this WW field record. Change the switchboard or device record—not form answers—to correct this context.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {canonicalMeter ? <LinkButton href={`/installhub/installations/${installationId}/zones/${canonicalBoard.zoneId}/boards/${canonicalBoard.id}/meters/${canonicalMeter.id}#meter-assignments`}>Open meter assignments</LinkButton> : null}
+                <LinkButton href={`/installhub/installations/${installationId}/zones/${canonicalBoard.zoneId}/boards/${canonicalBoard.id}`} variant="secondary">Open switchboard</LinkButton>
+              </div>
+            </div>
+            <DefinitionList items={[
+              { label: 'Switchboard', value: `${displayCodeValue(canonicalBoard)} — ${canonicalBoard.assetName}` },
+              { label: 'Stable board ID', value: <span className="font-mono text-xs">{canonicalBoard.id}</span> },
+              { label: 'Board type', value: boardTypeLabel(canonicalBoard) },
+              { label: 'Physical zone', value: canonicalBoardZone?.zoneName || 'Unknown zone' },
+              { label: 'FED_FROM source', value: canonicalSupplyLabel },
+              { label: 'Meter device', value: canonicalMeter ? `${meterDeviceName(canonicalMeter)} · ${canonicalMeter.serialNumber}` : source.meterId ? `Missing device ${source.meterId}` : 'No device linked' },
+            ]} />
+          </Card>
+        ) : (
+          <div id="form-canonical-context" className="mb-5"><InlineNotice tone="warning">This WW field record has no valid canonical switchboard context. Link it from the switchboard workflow before completion.</InlineNotice></div>
+        )
+      ) : null}
+
+      <ErrorSummary
+        title="Complete these items before finishing the form"
+        errors={completionErrors}
+      />
+
       <div className="mb-4 flex justify-end">
         <SaveStateNotice
           state={writer.writeState}
@@ -528,7 +642,7 @@ export function InstallHubFormEditorPage() {
                 {sectionIndex + 1}. {section.title}
               </h2>
               {section.fields.map((field) =>
-                isFieldVisible(field, answers) ? (
+                isFieldVisible(field, answers) && !isWwCanonicalBoardAnswer(currentForm, field.key) ? (
                   <FormField
                     key={field.key}
                     field={field}
@@ -536,6 +650,7 @@ export function InstallHubFormEditorPage() {
                     attachments={attachments}
                     readOnly={readOnly}
                     uploading={uploadingSlot === field.key}
+                    error={completionErrors.find((item) => item.fieldKey === field.key)?.message}
                     onChange={change}
                     onUpload={(files) => uploadEvidence(field, files)}
                     onCaption={(id, caption) => {
@@ -609,6 +724,7 @@ function FormField({
   attachments,
   readOnly,
   uploading,
+  error,
   onChange,
   onUpload,
   onCaption,
@@ -619,6 +735,7 @@ function FormField({
   attachments: FormAttachment[];
   readOnly: boolean;
   uploading: boolean;
+  error?: string;
   onChange: (key: string, value: string) => void;
   onUpload: (files: File[]) => Promise<void>;
   onCaption: (id: string, caption: string) => void;
@@ -626,34 +743,39 @@ function FormField({
 }) {
   const label = `${field.label}${field.required ? ' *' : ''}`;
   const value = answers[field.key] ?? '';
+  const fieldId = formFieldTargetId(field.key);
+  const errorId = `${fieldId}-error`;
   if (field.kind === 'photo') {
     const items = attachments.filter((item) => item.slot === field.key);
     return (
-      <EvidenceField
-        label={field.label}
-        required={field.required}
-        items={items}
-        busy={uploading}
-        readOnly={readOnly}
-        onFiles={onUpload}
-        onCaptionChange={
-          readOnly ? undefined : (id, caption) => onCaption(id, caption)
-        }
-        onRemove={
-          readOnly || !items.length
-            ? undefined
-            : (id) => {
-                if (window.confirm('Remove this evidence photo?')) {
-                  onRemove(id);
+      <div id={fieldId} tabIndex={-1} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined}>
+        <EvidenceField
+          label={field.label}
+          required={field.required}
+          items={items}
+          busy={uploading}
+          readOnly={readOnly}
+          onFiles={onUpload}
+          onCaptionChange={
+            readOnly ? undefined : (id, caption) => onCaption(id, caption)
+          }
+          onRemove={
+            readOnly || !items.length
+              ? undefined
+              : (id) => {
+                  if (window.confirm('Remove this evidence photo?')) {
+                    onRemove(id);
+                  }
                 }
-              }
-        }
-      />
+          }
+        />
+        <FieldError id={errorId} message={error} />
+      </div>
     );
   }
   if (field.kind === 'yesno') {
     return (
-      <fieldset className="mt-5">
+      <fieldset id={fieldId} className="mt-5" aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined}>
         <legend className="mb-2 text-sm font-bold text-[var(--text)]">
           {label}
         </legend>
@@ -681,6 +803,7 @@ function FormField({
             </button>
           ))}
         </div>
+        <FieldError id={errorId} message={error} />
       </fieldset>
     );
   }
@@ -689,9 +812,12 @@ function FormField({
       <div>
         <FieldLabel>{label}</FieldLabel>
         <Select
+          id={fieldId}
           value={value}
           disabled={readOnly}
           required={field.required}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
           onChange={(event) => onChange(field.key, event.target.value)}
         >
           <option value="">Select an option</option>
@@ -699,12 +825,13 @@ function FormField({
             <option key={option}>{option}</option>
           ))}
         </Select>
+        <FieldError id={errorId} message={error} />
       </div>
     );
   }
   if (field.scanModes?.length) {
     return (
-      <div>
+      <div id={fieldId} tabIndex={-1} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined}>
         <FieldLabel>{label}</FieldLabel>
         <ScannerInput
           value={value}
@@ -715,31 +842,39 @@ function FormField({
         <FieldHint>
           Scan with the browser camera or enter the value manually.
         </FieldHint>
+        <FieldError id={errorId} message={error} />
       </div>
     );
   }
   return (
     <div>
-      <FieldLabel>{label}</FieldLabel>
+      <FieldLabel htmlFor={fieldId}>{label}</FieldLabel>
       {field.kind === 'multiline' ? (
         <Textarea
+          id={fieldId}
           value={value}
           disabled={readOnly}
           required={field.required}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
           placeholder={field.placeholder}
           onChange={(event) => onChange(field.key, event.target.value)}
         />
       ) : (
         <Input
+          id={fieldId}
           value={value}
           disabled={readOnly}
           required={field.required}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? errorId : undefined}
           type={field.kind === 'number' ? 'number' : 'text'}
           step={field.kind === 'number' ? 'any' : undefined}
           placeholder={field.placeholder}
           onChange={(event) => onChange(field.key, event.target.value)}
         />
       )}
+      <FieldError id={errorId} message={error} />
     </div>
   );
 }

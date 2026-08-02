@@ -442,9 +442,25 @@ export function replaceMeterAssignments(
 ): void {
   const device = meterDevices(tree).find((item) => item.id === meterId);
   if (!device) throw new Error('The metering device is unavailable.');
+  const prior = measurementAssignments(tree);
   const channelById = new Map(device.channels.map((channel) => [channel.id, channel]));
   const seenChannels = new Set<string>();
+  const seenSiteAssetTargets = new Set<string>();
   for (const assignment of desired) {
+    if (assignment.target.kind === 'SITE_ASSET') {
+      if (seenSiteAssetTargets.has(assignment.target.siteAssetId)) {
+        throw new Error('A site asset may have only one active measurement assignment.');
+      }
+      const targetSiteAssetId = assignment.target.siteAssetId;
+      if (prior.some((existing) => (
+        existing.meterId !== meterId
+        && existing.target.kind === 'SITE_ASSET'
+        && existing.target.siteAssetId === targetSiteAssetId
+      ))) {
+        throw new Error('This site asset is already measured by another meter. Remove or reassign that measurement explicitly first.');
+      }
+      seenSiteAssetTargets.add(assignment.target.siteAssetId);
+    }
     const expected = assignment.phaseMode === 'SINGLE_PHASE'
       ? 1
       : assignment.phaseMode === 'THREE_PHASE'
@@ -458,11 +474,31 @@ export function replaceMeterAssignments(
       throw new Error('Each assignment must use non-spare channels with one shared purpose.');
     }
     const purpose = [...purposes][0];
-    if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY'].includes(assignment.target.kind)) {
-      throw new Error('Main-supply channels must target a confirmed switchboard or Grid boundary.');
+    if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) {
+      throw new Error('Main-supply channels must target the installed switchboard, a Grid boundary, or be explicitly TBC.');
+    }
+    if (
+      purpose === 'MAIN_SUPPLY'
+      && assignment.target.kind === 'BOARD'
+      && assignment.target.boardId !== device.installedOnBoardId
+    ) {
+      throw new Error('A confirmed main-supply board total must target the switchboard where this meter is installed.');
     }
     if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'GRID_BOUNDARY') {
       throw new Error('Sub-circuit channels cannot target a Grid boundary.');
+    }
+    if (assignment.target.kind === 'GRID_BOUNDARY') {
+      const gridSupplyId = assignment.target.gridSupplyId;
+      if (!reachableGridSuppliesForBoard(tree, device.installedOnBoardId).some((supply) => supply.id === gridSupplyId)) {
+        throw new Error('Grid-boundary assignments must target a Grid supply reachable upstream from the installed switchboard.');
+      }
+    }
+    if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'BOARD') {
+      const targetIsDownstream = assignment.target.boardId !== device.installedOnBoardId
+        && boardSupplyPath(tree, assignment.target.boardId).includes(device.installedOnBoardId);
+      if (!targetIsDownstream) {
+        throw new Error('Sub-circuit channels must target a downstream switchboard or site asset.');
+      }
     }
     for (const channelId of assignment.channelIds) {
       if (!channelById.has(channelId)) throw new Error('Assignments may only use channels on this meter.');
@@ -471,7 +507,6 @@ export function replaceMeterAssignments(
     }
   }
 
-  const prior = measurementAssignments(tree);
   const replaced = prior.filter((assignment) => assignment.meterId === meterId);
   const desiredSiteIds = new Set(
     desired.flatMap((assignment) => assignment.target.kind === 'SITE_ASSET' ? [assignment.target.siteAssetId] : []),
@@ -753,6 +788,21 @@ export function boardSupplyPath(tree: InstallationTree, boardId: string): string
   return path;
 }
 
+export function reachableGridSuppliesForBoard(
+  tree: InstallationTree,
+  boardId: string,
+): GridSupply[] {
+  const reachableIds = new Set<string>();
+  for (const pathBoardId of boardSupplyPath(tree, boardId)) {
+    const board = tree.electricalAssets.find((item) => item.id === pathBoardId);
+    const source = board ? boardElectricalSource(board) : null;
+    if (source?.kind === 'GRID') reachableIds.add(source.gridSupplyId);
+  }
+  return (tree.gridSupplies || [])
+    .filter((supply) => reachableIds.has(supply.id))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
 export function assetElectricalAncestorIds(tree: InstallationTree, asset: SiteAsset): string[] {
   const source = assetElectricalSource(asset);
   if (source.kind === 'GRID') return [source.gridSupplyId];
@@ -928,6 +978,12 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
       issues.push(issue('METER_DEVICE_REQUIRED', 'measurement_assignment', assignment.id, 'The selected metering device is unavailable.'));
       continue;
     }
+    if (assignment.target.kind === 'GRID_BOUNDARY') {
+      const gridSupplyId = assignment.target.gridSupplyId;
+      if (!reachableGridSuppliesForBoard(tree, meter.installedOnBoardId).some((supply) => supply.id === gridSupplyId)) {
+        issues.push(issue('METER_BOARD_MISMATCH', 'measurement_assignment', assignment.id, 'Grid boundary must be reachable upstream from the meter installation board.'));
+      }
+    }
     const expected = assignment.phaseMode === 'THREE_PHASE' ? 3 : assignment.phaseMode === 'SINGLE_PHASE' ? 1 : assignment.channelIds.length;
     if (assignment.channelIds.length !== expected || new Set(assignment.channelIds).size !== expected) {
       issues.push(issue('PHASE_GROUP_INVALID', 'measurement_assignment', assignment.id, `Select ${expected} distinct channel${expected === 1 ? '' : 's'} from one meter.`));
@@ -939,6 +995,16 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
       const prior = usedChannels.get(channelId);
       if (prior && prior !== assignment.id) issues.push(issue('CHANNEL_DUPLICATE_ASSIGNMENT', 'measurement_assignment', assignment.id, `Channel ${channelId} is already assigned.`));
       else usedChannels.set(channelId, assignment.id);
+    }
+  }
+
+  for (const meter of devices) {
+    for (const channel of meter.channels) {
+      if (channel.purpose === 'SPARE' || usedChannels.has(channel.id)) continue;
+      issues.push({
+        ...issue('CHANNEL_UNASSIGNED', 'channel', channel.id, 'Every non-spare meter channel must belong to exactly one measurement assignment.'),
+        field: 'measurementAssignments',
+      });
     }
   }
 

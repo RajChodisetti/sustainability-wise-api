@@ -86,6 +86,9 @@ export function getInstallationReadiness(
     offset?: number;
     limit?: number;
     q?: string;
+    severity?: 'ERROR' | 'WARNING';
+    entityType?: string;
+    zoneId?: string;
   } = {},
 ): Promise<InstallationReadiness> {
   const query = new URLSearchParams();
@@ -95,6 +98,9 @@ export function getInstallationReadiness(
   if (options.offset !== undefined) query.set('offset', String(options.offset));
   if (options.limit !== undefined) query.set('limit', String(options.limit));
   if (options.q?.trim()) query.set('q', options.q.trim());
+  if (options.severity) query.set('severity', options.severity);
+  if (options.entityType?.trim()) query.set('entityType', options.entityType.trim());
+  if (options.zoneId?.trim()) query.set('zoneId', options.zoneId.trim());
   const suffix = query.size ? `?${query}` : '';
   return installHubRequest(
     'GET',

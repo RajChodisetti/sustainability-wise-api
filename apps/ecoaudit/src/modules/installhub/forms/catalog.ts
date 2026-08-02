@@ -1121,12 +1121,17 @@ export function answersAfterChange(
   return { answers: next, hiddenPhotoSlots };
 }
 
-export function validateForm(
+export type FormValidationIssue = {
+  fieldKey: string;
+  message: string;
+};
+
+export function formValidationIssues(
   form: Pick<FormSubmission, 'formType' | 'answers' | 'attachments'>,
-): string[] {
+): FormValidationIssue[] {
   const definition = FORM_DEFINITION_BY_TYPE[form.formType];
   if (!definition) return [];
-  const errors: string[] = [];
+  const errors: FormValidationIssue[] = [];
   for (const section of definition.sections) {
     if (!isSectionVisible(section, form.answers)) continue;
     for (const field of section.fields) {
@@ -1138,13 +1143,19 @@ export function validateForm(
             (attachment) => attachment.slot === field.key,
           )
         ) {
-          errors.push(`${section.title}: ${field.label}`);
+          errors.push({
+            fieldKey: field.key,
+            message: `${section.title}: ${field.label}`,
+          });
         }
         continue;
       }
       const value = String(form.answers[field.key] ?? '').trim();
       if (!value && field.required) {
-        errors.push(`${section.title}: ${field.label}`);
+        errors.push({
+          fieldKey: field.key,
+          message: `${section.title}: ${field.label}`,
+        });
       } else if (
         value &&
         field.kind === 'yesno' &&
@@ -1154,27 +1165,38 @@ export function validateForm(
           ...(field.allowNotApplicable ? ['not_applicable'] : []),
         ].includes(value)
       ) {
-        errors.push(
-          `${section.title}: ${field.label} has an invalid selection`,
-        );
+        errors.push({
+          fieldKey: field.key,
+          message: `${section.title}: ${field.label} has an invalid selection`,
+        });
       } else if (
         value &&
         field.kind === 'number' &&
         !Number.isFinite(Number(value))
       ) {
-        errors.push(`${section.title}: ${field.label} must be a number`);
+        errors.push({
+          fieldKey: field.key,
+          message: `${section.title}: ${field.label} must be a number`,
+        });
       } else if (
         value &&
         field.kind === 'select' &&
         !optionsForField(field, form.answers).includes(value)
       ) {
-        errors.push(
-          `${section.title}: ${field.label} has an invalid selection`,
-        );
+        errors.push({
+          fieldKey: field.key,
+          message: `${section.title}: ${field.label} has an invalid selection`,
+        });
       }
     }
   }
   return errors;
+}
+
+export function validateForm(
+  form: Pick<FormSubmission, 'formType' | 'answers' | 'attachments'>,
+): string[] {
+  return formValidationIssues(form).map((issue) => issue.message);
 }
 
 export function requiredProgress(

@@ -31,6 +31,7 @@ import type {
 } from '@/modules/installhub/types/domain';
 import {
   CHANNEL_PURPOSE_OPTIONS,
+  assignmentForAsset,
   assetElectricalSource,
   boardSupplyPath,
   displayCodeMetadata,
@@ -41,11 +42,17 @@ import {
   meterEditorHasChanges,
   meterBoardsForAsset,
   meterDevices,
-  primaryGridSupply,
+  reachableGridSuppliesForBoard,
   replaceMeterAssignments,
   syncMeterDevice,
 } from '@/modules/installhub/lib/workflow';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
+import {
+  assetMeterReturnHref,
+  assetMeterReturnRequest,
+  pinSelectedResult,
+  type AssetMeterReturnRequest,
+} from '@/modules/installhub/lib/electricalPresentation';
 import { useToast } from '@/contexts/ToastContext';
 
 const prestartQuestions: Array<[keyof WattwatcherPrestart, string]> = [
@@ -112,6 +119,12 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assignmentDrafts, setAssignmentDrafts] = useState<MeasurementAssignment[]>([]);
   const [targetSearches, setTargetSearches] = useState<Record<string, string>>({});
+  const [assetReturn, setAssetReturn] = useState<AssetMeterReturnRequest | null>(null);
+
+  useEffect(() => {
+    if (mode !== 'new') return;
+    setAssetReturn(assetMeterReturnRequest(new URLSearchParams(window.location.search)));
+  }, [mode]);
 
   const board = query.data?.electricalAssets.find((item) => item.id === boardId);
   const source = board?.meters.find((item) => item.id === meterId);
@@ -167,6 +180,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     sourceAssignments,
     mode,
   );
+  const reachableGridSupplies = reachableGridSuppliesForBoard(tree, boardId);
 
   function set<K extends keyof Meter>(key: K, value: Meter[K]) {
     setDraft((current) => current ? { ...current, [key]: value } : current);
@@ -228,7 +242,18 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       channel.purpose || 'SPARE',
     ]));
     const usedIds = new Set<string>();
+    const usedSiteAssetTargets = new Set<string>();
     assignmentDrafts.forEach((assignment, index) => {
+      if (assignment.target.kind === 'SITE_ASSET') {
+        const existingAssignment = assignmentForAsset(tree, assignment.target.siteAssetId);
+        if (usedSiteAssetTargets.has(assignment.target.siteAssetId)) {
+          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'A site asset may have only one active measurement assignment.' });
+        }
+        if (existingAssignment && existingAssignment.meterId !== currentDraft.id) {
+          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'This site asset is already measured by another meter. Remove or reassign that measurement explicitly first.' });
+        }
+        usedSiteAssetTargets.add(assignment.target.siteAssetId);
+      }
       const expected = assignment.phaseMode === 'SINGLE_PHASE' ? 1 : assignment.phaseMode === 'THREE_PHASE' ? 3 : assignment.channelIds.length;
       if (!expected || assignment.channelIds.length !== expected || new Set(assignment.channelIds).size !== expected) {
         nextErrors.push({ id: `meter-assignment-${index + 1}`, message: `Choose ${assignment.phaseMode === 'THREE_PHASE' ? 'three' : assignment.phaseMode === 'SINGLE_PHASE' ? 'one' : 'one or more'} distinct channel${assignment.phaseMode === 'SINGLE_PHASE' ? '' : 's'} for assignment ${index + 1}.` });
@@ -242,11 +267,20 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         nextErrors.push({ id: `meter-assignment-${index + 1}`, message: `Assignment ${index + 1} must use channels with one shared non-spare purpose.` });
       }
       const purpose = purposes.size === 1 ? [...purposes][0] : undefined;
-      if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY'].includes(assignment.target.kind)) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Main-supply channels require a confirmed switchboard or Grid boundary target.' });
+      if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) {
+        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Main-supply channels require this installed switchboard, a Grid boundary, or an explicit TBC target.' });
+      }
+      if (purpose === 'MAIN_SUPPLY' && assignment.target.kind === 'BOARD' && assignment.target.boardId !== boardId) {
+        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'A main-supply board total must target the switchboard where this device is installed.' });
       }
       if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'GRID_BOUNDARY') {
         nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Sub-circuit channels cannot target a Grid boundary.' });
+      }
+      if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'BOARD' && (
+        assignment.target.boardId === boardId
+        || !boardSupplyPath(tree, assignment.target.boardId).includes(boardId)
+      )) {
+        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Sub-circuit channels must target a downstream switchboard or site asset.' });
       }
       if (assignment.target.kind === 'BOARD' && !assignment.target.boardId) {
         nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: `Choose the target switchboard for assignment ${index + 1}.` });
@@ -257,11 +291,17 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       if (assignment.target.kind === 'GRID_BOUNDARY' && !assignment.target.gridSupplyId) {
         nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: `Choose the Grid boundary for assignment ${index + 1}.` });
       }
+      if (assignment.target.kind === 'GRID_BOUNDARY') {
+        const gridSupplyId = assignment.target.gridSupplyId;
+        if (!reachableGridSupplies.some((supply) => supply.id === gridSupplyId)) {
+          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Choose a Grid boundary reachable upstream from this device’s installed switchboard.' });
+        }
+      }
     });
     const unassigned = [...purposeByChannelId].filter(
       ([channelId, purpose]) => purpose !== 'SPARE' && !usedIds.has(channelId),
     );
-    if (unassigned.length) {
+    if (unassigned.length && !assetReturn) {
       nextErrors.push({
         id: 'meter-assignments',
         message: `Assign every active channel. ${unassigned.map(([channelId]) => channelId).join(', ')} ${unassigned.length === 1 ? 'is' : 'are'} unresolved.`,
@@ -332,7 +372,9 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       setErrors([]);
       toast.success(saved ? 'Meter saved.' : 'Meter added.');
       if (!saved) {
-        router.replace(`/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/${currentDraft.id}`);
+        router.replace(assetReturn
+          ? assetMeterReturnHref(installationId, assetReturn, currentDraft.id)
+          : `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/${currentDraft.id}`);
       }
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
@@ -654,25 +696,38 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   function assignmentBoardCandidates(assignment: MeasurementAssignment) {
     const normalized = targetSearch(assignment.id).trim().toLowerCase();
     const selectedId = assignment.target.kind === 'BOARD' ? assignment.target.boardId : '';
-    return tree.electricalAssets
-      .filter((item) => item.id === selectedId || item.id === boardId || boardSupplyPath(tree, item.id).includes(boardId))
-      .filter((item) => !normalized || `${displayCodeValue(item)} ${item.assetName}`.toLowerCase().includes(normalized))
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .slice(0, 100);
+    const purpose = assignmentPurpose(assignment);
+    const allCandidates = tree.electricalAssets
+      .filter((item) => purpose === 'MAIN_SUPPLY'
+        ? item.id === boardId
+        : purpose === 'SUB_CIRCUIT'
+          ? item.id !== boardId && boardSupplyPath(tree, item.id).includes(boardId)
+          : item.id === boardId || boardSupplyPath(tree, item.id).includes(boardId))
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const matching = allCandidates.filter((item) => {
+      const zoneName = tree.zones.find((zone) => zone.id === item.zoneId)?.zoneName || '';
+      return !normalized || `${displayCodeValue(item)} ${item.assetName} ${zoneName}`.toLowerCase().includes(normalized);
+    });
+    return pinSelectedResult(matching, allCandidates, selectedId, (item) => item.id);
   }
 
   function assignmentAssetCandidates(assignment: MeasurementAssignment) {
     const normalized = targetSearch(assignment.id).trim().toLowerCase();
     const selectedId = assignment.target.kind === 'SITE_ASSET' ? assignment.target.siteAssetId : '';
-    return tree.siteAssets
+    const allCandidates = tree.siteAssets
       .filter((item) => {
+        const existingAssignment = assignmentForAsset(tree, item.id);
+        if (existingAssignment && existingAssignment.meterId !== currentDraft.id) return false;
         if (item.id === selectedId) return true;
         if (assetElectricalSource(item).kind !== 'BOARD') return false;
         return meterBoardsForAsset(tree, item).some((candidate) => candidate.id === boardId);
       })
-      .filter((item) => !normalized || `${displayCodeValue(item)} ${item.assetName}`.toLowerCase().includes(normalized))
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .slice(0, 100);
+      .sort((left, right) => left.id.localeCompare(right.id));
+    const matching = allCandidates.filter((item) => {
+      const zoneName = tree.zones.find((zone) => zone.id === item.zoneId)?.zoneName || '';
+      return !normalized || `${displayCodeValue(item)} ${item.assetName} ${zoneName}`.toLowerCase().includes(normalized);
+    });
+    return pinSelectedResult(matching, allCandidates, selectedId, (item) => item.id);
   }
 
   function updateAssignment(index: number, change: Partial<MeasurementAssignment>) {
@@ -693,11 +748,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
 
   function chooseAssignmentTarget(index: number, kind: MeasurementAssignment['target']['kind']) {
     const target: MeasurementAssignment['target'] = kind === 'BOARD'
-      ? { kind: 'BOARD', boardId: '' }
+      ? { kind: 'BOARD', boardId: assignmentPurpose(assignmentDrafts[index]) === 'MAIN_SUPPLY' ? boardId : '' }
       : kind === 'SITE_ASSET'
         ? { kind: 'SITE_ASSET', siteAssetId: '' }
         : kind === 'GRID_BOUNDARY'
-          ? { kind: 'GRID_BOUNDARY', gridSupplyId: primaryGridSupply(tree).id }
+          ? { kind: 'GRID_BOUNDARY', gridSupplyId: reachableGridSupplies[0]?.id || '' }
           : { kind: 'TBC' };
     updateAssignment(index, { target, status: kind === 'TBC' ? 'TBC' : 'CONFIRMED' });
   }
@@ -755,6 +810,13 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           onDiscard={() => void writer.discard()}
         />
       </div>
+      {assetReturn ? (
+        <div className="mb-5">
+          <InlineNotice>
+            This device is being added for an in-progress site asset mapping. Save the device and you will return to the preserved asset draft to choose its exact channels. Other active channels can be mapped later and will remain visible in reconciliation until resolved.
+          </InlineNotice>
+        </div>
+      ) : null}
       <TreeDraftNavigationGuard active={!busy && !uploading && (hasLocalChanges || writer.hasPendingTree)} onDiscard={writer.discard} />
       <ErrorSummary errors={errors} />
       {commissionedForm ? (
@@ -1140,7 +1202,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                       value={assignment.target.kind}
                       onChange={(event) => chooseAssignmentTarget(assignmentIndex, event.target.value as 'BOARD' | 'GRID_BOUNDARY' | 'SITE_ASSET' | 'TBC')}
                     >
-                      <option value="TBC" disabled={assignmentPurpose(assignment) === 'MAIN_SUPPLY'}>To be confirmed</option>
+                      <option value="TBC">To be confirmed</option>
                       <option value="BOARD">Switchboard</option>
                       <option value="GRID_BOUNDARY" disabled={assignmentPurpose(assignment) === 'SUB_CIRCUIT'}>Grid boundary</option>
                       <option value="SITE_ASSET" disabled={assignmentPurpose(assignment) === 'MAIN_SUPPLY'}>Site asset</option>
@@ -1180,7 +1242,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                         <option key={item.id} value={item.id}>{displayCodeValue(item)} — {item.assetName}</option>
                       ))}
                     </Select>
-                    <FieldHint>Only the installation board and downstream boards are eligible. Showing up to 100 matches.</FieldHint>
+                    <FieldHint>{assignmentPurpose(assignment) === 'MAIN_SUPPLY' ? 'A confirmed main-supply board total must target this device’s installed switchboard.' : assignmentPurpose(assignment) === 'SUB_CIRCUIT' ? 'Sub-circuit channels may target only a downstream switchboard.' : 'Choose channels to constrain the eligible switchboards. Showing up to 100 matches.'}</FieldHint>
                   </div>
                 ) : null}
                 {assignment.target.kind === 'SITE_ASSET' ? (
@@ -1204,7 +1266,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                         <option key={item.id} value={item.id}>{displayCodeValue(item)} — {item.assetName}</option>
                       ))}
                     </Select>
-                    <FieldHint>Only assets whose confirmed supply path includes this meter board are eligible. Showing up to 100 matches.</FieldHint>
+                    <FieldHint>Only assets on this meter board’s confirmed supply path and not already measured by another meter are eligible. Showing up to 100 matches.</FieldHint>
                   </div>
                 ) : null}
                 {assignment.target.kind === 'GRID_BOUNDARY' ? (
@@ -1215,10 +1277,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                       value={assignment.target.gridSupplyId}
                       onChange={(event) => updateAssignment(assignmentIndex, { target: { kind: 'GRID_BOUNDARY', gridSupplyId: event.target.value }, status: 'CONFIRMED' })}
                     >
-                      {[...(tree.gridSupplies || [])].sort((left, right) => left.id.localeCompare(right.id)).slice(0, 100).map((supply) => (
+                      {reachableGridSupplies.map((supply) => (
                         <option key={supply.id} value={supply.id}>{supply.name}{supply.nmi ? ` · NMI ${supply.nmi}` : ''}</option>
                       ))}
                     </Select>
+                    <FieldHint>{reachableGridSupplies.length ? 'Only Grid supplies on this switchboard’s confirmed upstream path are available.' : 'No confirmed upstream Grid boundary is reachable. Reconcile the switchboard supply first.'}</FieldHint>
                   </div>
                 ) : null}
                 {assignment.target.kind === 'TBC' ? (
@@ -1282,7 +1345,18 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
 
         <div className="flex flex-wrap gap-2">
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save meter'}</Button>
-          <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
+          <Button
+            variant="secondary"
+            onClick={() => requestTreeNavigation(
+              () => assetReturn
+                ? router.replace(assetMeterReturnHref(installationId, assetReturn))
+                : router.back(),
+              assetReturn ? 'the preserved site asset draft' : 'the previous page',
+            )}
+            disabled={busy}
+          >
+            {assetReturn ? 'Return to asset without adding device' : 'Cancel'}
+          </Button>
         </div>
       </form>
 
@@ -1302,7 +1376,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       {!saved ? (
         <InlineNotice>Save the meter first, then capture evidence and create communications fault records.</InlineNotice>
       ) : (
-        <Card className="mt-5">
+        <Card id="meter-evidence" className="mt-5">
           <h2 className="font-extrabold text-[var(--text)]">Meter evidence</h2>
           {photoFields.map(({ slot, label }) => {
             const uri = latest.wwPhotos?.[slot];

@@ -23,6 +23,7 @@ import {
 } from './canonicalViews.js';
 import {
   paginateReadiness,
+  readinessEntityIdsForZone,
   searchCanonicalCandidates,
   type CanonicalCandidateKind,
 } from './canonicalPagination.js';
@@ -245,21 +246,40 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
   app.get('/:installationId/readiness', protectedRoute, async (request, reply) => {
     const { installationId } = request.params as { installationId: string };
     await accessibleInstallation(installationId, request.user);
+    const query = request.query as {
+      recordVersionNumber?: unknown;
+      offset?: unknown;
+      limit?: unknown;
+      q?: unknown;
+      severity?: unknown;
+      entityType?: unknown;
+      zoneId?: unknown;
+    };
     const recordVersionNumber = positiveVersion(
-      (request.query as { recordVersionNumber?: unknown }).recordVersionNumber,
+      query.recordVersionNumber,
     );
+    const page = (readiness: ReturnType<typeof installationReadiness>, tree: CanonicalInstallationTree) => {
+      const zoneId = typeof query.zoneId === 'string' ? query.zoneId.trim() : '';
+      if (zoneId && !tree.zones.some((zone) => zone.id === zoneId)) {
+        throw badRequest('zoneId must identify a zone in this installation');
+      }
+      return paginateReadiness(readiness, {
+        ...query,
+        entityIds: zoneId ? readinessEntityIdsForZone(tree, zoneId) : undefined,
+      });
+    };
     if (recordVersionNumber !== undefined) {
       const version = await loadCanonicalRecordVersion({ installationId, versionNumber: recordVersionNumber });
       if (!version) throw notFound('Installation record version');
-      return reply.send(paginateReadiness(
+      return reply.send(page(
         version.snapshot.readiness,
-        request.query as { offset?: unknown; limit?: unknown; q?: unknown },
+        version.snapshot.installationTree,
       ));
     }
     const selected = await selectedTree({ installationId });
-    return reply.send(paginateReadiness(
+    return reply.send(page(
       installationReadiness(selected.tree),
-      request.query as { offset?: unknown; limit?: unknown; q?: unknown },
+      selected.tree,
     ));
   });
 

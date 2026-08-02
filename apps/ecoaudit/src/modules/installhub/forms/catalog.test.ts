@@ -10,6 +10,7 @@ import {
   FORM_DEFINITIONS,
   SENSOR_OPTIONS_BY_DEVICE,
   answersAfterChange,
+  formValidationIssues,
   isFieldVisible,
   isSectionVisible,
   meterAfterCommsReplacement,
@@ -225,6 +226,18 @@ test('required yes/no, numeric, and select values reject invalid input', () => {
       ),
     ),
   );
+});
+
+test('form validation retains stable field keys for summaries, inline errors, and focus', () => {
+  const issues = formValidationIssues(
+    submission('ww-installation', {
+      'prestart.safe_access': 'not_applicable',
+    }),
+  );
+  assert.ok(issues.some((issue) => (
+    issue.fieldKey === 'prestart.safe_access'
+    && issue.message.includes('has an invalid selection')
+  )));
 });
 
 test('legacy draft records retain the same required-field validation as iOS', () => {

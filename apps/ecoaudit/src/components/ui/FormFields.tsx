@@ -76,11 +76,13 @@ export function Checkbox({
   checked,
   onChange,
   disabled,
+  ariaDescribedBy,
 }: {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   disabled?: boolean;
+  ariaDescribedBy?: string;
 }) {
   return (
     <label className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg py-1 text-sm font-medium text-[var(--text)]">
@@ -88,6 +90,7 @@ export function Checkbox({
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-describedby={ariaDescribedBy}
         onChange={(e) => onChange(e.target.checked)}
         className="h-5 w-5 shrink-0 accent-[var(--primary)]"
       />

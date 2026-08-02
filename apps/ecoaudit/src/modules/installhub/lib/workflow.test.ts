@@ -59,6 +59,7 @@ import {
   meterBoardsForAsset,
   primaryGridSupply,
   reconcileRemovedMeter,
+  reachableGridSuppliesForBoard,
   replaceMeterAssignments,
   serializeInstallationTree,
   setAssetMetering,
@@ -225,13 +226,17 @@ test('legacy ambiguous metering remains TBC and direct-Grid assets receive no in
   assert.deepEqual(meterBoardsForAsset(tree, asset), []);
 });
 
-test('exact meter groups accept confirmed three-phase targets and reject inferred or incompatible targets', () => {
+test('exact meter groups accept explicit main TBC and constrain confirmed board totals to the installed board', () => {
   const tree = fixtureTree();
   const meter = sixChannelMeter();
   tree.electricalAssets[0].meters = [meter];
   tree.electricalAssets[0].meterPresent = true;
   syncMeterDevice(tree, 'board-a', meter);
   assert.equal(tree.measurementAssignments?.length, 0);
+  const unassignedChannels = localReadiness(tree).issues.filter((item) => item.code === 'CHANNEL_UNASSIGNED');
+  assert.equal(unassignedChannels.length, 6);
+  assert.equal(unassignedChannels[0].field, 'measurementAssignments');
+  assert.equal(unassignedChannels[0].message, 'Every non-spare meter channel must belong to exactly one measurement assignment.');
 
   const main: MeasurementAssignment = {
     id: 'assignment-main',
@@ -251,16 +256,57 @@ test('exact meter groups accept confirmed three-phase targets and reject inferre
     direction: 'CONSUMPTION',
     status: 'CONFIRMED',
   };
+  const beforeDuplicateAttempt = structuredClone(tree.measurementAssignments || []);
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...sub,
+    id: 'assignment-duplicate-a',
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+  }, {
+    ...sub,
+    id: 'assignment-duplicate-b',
+    channelIds: ['meter-a:5'],
+    phaseMode: 'SINGLE_PHASE',
+  }]), /only one active measurement assignment/);
+  assert.deepEqual(tree.measurementAssignments || [], beforeDuplicateAttempt);
   replaceMeterAssignments(tree, meter.id, [main, sub]);
+  assert.equal(localReadiness(tree).issues.some((item) => item.code === 'CHANNEL_UNASSIGNED'), false);
   assert.deepEqual(tree.siteAssets[0].meteringState, {
     kind: 'METERED',
     measurementAssignmentIds: ['assignment-sub'],
   });
-  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+  assert.doesNotThrow(() => replaceMeterAssignments(tree, meter.id, [{
     ...main,
     target: { kind: 'TBC' },
     status: 'TBC',
-  }]), /Main-supply channels/);
+  }]));
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...main,
+    target: { kind: 'BOARD', boardId: 'board-b' },
+  }]), /switchboard where this meter is installed/);
+  assert.doesNotThrow(() => replaceMeterAssignments(tree, meter.id, [{
+    ...main,
+    target: { kind: 'BOARD', boardId: 'board-a' },
+  }]));
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...sub,
+    target: { kind: 'BOARD', boardId: 'board-a' },
+  }]), /downstream switchboard or site asset/);
+  assert.doesNotThrow(() => replaceMeterAssignments(tree, meter.id, [{
+    ...sub,
+    target: { kind: 'BOARD', boardId: 'board-b' },
+  }]));
+  tree.gridSupplies!.push({
+    id: 'grid-unreachable',
+    installationId: tree.installation.id,
+    name: 'Unreachable Grid',
+    isDefault: false,
+  });
+  assert.deepEqual(reachableGridSuppliesForBoard(tree, 'board-a').map((supply) => supply.id), ['grid-a']);
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...main,
+    target: { kind: 'GRID_BOUNDARY', gridSupplyId: 'grid-unreachable' },
+  }]), /reachable upstream/);
   assert.throws(() => setAssetMetering(tree, tree.siteAssets[0], {
     kind: 'METERED',
     meterId: meter.id,
@@ -268,6 +314,73 @@ test('exact meter groups accept confirmed three-phase targets and reject inferre
     phaseMode: 'SINGLE_PHASE',
     direction: 'CONSUMPTION',
   }), /spare, unavailable, or belongs/);
+});
+
+test('meter assignment replacement rejects a silent cross-meter asset remap atomically', () => {
+  const tree = fixtureTree();
+  const meterA = sixChannelMeter();
+  const meterB: Meter = {
+    ...structuredClone(meterA),
+    id: 'meter-b',
+    deviceId: 'SERIAL-B',
+    wwChannels: (meterA.wwChannels || []).map((channel, index) => ({
+      ...channel,
+      id: `meter-b:${index + 1}`,
+    })),
+  };
+  tree.electricalAssets[0].meters = [meterA];
+  tree.electricalAssets[0].meterPresent = true;
+  tree.electricalAssets[1].meters = [meterB];
+  tree.electricalAssets[1].meterPresent = true;
+  syncMeterDevice(tree, 'board-a', meterA);
+  syncMeterDevice(tree, 'board-b', meterB);
+  replaceMeterAssignments(tree, meterA.id, [{
+    id: 'assignment-owner',
+    meterId: meterA.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }]);
+  const before = structuredClone({
+    assignments: tree.measurementAssignments,
+    asset: tree.siteAssets[0],
+  });
+  assert.throws(() => replaceMeterAssignments(tree, meterB.id, [{
+    id: 'assignment-takeover',
+    meterId: meterB.id,
+    channelIds: ['meter-b:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }]), /already measured by another meter/);
+  assert.deepEqual({
+    assignments: tree.measurementAssignments,
+    asset: tree.siteAssets[0],
+  }, before);
+});
+
+test('local readiness zone filtering includes both meter and measured-target zones', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[0].meters = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+  syncMeterDevice(tree, 'board-a', meter);
+  tree.measurementAssignments = [{
+    id: 'assignment-cross-zone',
+    meterId: meter.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'THREE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  const zoneA = localReadinessPage(tree, { zoneId: 'zone-a', entityType: 'measurement_assignment' });
+  const zoneB = localReadinessPage(tree, { zoneId: 'zone-b', entityType: 'measurement_assignment' });
+  assert.ok(zoneA.issues.some((issue) => issue.entityId === 'assignment-cross-zone'));
+  assert.ok(zoneB.issues.some((issue) => issue.entityId === 'assignment-cross-zone'));
 });
 
 test('shared residual coverage may identify several unmetered descendants without numeric allocation', () => {
@@ -761,10 +874,13 @@ test('readiness paging and search keep issues beyond the first one hundred reach
       offset: 100,
       limit: 50,
       q: 'metering state',
+      severity: 'ERROR',
+      entityType: 'site_asset',
+      zoneId: 'zone-b',
     });
     assert.match(
       requestedUrl,
-      /readiness\?offset=100&limit=50&q=metering\+state$/,
+      /readiness\?offset=100&limit=50&q=metering\+state&severity=ERROR&entityType=site_asset&zoneId=zone-b$/,
     );
     assert.equal(response.issuePage?.total, 130);
   } finally {
