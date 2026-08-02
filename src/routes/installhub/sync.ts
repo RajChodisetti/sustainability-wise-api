@@ -49,8 +49,10 @@ import {
   installationReadiness,
   isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
+  type CanonicalFormSubmission,
 } from './canonical.js';
 import {
+  assertCompletedFormsImmutable,
   ensureCanonicalRecordVersion,
   isCanonicalChildOwnershipDatabaseError,
   loadCanonicalInstallationTree,
@@ -496,8 +498,9 @@ export function formValues(
     answers,
     attachments,
     syncStage: status === 'Completed' ? 'complete' : syncStage,
+    allowLegacyCompletedWwLoadOnly: existing?.status === 'Completed',
   });
-  return {
+  const values = {
     id: requiredString(item, 'id'),
     serverId: existing?.serverId ?? optionalString(item, 'serverId') ?? randomUUID(),
     syncStatus: 'synced',
@@ -518,6 +521,77 @@ export function formValues(
     historicalMeterRemoved: existing?.historicalMeterRemoved ?? false,
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
   };
+  if (existing?.status === 'Completed') {
+    try {
+      assertCompletedFormsImmutable({
+        existing: [canonicalFormForImmutability(existing)],
+        incoming: [canonicalFormForImmutability(values)],
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('COMPLETED_FORM_IMMUTABLE:')) {
+        throw conflict(error.message);
+      }
+      throw error;
+    }
+  }
+  return values;
+}
+
+type ImmutableFormInput = {
+  id: string;
+  installationId: string;
+  formType: string;
+  schemaVersion: number;
+  status: string;
+  zoneId?: string | null;
+  boardId?: string | null;
+  meterId?: string | null;
+  siteAssetId?: string | null;
+  answers: unknown;
+  attachments: unknown;
+  completedAt?: Date | string | null;
+  supersedesId?: string | null;
+};
+
+function canonicalFormForImmutability(form: ImmutableFormInput): CanonicalFormSubmission {
+  return {
+    id: form.id,
+    installationId: form.installationId,
+    formType: form.formType,
+    schemaVersion: form.schemaVersion,
+    status: form.status,
+    zoneId: form.zoneId ?? null,
+    boardId: form.boardId ?? null,
+    meterId: form.meterId ?? null,
+    siteAssetId: form.siteAssetId ?? null,
+    answers: jsonObject(form.answers) as Record<string, string>,
+    attachments: jsonArray(form.attachments),
+    completedAt: form.completedAt ? isoDate(form.completedAt) : null,
+    supersedesId: form.supersedesId ?? null,
+  };
+}
+
+export function validateCanonicalFormContractsForSync(input: {
+  incoming: readonly CanonicalFormSubmission[];
+  existing?: readonly CanonicalFormSubmission[];
+  syncStage?: PushBody['syncStage'];
+}): void {
+  const persistedCompletedIds = new Set(
+    input.existing
+      ?.filter((form) => form.status === 'Completed')
+      .map((form) => form.id) ?? [],
+  );
+  for (const form of input.incoming) {
+    validateInstallHubFormContract({
+      formType: form.formType,
+      schemaVersion: form.schemaVersion,
+      status: form.status,
+      answers: form.answers,
+      attachments: form.attachments,
+      syncStage: form.status === 'Completed' ? 'complete' : input.syncStage,
+      allowLegacyCompletedWwLoadOnly: persistedCompletedIds.has(form.id),
+    });
+  }
 }
 
 export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> {
@@ -991,16 +1065,6 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         throw error;
       }
       const externalKeyConflict = incomingTree.installation.externalKey !== serverExternalKey;
-      for (const form of incomingTree.formSubmissions) {
-        validateInstallHubFormContract({
-          formType: form.formType,
-          schemaVersion: form.schemaVersion,
-          status: form.status,
-          answers: form.answers,
-          attachments: form.attachments,
-          syncStage: form.status === 'Completed' ? 'complete' : syncStage,
-        });
-      }
       incomingTree.installation.externalKey = serverExternalKey;
       incomingTree.installation.siteCode = incomingTree.installation.siteCode
         || existingInstallation?.siteCode
@@ -1069,6 +1133,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
                 throw badRequest('metadata_stage_cannot_complete_form');
               }
             }
+            validateCanonicalFormContractsForSync({
+              incoming: incomingTree.formSubmissions,
+              existing: currentTree.formSubmissions,
+              syncStage,
+            });
             if (
               canonicalTreeMutationFingerprint(currentTree)
               === canonicalTreeMutationFingerprint(incomingTree)
@@ -1132,6 +1201,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             if (body.baseTreeRevision !== undefined && body.baseTreeRevision !== 0) {
               throw conflict('snapshot_conflict');
             }
+            validateCanonicalFormContractsForSync({
+              incoming: incomingTree.formSubmissions,
+              syncStage,
+            });
             incomingTree.installation.treeRevision = 1;
             incomingTree.installation.recordVersionNumber = 0;
             const [created] = await tx.insert(ihInstallations).values({

@@ -74,6 +74,7 @@ import {
   newFormAttachment,
   nowIso,
   syncOperationalMeter,
+  wwFormCompletionContextError,
 } from '@/modules/installhub/lib/model';
 import {
   boardElectricalSource,
@@ -377,10 +378,11 @@ export function InstallHubFormEditorPage() {
       fieldKey: issue.fieldKey,
       message: issue.message,
     }));
-    if (currentForm.formType === 'ww-installation' && (!canonicalBoard || !canonicalMeter)) {
+    const contextError = wwFormCompletionContextError(tree, candidate);
+    if (contextError) {
       errors.unshift({
         id: 'form-canonical-context',
-        message: 'Link this WW form to a valid switchboard and meter before completion.',
+        message: contextError,
       });
     }
     setCompletionErrors(errors);
@@ -418,8 +420,14 @@ export function InstallHubFormEditorPage() {
           ? `Form completed. Version ${confirmed.recordVersionNumber} is confirmed and the record is now read-only.`
           : 'Form completed. The record is now read-only.',
       );
-      if (currentForm.formType === 'ww-installation' && canonicalBoard && canonicalMeter) {
-        router.replace(`/installhub/installations/${installationId}/zones/${canonicalBoard.zoneId}/boards/${canonicalBoard.id}/meters/${canonicalMeter.id}#meter-assignments`);
+      if (currentForm.formType === 'ww-installation') {
+        const completed = confirmed.formSubmissions.find((item) => item.id === formId);
+        const completedBoard = confirmed.electricalAssets.find(
+          (item) => item.id === completed?.boardId,
+        );
+        if (completedBoard && completed?.meterId) {
+          router.replace(`/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}/meters/${completed.meterId}#meter-assignments`);
+        }
       }
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));

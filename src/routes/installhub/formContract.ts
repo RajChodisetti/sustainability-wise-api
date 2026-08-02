@@ -74,6 +74,18 @@ const CHANNEL_LOADS = [
   'Other',
   'Not Used',
 ] as const;
+const CHANNEL_PURPOSES = [
+  'Main board supply',
+  'Sub-circuit / asset',
+  'Spare / unused',
+] as const;
+const METERED_CHANNEL_PURPOSES = CHANNEL_PURPOSES.slice(0, 2);
+const CHANNEL_LOADS_BY_PURPOSE: Readonly<Record<string, readonly string[]>> = {
+  'Main board supply': ['Mains Supply'],
+  'Sub-circuit / asset': CHANNEL_LOADS.filter((load) => (
+    load !== 'Mains Supply' && load !== 'Not Used'
+  )),
+};
 const USED_CHANNEL_LOADS = CHANNEL_LOADS.filter((load) => load !== 'Not Used');
 const SIGNAL_OPTIONS = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'] as const;
 const ANTENNA_OPTIONS = [
@@ -184,7 +196,24 @@ function wwChannelSections(): InstallHubContractSection[] {
         equals: channel <= 3 ? DEVICE_TYPES : 'A6M',
       },
       fields: [
-        select(`${prefix}.load`, CHANNEL_LOADS, true),
+        select(`${prefix}.purpose`, CHANNEL_PURPOSES, true),
+        {
+          key: `${prefix}.load`,
+          kind: 'select',
+          required: true,
+          optionsWhen: {
+            key: `${prefix}.purpose`,
+            values: CHANNEL_LOADS_BY_PURPOSE,
+          },
+          showWhen: {
+            key: `${prefix}.purpose`,
+            equals: METERED_CHANNEL_PURPOSES,
+          },
+        },
+        {
+          ...text(`${prefix}.custom_load_type`, true),
+          showWhen: { key: `${prefix}.load`, equals: 'Other' },
+        },
         sensor(
           `${prefix}.rating`,
           'device.type',
@@ -530,6 +559,58 @@ function optionsForField(
   return field.options ?? [];
 }
 
+/**
+ * Installed clients may still sync schema-v2 WW drafts authored before
+ * purpose/custom-load fields existed. Persisted Completed forms from that era
+ * are immutable and may opt into the same read/replay compatibility at their
+ * trusted call site. Project only for validation; never return or persist this
+ * copy.
+ */
+function projectLegacyWwAnswersForValidation(input: {
+  formType: string;
+  status: string;
+  answers: Record<string, string>;
+  allowLegacyCompletedWwLoadOnly: boolean;
+}): Record<string, string> {
+  const compatibilityAllowed = input.status === 'Draft'
+    || (input.status === 'Completed' && input.allowLegacyCompletedWwLoadOnly);
+  if (input.formType !== 'ww-installation' || !compatibilityAllowed) {
+    return input.answers;
+  }
+  const channelNumbers = Array.from({ length: 6 }, (_, index) => index + 1);
+  const hasPurpose = channelNumbers.some((channel) => (
+    Object.prototype.hasOwnProperty.call(input.answers, `channel.${channel}.purpose`)
+  ));
+  const hasCustomLoad = channelNumbers.some((channel) => (
+    Object.prototype.hasOwnProperty.call(input.answers, `channel.${channel}.custom_load_type`)
+  ));
+  if (hasPurpose || hasCustomLoad) return input.answers;
+
+  const deviceType = answer(input.answers, 'device.type');
+  const channelCount = deviceType === 'A3RM' ? 3 : deviceType === 'A6M' ? 6 : 0;
+  const projected = { ...input.answers };
+  for (let channel = 1; channel <= channelCount; channel += 1) {
+    const prefix = `channel.${channel}`;
+    const loadKey = `${prefix}.load`;
+    const load = answer(input.answers, loadKey);
+    if (!load) continue;
+    if (load === 'Mains Supply') {
+      projected[`${prefix}.purpose`] = 'Main board supply';
+    } else if (load === 'Not Used') {
+      projected[`${prefix}.purpose`] = 'Spare / unused';
+      delete projected[loadKey];
+    } else {
+      projected[`${prefix}.purpose`] = 'Sub-circuit / asset';
+      if (load === 'Other') {
+        projected[`${prefix}.custom_load_type`] = (
+          answer(input.answers, `${prefix}.description`) || 'Other'
+        );
+      }
+    }
+  }
+  return projected;
+}
+
 function validateRemoteUri(uri: string, index: number): void {
   let parsed: URL;
   try {
@@ -693,6 +774,8 @@ export function validateInstallHubFormContract(input: {
   answers: JsonRecord;
   attachments?: unknown;
   syncStage?: InstallHubSyncStage;
+  /** Only trusted persisted-form read/replay paths may enable this. */
+  allowLegacyCompletedWwLoadOnly?: boolean;
 }): void {
   if (!INSTALLHUB_FORM_TYPES.includes(
     input.formType as (typeof INSTALLHUB_FORM_TYPES)[number],
@@ -727,10 +810,16 @@ export function validateInstallHubFormContract(input: {
   if (!definition) {
     throw badRequest(`${input.formType} does not support schemaVersion 2`);
   }
+  const answers = projectLegacyWwAnswersForValidation({
+    formType: input.formType,
+    status: input.status,
+    answers: input.answers as Record<string, string>,
+    allowLegacyCompletedWwLoadOnly: input.allowLegacyCompletedWwLoadOnly === true,
+  });
   validateSchemaV2Definition({
     definition,
     status: input.status,
-    answers: input.answers as Record<string, string>,
+    answers,
     attachments: validateAttachments(input.attachments),
     syncStage: input.syncStage,
   });

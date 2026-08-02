@@ -114,6 +114,13 @@ const LOADS = [
   'Other',
   'Not Used',
 ] as const;
+const SUB_CIRCUIT_LOADS = LOADS.filter(
+  (load) => load !== 'Mains Supply' && load !== 'Not Used',
+);
+const LOADS_BY_PURPOSE: Readonly<Record<string, readonly string[]>> = {
+  'Main board supply': ['Mains Supply'],
+  'Sub-circuit / asset': SUB_CIRCUIT_LOADS,
+};
 const USED_LOADS = LOADS.filter((load) => load !== 'Not Used');
 const SIGNALS = [
   'Excellent',
@@ -229,12 +236,19 @@ function wwChannelSections(): FormSectionDefinition[] {
           key: `${prefix}.load`,
           label: 'Load',
           kind: 'select' as const,
-          options: LOADS,
+          optionsWhen: {
+            key: `${prefix}.purpose`,
+            values: LOADS_BY_PURPOSE,
+          },
           required: true,
           showWhen: {
             key: `${prefix}.purpose`,
             equals: ['Main board supply', 'Sub-circuit / asset'],
           },
+        },
+        {
+          ...text(`${prefix}.custom_load_type`, 'Custom load type', true),
+          showWhen: { key: `${prefix}.load`, equals: 'Other' },
         },
         sensor(
           `${prefix}.rating`,
@@ -1278,19 +1292,34 @@ export function operationalMeterForCompletedForm(
     deviceType,
     deviceId: form.answers['device.id'] || '',
     deviceNumber: form.answers['device.number'] || '',
-    wwChannels: Array.from({ length: channelCount }, (_, index) => ({
-      loadType: form.answers[`channel.${index + 1}.load`] || '',
-      description:
-        form.answers[`channel.${index + 1}.description`] || '',
-      ...(deviceType === 'A3RM'
-        ? {
-            rogowskiSize:
-              form.answers[`channel.${index + 1}.rating`] || '',
-          }
-        : {
-            ctRatio:
-              form.answers[`channel.${index + 1}.rating`] || '',
-          }),
-    })),
+    deviceFamily: 'WATTWATCHERS',
+    deviceNameOverridden: false,
+    wwChannels: Array.from({ length: channelCount }, (_, index) => {
+      const prefix = `channel.${index + 1}`;
+      const loadType = form.answers[`${prefix}.load`] || '';
+      const purpose = ({
+        'Main board supply': 'MAIN_SUPPLY',
+        'Sub-circuit / asset': 'SUB_CIRCUIT',
+        'Spare / unused': 'SPARE',
+      } as Record<string, string>)[form.answers[`${prefix}.purpose`] || '']
+        || (loadType === 'Not Used' ? 'SPARE' : loadType === 'Mains Supply' ? 'MAIN_SUPPLY' : 'SUB_CIRCUIT');
+      const channel: NonNullable<Meter['wwChannels']>[number] = {
+        ordinal: index + 1,
+        purpose,
+      };
+      if (purpose === 'SPARE') return channel;
+      const customLoadType = loadType === 'Other'
+        ? form.answers[`${prefix}.custom_load_type`]?.trim() || ''
+        : '';
+      channel.loadType = customLoadType || loadType;
+      channel.description = form.answers[`${prefix}.description`] || '';
+      if (customLoadType) channel.customLoadTypeName = customLoadType;
+      if (deviceType === 'A3RM') {
+        channel.rogowskiSize = form.answers[`${prefix}.rating`] || '';
+      } else {
+        channel.ctRatio = form.answers[`${prefix}.rating`] || '';
+      }
+      return channel;
+    }),
   };
 }

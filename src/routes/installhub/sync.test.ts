@@ -10,6 +10,7 @@ import {
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
   prepareCanonicalInstallHubWrite,
+  validateCanonicalFormContractsForSync,
 } from './sync.js';
 
 test('site-code rule matches the canonical eight-initial cross-client fixtures', () => {
@@ -557,6 +558,190 @@ test('InstallHub never persists a new Completed form before complete evidence va
   const values = formValues(completed, 'installation-1', undefined, 'complete');
   assert.equal(values.attachments.length, 2);
   assert.doesNotThrow(() => formValues(completed, 'installation-1', values, 'metadata'));
+});
+
+function loadOnlyWwForm(status: 'Draft' | 'Completed') {
+  const answers: Record<string, string> = {
+    'site.date_time': '2026-07-23T12:00:00.000Z',
+    'site.customer_name': 'Example Customer',
+    'site.address': '42 Example Road',
+    'installer.name': 'Installer One',
+    'prestart.site_induction': 'yes',
+    'prestart.safe_access': 'yes',
+    'prestart.correct_ppe': 'yes',
+    'prestart.live_points': 'no',
+    'prestart.can_isolate': 'yes',
+    'prestart.additional_hazards': 'no',
+    'prestart.safe_to_proceed': 'yes',
+    'auditor.switchboard_name': 'Main Switchboard',
+    'auditor.switchboard_location': 'Plant room',
+    'auditor.switchboard_type': 'Main switchboard',
+    'device.type': 'A3RM',
+    'device.number': 'WW-001',
+    'device.id': 'A3RM-001',
+    'channel.1.load': 'Mains Supply',
+    'channel.1.rating': '3000A - 9cm',
+    'channel.2.load': 'HVAC',
+    'channel.2.rating': '3000A - 20cm',
+    'channel.3.load': 'Not Used',
+    'commissioning.energised': 'yes',
+    'commissioning.leds_visible': 'yes',
+    'commissioning.online': 'yes',
+    'commissioning.signal_strength': 'Good',
+    'commissioning.antenna_type': 'Internal',
+    'commissioning.start_complete': 'yes',
+    'commissioning.channels_complete': 'yes',
+    'commissioning.phase_a_voltage': '230',
+    'commissioning.phase_b_voltage': '231',
+    'commissioning.phase_c_voltage': '232',
+  };
+  const requiredPhotoSlots = [
+    'auditor.location_before',
+    'auditor.sensor_before',
+    'auditor.cb_before',
+    'auditor.installed_location',
+    'auditor.serial_photo',
+    'auditor.sensor_installed',
+    'auditor.cb_installed',
+    'commissioning.start_screenshot',
+    'commissioning.channels_screenshot',
+    'commissioning.energy_screenshot',
+    'commissioning.completed_photos',
+  ];
+  return {
+    id: 'form-legacy-ww',
+    installationId: 'installation-1',
+    formType: 'ww-installation',
+    schemaVersion: 2,
+    status,
+    answers,
+    attachments: requiredPhotoSlots.map((slot, index) => ({
+      id: `legacy-ww-photo-${index + 1}`,
+      slot,
+      uri: `https://files.example.test/legacy-ww-photo-${index + 1}.jpg`,
+      mimeType: 'image/jpeg',
+      capturedAt: '2026-07-23T12:00:00.000Z',
+    })),
+    createdAt: '2026-07-23T12:00:00.000Z',
+    updatedAt: '2026-07-23T12:00:00.000Z',
+  };
+}
+
+function currentWwForm() {
+  const form = loadOnlyWwForm('Completed');
+  form.answers['channel.1.purpose'] = 'Main board supply';
+  form.answers['channel.2.purpose'] = 'Sub-circuit / asset';
+  form.answers['channel.3.purpose'] = 'Spare / unused';
+  delete form.answers['channel.3.load'];
+  return form;
+}
+
+test('legacy form mapping accepts load-only drafts and only replays an exact persisted Completed form', () => {
+  const purposeRequired = (error: unknown) => {
+    assert.ok(error && typeof error === 'object' && 'detail' in error);
+    assert.match(String(error.detail), /purpose/);
+    return true;
+  };
+  const legacyCompleted = loadOnlyWwForm('Completed');
+  assert.throws(
+    () => formValues(legacyCompleted, 'installation-1', undefined, 'complete'),
+    purposeRequired,
+  );
+
+  const legacyDraft = loadOnlyWwForm('Draft');
+  const persistedDraft = formValues(
+    legacyDraft,
+    'installation-1',
+    undefined,
+    'metadata',
+  );
+  assert.equal(persistedDraft.status, 'Draft');
+  assert.throws(
+    () => formValues(legacyCompleted, 'installation-1', persistedDraft, 'complete'),
+    purposeRequired,
+  );
+
+  const persistedCompleted = formValues(
+    currentWwForm(),
+    'installation-1',
+    undefined,
+    'complete',
+  );
+  const persistedLegacyCompleted = {
+    ...persistedCompleted,
+    answers: legacyCompleted.answers,
+  };
+  assert.doesNotThrow(() => formValues(
+    legacyCompleted,
+    'installation-1',
+    persistedLegacyCompleted,
+    'complete',
+  ));
+  assert.throws(
+    () => formValues(legacyCompleted, 'installation-1', persistedCompleted, 'complete'),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === `COMPLETED_FORM_IMMUTABLE:${legacyCompleted.id}`
+    ),
+  );
+  assert.throws(
+    () => formValues({
+      ...legacyCompleted,
+      answers: {
+        ...legacyCompleted.answers,
+        'channel.1.load': 'Solar PV',
+      },
+    }, 'installation-1', persistedLegacyCompleted, 'complete'),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === `COMPLETED_FORM_IMMUTABLE:${legacyCompleted.id}`
+    ),
+  );
+});
+
+test('canonical sync grants Completed load-only projection only to the same persisted Completed id', () => {
+  const purposeRequired = (error: unknown) => {
+    assert.ok(error && typeof error === 'object' && 'detail' in error);
+    assert.match(String(error.detail), /purpose/);
+    return true;
+  };
+  const legacyCompleted = loadOnlyWwForm('Completed');
+  assert.throws(
+    () => validateCanonicalFormContractsForSync({
+      incoming: [legacyCompleted],
+      syncStage: 'complete',
+    }),
+    purposeRequired,
+  );
+  assert.throws(
+    () => validateCanonicalFormContractsForSync({
+      incoming: [legacyCompleted],
+      existing: [loadOnlyWwForm('Draft')],
+      syncStage: 'complete',
+    }),
+    purposeRequired,
+  );
+  assert.throws(
+    () => validateCanonicalFormContractsForSync({
+      incoming: [legacyCompleted],
+      existing: [{ ...currentWwForm(), id: 'different-completed-form' }],
+      syncStage: 'complete',
+    }),
+    purposeRequired,
+  );
+  assert.doesNotThrow(() => validateCanonicalFormContractsForSync({
+    incoming: [loadOnlyWwForm('Draft')],
+    syncStage: 'metadata',
+  }));
+  assert.doesNotThrow(() => validateCanonicalFormContractsForSync({
+    incoming: [legacyCompleted],
+    existing: [legacyCompleted],
+    syncStage: 'complete',
+  }));
 });
 
 test('InstallHub form mapping rejects non-array schema-v2 attachments', () => {

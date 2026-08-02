@@ -188,14 +188,28 @@ selection are present. Scanner modality is a mobile capture concern; the API
 validates the resulting identifiers and conditional values.
 
 For Installation, A3RM exposes exactly three channels and A6M exactly six.
-Every visible channel requires a `channel.N.load`. A real load requires an
+Every visible current channel requires a `channel.N.purpose`. `Main board
+supply` permits only `Mains Supply`. `Sub-circuit / asset` requires HVAC,
+Lighting, Solar PV, Forklift Charger, Hot Water, General Power, or `Other`; an
+`Other` load also requires a non-empty `channel.N.custom_load_type`. `Spare /
+unused` hides and clears load, custom load, rating, and description, along with
+its load evidence and commissioning values. Each active channel requires an
 A3RM Rogowski value (`3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`) or an
-A6M CT value (`60A`, `120A`, `200A`, `400A`, or `600A`). `Not Used` is a load
-state and requires `channel.N.rating` to be empty; it is not a sensor option.
-A3RM submissions must not carry hidden channel 4-6 load/rating values; the
-mobile condition engine clears the rest of those hidden fields. Schema-v2
-answers reject the legacy `not_applicable` value; yes/no fields must use `yes`
-or `no`.
+A6M CT value (`60A`, `120A`, `200A`, `400A`, or `600A`). A3RM submissions must
+not carry hidden channel 4-6 values; the mobile condition engine clears those
+hidden fields.
+
+Current schema-v2 purpose/custom-load payloads are validated strictly. Load-only
+schema-v2 Drafts from installed clients remain syncable when their entire
+purpose/custom-load shape is absent. The equivalent Completed projection is
+accepted only for a same-ID row already persisted as immutable Completed, or
+when readiness/reporting validates that persisted row; a fresh Completed form
+or Draft-to-Completed transition is strict. The API infers purpose solely in a
+temporary validation copy and never rewrites the stored or returned snapshot.
+`Not Used` remains a legacy load-only compatibility signal, not a current load
+choice. Schema-v2 answers reject the legacy `not_applicable` value; yes/no fields
+must use `yes` or `no`. Form answers are already stored as JSON, so this boundary
+validation compatibility requires no new database migration.
 
 Completed standard forms require their ingestion identities: ACE job number and
 phase A/B/C CT serials; Honeywell Q400 water-meter serial; and both meter and

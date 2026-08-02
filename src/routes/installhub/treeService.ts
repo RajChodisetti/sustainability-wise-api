@@ -59,6 +59,7 @@ import {
   buildMeteringView,
 } from './canonicalViews.js';
 import { validateInstallHubFormContract } from './formContract.js';
+import { classifyLegacyMeterLoadType } from './legacyBackfill.js';
 
 // Drizzle transactions expose the same query builder surface used here. This
 // narrow structural type keeps every lifecycle write on the caller's tx.
@@ -587,7 +588,14 @@ const WW_LOAD_TYPE_CODES: Record<string, MeterDevice['channels'][number]['loadTy
   'Forklift Charger': 'FORKLIFT',
   'Hot Water': 'HEATER_GEYSER',
   'General Power': 'POWER_OUTLET',
-  Other: 'OTHER',
+};
+
+const WW_CHANNEL_PURPOSE_BY_FORM_VALUE: Readonly<
+  Record<string, MeterDevice['channels'][number]['purpose']>
+> = {
+  'Main board supply': 'MAIN_SUPPLY',
+  'Sub-circuit / asset': 'SUB_CIRCUIT',
+  'Spare / unused': 'SPARE',
 };
 
 /** Shared server mapper/guard for WW commissioning answers → meter identity. */
@@ -607,18 +615,36 @@ export function wwCommissioningFormMatchesMeter(
     const channel = meter.channels.find((item) => item.ordinal === ordinal);
     if (!channel) return false;
     const load = form.answers[`channel.${ordinal}.load`];
-    const expectedPurpose = load === 'Not Used'
-      ? 'SPARE'
-      : load === 'Mains Supply'
-        ? 'MAIN_SUPPLY'
-        : 'SUB_CIRCUIT';
+    const purposeAnswer = form.answers[`channel.${ordinal}.purpose`];
+    const expectedPurpose = purposeAnswer
+      ? WW_CHANNEL_PURPOSE_BY_FORM_VALUE[purposeAnswer]
+      : load === 'Not Used'
+        ? 'SPARE'
+        : load === 'Mains Supply'
+          ? 'MAIN_SUPPLY'
+          : 'SUB_CIRCUIT';
+    if (!expectedPurpose) return false;
     if (channel.purpose !== expectedPurpose) return false;
+    const customLoadKey = `channel.${ordinal}.custom_load_type`;
+    const hasCurrentCustomLoad = Object.prototype.hasOwnProperty.call(
+      form.answers,
+      customLoadKey,
+    );
+    const customLoadLabel = load === 'Other'
+      ? hasCurrentCustomLoad
+        ? form.answers[customLoadKey]?.trim() || null
+        : form.answers[`channel.${ordinal}.description`]?.trim() || load
+      : null;
+    if (load === 'Other' && !customLoadLabel) return false;
+    const classifiedCustomLoad = load === 'Other'
+      ? classifyLegacyMeterLoadType(customLoadLabel)
+      : null;
     const expectedLoadType = expectedPurpose === 'SUB_CIRCUIT'
-      ? WW_LOAD_TYPE_CODES[load] ?? 'OTHER'
+      ? classifiedCustomLoad?.code ?? WW_LOAD_TYPE_CODES[load] ?? 'OTHER'
       : null;
     if ((channel.loadTypeCode ?? null) !== expectedLoadType) return false;
-    const expectedCustom = expectedLoadType === 'OTHER'
-      ? form.answers[`channel.${ordinal}.description`] || null
+    const expectedCustom = expectedPurpose === 'SUB_CIRCUIT'
+      ? classifiedCustomLoad?.custom ?? null
       : null;
     if ((channel.customLoadTypeName ?? null) !== expectedCustom) return false;
     const expectedRating = expectedPurpose === 'SPARE'
@@ -1494,6 +1520,10 @@ export function canonicalCompletionFormIssues(
         answers: form.answers,
         attachments: form.attachments,
         syncStage: 'complete',
+        // Readiness operates on forms loaded from persistence. Completed rows
+        // are immutable, so older load-only WW answers may be projected on a
+        // temporary validation copy without weakening new completion writes.
+        allowLegacyCompletedWwLoadOnly: true,
       });
       return [];
     } catch (error) {

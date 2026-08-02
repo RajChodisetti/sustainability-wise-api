@@ -2,6 +2,7 @@ import {
   FORM_DEFINITIONS,
   createInitialFormAnswers,
   meterAfterCommsReplacement,
+  operationalMeterForCompletedForm,
 } from '@/modules/installhub/forms/catalog';
 import type { FormDefinition } from '@/modules/installhub/forms/catalog';
 import type {
@@ -429,6 +430,91 @@ export type FormContext = {
   siteAssetId?: string | null;
 };
 
+const WW_CHANNEL_PURPOSE_LABELS: Record<string, string> = {
+  MAIN_SUPPLY: 'Main board supply',
+  SUB_CIRCUIT: 'Sub-circuit / asset',
+  SPARE: 'Spare / unused',
+};
+
+const WW_LOAD_LABELS = new Set([
+  'Mains Supply',
+  'HVAC',
+  'Lighting',
+  'Solar PV',
+  'Forklift Charger',
+  'Hot Water',
+  'General Power',
+  'Other',
+  'Not Used',
+]);
+
+const WW_LOAD_LABEL_BY_CODE: Record<string, string> = {
+  HVAC: 'HVAC',
+  LIGHTING: 'Lighting',
+  PV: 'Solar PV',
+  FORKLIFT: 'Forklift Charger',
+  HEATER_GEYSER: 'Hot Water',
+  POWER_OUTLET: 'General Power',
+  OTHER: 'Other',
+  EV_CHARGER: 'Other',
+  VEHICLE_HOIST: 'Other',
+  EXHAUST_FAN_SYSTEM: 'Other',
+};
+
+const WW_CUSTOM_LOAD_LABEL_BY_CODE: Record<string, string> = {
+  EV_CHARGER: 'EV Charger',
+  VEHICLE_HOIST: 'Vehicle Hoist',
+  EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
+};
+
+function prefillWwInstallationAnswers(
+  answers: Record<string, string>,
+  meter: Meter,
+): void {
+  if (meter.deviceType !== 'A3RM' && meter.deviceType !== 'A6M') return;
+  answers['device.type'] = meter.deviceType;
+  answers['device.id'] = meter.deviceId;
+  answers['device.number'] = meter.deviceNumber ?? '';
+
+  const channelCount = meter.deviceType === 'A3RM' ? 3 : 6;
+  const channels = (meter.wwChannels ?? [])
+    .map((channel, index) => ({ channel, ordinal: channel.ordinal ?? index + 1 }))
+    .sort((left, right) => left.ordinal - right.ordinal);
+  const seenOrdinals = new Set<number>();
+  for (const { channel, ordinal } of channels) {
+    if (ordinal < 1 || ordinal > channelCount || seenOrdinals.has(ordinal)) continue;
+    seenOrdinals.add(ordinal);
+    const rawLoad = channel.loadType?.trim() ?? '';
+    const inferredPurpose = rawLoad === 'Mains Supply'
+      ? 'Main board supply'
+      : rawLoad === 'Not Used'
+        ? 'Spare / unused'
+        : 'Sub-circuit / asset';
+    const purpose = WW_CHANNEL_PURPOSE_LABELS[channel.purpose ?? ''] ?? inferredPurpose;
+    answers[`channel.${ordinal}.purpose`] = purpose;
+    if (purpose === 'Spare / unused') continue;
+
+    const canonicalLoad = purpose === 'Main board supply'
+      ? 'Mains Supply'
+      : WW_LOAD_LABELS.has(rawLoad)
+        ? rawLoad
+        : WW_LOAD_LABEL_BY_CODE[rawLoad]
+          ?? (rawLoad ? 'Other' : '');
+    if (canonicalLoad) answers[`channel.${ordinal}.load`] = canonicalLoad;
+    if (canonicalLoad === 'Other') {
+      const customLoad = channel.customLoadTypeName?.trim()
+        || WW_CUSTOM_LOAD_LABEL_BY_CODE[rawLoad]
+        || (rawLoad && rawLoad !== 'Other' && rawLoad !== 'OTHER' ? rawLoad : '');
+      if (customLoad) answers[`channel.${ordinal}.custom_load_type`] = customLoad;
+    }
+    const rating = channel.rogowskiSize?.trim() || channel.ctRatio?.trim();
+    if (rating) answers[`channel.${ordinal}.rating`] = rating;
+    if (channel.description?.trim()) {
+      answers[`channel.${ordinal}.description`] = channel.description.trim();
+    }
+  }
+}
+
 export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
   return FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
@@ -446,6 +532,22 @@ export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
     }
     return true;
   });
+}
+
+export function wwFormCompletionContextError(
+  tree: InstallationTree,
+  form: Pick<FormSubmission, 'formType' | 'boardId' | 'meterId'>,
+): string | null {
+  if (form.formType !== 'ww-installation') return null;
+  const board = tree.electricalAssets.find((item) => item.id === form.boardId);
+  if (!board) return 'Link this WW form to a valid switchboard before completion.';
+  if (!form.meterId) return null;
+  const meter = (tree.meterDevices ?? []).find(
+    (item) => item.id === form.meterId && item.installedOnBoardId === board.id,
+  );
+  return meter
+    ? null
+    : 'The linked meter is unavailable on this switchboard. Reconcile the form context before completion.';
 }
 
 export function createFormSubmission(
@@ -475,6 +577,7 @@ export function createFormSubmission(
         answers['existing.device_id'] = meter.deviceId;
         answers['existing.device_number'] = meter.deviceNumber ?? '';
         answers['existing.device_type'] = meter.deviceType;
+        if (type === 'ww-installation') prefillWwInstallationAnswers(answers, meter);
       }
     }
   }
@@ -570,46 +673,57 @@ export function syncOperationalMeter(
   if (!['ww-installation', 'a3rm-installation', 'a6m-installation'].includes(completed.formType)) {
     return;
   }
-  const deviceType =
-    completed.formType === 'ww-installation'
-      ? completed.answers['device.type'] as Meter['deviceType']
-      : completed.formType === 'a3rm-installation'
-        ? 'A3RM'
-        : 'A6M';
-  const deviceId = String(
-    completed.answers[
-      completed.formType === 'ww-installation' ? 'device.id' : 'auditor.serial_number'
-    ] ?? '',
-  );
-  const meter: Meter = {
-    id: completed.meterId ?? createId('meter'),
-    deviceFamily: 'WATTWATCHERS',
-    deviceName: `${deviceType} Auditor`,
-    deviceNameOverridden: false,
-    deviceType,
-    deviceId,
-    deviceNumber: String(completed.answers['device.number'] ?? ''),
-    wwChannels: Array.from({ length: deviceType === 'A3RM' ? 3 : 6 }, (_, index) => ({
-      id: `${completed.meterId ?? 'pending'}:${index + 1}`,
-      ordinal: index + 1,
-      purpose: ({
-        'Main board supply': 'MAIN_SUPPLY',
-        'Sub-circuit / asset': 'SUB_CIRCUIT',
-        'Spare / unused': 'SPARE',
-      } as Record<string, string>)[String(completed.answers[`channel.${index + 1}.purpose`] ?? '')]
-        || (String(completed.answers[`channel.${index + 1}.load`] ?? '') === 'Not Used' ? 'SPARE' : 'SUB_CIRCUIT'),
-      loadType: String(completed.answers[`channel.${index + 1}.load`] ?? ''),
-      description: String(completed.answers[`channel.${index + 1}.description`] ?? ''),
-      ...(deviceType === 'A3RM'
-        ? { rogowskiSize: String(completed.answers[`channel.${index + 1}.rating`] ?? '') }
-        : { ctRatio: String(completed.answers[`channel.${index + 1}.rating`] ?? '') }),
-    })),
-  };
-  meter.wwChannels = meter.wwChannels?.map((channel, index) => ({
-    ...channel,
-    id: `${meter.id}:${index + 1}`,
-  }));
+  const meter: Meter | null = completed.formType === 'ww-installation'
+    ? operationalMeterForCompletedForm(completed)
+    : (() => {
+        const deviceType = completed.formType === 'a3rm-installation' ? 'A3RM' : 'A6M';
+        const id = completed.meterId ?? createId('meter');
+        return {
+          id,
+          deviceFamily: 'WATTWATCHERS' as const,
+          deviceName: `${deviceType} Auditor`,
+          deviceNameOverridden: false,
+          deviceType,
+          deviceId: String(completed.answers['auditor.serial_number'] ?? ''),
+          deviceNumber: String(completed.answers['device.number'] ?? ''),
+          wwChannels: Array.from({ length: deviceType === 'A3RM' ? 3 : 6 }, (_, index) => ({
+            id: `${id}:${index + 1}`,
+            ordinal: index + 1,
+            purpose: String(completed.answers[`channel.${index + 1}.load`] ?? '') === 'Not Used'
+              ? 'SPARE'
+              : 'SUB_CIRCUIT',
+            loadType: String(completed.answers[`channel.${index + 1}.load`] ?? ''),
+            description: String(completed.answers[`channel.${index + 1}.description`] ?? ''),
+            ...(deviceType === 'A3RM'
+              ? { rogowskiSize: String(completed.answers[`channel.${index + 1}.rating`] ?? '') }
+              : { ctRatio: String(completed.answers[`channel.${index + 1}.rating`] ?? '') }),
+          })),
+        } satisfies Meter;
+      })();
+  if (!meter) return;
   const existingIndex = board.meters.findIndex((item) => item.id === meter.id);
+  const existingMeter = existingIndex >= 0 ? board.meters[existingIndex] : undefined;
+  const existingChannels = new Map(
+    (existingMeter?.wwChannels ?? []).map((channel, index) => [
+      channel.ordinal ?? index + 1,
+      channel,
+    ]),
+  );
+  meter.wwChannels = meter.wwChannels?.map((channel, index) => {
+    const ordinal = channel.ordinal ?? index + 1;
+    const prior = existingChannels.get(ordinal);
+    return {
+      ...prior,
+      ...channel,
+      id: prior?.id ?? channel.id ?? `${meter.id}:${ordinal}`,
+      ordinal,
+      loadType: channel.loadType,
+      customLoadTypeName: channel.customLoadTypeName,
+      rogowskiSize: channel.rogowskiSize,
+      ctRatio: channel.ctRatio,
+      description: channel.description,
+    };
+  });
   if (existingIndex >= 0) board.meters[existingIndex] = { ...board.meters[existingIndex], ...meter };
   else board.meters.push(meter);
   board.meterPresent = true;

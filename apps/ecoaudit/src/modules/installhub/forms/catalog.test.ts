@@ -107,10 +107,10 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 384);
+  assert.equal(fieldCount, 390);
   assert.equal(
     fingerprint,
-    'bcaf7b3343a39e7fd937c78ab7f150bb0e3fe236cbd32597758d7b6772665852',
+    'df5cda7af9d65d9f6c19bdcaec182a61d248b1d9fe47bb29478f1d736e1b482a',
   );
 });
 
@@ -122,8 +122,12 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   const firstRating = channels[0].fields.find(
     (field) => field.key === 'channel.1.rating',
   );
+  const firstLoad = channels[0].fields.find(
+    (field) => field.key === 'channel.1.load',
+  );
 
   assert.ok(firstRating);
+  assert.ok(firstLoad);
   assert.equal(channels.length, 6);
   assert.deepEqual(
     optionsForField(firstRating, { 'device.type': 'A3RM' }),
@@ -133,6 +137,14 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
     optionsForField(firstRating, { 'device.type': 'A6M' }),
     SENSOR_OPTIONS_BY_DEVICE.A6M,
   );
+  assert.deepEqual(
+    optionsForField(firstLoad, { 'channel.1.purpose': 'Main board supply' }),
+    ['Mains Supply'],
+  );
+  assert.deepEqual(
+    optionsForField(firstLoad, { 'channel.1.purpose': 'Sub-circuit / asset' }),
+    ['HVAC', 'Lighting', 'Solar PV', 'Forklift Charger', 'Hot Water', 'General Power', 'Other'],
+  );
   assert.equal(
     isSectionVisible(channels[3], { 'device.type': 'A3RM' }),
     false,
@@ -140,6 +152,34 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   assert.equal(
     isSectionVisible(channels[5], { 'device.type': 'A6M' }),
     true,
+  );
+});
+
+test('WW channel contract matches the API and iOS parity signature', () => {
+  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const channelContract = Array.from({ length: 6 }, (_, index) => {
+    const channel = index + 1;
+    const section = definition.sections.find((candidate) =>
+      candidate.fields.some((field) => field.key === `channel.${channel}.purpose`),
+    );
+    assert.ok(section, `channel ${channel} section is declared`);
+    return {
+      channel,
+      showWhen: section.showWhen,
+      fields: section.fields.map((field) => ({
+        key: field.key,
+        kind: field.kind,
+        required: field.required ?? false,
+        ...(field.options ? { options: field.options } : {}),
+        ...(field.showWhen ? { showWhen: field.showWhen } : {}),
+        ...(field.optionsWhen ? { optionsWhen: field.optionsWhen } : {}),
+      })),
+    };
+  });
+
+  assert.equal(
+    createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
+    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
   );
 });
 

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS,
@@ -10,6 +11,19 @@ import {
 
 type CurrentFormType = keyof typeof INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS;
 type Answers = Record<string, string>;
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(
+        (value as Record<string, unknown>)[key],
+      )}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
 
 function detailMatches(pattern: RegExp) {
   return (error: unknown) => (
@@ -195,11 +209,221 @@ test('WW installation enforces exact A3RM and A6M conditional sensor choices', (
   assert.doesNotThrow(() => validateInstallHubFormContract(a6m));
 });
 
-test('WW Not Used channels reject hidden rating, description, evidence and commissioning data', () => {
+test('WW channel contract accepts the canonical purpose and conditional load shape', () => {
+  const purposeOptions = [
+    'Main board supply',
+    'Sub-circuit / asset',
+    'Spare / unused',
+  ];
+  const loadOptions = [
+    'Mains Supply',
+    'HVAC',
+    'Lighting',
+    'Solar PV',
+    'Forklift Charger',
+    'Hot Water',
+    'General Power',
+    'Other',
+    'Not Used',
+  ];
+  const definition = INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS['ww-installation'];
+  const channelContract = [];
+
+  for (let channel = 1; channel <= 6; channel += 1) {
+    const section = definition.sections.find((candidate) => (
+      candidate.fields.some((field) => field.key === `channel.${channel}.purpose`)
+    ));
+    assert.ok(section, `channel ${channel} section is declared`);
+    channelContract.push({
+      channel,
+      showWhen: section.showWhen,
+      fields: section.fields,
+    });
+  }
+
+  assert.equal(channelContract.length, 6);
+  assert.deepEqual(channelContract, Array.from({ length: 6 }, (_, index) => {
+    const channel = index + 1;
+    const prefix = `channel.${channel}`;
+    const loadVisible = {
+      key: `${prefix}.purpose`,
+      equals: purposeOptions.slice(0, 2),
+    };
+    const usedLoadVisible = {
+      key: `${prefix}.load`,
+      equals: loadOptions.slice(0, -1),
+    };
+    return {
+      channel,
+      showWhen: {
+        key: 'device.type',
+        equals: channel <= 3 ? ['A3RM', 'A6M'] : 'A6M',
+      },
+      fields: [
+        {
+          key: `${prefix}.purpose`,
+          kind: 'select',
+          options: purposeOptions,
+          required: true,
+        },
+        {
+          key: `${prefix}.load`,
+          kind: 'select',
+          required: true,
+          optionsWhen: {
+            key: `${prefix}.purpose`,
+            values: {
+              'Main board supply': ['Mains Supply'],
+              'Sub-circuit / asset': loadOptions.slice(1, -1),
+            },
+          },
+          showWhen: loadVisible,
+        },
+        {
+          key: `${prefix}.custom_load_type`,
+          kind: 'text',
+          required: true,
+          showWhen: { key: `${prefix}.load`, equals: 'Other' },
+        },
+        {
+          key: `${prefix}.rating`,
+          kind: 'select',
+          required: true,
+          optionsWhen: {
+            key: 'device.type',
+            values: {
+              A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
+              A6M: ['60A', '120A', '200A', '400A', '600A'],
+            },
+          },
+          showWhen: usedLoadVisible,
+        },
+        {
+          key: `${prefix}.description`,
+          kind: 'text',
+          required: false,
+          showWhen: usedLoadVisible,
+        },
+        {
+          key: `${prefix}.nameplate_photos`,
+          kind: 'photo',
+          required: false,
+          showWhen: usedLoadVisible,
+        },
+      ],
+    };
+  }));
+  assert.equal(
+    createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
+    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
+  );
+
+  assert.doesNotThrow(() => validateInstallHubFormContract({
+    formType: 'ww-installation',
+    schemaVersion: 2,
+    status: 'Draft',
+    answers: {
+      'device.type': 'A3RM',
+      'channel.1.purpose': 'Main board supply',
+      'channel.1.load': 'Mains Supply',
+    },
+    attachments: [],
+  }));
+});
+
+test('WW current load choices are constrained by channel purpose', () => {
+  const draft = (purpose: string, load: string) => ({
+    formType: 'ww-installation',
+    schemaVersion: 2,
+    status: 'Draft',
+    answers: {
+      'device.type': 'A3RM',
+      'channel.1.purpose': purpose,
+      'channel.1.load': load,
+    },
+    attachments: [],
+  });
+
+  assert.doesNotThrow(() => validateInstallHubFormContract(
+    draft('Main board supply', 'Mains Supply'),
+  ));
+  assert.doesNotThrow(() => validateInstallHubFormContract(
+    draft('Sub-circuit / asset', 'HVAC'),
+  ));
+  for (const invalid of [
+    draft('Main board supply', 'HVAC'),
+    draft('Sub-circuit / asset', 'Mains Supply'),
+    draft('Sub-circuit / asset', 'Not Used'),
+  ]) {
+    assert.throws(
+      () => validateInstallHubFormContract(invalid),
+      detailMatches(/channel\.1\.load is not a valid selection/),
+    );
+  }
+  assert.throws(
+    () => validateInstallHubFormContract(draft('Spare / unused', 'Not Used')),
+    detailMatches(/channel\.1\.load.*hidden/),
+  );
+});
+
+test('WW Other loads require a separate custom label and reject it when hidden', () => {
+  const fixture = generatedCompletedFixture('ww-installation', {
+    'device.type': 'A3RM',
+  });
+  fixture.answers['channel.1.purpose'] = 'Sub-circuit / asset';
+  fixture.answers['channel.1.load'] = 'Other';
+
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/Completed form requires answers\.channel\.1\.custom_load_type/),
+  );
+
+  fixture.answers['channel.1.custom_load_type'] = 'Packaging line';
+  fixture.answers['channel.1.description'] = 'Feeds the west-side conveyor';
+  assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
+
+  fixture.answers['channel.1.load'] = 'HVAC';
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/channel\.1\.custom_load_type.*hidden/),
+  );
+});
+
+test('WW spare channels require a purpose and reject hidden load details', () => {
+  const fixture = generatedCompletedFixture('ww-installation', {
+    'device.type': 'A3RM',
+  });
+  fixture.answers['channel.1.purpose'] = 'Spare / unused';
+  delete fixture.answers['channel.1.load'];
+  delete fixture.answers['channel.1.rating'];
+  assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
+
+  fixture.answers['channel.1.load'] = 'Not Used';
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/channel\.1\.load.*hidden/),
+  );
+  delete fixture.answers['channel.1.load'];
+
+  fixture.answers['channel.1.purpose'] = 'Unused';
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/channel\.1\.purpose is not a valid selection/),
+  );
+
+  delete fixture.answers['channel.1.purpose'];
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/Completed form requires answers\.channel\.1\.purpose/),
+  );
+});
+
+test('WW spare channels reject hidden rating, description, evidence and commissioning data', () => {
   const fixture = generatedCompletedFixture('ww-installation', {
     'device.type': 'A6M',
   });
-  fixture.answers['channel.4.load'] = 'Not Used';
+  fixture.answers['channel.4.purpose'] = 'Spare / unused';
+  delete fixture.answers['channel.4.load'];
   delete fixture.answers['channel.4.rating'];
   assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
 
@@ -222,6 +446,56 @@ test('WW Not Used channels reject hidden rating, description, evidence and commi
   assert.throws(
     () => validateInstallHubFormContract(fixture),
     detailMatches(/channel\.4\.nameplate_photos.*hidden/),
+  );
+});
+
+test('load-only WW compatibility is non-mutating and gated by lifecycle context', () => {
+  const historical = generatedCompletedFixture('ww-installation', {
+    'device.type': 'A3RM',
+  });
+  historical.answers['channel.2.load'] = 'Other';
+  delete historical.answers['channel.2.description'];
+  historical.answers['channel.3.load'] = 'Not Used';
+  delete historical.answers['channel.3.rating'];
+  for (let channel = 1; channel <= 3; channel += 1) {
+    delete historical.answers[`channel.${channel}.purpose`];
+    delete historical.answers[`channel.${channel}.custom_load_type`];
+  }
+  const before = structuredClone(historical.answers);
+
+  assert.throws(
+    () => validateInstallHubFormContract(historical),
+    detailMatches(/Completed form requires answers\.channel\.1\.purpose/),
+  );
+  assert.doesNotThrow(() => validateInstallHubFormContract({
+    ...historical,
+    status: 'Draft',
+    syncStage: 'metadata',
+  }));
+  assert.doesNotThrow(() => validateInstallHubFormContract({
+    ...historical,
+    allowLegacyCompletedWwLoadOnly: true,
+  }));
+  assert.deepEqual(historical.answers, before);
+
+  const partialCurrent = structuredClone(historical);
+  partialCurrent.answers['channel.1.purpose'] = 'Main board supply';
+  assert.throws(
+    () => validateInstallHubFormContract({
+      ...partialCurrent,
+      allowLegacyCompletedWwLoadOnly: true,
+    }),
+    detailMatches(/Completed form requires answers\.channel\.2\.purpose/),
+  );
+
+  const currentOther = generatedCompletedFixture('ww-installation', {
+    'device.type': 'A3RM',
+  });
+  currentOther.answers['channel.2.purpose'] = 'Sub-circuit / asset';
+  currentOther.answers['channel.2.load'] = 'Other';
+  assert.throws(
+    () => validateInstallHubFormContract(currentOther),
+    detailMatches(/Completed form requires answers\.channel\.2\.custom_load_type/),
   );
 });
 

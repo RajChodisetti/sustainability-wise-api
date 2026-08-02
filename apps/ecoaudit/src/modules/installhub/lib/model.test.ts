@@ -14,7 +14,9 @@ import {
   createZone,
   removeZone,
   syncOperationalMeter,
+  wwFormCompletionContextError,
 } from './model';
+import { syncMeterDevice } from './workflow';
 import type { InstallHubUser } from '../types/domain';
 
 const user: InstallHubUser = {
@@ -77,6 +79,144 @@ test('meter-linked reconciliation keeps the required WW installation form availa
       .map((definition) => definition.type),
     ['comms-fault'],
   );
+});
+
+test('board-only WW forms may create a meter while stale linked-meter context is blocked', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+  });
+
+  assert.equal(wwFormCompletionContextError(tree, form), null);
+  form.meterId = 'missing-meter';
+  assert.match(wwFormCompletionContextError(tree, form) ?? '', /unavailable/);
+});
+
+test('meter-linked WW completion preserves stable channel IDs and assignments', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.meters = [{
+    id: 'meter-stable',
+    deviceFamily: 'WATTWATCHERS',
+    deviceName: 'A3RM Auditor',
+    deviceType: 'A3RM',
+    deviceId: 'SERIAL-STABLE',
+    deviceNumber: '42',
+    wwChannels: [
+      { id: 'channel-red', ordinal: 1, purpose: 'MAIN_SUPPLY', loadType: 'Mains Supply', rogowskiSize: '3000A - 9cm' },
+      { id: 'channel-white', ordinal: 2, purpose: 'SPARE' },
+      { id: 'channel-blue', ordinal: 3, purpose: 'SPARE' },
+    ],
+  }];
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+  syncMeterDevice(tree, board.id, board.meters[0]);
+  tree.measurementAssignments = [{
+    id: 'assignment-stable',
+    installationId: tree.installation.id,
+    meterId: 'meter-stable',
+    channelIds: ['channel-red'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'BOARD', boardId: board.id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+    meterId: 'meter-stable',
+  });
+  form.status = 'Completed';
+
+  syncOperationalMeter(tree, form);
+  syncMeterDevice(tree, board.id, board.meters[0]);
+
+  assert.deepEqual(
+    board.meters[0].wwChannels?.map((channel) => channel.id),
+    ['channel-red', 'channel-white', 'channel-blue'],
+  );
+  assert.deepEqual(tree.measurementAssignments.map((item) => item.id), ['assignment-stable']);
+});
+
+test('meter-linked WW forms prefill canonical device and channel context', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.meters = [{
+    id: 'meter-1',
+    deviceFamily: 'WATTWATCHERS',
+    deviceName: 'A3RM Auditor',
+    deviceType: 'A3RM',
+    deviceId: 'A3RM-001',
+    deviceNumber: '7',
+    wwChannels: [
+      {
+        id: 'meter-1:2',
+        ordinal: 2,
+        purpose: 'SUB_CIRCUIT',
+        loadType: 'OTHER',
+        customLoadTypeName: 'Refrigeration',
+        rogowskiSize: '3000A - 9cm',
+        description: 'Mechanical room circuit',
+      },
+      {
+        id: 'meter-1:1',
+        ordinal: 1,
+        purpose: 'MAIN_SUPPLY',
+        loadType: 'Mains Supply',
+        rogowskiSize: '3000A - 9cm',
+        description: 'Incoming red phase',
+      },
+      {
+        id: 'meter-1:3',
+        ordinal: 3,
+        purpose: 'SPARE',
+        loadType: 'Not Used',
+        rogowskiSize: '3000A - 20cm',
+        description: 'Stale spare metadata',
+      },
+    ],
+  }];
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+    meterId: 'meter-1',
+  });
+
+  assert.equal(form.answers['device.type'], 'A3RM');
+  assert.equal(form.answers['device.id'], 'A3RM-001');
+  assert.equal(form.answers['device.number'], '7');
+  assert.equal(form.answers['channel.1.purpose'], 'Main board supply');
+  assert.equal(form.answers['channel.1.load'], 'Mains Supply');
+  assert.equal(form.answers['channel.1.rating'], '3000A - 9cm');
+  assert.equal(form.answers['channel.1.description'], 'Incoming red phase');
+  assert.equal(form.answers['channel.2.purpose'], 'Sub-circuit / asset');
+  assert.equal(form.answers['channel.2.load'], 'Other');
+  assert.equal(form.answers['channel.2.custom_load_type'], 'Refrigeration');
+  assert.equal(form.answers['channel.2.description'], 'Mechanical room circuit');
+  assert.equal(form.answers['channel.3.purpose'], 'Spare / unused');
+  assert.equal(form.answers['channel.3.load'], undefined);
+  assert.equal(form.answers['channel.3.rating'], undefined);
+  assert.equal(form.answers['channel.3.description'], undefined);
+  assert.equal(form.answers['existing.device_id'], undefined);
 });
 
 test('removeZone cascades owned records and marks surviving relationships TBC', () => {
@@ -267,8 +407,15 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   form.answers['device.id'] = 'A3RM-001';
   form.answers['device.number'] = '7';
   form.answers['channel.1.load'] = 'Mains Supply';
+  form.answers['channel.1.purpose'] = 'Main board supply';
   form.answers['channel.1.description'] = 'Incoming mains';
   form.answers['channel.1.rating'] = '3000A - 9cm';
+  form.answers['channel.2.purpose'] = 'Sub-circuit / asset';
+  form.answers['channel.2.load'] = 'Other';
+  form.answers['channel.2.custom_load_type'] = 'Refrigeration';
+  form.answers['channel.2.description'] = 'Cool-room circuit';
+  form.answers['channel.2.rating'] = '3000A - 9cm';
+  form.answers['channel.3.purpose'] = 'Spare / unused';
 
   syncOperationalMeter(tree, form);
 
@@ -278,5 +425,13 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   assert.equal(board.meters[0].deviceId, 'A3RM-001');
   assert.equal(board.meters[0].wwChannels?.length, 3);
   assert.equal(board.meters[0].wwChannels?.[0].description, 'Incoming mains');
+  assert.equal(board.meters[0].wwChannels?.[0].purpose, 'MAIN_SUPPLY');
+  assert.equal(board.meters[0].wwChannels?.[1].purpose, 'SUB_CIRCUIT');
+  assert.equal(board.meters[0].wwChannels?.[1].loadType, 'Refrigeration');
+  assert.equal(board.meters[0].wwChannels?.[1].customLoadTypeName, 'Refrigeration');
+  assert.equal(board.meters[0].wwChannels?.[1].description, 'Cool-room circuit');
+  assert.equal(board.meters[0].wwChannels?.[2].purpose, 'SPARE');
+  assert.equal(board.meters[0].wwChannels?.[2].loadType, undefined);
+  assert.equal(board.meters[0].wwChannels?.[2].rogowskiSize, undefined);
   assert.equal(form.meterId, board.meters[0].id);
 });

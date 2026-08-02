@@ -146,10 +146,22 @@ expose device-local paths.
 The six current schema-v2 form families are WW Installation, Comms
 Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger.
 Schema-v1 A3RM/A6M records remain readable. WW Installation exposes three
-channels for A3RM and six for A6M. Each visible channel requires a load; `Not
-Used` requires an empty rating, while a real load requires an exact A3RM
-Rogowski or A6M CT choice. These conditions are shared by API validation and
-the server report manifest.
+channels for A3RM and six for A6M. Every visible current channel has an explicit
+purpose. `Main board supply` permits only `Mains Supply`; `Sub-circuit / asset`
+requires one of HVAC, Lighting, Solar PV, Forklift Charger, Hot Water, General
+Power, or `Other`, with a required `channel.N.custom_load_type` when `Other` is
+selected. `Spare / unused` hides and clears load, rating, and description. Each
+active channel also requires an exact A3RM Rogowski or A6M CT choice. Current
+purpose and custom-load fields, including partially authored current-shape
+payloads, are validated strictly. Load-only schema-v2 Drafts from installed
+clients remain syncable through inference on a temporary validation copy.
+Completed load-only projection is narrower: only a same-ID row already persisted
+as immutable Completed, or readiness/reporting of that persisted row, may opt in.
+Fresh Completed forms and Draft-to-Completed transitions stay strict. Stored or
+returned snapshots are never mutated. `Not Used` is therefore a legacy load-only
+compatibility value, not a current load choice. These conditions are shared by
+API validation and the server report manifest. The answers already live in form
+JSON, so this boundary compatibility does not require a database migration.
 
 Field App Complete PDF start routes accept only completed backed-up forms and return a
 durable job ID. The renderer resolves exact confirmed attachment originals,

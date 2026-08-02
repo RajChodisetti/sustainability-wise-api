@@ -282,7 +282,9 @@ function assetClassification(value: string): { typeCode: SiteAssetTypeCode; cust
   };
 }
 
-function loadType(value: string | null): { code: SiteAssetTypeCode | null; custom: string | null } {
+export function classifyLegacyMeterLoadType(
+  value: string | null,
+): { code: SiteAssetTypeCode | null; custom: string | null } {
   if (!value || value === 'Not Used' || value === 'Mains Supply') return { code: null, custom: null };
   const classification = assetClassification(value);
   return {
@@ -367,7 +369,7 @@ function meterFromLegacy(input: {
       return null;
     }
     localChannelIds.add(channelId);
-    const classifiedLoad = loadType(rawLoad);
+    const classifiedLoad = classifyLegacyMeterLoadType(rawLoad);
     channels.push({
       id: channelId,
       ordinal,

@@ -211,13 +211,30 @@ Fault submissions require device number, device ID, A3RM/A6M type, and matching
 sensor selection. A3RM accepts only the three documented 3000A Rogowski sizes;
 A6M accepts only 60A, 120A, 200A, 400A, or 600A.
 
-WW Installation requires a valid Load for all visible channels: three for A3RM
-and six for A6M. `Not Used` is a load value, never a rating. It requires the
-rating to be empty and suppresses load description/evidence and commissioning
-polarity/current in the app/report. A real load requires the exact
-device-compatible rating. A3RM payloads cannot retain hidden channel 4-6
-load/rating values; the mobile condition engine clears their other hidden
-fields. Schema-v2 answers reject the legacy `not_applicable` value.
+WW Installation exposes three channels for A3RM and six for A6M. Every visible
+current channel requires an explicit `channel.N.purpose`. `Main board supply`
+permits only the `Mains Supply` load. `Sub-circuit / asset` requires an active
+downstream load from HVAC, Lighting, Solar PV, Forklift Charger, Hot Water,
+General Power, or `Other`; selecting `Other` also requires a non-empty
+`channel.N.custom_load_type`. `Spare / unused` hides and clears that channel's
+load, custom load, rating, and description, and suppresses its load evidence and
+commissioning polarity/current in the app and report. An active channel requires
+the exact device-compatible rating. A3RM payloads cannot retain hidden channel
+4-6 values; the mobile condition engine clears their other hidden fields.
+
+Current schema-v2 purpose/custom-load payloads are strict: they cannot use
+purpose-incompatible loads or omit the custom label for `Other`. Load-only
+schema-v2 Drafts from installed clients remain syncable through validation-only
+inference when the entire purpose/custom-load shape is absent. A load-only
+Completed form may use that projection only when the same ID is already
+persisted as immutable Completed, or when readiness/reporting validates that
+persisted row. Fresh Completed forms and Draft-to-Completed transitions remain
+strict. The inference operates on a temporary copy and never mutates the stored
+or returned snapshot. `Not Used` remains a legacy load-only compatibility signal
+and is not a current load option. Schema-v2 answers reject the legacy
+`not_applicable` value. Because form answers are already stored as JSON and
+compatibility is applied only at the validation boundary, this contract change
+requires no new database migration.
 
 Completed ACE requires job number and all three phase CT serials; Honeywell Q400
 requires the water-meter serial; Captis and SUMS require meter and logger

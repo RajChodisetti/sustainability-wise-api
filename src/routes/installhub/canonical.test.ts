@@ -168,6 +168,21 @@ function a3Meter(serialNumber = 'serial-old'): MeterDevice {
   };
 }
 
+const WW_FORM_LOAD_BY_CODE: Readonly<Record<string, string>> = {
+  PV: 'Solar PV',
+  HVAC: 'HVAC',
+  LIGHTING: 'Lighting',
+  FORKLIFT: 'Forklift Charger',
+  POWER_OUTLET: 'General Power',
+  HEATER_GEYSER: 'Hot Water',
+};
+
+const WW_FORM_CUSTOM_LOAD_BY_CODE: Readonly<Record<string, string>> = {
+  EV_CHARGER: 'EV Charger',
+  VEHICLE_HOIST: 'Vehicle Hoist',
+  EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
+};
+
 function wwAnswers(meter: MeterDevice): Record<string, string> {
   const answers: Record<string, string> = {
     'device.type': meter.deviceModel,
@@ -175,18 +190,31 @@ function wwAnswers(meter: MeterDevice): Record<string, string> {
     'device.id': meter.serialNumber,
   };
   for (const meterChannel of meter.channels) {
-    answers[`channel.${meterChannel.ordinal}.load`] = meterChannel.purpose === 'SPARE'
-      ? 'Not Used'
+    answers[`channel.${meterChannel.ordinal}.purpose`] = meterChannel.purpose === 'SPARE'
+      ? 'Spare / unused'
       : meterChannel.purpose === 'MAIN_SUPPLY'
+        ? 'Main board supply'
+        : 'Sub-circuit / asset';
+    if (meterChannel.purpose !== 'SPARE') {
+      answers[`channel.${meterChannel.ordinal}.load`] = meterChannel.purpose === 'MAIN_SUPPLY'
         ? 'Mains Supply'
-        : meterChannel.loadTypeCode === 'HVAC'
-          ? 'HVAC'
-          : 'Other';
+        : WW_FORM_LOAD_BY_CODE[meterChannel.loadTypeCode ?? ''] ?? 'Other';
+      if (
+        meterChannel.purpose === 'SUB_CIRCUIT'
+        && answers[`channel.${meterChannel.ordinal}.load`] === 'Other'
+      ) {
+        answers[`channel.${meterChannel.ordinal}.custom_load_type`] = (
+          meterChannel.customLoadTypeName
+          ?? WW_FORM_CUSTOM_LOAD_BY_CODE[meterChannel.loadTypeCode ?? '']
+          ?? 'Other'
+        );
+      }
+    }
     if (meterChannel.sensorRating) {
       answers[`channel.${meterChannel.ordinal}.rating`] = meterChannel.sensorRating;
     }
-    if (meterChannel.customLoadTypeName) {
-      answers[`channel.${meterChannel.ordinal}.description`] = meterChannel.customLoadTypeName;
+    if (meterChannel.description) {
+      answers[`channel.${meterChannel.ordinal}.description`] = meterChannel.description;
     }
   }
   return answers;
@@ -1344,6 +1372,106 @@ test('commissioned meter identity changes require an equivalent completed amendm
     () => assertCommissionedMetersRequireAmendment({ existing, incoming }),
     /WW_METER_AMENDMENT_REQUIRED:meter-1/,
   );
+});
+
+test('WW commissioning matching uses explicit channel purpose with bounded legacy fallback', () => {
+  const meter = a3Meter();
+  meter.channels[0] = channel(1, 'MAIN_SUPPLY');
+  meter.channels[2] = channel(3, 'SPARE');
+
+  const current = completedWwForm('form-current', meter);
+  assert.equal(wwCommissioningFormMatchesMeter(current, meter), true);
+
+  current.answers['channel.1.purpose'] = 'Sub-circuit / asset';
+  assert.equal(wwCommissioningFormMatchesMeter(current, meter), false);
+  current.answers['channel.1.purpose'] = 'Main board supply';
+
+  const legacy = structuredClone(current);
+  for (const meterChannel of meter.channels) {
+    delete legacy.answers[`channel.${meterChannel.ordinal}.purpose`];
+  }
+  legacy.answers['channel.1.load'] = 'Mains Supply';
+  legacy.answers['channel.3.load'] = 'Not Used';
+  assert.equal(wwCommissioningFormMatchesMeter(legacy, meter), true);
+});
+
+test('WW commissioning matching keeps Other labels separate from descriptions', () => {
+  const meter = a3Meter();
+  meter.channels[1] = {
+    ...channel(2),
+    loadTypeCode: 'OTHER',
+    customLoadTypeName: 'Packaging line',
+    description: 'Feeds the west-side conveyor',
+  };
+  const current = completedWwForm('form-other-current', meter);
+
+  assert.equal(
+    current.answers['channel.2.custom_load_type'],
+    'Packaging line',
+  );
+  current.answers['channel.2.description'] = 'Updated field notes';
+  assert.equal(wwCommissioningFormMatchesMeter(current, meter), true);
+
+  current.answers['channel.2.custom_load_type'] = 'Wrong custom label';
+  assert.equal(wwCommissioningFormMatchesMeter(current, meter), false);
+
+  const legacy = structuredClone(current);
+  delete legacy.answers['channel.2.custom_load_type'];
+  legacy.answers['channel.2.description'] = 'Packaging line';
+  assert.equal(wwCommissioningFormMatchesMeter(legacy, meter), true);
+});
+
+test('WW Other labels use the canonical legacy load taxonomy', () => {
+  const evMeter = a3Meter();
+  evMeter.channels[1] = {
+    ...channel(2),
+    loadTypeCode: 'EV_CHARGER',
+    customLoadTypeName: null,
+  };
+  const evForm = completedWwForm('form-ev-current', evMeter);
+  assert.equal(evForm.answers['channel.2.load'], 'Other');
+  assert.equal(evForm.answers['channel.2.custom_load_type'], 'EV Charger');
+  assert.equal(wwCommissioningFormMatchesMeter(evForm, evMeter), true);
+
+  const refrigerationMeter = a3Meter();
+  refrigerationMeter.channels[1] = {
+    ...channel(2),
+    loadTypeCode: 'OTHER',
+    customLoadTypeName: 'Refrigeration',
+  };
+  const refrigerationForm = completedWwForm(
+    'form-refrigeration-current',
+    refrigerationMeter,
+  );
+  assert.equal(wwCommissioningFormMatchesMeter(
+    refrigerationForm,
+    refrigerationMeter,
+  ), true);
+
+  const historical = structuredClone(refrigerationForm);
+  delete historical.answers['channel.2.custom_load_type'];
+  historical.answers['channel.2.description'] = 'Refrigeration';
+  assert.equal(wwCommissioningFormMatchesMeter(
+    historical,
+    refrigerationMeter,
+  ), true);
+
+  const genericOtherMeter = a3Meter();
+  genericOtherMeter.channels[1] = {
+    ...channel(2),
+    loadTypeCode: 'OTHER',
+    customLoadTypeName: 'Other',
+  };
+  const genericHistorical = completedWwForm(
+    'form-generic-other-historical',
+    genericOtherMeter,
+  );
+  delete genericHistorical.answers['channel.2.custom_load_type'];
+  delete genericHistorical.answers['channel.2.description'];
+  assert.equal(wwCommissioningFormMatchesMeter(
+    genericHistorical,
+    genericOtherMeter,
+  ), true);
 });
 
 test('snapshot manifest pins only exact currently referenced confirmed remote evidence', () => {
