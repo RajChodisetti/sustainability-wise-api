@@ -470,8 +470,25 @@ function optionalBooleanField(
   key: string,
   label: string,
 ): boolean | undefined {
-  if (!Object.prototype.hasOwnProperty.call(value, key) || value[key] === null) return undefined;
+  if (
+    !Object.prototype.hasOwnProperty.call(value, key)
+    || value[key] === undefined
+    || value[key] === null
+  ) return undefined;
   return booleanValue(value[key], `${label}.${key}`);
+}
+
+function optionalBooleanFields<Key extends string>(
+  value: JsonRecord,
+  label: string,
+  keys: readonly Key[],
+): Partial<Record<Key, boolean>> {
+  const normalized: Partial<Record<Key, boolean>> = {};
+  for (const key of keys) {
+    const parsed = optionalBooleanField(value, key, label);
+    if (parsed !== undefined) normalized[key] = parsed;
+  }
+  return normalized;
 }
 
 function optionalCommissioningSection(value: unknown, label: string): JsonRecord | undefined {
@@ -493,15 +510,15 @@ function parseMeterCommissioningData(
     classification: boundedMeterCommissioningText(input.classification, `${label}.classification`),
     coverage: boundedMeterCommissioningText(input.coverage, `${label}.coverage`),
     ...(prestart ? {
-      prestart: {
-        siteInduction: optionalBooleanField(prestart, 'siteInduction', `${label}.prestart`),
-        safeAccess: optionalBooleanField(prestart, 'safeAccess', `${label}.prestart`),
-        correctPpe: optionalBooleanField(prestart, 'correctPpe', `${label}.prestart`),
-        livePointsAware: optionalBooleanField(prestart, 'livePointsAware', `${label}.prestart`),
-        canIsolate: optionalBooleanField(prestart, 'canIsolate', `${label}.prestart`),
-        additionalHazards: optionalBooleanField(prestart, 'additionalHazards', `${label}.prestart`),
-        safeToProceed: optionalBooleanField(prestart, 'safeToProceed', `${label}.prestart`),
-      },
+      prestart: optionalBooleanFields(prestart, `${label}.prestart`, [
+        'siteInduction',
+        'safeAccess',
+        'correctPpe',
+        'livePointsAware',
+        'canIsolate',
+        'additionalHazards',
+        'safeToProceed',
+      ] as const),
     } : {}),
     ...(switchboard ? {
       switchboard: {
@@ -516,18 +533,22 @@ function parseMeterCommissioningData(
     } : {}),
     ...(verification ? {
       verification: {
-        voltageChecked: optionalBooleanField(verification, 'voltageChecked', `${label}.verification`),
-        polarityChecked: optionalBooleanField(verification, 'polarityChecked', `${label}.verification`),
-        communicationsOk: optionalBooleanField(verification, 'communicationsOk', `${label}.verification`),
+        ...optionalBooleanFields(verification, `${label}.verification`, [
+          'voltageChecked',
+          'polarityChecked',
+          'communicationsOk',
+        ] as const),
         notes: boundedMeterCommissioningText(verification.notes, `${label}.verification.notes`),
       },
     } : {}),
     ...(commissioning ? {
       commissioning: {
-        deviceOnline: optionalBooleanField(commissioning, 'deviceOnline', `${label}.commissioning`),
-        channelsReporting: optionalBooleanField(commissioning, 'channelsReporting', `${label}.commissioning`),
-        labeled: optionalBooleanField(commissioning, 'labeled', `${label}.commissioning`),
-        photosTaken: optionalBooleanField(commissioning, 'photosTaken', `${label}.commissioning`),
+        ...optionalBooleanFields(commissioning, `${label}.commissioning`, [
+          'deviceOnline',
+          'channelsReporting',
+          'labeled',
+          'photosTaken',
+        ] as const),
         notes: boundedMeterCommissioningText(commissioning.notes, `${label}.commissioning.notes`),
       },
     } : {}),

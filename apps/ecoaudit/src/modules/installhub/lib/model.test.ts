@@ -150,6 +150,70 @@ test('meter-linked WW completion preserves stable channel IDs and assignments', 
   assert.deepEqual(tree.measurementAssignments.map((item) => item.id), ['assignment-stable']);
 });
 
+test('meter-linked WW completion converts every prestart yes/no answer to a canonical boolean', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.meters = [{
+    id: 'meter-prestart',
+    deviceFamily: 'WATTWATCHERS',
+    deviceName: 'A3RM Auditor',
+    deviceType: 'A3RM',
+    deviceId: 'SERIAL-PRESTART',
+    wwPrestart: {
+      siteInduction: true,
+      safeAccess: true,
+      correctPpe: true,
+      livePointsAware: true,
+      canIsolate: true,
+      safeToProceed: true,
+    },
+    wwChannels: [
+      { id: 'meter-prestart:1', ordinal: 1, purpose: 'MAIN_SUPPLY', loadType: 'Mains Supply', rogowskiSize: '3000A - 9cm' },
+      { id: 'meter-prestart:2', ordinal: 2, purpose: 'SUB_CIRCUIT', loadType: 'HVAC', rogowskiSize: '3000A - 20cm' },
+      { id: 'meter-prestart:3', ordinal: 3, purpose: 'SPARE' },
+    ],
+  }];
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+  syncMeterDevice(tree, board.id, board.meters[0]);
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+    meterId: 'meter-prestart',
+  });
+  Object.assign(form.answers, {
+    'prestart.site_induction': 'yes',
+    'prestart.safe_access': 'yes',
+    'prestart.correct_ppe': 'no',
+    'prestart.live_points': 'yes',
+    'prestart.can_isolate': 'no',
+    'prestart.additional_hazards': 'no',
+    'prestart.safe_to_proceed': 'yes',
+  });
+  form.status = 'Completed';
+
+  syncOperationalMeter(tree, form);
+  const canonical = syncMeterDevice(tree, board.id, board.meters[0]);
+  const expected = {
+    siteInduction: true,
+    safeAccess: true,
+    correctPpe: false,
+    livePointsAware: true,
+    canIsolate: false,
+    additionalHazards: false,
+    safeToProceed: true,
+  };
+
+  assert.deepEqual(board.meters[0].wwPrestart, expected);
+  assert.deepEqual(canonical.commissioningData?.prestart, expected);
+  assert.ok(Object.values(canonical.commissioningData?.prestart ?? {})
+    .every((value) => typeof value === 'boolean'));
+});
+
 test('meter-linked WW forms prefill canonical device and channel context', () => {
   const tree = fixtureTree();
   const zone = createZone(tree.installation.id, {

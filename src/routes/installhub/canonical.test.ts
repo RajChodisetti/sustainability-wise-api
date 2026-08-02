@@ -333,6 +333,60 @@ test('meter commissioning metadata normalizes and projects without losing field 
   );
 });
 
+test('omitted commissioning booleans remain absent across normalization and snapshot replay', () => {
+  const tree = baseTree();
+  const meter = a3Meter();
+  meter.commissioningData = {
+    prestart: {},
+    verification: {},
+    commissioning: {},
+  };
+  tree.meterDevices = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+
+  const normalized = normalizeInstallationTreeV2(tree);
+  const booleanFields = {
+    prestart: [
+      'siteInduction',
+      'safeAccess',
+      'correctPpe',
+      'livePointsAware',
+      'canIsolate',
+      'additionalHazards',
+      'safeToProceed',
+    ],
+    verification: [
+      'voltageChecked',
+      'polarityChecked',
+      'communicationsOk',
+    ],
+    commissioning: [
+      'deviceOnline',
+      'channelsReporting',
+      'labeled',
+      'photosTaken',
+    ],
+  } as const;
+  for (const [sectionName, fields] of Object.entries(booleanFields)) {
+    const section = normalized.meterDevices[0].commissioningData?.[
+      sectionName as keyof typeof booleanFields
+    ] as Record<string, unknown>;
+    for (const field of fields) {
+      assert.equal(Object.prototype.hasOwnProperty.call(section, field), false);
+      assert.equal(section[field], undefined);
+    }
+  }
+
+  const renormalized = normalizeInstallationTreeV2(normalized);
+  assert.deepEqual(renormalized, normalized);
+  const snapshot = buildCanonicalSnapshotPayload({
+    tree: normalized,
+    mediaManifest: [],
+  });
+  const storedSnapshot = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot;
+  assert.equal(canonicalSnapshotPayloadHashMatches(storedSnapshot), true);
+});
+
 test('v2 normalizer rejects legacy aliases, missing tags, and fabricated defaults', () => {
   const aliasedBoard = structuredClone(baseTree()) as unknown as Record<string, unknown>;
   const boards = aliasedBoard.electricalAssets as Array<Record<string, unknown>>;

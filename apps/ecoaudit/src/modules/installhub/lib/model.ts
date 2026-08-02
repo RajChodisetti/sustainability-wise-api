@@ -674,7 +674,12 @@ export function syncOperationalMeter(
     return;
   }
   const meter: Meter | null = completed.formType === 'ww-installation'
-    ? operationalMeterForCompletedForm(completed)
+    ? operationalMeterForCompletedForm(
+        completed,
+        completed.meterId
+          ? board.meters.find((item) => item.id === completed.meterId)
+          : undefined,
+      )
     : (() => {
         const deviceType = completed.formType === 'a3rm-installation' ? 'A3RM' : 'A6M';
         const id = completed.meterId ?? createId('meter');

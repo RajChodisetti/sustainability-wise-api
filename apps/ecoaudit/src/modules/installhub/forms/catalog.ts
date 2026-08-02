@@ -1281,11 +1281,29 @@ export function meterAfterCommsReplacement(
 
 export function operationalMeterForCompletedForm(
   form: FormSubmission,
+  existing?: Meter,
 ): Meter | null {
   if (form.formType !== 'ww-installation') return null;
   const deviceType = form.answers['device.type'] as 'A3RM' | 'A6M';
   if (!DEVICE_TYPES.includes(deviceType)) return null;
   const channelCount = deviceType === 'A3RM' ? 3 : 6;
+  const prestartFields = [
+    ['siteInduction', 'prestart.site_induction'],
+    ['safeAccess', 'prestart.safe_access'],
+    ['correctPpe', 'prestart.correct_ppe'],
+    ['livePointsAware', 'prestart.live_points'],
+    ['canIsolate', 'prestart.can_isolate'],
+    ['additionalHazards', 'prestart.additional_hazards'],
+    ['safeToProceed', 'prestart.safe_to_proceed'],
+  ] as const satisfies ReadonlyArray<readonly [keyof NonNullable<Meter['wwPrestart']>, string]>;
+  const wwPrestart: NonNullable<Meter['wwPrestart']> = {};
+  for (const [field, answerKey] of prestartFields) {
+    const prior = existing?.wwPrestart?.[field];
+    if (typeof prior === 'boolean') wwPrestart[field] = prior;
+    const answer = form.answers[answerKey];
+    if (answer === 'yes') wwPrestart[field] = true;
+    if (answer === 'no') wwPrestart[field] = false;
+  }
   return {
     id: form.meterId || createInstallHubId('meter'),
     deviceName: `${deviceType} Auditor`,
@@ -1294,6 +1312,7 @@ export function operationalMeterForCompletedForm(
     deviceNumber: form.answers['device.number'] || '',
     deviceFamily: 'WATTWATCHERS',
     deviceNameOverridden: false,
+    ...(Object.keys(wwPrestart).length ? { wwPrestart } : {}),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const prefix = `channel.${index + 1}`;
       const loadType = form.answers[`${prefix}.load`] || '';
