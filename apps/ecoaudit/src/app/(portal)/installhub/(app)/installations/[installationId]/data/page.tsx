@@ -1,5 +1,5 @@
-import { InstallHubDataPage } from '@/modules/installhub/pages/DataPage';
+import { InstallHubCanonicalDataPage } from '@/modules/installhub/pages/CanonicalDataPage';
 
 export default function Page() {
-  return <InstallHubDataPage />;
+  return <InstallHubCanonicalDataPage />;
 }

@@ -71,7 +71,7 @@ test('portalLoginRedirectPath sends legacy app login URLs to the canonical login
   );
 });
 
-test('InstallHub is grouped under the Field App navigation scope', () => {
+test('InstallHub routes are grouped under the Field App Complete navigation scope', () => {
   assert.equal(portalNavigationScopeForPath('/field'), 'field');
   assert.equal(portalNavigationScopeForPath('/installhub/dashboard'), 'field');
   assert.equal(portalNavigationScopeForPath('/installhub/installations/installation-1'), 'field');

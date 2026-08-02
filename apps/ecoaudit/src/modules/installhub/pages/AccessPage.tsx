@@ -138,7 +138,7 @@ export function InstallHubAccessPage() {
 
       <InlineNotice>
         Assignment lets that user see the cloud installation. The owner and
-        InstallHub administrators retain access.
+        Field App Complete administrators retain access.
       </InlineNotice>
 
       <Card className="mt-5">
@@ -163,7 +163,7 @@ export function InstallHubAccessPage() {
             Administrator controls
           </p>
           <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-            Inspectors can view the current assignment. An InstallHub
+            Inspectors can view the current assignment. A Field App Complete
             administrator is required to change it.
           </p>
         </Card>

@@ -1,5 +1,5 @@
-import { InstallHubMeteringPage } from '@/modules/installhub/pages/DataPage';
+import { InstallHubCanonicalMeteringPage } from '@/modules/installhub/pages/CanonicalDataPage';
 
 export default function Page() {
-  return <InstallHubMeteringPage />;
+  return <InstallHubCanonicalMeteringPage />;
 }

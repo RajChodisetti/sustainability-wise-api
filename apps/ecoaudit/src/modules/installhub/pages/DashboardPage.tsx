@@ -10,7 +10,7 @@ import { useInstallationTrees } from '@/modules/installhub/hooks/useInstallation
 
 export function InstallHubDashboardPage() {
   const treesQuery = useInstallationTrees();
-  if (treesQuery.isLoading) return <Spinner label="Loading InstallHub…" />;
+  if (treesQuery.isLoading) return <Spinner label="Loading Field App Complete…" />;
   if (treesQuery.error) return <ErrorBanner message={installHubConnectionErrorMessage(treesQuery.error)} />;
 
   const trees = [...(treesQuery.data ?? [])].sort(
@@ -23,7 +23,7 @@ export function InstallHubDashboardPage() {
   return (
     <div>
       <PageHeader
-        title="InstallHub dashboard"
+        title="Field App Complete dashboard"
         subtitle="Cloud-backed installation, commissioning, evidence, and handover workflows."
         actions={
           <LinkButton href="/installhub/installations/new">

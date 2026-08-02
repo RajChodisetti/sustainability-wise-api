@@ -40,18 +40,27 @@ export function createInstallationTree(
     siteAddress: string;
     inspectorName: string;
     auditDate: string;
+    siteCode?: string;
+    timezone?: string;
   },
   user: InstallHubUser,
 ): InstallationTree {
   const timestamp = nowIso();
+  const installationId = createId('installation');
   return {
+    treeSchemaVersion: 2,
+    baseTreeRevision: 0,
+    treeRevision: 0,
     installation: {
-      id: createId('installation'),
+      id: installationId,
       clientName: input.clientName.trim(),
       siteName: input.siteName.trim(),
       siteAddress: input.siteAddress.trim(),
       inspectorName: input.inspectorName.trim(),
       auditDate: input.auditDate,
+      siteCode: input.siteCode?.trim() || null,
+      timezone: input.timezone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      externalKey: null,
       status: 'Draft',
       createdByUserId: user.id,
       assignedInspectorUserId: null,
@@ -60,10 +69,19 @@ export function createInstallationTree(
       updatedAt: timestamp,
       deletedAt: null,
     },
+    gridSupplies: [{
+      id: `grid_${installationId}_primary`,
+      installationId,
+      name: 'Grid supply',
+      isDefault: true,
+    }],
     zones: [],
     electricalAssets: [],
     siteAssets: [],
+    meterDevices: [],
+    measurementAssignments: [],
     formSubmissions: [],
+    serverDerived: { virtualMeterDefinitions: [] },
   };
 }
 
@@ -102,8 +120,11 @@ export function createBoard(
     assetName: '',
     displayCode: '',
     assetType: 'DB',
+    typeCode: 'DB',
+    customTypeName: null,
+    electricalSource: { kind: 'TBC' },
     electricalParentId: null,
-    electricalParentTbc: false,
+    electricalParentTbc: true,
     locationDescription: '',
     phase: '',
     amperageRating: '',
@@ -131,12 +152,16 @@ export function createSiteAsset(
     zoneId,
     assetName: '',
     assetType: 'HVAC',
+    typeCode: 'HVAC',
+    customTypeName: null,
+    electricalSource: { kind: 'TBC' },
     electricalBoardId: null,
-    electricalBoardTbc: false,
+    electricalBoardTbc: true,
     locationDescription: '',
     locationPhoto: null,
     displayCode: '',
     meterPresent: false,
+    meteringState: { kind: 'TBC' },
     meterSwitchboardId: null,
     meterSwitchboardTbc: false,
     meterChannels: [],
@@ -149,9 +174,12 @@ export function createSiteAsset(
 }
 
 export function createMeter(): Meter {
+  const id = createId('meter');
   return {
-    id: createId('meter'),
+    id,
+    deviceFamily: 'WATTWATCHERS',
     deviceName: 'A3RM Auditor',
+    deviceNameOverridden: false,
     deviceType: 'A3RM',
     deviceId: '',
     deviceNumber: '',
@@ -159,7 +187,11 @@ export function createMeter(): Meter {
     coverage: '',
     wwPrestart: {},
     wwSwitchboard: {},
-    wwChannels: Array.from({ length: 3 }, () => ({})),
+    wwChannels: Array.from({ length: 3 }, (_, index) => ({
+      id: `${id}:${index + 1}`,
+      ordinal: index + 1,
+      purpose: 'SPARE',
+    })),
     wwVerification: {},
     wwCommissioning: {},
     wwPhotos: { extra: [] },
@@ -193,7 +225,7 @@ export function createFormSubmission(
 ): FormSubmission {
   const timestamp = nowIso();
   const definition = FORM_DEFINITIONS.find((item) => item.type === type);
-  if (!definition) throw new Error('Unknown InstallHub form type.');
+  if (!definition) throw new Error('Unknown Field App Complete form type.');
   const answers = createInitialFormAnswers(tree.installation, user);
   if (context.boardId) {
     const board = tree.electricalAssets.find((item) => item.id === context.boardId);
@@ -320,11 +352,21 @@ export function syncOperationalMeter(
   );
   const meter: Meter = {
     id: completed.meterId ?? createId('meter'),
+    deviceFamily: 'WATTWATCHERS',
     deviceName: `${deviceType} Auditor`,
+    deviceNameOverridden: false,
     deviceType,
     deviceId,
     deviceNumber: String(completed.answers['device.number'] ?? ''),
     wwChannels: Array.from({ length: deviceType === 'A3RM' ? 3 : 6 }, (_, index) => ({
+      id: `${completed.meterId ?? 'pending'}:${index + 1}`,
+      ordinal: index + 1,
+      purpose: ({
+        'Main board supply': 'MAIN_SUPPLY',
+        'Sub-circuit / asset': 'SUB_CIRCUIT',
+        'Spare / unused': 'SPARE',
+      } as Record<string, string>)[String(completed.answers[`channel.${index + 1}.purpose`] ?? '')]
+        || (String(completed.answers[`channel.${index + 1}.load`] ?? '') === 'Not Used' ? 'SPARE' : 'SUB_CIRCUIT'),
       loadType: String(completed.answers[`channel.${index + 1}.load`] ?? ''),
       description: String(completed.answers[`channel.${index + 1}.description`] ?? ''),
       ...(deviceType === 'A3RM'
@@ -332,6 +374,10 @@ export function syncOperationalMeter(
         : { ctRatio: String(completed.answers[`channel.${index + 1}.rating`] ?? '') }),
     })),
   };
+  meter.wwChannels = meter.wwChannels?.map((channel, index) => ({
+    ...channel,
+    id: `${meter.id}:${index + 1}`,
+  }));
   const existingIndex = board.meters.findIndex((item) => item.id === meter.id);
   if (existingIndex >= 0) board.meters[existingIndex] = { ...board.meters[existingIndex], ...meter };
   else board.meters.push(meter);

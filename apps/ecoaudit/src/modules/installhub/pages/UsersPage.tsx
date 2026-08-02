@@ -48,7 +48,7 @@ function AdminRequired() {
   return (
     <EmptyState
       title="Administrator access required"
-      description="Only InstallHub administrators can manage cloud user accounts."
+      description="Only Field App Complete administrators can manage cloud user accounts."
       icon="shield"
     />
   );
@@ -57,7 +57,7 @@ function AdminRequired() {
 const portalAppLabels: Record<UnifiedPortalApp, string> = {
   ecoaudit: 'Eco Audit',
   solarsense: 'Solar Sense',
-  installhub: 'Field App',
+  installhub: 'Field App Complete',
 };
 
 function userLabel(user: UnifiedPortalUser): string {
@@ -135,7 +135,7 @@ function SyncBadge({
         'border-[var(--green)]/25 bg-[var(--green-soft)] text-[var(--green)]',
     },
     field_only: {
-      label: 'Field only',
+      label: 'Field App Complete only',
       className:
         'border-[var(--primary)]/25 bg-[var(--primary-soft)] text-[var(--primary)]',
     },
@@ -145,12 +145,12 @@ function SyncBadge({
         'border-[var(--amber)]/30 bg-[var(--amber-soft)] text-[var(--amber)]',
     },
     missing_projection: {
-      label: 'Missing Field access',
+      label: 'Missing Field App Complete access',
       className:
         'border-[var(--amber)]/30 bg-[var(--amber-soft)] text-[var(--amber)]',
     },
     orphaned_projection: {
-      label: 'Orphaned Field access',
+      label: 'Orphaned Field App Complete access',
       className:
         'border-[var(--red)]/25 bg-[var(--red-soft)] text-[var(--red)]',
     },
@@ -201,7 +201,7 @@ function UserEditorAction({ user }: { user: UnifiedPortalUser }) {
         href={`/installhub/admin/users/${encodeURIComponent(editable.userId)}`}
         variant="secondary"
       >
-        Edit Field user
+        Edit Field App Complete user
       </LinkButton>
     );
   }
@@ -285,17 +285,17 @@ export function InstallHubUsersPage() {
     <div>
       <Breadcrumbs
         items={[
-          { label: 'InstallHub', href: '/installhub/dashboard' },
+          { label: 'Field App Complete', href: '/installhub/dashboard' },
           { label: 'Unified users' },
         ]}
       />
       <PageHeader
         title="Unified user directory"
-        subtitle="Review roles and access across Eco Audit, Solar Sense, and the Field App from one directory. Solar memberships remain visible here even when the Solar Sense application is hidden."
+        subtitle="Review roles and access across Eco Audit, Solar Sense, and Field App Complete from one directory. Solar memberships remain visible here even when the Solar Sense application is hidden."
         actions={
           <LinkButton href="/installhub/admin/users/new">
             <Icon name="plus" size={17} />
-            Add Field user
+            Add Field App Complete user
           </LinkButton>
         }
       />
@@ -369,7 +369,7 @@ export function InstallHubUsersPage() {
           description={
             search
               ? 'Try a different name, login, application, role, or status.'
-              : 'Add the first Field App account.'
+              : 'Add the first Field App Complete account.'
           }
           icon="users"
         />
@@ -392,7 +392,7 @@ export function InstallHubUsersPage() {
             <table className="w-full min-w-[1020px] border-collapse text-left">
               <caption className="sr-only">
                 Unified user roles and access status for Eco Audit, Solar
-                Sense, and the Field App
+                Sense, and Field App Complete
               </caption>
               <thead className="bg-[var(--surface2)] text-xs uppercase tracking-[0.06em] text-[var(--text-sub)]">
                 <tr>
@@ -402,7 +402,7 @@ export function InstallHubUsersPage() {
                   >
                     User
                   </th>
-                  {(['Eco Audit', 'Solar Sense', 'Field App'] as const).map(
+                  {(['Eco Audit', 'Solar Sense', 'Field App Complete'] as const).map(
                     (label) => (
                       <th
                         key={label}
@@ -490,7 +490,7 @@ export function InstallHubUsersPage() {
                       [
                         ['Eco Audit', 'ecoaudit'],
                         ['Solar Sense', 'solarsense'],
-                        ['Field App', 'installhub'],
+                        ['Field App Complete', 'installhub'],
                       ] as const
                     ).map(([label, app]) => (
                       <div
@@ -545,7 +545,7 @@ export function InstallHubUserEditorPage({ mode }: { mode: EditorMode }) {
     return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
   }
   if (mode === 'edit' && !query.data) {
-    return <ErrorBanner message="InstallHub user not found." />;
+    return <ErrorBanner message="Field App Complete user not found." />;
   }
   if (mode === 'edit' && query.data?.sourceManaged) {
     return (
@@ -591,7 +591,7 @@ function SourceManagedFieldUserDetails({
       />
       <PageHeader
         title={user.fullName?.trim() || user.email || 'Source-managed user'}
-        subtitle="Review this account's shared Field access. Its authoritative account remains in the source application."
+        subtitle="Review this account's shared Field App Complete access. Its authoritative account remains in the source application."
         actions={
           <span
             className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
@@ -607,8 +607,8 @@ function SourceManagedFieldUserDetails({
 
       <InlineNotice>
         {sourceUnavailable
-          ? 'The source account is unavailable. This inactive Field record is retained only for traceability and cannot be edited or used to sign in.'
-          : `This account is managed in ${sourceName}. Profile, role, status, and administrator password resets are read-only here; source changes update its shared Field access automatically.`}
+          ? 'The source account is unavailable. This inactive Field App Complete record is retained only for traceability and cannot be edited or used to sign in.'
+          : `This account is managed in ${sourceName}. Profile, role, status, and administrator password resets are read-only here; source changes update its shared Field App Complete access automatically.`}
       </InlineNotice>
 
       <Card className="mt-5">
@@ -758,7 +758,7 @@ function UserEditorForm({
     }
     if (
       window.confirm(
-        'Deactivate this user? Their InstallHub refresh sessions will be revoked, while existing backed-up data is retained.',
+        'Deactivate this user? Their Field App Complete refresh sessions will be revoked, while existing backed-up data is retained.',
       )
     ) {
       void setAccountActive(false);
@@ -807,7 +807,7 @@ function UserEditorForm({
         subtitle={
           isEditing
             ? 'Update account details, access state, and password security.'
-            : 'Create an InstallHub inspector or administrator account.'
+            : 'Create a Field App Complete inspector or administrator account.'
         }
         actions={
           account ? (
@@ -934,7 +934,7 @@ function UserEditorForm({
             <>
               <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
                 Changing your own password requires your current password and
-                signs out existing InstallHub cloud sessions.
+                signs out existing Field App Complete cloud sessions.
               </p>
               <LinkButton
                 className="mt-4"

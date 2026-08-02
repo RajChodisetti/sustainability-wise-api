@@ -269,7 +269,7 @@ export async function requestFieldSession(
 
   if (!response.ok) {
     const text = await response.text().catch(() => response.statusText);
-    const detail = errorDetail(text) || response.statusText || 'Field session failed.';
+    const detail = errorDetail(text) || response.statusText || 'Field App Complete session failed.';
     throw new PortalLoginHttpError(detail, response.status, detail);
   }
 
@@ -277,10 +277,10 @@ export async function requestFieldSession(
   try {
     data = await response.json();
   } catch {
-    throw new PortalLoginResponseError('Invalid Field authentication response.');
+    throw new PortalLoginResponseError('Invalid Field App Complete authentication response.');
   }
   if (!isPortalLoginSession(data)) {
-    throw new PortalLoginResponseError('Invalid Field authentication response.');
+    throw new PortalLoginResponseError('Invalid Field App Complete authentication response.');
   }
   return data as PortalLoginSession<'installhub'>;
 }
@@ -321,7 +321,7 @@ export async function requestFieldSessionFromSources(
 
   if (lastError !== undefined) throw lastError;
   throw new PortalLoginResponseError(
-    'No verified source session can open Field App.',
+    'No verified source session can open Field App Complete.',
   );
 }
 

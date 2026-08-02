@@ -48,9 +48,9 @@ export const PORTAL_APPLICATIONS: readonly PortalApplication[] = [
   },
   {
     href: '/field',
-    title: 'Field App',
+    title: 'Field App Complete',
     eyebrow: 'Mobile operations',
-    description: 'Open InstallHub for installations, field forms, evidence capture, and report packs.',
+    description: 'Open Field App Complete for installations, field forms, evidence capture, and report packs.',
     icon: 'clipboard',
     tone: 'bg-cyan-500/10 text-cyan-700 dark:text-cyan-300',
     access: 'installhub',

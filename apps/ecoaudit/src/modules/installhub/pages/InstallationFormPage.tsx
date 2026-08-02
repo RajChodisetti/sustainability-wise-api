@@ -9,7 +9,7 @@ import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
-import { saveInstallationTree } from '@/modules/installhub/api/installhub';
+import { getInstallationTree, saveInstallationTree } from '@/modules/installhub/api/installhub';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import {
   installationTreeKey,
@@ -19,6 +19,11 @@ import {
 } from '@/modules/installhub/hooks/useInstallationTree';
 import { createInstallationTree, todayIso } from '@/modules/installhub/lib/model';
 import { Breadcrumbs } from '@/modules/installhub/components/InstallHubUi';
+import {
+  SaveStateNotice,
+  TreeDraftNavigationGuard,
+  requestTreeNavigation,
+} from '@/modules/installhub/components/WorkflowUi';
 
 type FormState = {
   clientName: string;
@@ -26,6 +31,8 @@ type FormState = {
   siteAddress: string;
   inspectorName: string;
   auditDate: string;
+  siteCode: string;
+  timezone: string;
 };
 
 const emptyForm: FormState = {
@@ -34,6 +41,8 @@ const emptyForm: FormState = {
   siteAddress: '',
   inspectorName: '',
   auditDate: todayIso(),
+  siteCode: '',
+  timezone: '',
 };
 
 export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' }) {
@@ -47,12 +56,14 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
   const toast = useToast();
   const [form, setForm] = useState<FormState>(emptyForm);
   const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
     if (mode === 'new' && user) {
       setForm((current) => ({
         ...current,
         inspectorName: current.inspectorName || user.fullName || user.email,
+        timezone: current.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
       }));
     }
   }, [mode, user]);
@@ -66,7 +77,10 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       siteAddress: installation.siteAddress,
       inspectorName: installation.inspectorName,
       auditDate: installation.auditDate,
+      siteCode: installation.siteCode || '',
+      timezone: installation.timezone || '',
     });
+    setDirty(false);
   }, [mode, treeQuery.data]);
 
   if (!user) return <Spinner />;
@@ -77,8 +91,14 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!form.clientName.trim() || !form.siteName.trim() || !form.siteAddress.trim() || !form.inspectorName.trim() || !form.auditDate) {
+    if (!form.clientName.trim() || !form.siteName.trim() || !form.siteAddress.trim() || !form.inspectorName.trim() || !form.auditDate || !form.timezone.trim()) {
       toast.error('Complete every required installation field.');
+      return;
+    }
+    try {
+      new Intl.DateTimeFormat('en-AU', { timeZone: form.timezone.trim() }).format();
+    } catch {
+      toast.error('Enter a valid IANA timezone, such as Australia/Sydney.');
       return;
     }
     setBusy(true);
@@ -86,14 +106,17 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       if (mode === 'new') {
         const tree = createInstallationTree(form, user!);
         await saveInstallationTree(tree);
-        queryClient.setQueryData(installationTreeKey(tree.installation.id), tree);
+        const confirmed = await getInstallationTree(tree.installation.id);
+        queryClient.setQueryData(installationTreeKey(tree.installation.id), confirmed);
         await queryClient.invalidateQueries({ queryKey: installationTreesKey });
+        setDirty(false);
         toast.success('Installation created.');
         router.replace(`/installhub/installations/${tree.installation.id}`);
       } else {
         await writer.mutate((tree) => {
           Object.assign(tree.installation, form);
         });
+        setDirty(false);
         toast.success('Installation details saved.');
         router.replace(`/installhub/installations/${installationId}`);
       }
@@ -102,6 +125,16 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
     } finally {
       setBusy(false);
     }
+  }
+
+  function updateForm(change: Partial<FormState>) {
+    setForm((current) => ({ ...current, ...change }));
+    setDirty(true);
+  }
+
+  async function discardAndLeave() {
+    setDirty(false);
+    await writer.discard();
   }
 
   return (
@@ -117,27 +150,47 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
         title={mode === 'new' ? 'New installation' : 'Edit installation'}
         subtitle="These details prefill field forms and identify the installation in cloud storage and reports."
       />
+      {mode === 'edit' ? (
+        <div className="mb-5 flex justify-end">
+          <SaveStateNotice
+            state={writer.writeState}
+            onRetry={() => void writer.retry().catch((error) => toast.error(installHubConnectionErrorMessage(error)))}
+            onDiscard={() => void writer.discard()}
+          />
+        </div>
+      ) : null}
+      <TreeDraftNavigationGuard active={!busy && (dirty || writer.hasPendingTree)} onDiscard={discardAndLeave} />
       <form onSubmit={(event) => void submit(event)}>
         <Card className="max-w-3xl">
           <FieldLabel>Client name *</FieldLabel>
-          <Input value={form.clientName} required onChange={(event) => setForm({ ...form, clientName: event.target.value })} />
+          <Input value={form.clientName} required onChange={(event) => updateForm({ clientName: event.target.value })} />
           <FieldLabel>Site name *</FieldLabel>
-          <Input value={form.siteName} required onChange={(event) => setForm({ ...form, siteName: event.target.value })} />
+          <Input value={form.siteName} required onChange={(event) => updateForm({ siteName: event.target.value })} />
           <FieldLabel>Site address *</FieldLabel>
-          <Textarea value={form.siteAddress} required onChange={(event) => setForm({ ...form, siteAddress: event.target.value })} />
+          <Textarea value={form.siteAddress} required onChange={(event) => updateForm({ siteAddress: event.target.value })} />
           <div className="grid gap-x-4 sm:grid-cols-2">
             <div>
               <FieldLabel>Installer / inspector *</FieldLabel>
-              <Input value={form.inspectorName} required onChange={(event) => setForm({ ...form, inspectorName: event.target.value })} />
+              <Input value={form.inspectorName} required onChange={(event) => updateForm({ inspectorName: event.target.value })} />
             </div>
             <div>
               <FieldLabel>Installation date *</FieldLabel>
-              <Input type="date" value={form.auditDate} required onChange={(event) => setForm({ ...form, auditDate: event.target.value })} />
+              <Input type="date" value={form.auditDate} required onChange={(event) => updateForm({ auditDate: event.target.value })} />
+            </div>
+          </div>
+          <div className="grid gap-x-4 sm:grid-cols-2">
+            <div>
+              <FieldLabel>Site code (optional)</FieldLabel>
+              <Input value={form.siteCode} placeholder="e.g. SYD-WH1" onChange={(event) => updateForm({ siteCode: event.target.value })} />
+            </div>
+            <div>
+              <FieldLabel>Site timezone *</FieldLabel>
+              <Input value={form.timezone} required placeholder="e.g. Australia/Sydney" onChange={(event) => updateForm({ timezone: event.target.value })} />
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save installation'}</Button>
-            <Button variant="secondary" onClick={() => router.back()} disabled={busy}>Cancel</Button>
+            <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
           </div>
         </Card>
       </form>

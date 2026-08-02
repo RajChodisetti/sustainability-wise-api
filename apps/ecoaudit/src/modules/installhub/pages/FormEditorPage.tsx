@@ -24,9 +24,14 @@ import { useToast } from '@/contexts/ToastContext';
 import { useExportJob } from '@/hooks/useExportJob';
 import { slugify } from '@/lib/download';
 import {
+  FORM_COMPLETION_SYNC_STAGE,
   downloadExportJob,
+  findRecordVersionContainingForms,
+  getAuthoritativeReportProvenance,
   getExportJobStatus,
   getLatestExportJob,
+  matchesInstallHubReportProvenance,
+  requireRecordVersionNumber,
   startFormPdfJob,
   uploadInstallationPhoto,
 } from '@/modules/installhub/api/installhub';
@@ -37,6 +42,10 @@ import {
   InlineNotice,
 } from '@/modules/installhub/components/InstallHubUi';
 import { ScannerInput } from '@/modules/installhub/components/ScannerInput';
+import {
+  SaveStateNotice,
+  TreeDraftNavigationGuard,
+} from '@/modules/installhub/components/WorkflowUi';
 import {
   FORM_DEFINITION_BY_TYPE,
   answersAfterChange,
@@ -58,9 +67,11 @@ import {
   nowIso,
   syncOperationalMeter,
 } from '@/modules/installhub/lib/model';
+import { syncMeterDevice } from '@/modules/installhub/lib/workflow';
 import type {
   FormAttachment,
   FormSubmission,
+  InstallHubReportProvenance,
 } from '@/modules/installhub/types/domain';
 
 export function InstallHubFormEditorPage() {
@@ -303,7 +314,7 @@ export function InstallHubFormEditorPage() {
     }
     setCompleting(true);
     try {
-      await writer.mutate((next) => {
+      const confirmed = await writer.mutate((next) => {
         const target = next.formSubmissions.find(
           (item) => item.id === formId,
         );
@@ -316,9 +327,18 @@ export function InstallHubFormEditorPage() {
         target.completedAt = nowIso();
         target.updatedAt = target.completedAt;
         syncOperationalMeter(next, target);
-      });
+        if (target.meterId && target.boardId) {
+          const board = next.electricalAssets.find((item) => item.id === target.boardId);
+          const meter = board?.meters.find((item) => item.id === target.meterId);
+          if (meter) syncMeterDevice(next, board!.id, meter);
+        }
+      }, FORM_COMPLETION_SYNC_STAGE);
       setDirty(false);
-      toast.success('Form completed. The record is now read-only.');
+      toast.success(
+        typeof confirmed.recordVersionNumber === 'number'
+          ? `Form completed. Version ${confirmed.recordVersionNumber} is confirmed and the record is now read-only.`
+          : 'Form completed. The record is now read-only.',
+      );
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -345,6 +365,7 @@ export function InstallHubFormEditorPage() {
           (item) => item.id !== formId,
         );
       });
+      setDirty(false);
       toast.success('Draft deleted.');
       router.replace(
         `/installhub/installations/${installationId}/forms`,
@@ -417,6 +438,21 @@ export function InstallHubFormEditorPage() {
             ) : null}
           </>
         }
+      />
+
+      <div className="mb-4 flex justify-end">
+        <SaveStateNotice
+          state={writer.writeState}
+          onRetry={() => void writer.retry().catch((error) => toast.error(installHubConnectionErrorMessage(error)))}
+          onDiscard={() => void writer.discard()}
+        />
+      </div>
+      <TreeDraftNavigationGuard
+        active={dirty || writer.hasPendingTree}
+        onDiscard={async () => {
+          setDirty(false);
+          await writer.discard();
+        }}
       />
 
       <div className="mb-6">
@@ -535,6 +571,7 @@ export function InstallHubFormEditorPage() {
         <CompletedFormActions
           installationId={installationId}
           form={source}
+          recordVersionNumber={tree.recordVersionNumber}
           onAmend={amend}
         />
       ) : (
@@ -743,20 +780,48 @@ function LegacyFormRecord({ form }: { form: FormSubmission }) {
 function CompletedFormActions({
   installationId,
   form,
+  recordVersionNumber,
   onAmend,
 }: {
   installationId: string;
   form: FormSubmission;
+  recordVersionNumber?: number;
   onAmend: () => Promise<void>;
 }) {
   const toast = useToast();
   const definition = FORM_DEFINITION_BY_TYPE[form.formType];
+  const hasPinnedVersion = Number.isInteger(recordVersionNumber)
+    && (recordVersionNumber ?? 0) > 0;
+  const expectedReport = useRef<InstallHubReportProvenance | null>(null);
+
+  async function selectReportProvenance(): Promise<InstallHubReportProvenance> {
+    const preferredVersion = requireRecordVersionNumber(recordVersionNumber);
+    const reportVersion = form.historicalMeterRemoved
+      ? await findRecordVersionContainingForms(
+          installationId,
+          [form.id],
+          preferredVersion,
+        )
+      : preferredVersion;
+    const expected = await getAuthoritativeReportProvenance(
+      installationId,
+      reportVersion,
+    );
+    expectedReport.current = expected;
+    return expected;
+  }
+
   const pdf = useExportJob({
-    scopeKey: ['installhub', installationId, 'form', form.id],
-    loadLatest: () => getLatestExportJob(form.id),
+    scopeKey: ['installhub', installationId, 'form', form.id, String(recordVersionNumber ?? 'unversioned')],
+    loadLatest: async () => (
+      hasPinnedVersion
+        ? getLatestExportJob(form.id, await selectReportProvenance())
+        : null
+    ),
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id),
     fallbackFilename: `${slugify(definition.shortTitle)}.pdf`,
+    matchesJob: (job) => matchesInstallHubReportProvenance(job, expectedReport.current),
   });
 
   return (
@@ -765,8 +830,9 @@ function CompletedFormActions({
         Completed record
       </h2>
       <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-        Generate the original-quality API server PDF or create an editable
-        amendment that keeps the existing evidence.
+        {form.historicalMeterRemoved
+          ? 'The commissioned meter is no longer active. This form, its original meter ID, photos, and pinned record version remain immutable historical evidence.'
+          : 'Generate the original-quality API server PDF or create an editable amendment that keeps the existing evidence.'}
       </p>
       <ExportJobStatus
         job={pdf.job}
@@ -783,12 +849,23 @@ function CompletedFormActions({
         }}
         className="mt-5"
       />
+      {!hasPinnedVersion ? (
+        <p className="mt-4 text-xs font-semibold text-[var(--amber)]">
+          A pinned record version is required before generating this authoritative PDF.
+        </p>
+      ) : null}
       <div className="mt-5 flex flex-wrap gap-2">
         <Button
-          disabled={pdf.starting || pdf.active}
+          disabled={pdf.starting || pdf.active || !hasPinnedVersion}
           onClick={() => {
-            void pdf
-              .start(() => startFormPdfJob(installationId, form.id))
+            void (async () => {
+              const expected = await selectReportProvenance();
+              return pdf.start(() => startFormPdfJob(
+                installationId,
+                form.id,
+                expected.recordVersionNumber,
+              ));
+            })()
               .then(() => toast.success('Form PDF generation started.'))
               .catch((error) =>
                 toast.error(installHubConnectionErrorMessage(error)),
@@ -798,9 +875,11 @@ function CompletedFormActions({
           <Icon name="file-text" size={17} />
           {pdf.active ? 'Preparing PDF…' : 'Generate PDF'}
         </Button>
-        <Button variant="secondary" onClick={() => void onAmend()}>
-          Create amendment
-        </Button>
+        {!form.historicalMeterRemoved ? (
+          <Button variant="secondary" onClick={() => void onAmend()}>
+            Create amendment
+          </Button>
+        ) : null}
         <LinkButton
           variant="ghost"
           href={`/installhub/installations/${installationId}/forms`}

@@ -6,15 +6,39 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { Checkbox, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
+import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import {
+  ChoiceGroup,
+  ConfirmDialog,
+  ErrorSummary,
+  SaveStateNotice,
+  TreeDraftNavigationGuard,
+  requestTreeNavigation,
+} from '@/modules/installhub/components/WorkflowUi';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
-import { BOARD_TYPES, type ElectricalAsset } from '@/modules/installhub/types/domain';
+import type { ElectricalAsset, ElectricalSourceKind } from '@/modules/installhub/types/domain';
+import {
+  BOARD_TYPE_OPTIONS,
+  applyAssetElectricalSource,
+  applyBoardElectricalSource,
+  assetElectricalSource,
+  boardDependencyPreview,
+  boardElectricalSource,
+  boardTypeCode,
+  displayCodeMetadata,
+  displayCodeValue,
+  legacyBoardType,
+  primaryGridSupply,
+  reconcileRemovedMeter,
+  setAssetMetering,
+  validBoardParents,
+} from '@/modules/installhub/lib/workflow';
 import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -31,6 +55,10 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const [draft, setDraft] = useState<ElectricalAsset | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [parentSearch, setParentSearch] = useState('');
+  const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
+  const [confirmMeterRemoval, setConfirmMeterRemoval] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const source = query.data?.electricalAssets.find((item) => item.id === boardId);
   useEffect(() => {
@@ -49,8 +77,28 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   if (!zone) return <ErrorBanner message="Zone not found." />;
   const saved = mode === 'edit';
   const currentDraft = draft;
-  const availableParents = tree.electricalAssets.filter((item) => item.id !== boardId);
+  const allAvailableParents = validBoardParents(tree, draft.id);
+  const normalizedSearch = parentSearch.trim().toLowerCase();
+  const availableParents = allAvailableParents.filter((item) => {
+    if (!normalizedSearch) return true;
+    const itemZone = tree.zones.find((candidate) => candidate.id === item.zoneId);
+    return `${displayCodeValue(item)} ${item.assetName} ${item.assetType} ${itemZone?.zoneName || ''}`
+      .toLowerCase()
+      .includes(normalizedSearch);
+  }).slice(0, 100);
   const forms = tree.formSubmissions.filter((item) => item.boardId === boardId);
+  const draftSource = boardElectricalSource(draft);
+  const sourceKind = draftSource.kind;
+  const dependencyPreview = boardDependencyPreview(tree, draft.id);
+  const codeMeta = displayCodeMetadata(
+    tree,
+    boardTypeCode(draft),
+    draft.displayCode,
+    draft.displayCodeMeta,
+    draft.id,
+  );
+  const hasLocalChanges = mode === 'new'
+    || Boolean(source && JSON.stringify(draft) !== JSON.stringify(source));
 
   function set<K extends keyof ElectricalAsset>(key: K, value: ElectricalAsset[K]) {
     setDraft((current) => current ? { ...current, [key]: value } : current);
@@ -58,24 +106,58 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function save(event?: FormEvent) {
     event?.preventDefault();
-    if (!currentDraft.assetName.trim() || !currentDraft.displayCode.trim()) {
-      toast.error('Board name and display code are required.');
+    const nextErrors: Array<{ id?: string; message: string }> = [];
+    if (!currentDraft.assetName.trim()) nextErrors.push({ id: 'board-name', message: 'Enter the switchboard name.' });
+    if (boardTypeCode(currentDraft) === 'OTHER' && !currentDraft.customTypeName?.trim()) {
+      nextErrors.push({ id: 'board-custom-type', message: 'Enter the custom switchboard type.' });
+    }
+    const electricalSource = boardElectricalSource(currentDraft);
+    if (electricalSource.kind === 'BOARD' && !electricalSource.boardId) {
+      nextErrors.push({ id: 'board-parent', message: 'Choose the confirmed parent switchboard.' });
+    }
+    const code = displayCodeMetadata(
+      tree,
+      boardTypeCode(currentDraft),
+      currentDraft.displayCode,
+      currentDraft.displayCodeMeta,
+      currentDraft.id,
+    ).value;
+    if (!code.trim()) nextErrors.push({ id: 'board-code', message: 'Enter or generate a display code.' });
+    setErrors(nextErrors);
+    if (nextErrors.length) {
+      document.getElementById(nextErrors[0].id || '')?.focus();
+      toast.error('Check the highlighted switchboard fields.');
       return;
     }
     setBusy(true);
     try {
       await writer.mutate((next) => {
+        if (!currentDraft.meterPresent) {
+          const existing = next.electricalAssets.find((item) => item.id === currentDraft.id);
+          for (const meter of existing?.meters || []) reconcileRemovedMeter(next, meter.id);
+        }
         const value: ElectricalAsset = {
           ...structuredClone(currentDraft),
+          meters: currentDraft.meterPresent
+            ? currentDraft.meters.filter((meter) => meter.lifecycleState !== 'INACTIVE')
+            : [],
           assetName: currentDraft.assetName.trim(),
-          displayCode: currentDraft.displayCode.trim(),
-          electricalParentId: currentDraft.electricalParentTbc ? null : currentDraft.electricalParentId || null,
+          assetType: legacyBoardType(boardTypeCode(currentDraft)),
+          typeCode: boardTypeCode(currentDraft),
+          customTypeName: boardTypeCode(currentDraft) === 'OTHER' ? currentDraft.customTypeName?.trim() : null,
+          displayCode: code.trim(),
+          displayCodeMeta: {
+            ...displayCodeMetadata(next, boardTypeCode(currentDraft), code, currentDraft.displayCodeMeta, currentDraft.id),
+            value: code.trim(),
+          },
           updatedAt: nowIso(),
         };
+        applyBoardElectricalSource(value, electricalSource);
         const index = next.electricalAssets.findIndex((item) => item.id === value.id);
         if (index >= 0) next.electricalAssets[index] = value;
         else next.electricalAssets.push(value);
       });
+      setErrors([]);
       toast.success(saved ? 'Switchboard saved.' : 'Switchboard created.');
       if (!saved) {
         router.replace(`/installhub/installations/${installationId}/zones/${zoneId}/boards/${currentDraft.id}`);
@@ -160,38 +242,119 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   }
 
   async function removeBoard() {
-    if (!boardId || !confirm(`Delete ${currentDraft.assetName} and its meters and forms?`)) return;
+    if (!boardId) return;
     try {
       await writer.mutate((next) => {
         const meterIds = new Set(
           next.electricalAssets.find((item) => item.id === boardId)?.meters.map((item) => item.id) ?? [],
         );
+        for (const meterId of meterIds) reconcileRemovedMeter(next, meterId);
         next.electricalAssets = next.electricalAssets.filter((item) => item.id !== boardId);
-        next.electricalAssets = next.electricalAssets.map((item) => ({
-          ...item,
-          electricalParentId: item.electricalParentId === boardId ? null : item.electricalParentId,
-          electricalParentTbc:
-            item.electricalParentTbc || item.electricalParentId === boardId,
-        }));
-        next.siteAssets = next.siteAssets.map((item) => ({
-          ...item,
-          electricalBoardId: item.electricalBoardId === boardId ? null : item.electricalBoardId,
-          electricalBoardTbc:
-            item.electricalBoardTbc || item.electricalBoardId === boardId,
-          meterSwitchboardId: item.meterSwitchboardId === boardId ? null : item.meterSwitchboardId,
-          meterSwitchboardTbc:
-            item.meterSwitchboardTbc ||
-            (item.meterPresent && item.meterSwitchboardId === boardId),
-        }));
-        next.formSubmissions = next.formSubmissions.filter(
-          (item) => item.boardId !== boardId && !meterIds.has(item.meterId ?? ''),
+        for (const item of next.electricalAssets) {
+          const itemSource = boardElectricalSource(item);
+          if (itemSource.kind === 'BOARD' && itemSource.boardId === boardId) {
+            applyBoardElectricalSource(item, { kind: 'TBC' });
+          }
+        }
+        for (const item of next.siteAssets) {
+          const itemSource = assetElectricalSource(item);
+          if (itemSource.kind === 'BOARD' && itemSource.boardId === boardId) {
+            applyAssetElectricalSource(item, { kind: 'TBC' });
+          }
+          if (item.meterSwitchboardId === boardId || (item.meterId && meterIds.has(item.meterId))) {
+            setAssetMetering(next, item, { kind: 'TBC' });
+          }
+        }
+        next.measurementAssignments = (next.measurementAssignments || []).filter(
+          (assignment) => !meterIds.has(assignment.meterId),
+        );
+        next.meterDevices = (next.meterDevices || []).filter(
+          (meter) => !meterIds.has(meter.id),
+        );
+        next.formSubmissions = next.formSubmissions.map(
+          (item) => item.status === 'Draft' && (item.boardId === boardId || meterIds.has(item.meterId ?? ''))
+            ? { ...item, boardId: null, meterId: null }
+            : item,
         );
       });
-      toast.success('Switchboard deleted.');
+      setConfirmDelete(false);
+      toast.success('Switchboard deleted. Dependent draft relationships are ready for reconciliation.');
       router.replace(`/installhub/installations/${installationId}/zones/${zoneId}`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     }
+  }
+
+  function chooseSource(kind: ElectricalSourceKind) {
+    setDraft((current) => {
+      if (!current) return current;
+      const next = structuredClone(current);
+      if (kind === 'GRID') applyBoardElectricalSource(next, { kind: 'GRID', gridSupplyId: primaryGridSupply(tree).id });
+      else if (kind === 'BOARD') applyBoardElectricalSource(next, { kind: 'BOARD', boardId: '' });
+      else applyBoardElectricalSource(next, { kind: 'TBC' });
+      return next;
+    });
+  }
+
+  function chooseMeterPresent(value: 'YES' | 'NO') {
+    if (value === 'YES') {
+      set('meterPresent', true);
+      return;
+    }
+    if (currentDraft.meters.length > 0 || forms.length > 0) {
+      setConfirmMeterRemoval(true);
+      return;
+    }
+    set('meterPresent', false);
+  }
+
+  function confirmNoMeter() {
+    setDraft((current) => current ? {
+      ...current,
+      meterPresent: false,
+      meters: [],
+    } : current);
+    setConfirmMeterRemoval(false);
+  }
+
+  function chooseBoardType(value: string) {
+    setDraft((current) => {
+      if (!current) return current;
+      const nextMeta = displayCodeMetadata(
+        tree,
+        value,
+        '',
+        current.displayCodeMeta,
+        current.id,
+        !saved,
+      );
+      return {
+        ...current,
+        typeCode: value,
+        assetType: legacyBoardType(value),
+        customTypeName: value === 'OTHER' ? current.customTypeName : null,
+        displayCode: current.displayCodeMeta?.isOverridden ? current.displayCode : nextMeta.value,
+        displayCodeMeta: current.displayCodeMeta?.isOverridden
+          ? { ...current.displayCodeMeta, generatedValue: nextMeta.generatedValue }
+          : nextMeta,
+      };
+    });
+  }
+
+  function setCodeOverride(checked: boolean) {
+    setDraft((current) => {
+      if (!current) return current;
+      const nextMeta = displayCodeMetadata(tree, boardTypeCode(current), '', undefined, current.id);
+      return {
+        ...current,
+        displayCode: checked ? displayCodeValue(current) : nextMeta.value,
+        displayCodeMeta: {
+          ...nextMeta,
+          value: checked ? displayCodeValue(current) : nextMeta.value,
+          isOverridden: checked,
+        },
+      };
+    });
   }
 
   const latest = query.data!.electricalAssets.find((item) => item.id === boardId) ?? draft;
@@ -215,75 +378,224 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/new`}>
               <Icon name="plus" size={17} />Add meter
             </LinkButton>
-            <Button variant="danger" onClick={() => void removeBoard()}>Delete</Button>
+            <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
           </>
         ) : undefined}
       />
+
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--text-sub)]">
+          Physical zone: <strong className="text-[var(--text)]">{zone.zoneName}</strong>
+        </p>
+        <SaveStateNotice
+          state={writer.writeState}
+          onRetry={() => void writer.retry().catch((error) => toast.error(installHubConnectionErrorMessage(error)))}
+          onDiscard={() => void writer.discard()}
+        />
+      </div>
+
+      <TreeDraftNavigationGuard active={!busy && !uploading && (hasLocalChanges || writer.hasPendingTree)} onDiscard={writer.discard} />
+
+      <ErrorSummary errors={errors} />
 
       <form onSubmit={(event) => void save(event)}>
         <Card className="mb-5">
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
-              <FieldLabel>Board name *</FieldLabel>
-              <Input value={draft.assetName} required onChange={(event) => set('assetName', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Display code *</FieldLabel>
-              <Input value={draft.displayCode} required onChange={(event) => set('displayCode', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Board type *</FieldLabel>
-              <Select value={draft.assetType} onChange={(event) => set('assetType', event.target.value as ElectricalAsset['assetType'])}>
-                {BOARD_TYPES.map((value) => <option key={value}>{value}</option>)}
-              </Select>
-            </div>
-            <div>
-              <FieldLabel>Parent switchboard</FieldLabel>
-              <Select
-                value={draft.electricalParentId ?? ''}
-                disabled={draft.electricalParentTbc}
-                onChange={(event) => set('electricalParentId', event.target.value || null)}
-              >
-                <option value="">No parent / incoming supply</option>
-                {availableParents.map((board) => <option key={board.id} value={board.id}>{board.displayCode} — {board.assetName}</option>)}
-              </Select>
-              <Checkbox
-                label="Parent relationship to be confirmed (TBC)"
-                checked={draft.electricalParentTbc}
-                onChange={(checked) => {
-                  set('electricalParentTbc', checked);
-                  if (checked) set('electricalParentId', null);
-                }}
+              <FieldLabel htmlFor="board-name">Switchboard name *</FieldLabel>
+              <Input
+                id="board-name"
+                value={draft.assetName}
+                required
+                aria-invalid={errors.some((item) => item.id === 'board-name')}
+                aria-describedby={errors.some((item) => item.id === 'board-name') ? 'board-name-error' : undefined}
+                onChange={(event) => set('assetName', event.target.value)}
               />
+              <FieldError id="board-name-error" message={errors.find((item) => item.id === 'board-name')?.message} />
             </div>
             <div>
-              <FieldLabel>Location description</FieldLabel>
-              <Input value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
+              <FieldLabel htmlFor="board-type">Switchboard type *</FieldLabel>
+              <Select id="board-type" value={boardTypeCode(draft)} onChange={(event) => chooseBoardType(event.target.value)}>
+                {BOARD_TYPE_OPTIONS.map((option) => (
+                  <option key={option.code} value={option.code}>{option.label}</option>
+                ))}
+              </Select>
+            </div>
+            {boardTypeCode(draft) === 'OTHER' ? (
+              <div>
+                <FieldLabel htmlFor="board-custom-type">Custom switchboard type *</FieldLabel>
+                <Input
+                  id="board-custom-type"
+                  value={draft.customTypeName ?? ''}
+                  aria-invalid={errors.some((item) => item.id === 'board-custom-type')}
+                  aria-describedby={errors.some((item) => item.id === 'board-custom-type') ? 'board-custom-type-error' : undefined}
+                  onChange={(event) => set('customTypeName', event.target.value)}
+                />
+                <FieldError id="board-custom-type-error" message={errors.find((item) => item.id === 'board-custom-type')?.message} />
+              </div>
+            ) : null}
+            <div>
+              <FieldLabel htmlFor="board-code">Display code *</FieldLabel>
+              <Input
+                id="board-code"
+                value={codeMeta.value}
+                readOnly={!codeMeta.isOverridden}
+                required
+                aria-invalid={errors.some((item) => item.id === 'board-code')}
+                aria-describedby="board-code-hint"
+                onChange={(event) => setDraft((current) => current ? {
+                  ...current,
+                  displayCode: event.target.value,
+                  displayCodeMeta: { ...codeMeta, value: event.target.value, isOverridden: true },
+                } : current)}
+              />
+              <FieldHint id="board-code-hint">
+                Generated from site and type. The custom-code option preserves an intentional override.
+              </FieldHint>
+              <FieldError message={errors.find((item) => item.id === 'board-code')?.message} />
+              <Checkbox label="Use a custom display code" checked={codeMeta.isOverridden} onChange={setCodeOverride} />
             </div>
             <div>
-              <FieldLabel>Site NMI</FieldLabel>
-              <Input value={draft.siteNmi ?? ''} onChange={(event) => set('siteNmi', event.target.value)} />
+              <FieldLabel htmlFor="board-location">Location description</FieldLabel>
+              <Input id="board-location" value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
             </div>
             <div>
-              <FieldLabel>Phase</FieldLabel>
-              <Input value={draft.phase ?? ''} onChange={(event) => set('phase', event.target.value)} />
+              <FieldLabel htmlFor="board-nmi">Site NMI</FieldLabel>
+              <Input id="board-nmi" value={draft.siteNmi ?? ''} onChange={(event) => set('siteNmi', event.target.value)} />
             </div>
             <div>
-              <FieldLabel>Amperage rating</FieldLabel>
-              <Input value={draft.amperageRating ?? ''} onChange={(event) => set('amperageRating', event.target.value)} />
+              <FieldLabel htmlFor="board-phase">Phase</FieldLabel>
+              <Input id="board-phase" value={draft.phase ?? ''} onChange={(event) => set('phase', event.target.value)} />
+            </div>
+            <div>
+              <FieldLabel htmlFor="board-amperage">Amperage rating</FieldLabel>
+              <Input id="board-amperage" value={draft.amperageRating ?? ''} onChange={(event) => set('amperageRating', event.target.value)} />
             </div>
           </div>
-          <FieldLabel>Sub-circuits description</FieldLabel>
-          <Textarea value={draft.subCircuitsDescription ?? ''} onChange={(event) => set('subCircuitsDescription', event.target.value)} />
-          <FieldLabel>Comments</FieldLabel>
-          <Textarea value={draft.comments ?? ''} onChange={(event) => set('comments', event.target.value)} />
-          <Checkbox label="Meter present" checked={draft.meterPresent || draft.meters.length > 0} onChange={(checked) => set('meterPresent', checked)} />
+
+          <div className="mt-6 border-t border-[var(--border)] pt-2">
+            <ChoiceGroup<ElectricalSourceKind>
+              label="What supplies this switchboard?"
+              hint="Choose the confirmed electrical source. Physical zone and electrical parent are separate relationships."
+              value={sourceKind}
+              options={[
+                { value: 'GRID', label: 'Grid / incoming supply', description: primaryGridSupply(tree).name },
+                { value: 'BOARD', label: 'Another switchboard', description: 'Select a parent anywhere in this installation.' },
+                { value: 'TBC', label: 'To be confirmed', description: 'Save the uncertainty for reconciliation.' },
+              ]}
+              onChange={chooseSource}
+            />
+            {sourceKind === 'GRID' ? (
+              <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+                <FieldLabel htmlFor="board-grid-supply" className="mt-0">Grid supply *</FieldLabel>
+                <Select
+                  id="board-grid-supply"
+                  value={draftSource.gridSupplyId}
+                  onChange={(event) => setDraft((current) => {
+                    if (!current) return current;
+                    const next = structuredClone(current);
+                    applyBoardElectricalSource(next, { kind: 'GRID', gridSupplyId: event.target.value });
+                    return next;
+                  })}
+                >
+                  {(tree.gridSupplies || []).map((supply) => (
+                    <option key={supply.id} value={supply.id}>
+                      {supply.name}{supply.nmi ? ` · NMI ${supply.nmi}` : ''}{supply.isDefault ? ' · Default' : ''}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
+            {sourceKind === 'BOARD' ? (
+              <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+                <FieldLabel htmlFor="board-parent-search" className="mt-0">Find a parent switchboard</FieldLabel>
+                <Input
+                  id="board-parent-search"
+                  type="search"
+                  value={parentSearch}
+                  placeholder="Search code, name, type, or zone"
+                  onChange={(event) => setParentSearch(event.target.value)}
+                />
+                <FieldLabel htmlFor="board-parent">Confirmed parent *</FieldLabel>
+                <Select
+                  id="board-parent"
+                  value={draftSource.kind === 'BOARD' ? draftSource.boardId : ''}
+                  aria-invalid={errors.some((item) => item.id === 'board-parent')}
+                  aria-describedby={errors.some((item) => item.id === 'board-parent') ? 'board-parent-error' : undefined}
+                  onChange={(event) => setDraft((current) => {
+                    if (!current) return current;
+                    const next = structuredClone(current);
+                    applyBoardElectricalSource(next, { kind: 'BOARD', boardId: event.target.value });
+                    return next;
+                  })}
+                >
+                  <option value="">Choose a switchboard</option>
+                  {availableParents.map((board) => {
+                    const parentZone = tree.zones.find((item) => item.id === board.zoneId);
+                    return (
+                      <option key={board.id} value={board.id}>
+                        {displayCodeValue(board)} — {board.assetName} · {parentZone?.zoneName || 'Unknown zone'}
+                      </option>
+                    );
+                  })}
+                </Select>
+                <FieldError id="board-parent-error" message={errors.find((item) => item.id === 'board-parent')?.message} />
+                <FieldHint>Showing at most 100 eligible matches. Refine the search for large installations.</FieldHint>
+                {availableParents.length === 0 ? <FieldHint>No eligible switchboards match this search.</FieldHint> : null}
+              </div>
+            ) : null}
+            {sourceKind === 'TBC' ? (
+              <InlineNotice>Unresolved source will appear in reconciliation and block completion.</InlineNotice>
+            ) : null}
+          </div>
+
+          <ChoiceGroup<'YES' | 'NO'>
+            label="Is a metering device installed on this switchboard?"
+            value={draft.meterPresent || draft.meters.some((meter) => meter.lifecycleState !== 'INACTIVE') ? 'YES' : 'NO'}
+            options={[
+              { value: 'YES', label: 'Yes', description: 'Capture the installed device and channels after saving.' },
+              { value: 'NO', label: 'No', description: 'This switchboard has no installed meter.' },
+            ]}
+            onChange={chooseMeterPresent}
+          />
+
+          <FieldLabel htmlFor="board-subcircuits">Sub-circuits description</FieldLabel>
+          <Textarea id="board-subcircuits" value={draft.subCircuitsDescription ?? ''} onChange={(event) => set('subCircuitsDescription', event.target.value)} />
+          <FieldLabel htmlFor="board-comments">Comments</FieldLabel>
+          <Textarea id="board-comments" value={draft.comments ?? ''} onChange={(event) => set('comments', event.target.value)} />
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save switchboard'}</Button>
-            <Button variant="secondary" onClick={() => router.back()} disabled={busy}>Cancel</Button>
+            <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
           </div>
         </Card>
       </form>
+
+      <ConfirmDialog
+        open={confirmMeterRemoval}
+        title="Record no installed meter?"
+        description="Meters leave the active register and dependent channel mappings become unresolved. Completed forms and evidence remain in history."
+        consequences={[
+          `${draft.meters.length} metering device${draft.meters.length === 1 ? '' : 's'} will leave the active register`,
+          `${forms.filter((item) => item.meterId).length} linked meter form${forms.filter((item) => item.meterId).length === 1 ? '' : 's'} will remain in history`,
+          'Affected site-asset mappings will move to To be confirmed',
+        ]}
+        confirmLabel="Record no meter"
+        blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before changing metering.' : undefined}
+        onConfirm={confirmNoMeter}
+        onCancel={() => setConfirmMeterRemoval(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmDelete}
+        title={dependencyPreview.heading}
+        description="Deleting this switchboard removes it from the active electrical tree. Completed field records remain in history."
+        consequences={dependencyPreview.consequences}
+        confirmLabel="Delete switchboard"
+        busy={busy}
+        blockedMessage={dependencyPreview.blocked ? 'Reopen this completed installation before deleting a switchboard.' : undefined}
+        onConfirm={() => void removeBoard()}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       {!saved ? (
         <InlineNotice>Save the switchboard first, then add meter records, evidence, and field forms.</InlineNotice>

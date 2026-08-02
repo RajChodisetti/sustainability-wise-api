@@ -4,6 +4,134 @@ export type InstallHubRole = 'admin' | 'inspector';
 export type InstallationStatus = 'Draft' | 'Completed';
 export type FormStatus = 'Draft' | 'Completed';
 export type MeterDeviceType = 'A3RM' | 'A6M' | 'Other';
+export type MeterDeviceModel = 'A3RM' | 'A6M' | 'OTHER';
+export type ElectricalSourceKind = 'GRID' | 'BOARD' | 'TBC';
+export type MeteringStateKind = 'METERED' | 'UNMETERED' | 'TBC';
+export type ChannelPurpose = 'MAIN_SUPPLY' | 'SUB_CIRCUIT' | 'SPARE';
+export type MeasurementDirection = 'CONSUMPTION' | 'GENERATION' | 'BIDIRECTIONAL';
+export type PhaseMode = 'SINGLE_PHASE' | 'THREE_PHASE' | 'OTHER';
+
+export type DisplayCodeMetadata = {
+  value: string;
+  generatedValue: string;
+  isOverridden: boolean;
+  ruleVersion: number;
+  overrideReason?: string | null;
+};
+
+export type ElectricalSource =
+  | { kind: 'GRID'; gridSupplyId: string }
+  | { kind: 'BOARD'; boardId: string }
+  | { kind: 'TBC' };
+
+export type SiteAssetMeteringState =
+  | { kind: 'METERED'; measurementAssignmentIds: string[] }
+  | { kind: 'UNMETERED' }
+  | { kind: 'TBC' };
+
+export type GridSupply = {
+  id: string;
+  installationId: string;
+  name: string;
+  isDefault: boolean;
+  nmi?: string | null;
+  externalKey?: string | null;
+};
+
+export type MeasurementTarget =
+  | { kind: 'BOARD'; boardId: string }
+  | { kind: 'SITE_ASSET'; siteAssetId: string }
+  | { kind: 'GRID_BOUNDARY'; gridSupplyId: string }
+  | { kind: 'TBC' };
+
+export type MeterDeviceChannel = {
+  id: string;
+  ordinal: number;
+  phaseLabel?: string | null;
+  purpose: ChannelPurpose;
+  loadTypeCode?: string | null;
+  customLoadTypeName?: string | null;
+  sensorRating?: string | null;
+  description?: string | null;
+  capabilities?: Record<string, unknown>;
+};
+
+export type MeterDevice = {
+  id: string;
+  installationId: string;
+  installedOnBoardId: string;
+  deviceFamily: 'WATTWATCHERS' | 'OTHER';
+  deviceModel: MeterDeviceModel;
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+  displayName: DisplayCodeMetadata;
+  serialNumber: string;
+  deviceNumber?: string | null;
+  lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
+  channels: MeterDeviceChannel[];
+  wwPhotos?: Record<string, unknown>;
+  notes?: string | null;
+};
+
+export type MeasurementAssignment = {
+  id: string;
+  meterId: string;
+  channelIds: string[];
+  phaseMode: PhaseMode;
+  target: MeasurementTarget;
+  direction: MeasurementDirection;
+  status: 'CONFIRMED' | 'TBC';
+};
+
+export type ReadinessIssue = {
+  code: string;
+  severity: 'ERROR' | 'WARNING';
+  entityType:
+    | 'installation'
+    | 'grid_supply'
+    | 'board'
+    | 'site_asset'
+    | 'meter'
+    | 'channel'
+    | 'measurement_assignment'
+    | 'virtual_meter'
+    | 'form';
+  entityId: string;
+  field?: string;
+  message: string;
+  candidateIds?: string[];
+};
+
+export type InstallationReadiness = {
+  installationId: string;
+  authority?: 'SERVER' | 'LOCAL_ADVISORY';
+  locallyConsistent?: boolean;
+  treeRevision: number;
+  recordVersionNumber?: number;
+  readyToComplete: boolean;
+  eligibility: {
+    draftDiagnosticReport: boolean;
+    authoritativeReport: boolean;
+    mappingExport: boolean;
+    dataDomeDelivery: boolean;
+  };
+  issues: ReadinessIssue[];
+  issuePage?: {
+    offset: number;
+    limit: number;
+    total: number;
+    nextOffset: number | null;
+  };
+};
+
+export type VirtualMeterDefinition = {
+  id: string;
+  parentNodeId: string;
+  totalMeasurementAssignmentId: string;
+  subtractAssignmentIds: string[];
+  formulaVersion: number;
+  allocation: 'UNALLOCATED_RESIDUAL';
+};
 export type FormType =
   | 'ww-installation'
   | 'a3rm-installation'
@@ -95,12 +223,20 @@ export type Installation = {
   siteAddress: string;
   inspectorName: string;
   auditDate: string;
+  siteCode?: string | null;
+  timezone?: string | null;
+  externalKey?: string | null;
   status: InstallationStatus;
   createdByUserId?: string | null;
   assignedInspectorUserId?: string | null;
   syncStatus?: string;
   createdAt: string;
   updatedAt: string;
+  completedAt?: string | null;
+  completedByUserId?: string | null;
+  reopenedAt?: string | null;
+  reopenedByUserId?: string | null;
+  reopenReason?: string | null;
   deletedAt?: string | null;
 };
 
@@ -133,9 +269,11 @@ export const SITE_ASSET_TYPES = [
   'Lighting',
   'Solar / PV',
   'EV Charger',
+  'Vehicle Hoist',
+  'Forklift',
   'Exhaust / Fan System',
   'Power Outlet',
-  'Hot Water',
+  'Heater / Geyser',
   'Refrigeration',
   'Compressed Air',
   'Other',
@@ -163,11 +301,16 @@ export type WattwatcherSwitchboard = {
 };
 
 export type WattwatcherChannel = {
+  id?: string;
+  ordinal?: number;
+  phaseLabel?: string | null;
   purpose?: string;
   loadType?: string;
+  customLoadTypeName?: string;
   rogowskiSize?: string;
   description?: string;
   ctRatio?: string;
+  capabilities?: Record<string, unknown>;
 };
 
 export type WattwatcherVerification = {
@@ -194,10 +337,16 @@ export type WattwatcherPhotos = {
 
 export type Meter = {
   id: string;
+  deviceFamily?: 'WATTWATCHERS' | 'OTHER';
   deviceName: string;
   deviceType: MeterDeviceType;
   deviceId: string;
   deviceNumber?: string | null;
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+  deviceNameOverridden?: boolean;
+  lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
+  notes?: string | null;
   classification?: string | null;
   coverage?: string | null;
   wwPrestart?: WattwatcherPrestart;
@@ -215,7 +364,11 @@ export type ElectricalAsset = {
   zoneId: string;
   assetName: string;
   displayCode: string;
+  displayCodeMeta?: DisplayCodeMetadata;
   assetType: BoardType;
+  typeCode?: string;
+  customTypeName?: string | null;
+  electricalSource?: ElectricalSource;
   electricalParentId?: string | null;
   electricalParentTbc: boolean;
   locationDescription?: string | null;
@@ -245,14 +398,23 @@ export type SiteAsset = {
   zoneId: string;
   assetName: string;
   assetType: SiteAssetType;
+  typeCode?: string;
+  customTypeName?: string | null;
+  electricalSource?: ElectricalSource;
   electricalBoardId?: string | null;
   electricalBoardTbc: boolean;
   locationDescription?: string | null;
   locationPhoto?: string | null;
   displayCode?: string | null;
+  displayCodeMeta?: DisplayCodeMetadata;
   meterPresent: boolean;
+  meteringState?: SiteAssetMeteringState;
   meterSwitchboardId?: string | null;
   meterSwitchboardTbc: boolean;
+  meterId?: string | null;
+  meterChannelIds?: string[];
+  phaseMode?: PhaseMode | null;
+  measurementDirection?: MeasurementDirection | null;
   meterChannels: MeterChannelRef[];
   comments?: string | null;
   extraPhotos: string[];
@@ -287,17 +449,89 @@ export type FormSubmission = {
   attachments: FormAttachment[];
   completedAt?: string | null;
   supersedesId?: string | null;
+  historicalMeterRemoved?: boolean;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
 };
 
 export type InstallationTree = {
+  treeSchemaVersion?: 2;
+  baseTreeRevision?: number;
+  treeRevision?: number;
+  recordVersionNumber?: number;
   installation: Installation;
+  gridSupplies?: GridSupply[];
   zones: Zone[];
   electricalAssets: ElectricalAsset[];
   siteAssets: SiteAsset[];
+  meterDevices?: MeterDevice[];
+  measurementAssignments?: MeasurementAssignment[];
   formSubmissions: FormSubmission[];
+  serverDerived?: {
+    virtualMeterDefinitions: VirtualMeterDefinition[];
+  };
+};
+
+export type InstallationMappingExport = {
+  schema: 'installation-mapping/v1';
+  authority?: 'SERVER_PINNED' | 'LOCAL_ADVISORY';
+  installation: {
+    id: string;
+    externalKey: string;
+    recordVersionNumber: number;
+    canonicalizerVersion: number;
+    validatorVersion: number;
+    taxonomyCatalogVersion: number;
+    siteName: string;
+    timezone: string;
+    completedAt?: string;
+  };
+  physicalLocations: Array<{
+    id: string;
+    name: string;
+    description?: string;
+  }>;
+  electricalNodes: Array<Record<string, unknown> & { id: string; kind: string }>;
+  supplyEdges: Array<{ id: string; sourceNodeId: string; targetNodeId: string }>;
+  unresolvedRelationships: Array<{
+    id: string;
+    subjectType: 'BOARD' | 'SITE_ASSET' | 'MEASUREMENT_ASSIGNMENT';
+    subjectId: string;
+    relation: 'SUPPLY' | 'MEASUREMENT';
+    missingEnd: 'SOURCE' | 'TARGET';
+    knownNodeId?: string;
+    reason: 'TBC' | 'ORPHAN' | 'INVALID';
+  }>;
+  meters: Array<Record<string, unknown> & { id: string }>;
+  channels: Array<Record<string, unknown> & { id: string }>;
+  measurementAssignments: MeasurementAssignment[];
+  assetCoverage: Array<Record<string, unknown> & { assetId: string; state: string }>;
+  virtualMeters: VirtualMeterDefinition[];
+  readiness: InstallationReadiness;
+};
+
+export type ElectricalTreeReadModel = {
+  installationId: string;
+  treeRevision: number;
+  recordVersionNumber?: number;
+  payloadHash?: string;
+  nodes: Array<{
+    id: string;
+    kind: 'GRID' | 'BOARD' | 'SITE_ASSET' | 'VIRTUAL_RESIDUAL';
+    name: string;
+    displayCode?: string;
+    typeLabel?: string;
+    physicalLocationId?: string;
+    coverageState?: string;
+  }>;
+  edges: Array<{
+    id: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    relationship: 'FED_FROM' | 'MEASURES';
+  }>;
+  unresolved: InstallationMappingExport['unresolvedRelationships'];
 };
 
 export type InstallHubPullResponse = {
@@ -352,7 +586,21 @@ export type InstallationVersionRecord = InstallationVersionSummary & {
   app: 'installhub';
   entityType: 'installation';
   entityId: string;
-  snapshot: InstallationTree & { syncStage?: 'metadata' | 'complete' };
+  payloadHash: string | null;
+  snapshot: {
+    snapshotSchema: 'InstallationCanonicalSnapshotV2';
+    installationTree: InstallationTree & {
+      installation: Installation & { recordVersionNumber: number };
+    };
+    readiness: InstallationReadiness;
+    payloadHash: string;
+  };
 };
 
 export type InstallHubExportJob = ExportJobStatus;
+
+export type InstallHubReportProvenance = {
+  recordVersionNumber: number;
+  recordVersionPayloadHash: string;
+  reportSource: 'canonical-version';
+};

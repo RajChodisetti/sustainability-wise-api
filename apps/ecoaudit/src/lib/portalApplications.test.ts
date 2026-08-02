@@ -14,13 +14,13 @@ test('the portal directory contains every product workspace', () => {
       { title: 'Eco Audit', href: '/ecoaudit/dashboard' },
       { title: 'Solar Sense', href: '/solar/dashboard' },
       { title: 'Wattwatchers Fleet', href: '/fleet/dashboard' },
-      { title: 'Field App', href: '/field' },
+      { title: 'Field App Complete', href: '/field' },
     ],
   );
   assert.equal(new Set(PORTAL_APPLICATIONS.map(({ href }) => href)).size, 4);
 });
 
-test('Field App remains visible while Solar Sense stays hidden', () => {
+test('Field App Complete remains visible while Solar Sense stays hidden', () => {
   const visible = visiblePortalApplications(
     {
       ecoaudit: true,
@@ -33,7 +33,7 @@ test('Field App remains visible while Solar Sense stays hidden', () => {
 
   assert.deepEqual(
     visible.map(({ title }) => title),
-    ['Eco Audit', 'Wattwatchers Fleet', 'Field App'],
+    ['Eco Audit', 'Wattwatchers Fleet', 'Field App Complete'],
   );
   assert.equal(PORTAL_FEATURES.solarSenseVisible, false);
 });

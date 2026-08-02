@@ -502,7 +502,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
           status: 'failed',
           error: error instanceof Error && error.message.trim()
             ? error.message
-            : 'Field access could not be opened from your signed-in account.',
+            : 'Field App Complete access could not be opened from your signed-in account.',
         });
       }
       throw error;
@@ -511,7 +511,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
 
   const retryInstallHubSession = useCallback(async () => {
     if (!fieldSessionSourceSignature || fieldSessionSources.length === 0) {
-      throw new Error('No signed-in source session is available for Field App.');
+      throw new Error('No signed-in source session is available for Field App Complete.');
     }
     await exchangeInstallHubSession(
       fieldSessionSources,

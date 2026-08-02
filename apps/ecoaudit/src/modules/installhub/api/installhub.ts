@@ -3,15 +3,23 @@ import { resolveApiRequestUrl } from '@/lib/config';
 import type {
   CloudStoredFile,
   InstallationAccess,
+  ElectricalTreeReadModel,
   InstallationFilesResponse,
+  InstallationMappingExport,
+  InstallationReadiness,
   InstallationTree,
   InstallationVersionRecord,
   InstallationVersionSummary,
   InstallHubExportJob,
   InstallHubPullResponse,
+  InstallHubReportProvenance,
   ManagedInstallHubUser,
   UnifiedPortalUsersResponse,
 } from '@/modules/installhub/types/domain';
+import {
+  normalizeInstallationTree,
+  serializeInstallationTree,
+} from '@/modules/installhub/lib/workflow';
 import {
   getStoredJwt,
   installHubRequest,
@@ -21,17 +29,20 @@ import {
 
 export type PhotoIdentity = {
   installationId: string;
-  entityType: 'zone' | 'electrical_asset' | 'site_asset' | 'form_submission';
+  entityType: 'zone' | 'electrical_asset' | 'site_asset' | 'meter_device' | 'form_submission';
   entityId: string;
   fieldName: string;
 };
+
+export const DEFAULT_TREE_SYNC_STAGE = 'metadata' as const;
+export const FORM_COMPLETION_SYNC_STAGE = 'complete' as const;
 
 export async function listInstallationTrees(): Promise<InstallationTree[]> {
   const result = await installHubRequest<InstallHubPullResponse>(
     'GET',
     '/v1/installhub/sync/pull?since=1970-01-01T00%3A00%3A00.000Z',
   );
-  return result.installations;
+  return result.installations.map(normalizeInstallationTree);
 }
 
 export async function getInstallationTree(
@@ -47,20 +58,140 @@ export async function getInstallationTree(
   );
   const tree = result.installations[0];
   if (!tree) throw new Error('Installation not found.');
-  return tree;
+  return normalizeInstallationTree(tree);
 }
 
 export function saveInstallationTree(
   tree: InstallationTree,
-  syncStage: 'metadata' | 'complete' = 'complete',
+  syncStage: 'metadata' | 'complete' = DEFAULT_TREE_SYNC_STAGE,
 ): Promise<{
   installationId: string;
   versionNumber: number | null;
+  recordVersionNumber?: number | null;
+  treeRevision?: number;
+  readiness?: InstallationReadiness;
 }> {
+  const wire = serializeInstallationTree(tree);
   return installHubRequest(
     'POST',
     '/v1/installhub/sync/push',
-    { syncStage, ...tree },
+    { syncStage, ...wire },
+  );
+}
+
+export function getInstallationReadiness(
+  installationId: string,
+  options: {
+    recordVersionNumber?: number;
+    offset?: number;
+    limit?: number;
+    q?: string;
+  } = {},
+): Promise<InstallationReadiness> {
+  const query = new URLSearchParams();
+  if (options.recordVersionNumber !== undefined) {
+    query.set('recordVersionNumber', String(options.recordVersionNumber));
+  }
+  if (options.offset !== undefined) query.set('offset', String(options.offset));
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  if (options.q?.trim()) query.set('q', options.q.trim());
+  const suffix = query.size ? `?${query}` : '';
+  return installHubRequest(
+    'GET',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/readiness${suffix}`,
+  );
+}
+
+export type InstallationLifecycleResult = {
+  installationId: string;
+  status: 'Draft' | 'Completed';
+  treeRevision: number;
+  recordVersionNumber?: number;
+  completedFromRevision?: number;
+  readiness?: InstallationReadiness;
+};
+
+export function completeInstallation(
+  installationId: string,
+  input: { baseTreeRevision: number; idempotencyKey: string },
+): Promise<InstallationLifecycleResult> {
+  return installHubRequest(
+    'POST',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/complete`,
+    input,
+  );
+}
+
+export function reopenInstallation(
+  installationId: string,
+  input: { baseTreeRevision: number; reason: string; idempotencyKey: string },
+): Promise<InstallationLifecycleResult> {
+  return installHubRequest(
+    'POST',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/reopen`,
+    input,
+  );
+}
+
+export type MeterRemovalResult = {
+  tree: InstallationTree;
+  readiness: InstallationReadiness;
+  meterRemoval: {
+    meterId: string;
+    removedAssignmentIds: string[];
+    affectedSiteAssetIds: string[];
+    retainedFormIds: string[];
+    retainedRecordVersions: Array<{
+      id: string;
+      recordVersionNumber: number;
+    }>;
+  };
+};
+
+export async function deleteInstallationMeter(
+  installationId: string,
+  meterId: string,
+  input: { baseTreeRevision: number },
+): Promise<MeterRemovalResult> {
+  const response = await installHubRequest<InstallationTree & Omit<MeterRemovalResult, 'tree'>>(
+    'DELETE',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/meters/${encodeURIComponent(meterId)}`,
+    input,
+  );
+  return {
+    tree: normalizeInstallationTree(response),
+    readiness: response.readiness,
+    meterRemoval: response.meterRemoval,
+  };
+}
+
+export function getInstallationMapping(
+  installationId: string,
+  recordVersionNumber?: number,
+): Promise<InstallationMappingExport> {
+  const query = new URLSearchParams();
+  if (recordVersionNumber !== undefined) {
+    query.set('recordVersionNumber', String(recordVersionNumber));
+  }
+  const suffix = query.size ? `?${query}` : '';
+  return installHubRequest(
+    'GET',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/mapping${suffix}`,
+  );
+}
+
+export function getInstallationElectricalTree(
+  installationId: string,
+  recordVersionNumber?: number,
+): Promise<ElectricalTreeReadModel> {
+  const query = new URLSearchParams();
+  if (recordVersionNumber !== undefined) {
+    query.set('recordVersionNumber', String(recordVersionNumber));
+  }
+  const suffix = query.size ? `?${query}` : '';
+  return installHubRequest(
+    'GET',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/electrical-tree${suffix}`,
   );
 }
 
@@ -118,27 +249,140 @@ export function deleteCloudInstallation(
   );
 }
 
+export function requireRecordVersionNumber(value: number | null | undefined): number {
+  if (!Number.isInteger(value) || (value ?? 0) < 1) {
+    throw new Error('A pinned record version is required for authoritative report generation.');
+  }
+  return value!;
+}
+
+type InstallationVersionLookup = {
+  list: typeof listInstallationVersions;
+  get: typeof getInstallationVersion;
+};
+
+export async function findRecordVersionContainingForms(
+  installationId: string,
+  formIds: string[],
+  preferredRecordVersionNumber: number,
+  lookup: InstallationVersionLookup = {
+    list: listInstallationVersions,
+    get: getInstallationVersion,
+  },
+): Promise<number> {
+  const preferred = requireRecordVersionNumber(preferredRecordVersionNumber);
+  const requiredIds = [...new Set(formIds.filter(Boolean))];
+  if (!requiredIds.length) return preferred;
+  const listed = await lookup.list(installationId);
+  const candidates = [
+    preferred,
+    ...listed.versions
+      .map((version) => version.versionNumber)
+      .sort((left, right) => right - left),
+  ].filter((version, index, values) => values.indexOf(version) === index);
+  for (const versionNumber of candidates) {
+    try {
+      const version = await lookup.get(installationId, versionNumber);
+      authoritativeReportProvenanceFromVersion(version);
+      const completedIds = new Set(
+        version.snapshot.installationTree.formSubmissions
+          .filter((form) => form.status === 'Completed')
+          .map((form) => form.id),
+      );
+      if (requiredIds.every((formId) => completedIds.has(formId))) {
+        return versionNumber;
+      }
+    } catch {
+      // Continue through retained versions; one inaccessible version must not hide another match.
+    }
+  }
+  throw new Error('No retained pinned record version contains every selected completed form.');
+}
+
+type ReportProvenanceFields = Pick<
+  InstallHubExportJob,
+  'recordVersionNumber' | 'recordVersionPayloadHash' | 'reportSource'
+>;
+
+export function matchesInstallHubReportProvenance(
+  actual: ReportProvenanceFields | null | undefined,
+  expected: InstallHubReportProvenance | null | undefined,
+): boolean {
+  return Boolean(
+    actual
+    && expected
+    && actual.recordVersionNumber === expected.recordVersionNumber
+    && actual.recordVersionPayloadHash === expected.recordVersionPayloadHash
+    && actual.reportSource === expected.reportSource,
+  );
+}
+
+export function authoritativeReportProvenanceFromVersion(
+  version: InstallationVersionRecord,
+): InstallHubReportProvenance {
+  const snapshot = version.snapshot;
+  if (
+    snapshot.snapshotSchema !== 'InstallationCanonicalSnapshotV2'
+    || snapshot.installationTree.installation.recordVersionNumber !== version.versionNumber
+    || snapshot.readiness.eligibility.authoritativeReport !== true
+    || !version.payloadHash
+    || snapshot.payloadHash !== version.payloadHash
+  ) {
+    throw new Error('The selected pinned version is not eligible for an authoritative report.');
+  }
+  return {
+    recordVersionNumber: version.versionNumber,
+    recordVersionPayloadHash: version.payloadHash,
+    reportSource: 'canonical-version',
+  };
+}
+
+export async function getAuthoritativeReportProvenance(
+  installationId: string,
+  recordVersionNumber: number,
+): Promise<InstallHubReportProvenance> {
+  return authoritativeReportProvenanceFromVersion(await getInstallationVersion(
+    installationId,
+    requireRecordVersionNumber(recordVersionNumber),
+  ));
+}
+
+export type QueuedInstallHubReportJob = {
+  jobId: string;
+  reused?: boolean;
+} & InstallHubReportProvenance;
+
 export function startFormPdfJob(
   installationId: string,
   formId: string,
-): Promise<{ jobId: string; reused?: boolean }> {
+  recordVersionNumber: number,
+): Promise<QueuedInstallHubReportJob> {
+  const query = new URLSearchParams({
+    recordVersionNumber: String(requireRecordVersionNumber(recordVersionNumber)),
+  });
   return installHubRequest(
     'POST',
-    `/v1/installhub/installations/${encodeURIComponent(installationId)}/forms/${encodeURIComponent(formId)}/report/pdf/jobs`,
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/forms/${encodeURIComponent(formId)}/report/pdf/jobs?${query}`,
     {},
   );
 }
 
 export function startInstallationPdfJob(
   installationId: string,
-  formSubmissionIds?: string[],
-): Promise<{ jobId: string; reused?: boolean }> {
+  input: {
+    recordVersionNumber: number;
+    formSubmissionIds?: string[];
+  },
+): Promise<QueuedInstallHubReportJob> {
   return installHubRequest(
     'POST',
     `/v1/installhub/installations/${encodeURIComponent(installationId)}/report/pdf/jobs`,
     {
+      recordVersionNumber: requireRecordVersionNumber(input.recordVersionNumber),
       formSubmissionIds:
-        formSubmissionIds?.length ? [...new Set(formSubmissionIds)] : undefined,
+        input.formSubmissionIds?.length
+          ? [...new Set(input.formSubmissionIds)]
+          : undefined,
     },
   );
 }
@@ -152,8 +396,15 @@ export function getExportJobStatus(jobId: string): Promise<InstallHubExportJob> 
 
 export async function getLatestExportJob(
   entityId: string,
+  expected: InstallHubReportProvenance,
 ): Promise<InstallHubExportJob | null> {
-  const query = new URLSearchParams({ entityId, artifactType: 'pdf' });
+  const query = new URLSearchParams({
+    entityId,
+    artifactType: 'pdf',
+    recordVersionNumber: String(expected.recordVersionNumber),
+    recordVersionPayloadHash: expected.recordVersionPayloadHash,
+    reportSource: expected.reportSource,
+  });
   const result = await installHubRequest<{ job: InstallHubExportJob | null }>(
     'GET',
     `/v1/export/jobs/latest?${query}`,

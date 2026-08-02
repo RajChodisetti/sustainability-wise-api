@@ -12,14 +12,14 @@ export default function FieldAppPage() {
   return (
     <div>
       <PageHeader
-        title="Field App"
+        title="Field App Complete"
         subtitle="Open your available mobile field workflow from the shared EcoSense Portal."
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Link
           href="/installhub/dashboard"
-          aria-label={`${canOpenInstallHub ? 'Open' : 'Sign in to'} InstallHub`}
+          aria-label={`${canOpenInstallHub ? 'Open' : 'Sign in to'} Field App Complete`}
           className="group block cursor-pointer rounded-[var(--radius-md)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2"
         >
           <Card className="interactive-card h-full !p-5 sm:!p-6">
@@ -42,14 +42,14 @@ export default function FieldAppPage() {
                 Installation operations
               </p>
               <h2 className="mt-1 text-xl font-extrabold tracking-[-0.025em] text-[var(--text)]">
-                InstallHub
+                Field App Complete
               </h2>
               <p className="mt-2 flex-1 text-sm leading-6 text-[var(--text-sub)]">
                 Manage installations, switchboards, meters, assets, commissioning forms,
                 evidence, and PDF report packs.
               </p>
               <span className="mt-5 inline-flex items-center gap-2 text-sm font-bold text-[var(--primary)]">
-                {canOpenInstallHub ? 'Open InstallHub' : 'Sign in to InstallHub'} <Icon name="arrow-right" size={17} />
+                {canOpenInstallHub ? 'Open Field App Complete' : 'Sign in to Field App Complete'} <Icon name="arrow-right" size={17} />
               </span>
             </div>
           </Card>

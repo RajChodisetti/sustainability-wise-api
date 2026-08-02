@@ -219,11 +219,22 @@ function wwChannelSections(): FormSectionDefinition[] {
       },
       fields: [
         {
+          key: `${prefix}.purpose`,
+          label: 'Channel purpose',
+          kind: 'select' as const,
+          options: ['Main board supply', 'Sub-circuit / asset', 'Spare / unused'],
+          required: true,
+        },
+        {
           key: `${prefix}.load`,
           label: 'Load',
           kind: 'select' as const,
           options: LOADS,
           required: true,
+          showWhen: {
+            key: `${prefix}.purpose`,
+            equals: ['Main board supply', 'Sub-circuit / asset'],
+          },
         },
         sensor(
           `${prefix}.rating`,

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
 import { StatusBadge } from '@/components/ui/Badges';
 import { Button, LinkButton } from '@/components/ui/Button';
@@ -14,13 +14,18 @@ import {
   Spinner,
 } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
+import { FieldHint, FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { useExportJob } from '@/hooks/useExportJob';
 import { slugify } from '@/lib/download';
 import {
   downloadExportJob,
+  findRecordVersionContainingForms,
+  getAuthoritativeReportProvenance,
   getExportJobStatus,
   getLatestExportJob,
+  matchesInstallHubReportProvenance,
+  requireRecordVersionNumber,
   startFormPdfJob,
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
@@ -40,6 +45,7 @@ import {
 import type {
   FormSubmission,
   FormType,
+  InstallHubReportProvenance,
 } from '@/modules/installhub/types/domain';
 
 export function InstallHubFormsPage() {
@@ -103,6 +109,7 @@ export function InstallHubFormsPage() {
               key={form.id}
               installationId={installationId}
               form={form}
+              recordVersionNumber={tree.recordVersionNumber}
             />
           ))}
         </div>
@@ -114,20 +121,48 @@ export function InstallHubFormsPage() {
 function FormSummaryCard({
   installationId,
   form,
+  recordVersionNumber,
 }: {
   installationId: string;
   form: FormSubmission;
+  recordVersionNumber?: number;
 }) {
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
   const definition = FORM_DEFINITION_BY_TYPE[form.formType];
+  const hasPinnedVersion = Number.isInteger(recordVersionNumber)
+    && (recordVersionNumber ?? 0) > 0;
+  const expectedReport = useRef<InstallHubReportProvenance | null>(null);
+
+  async function selectReportProvenance(): Promise<InstallHubReportProvenance> {
+    const preferredVersion = requireRecordVersionNumber(recordVersionNumber);
+    const reportVersion = form.historicalMeterRemoved
+      ? await findRecordVersionContainingForms(
+          installationId,
+          [form.id],
+          preferredVersion,
+        )
+      : preferredVersion;
+    const expected = await getAuthoritativeReportProvenance(
+      installationId,
+      reportVersion,
+    );
+    expectedReport.current = expected;
+    return expected;
+  }
+
   const pdf = useExportJob({
-    scopeKey: ['installhub', installationId, 'form', form.id],
-    loadLatest: () => getLatestExportJob(form.id),
+    scopeKey: ['installhub', installationId, 'form', form.id, String(recordVersionNumber ?? 'unversioned')],
+    loadLatest: async () => (
+      hasPinnedVersion
+        ? getLatestExportJob(form.id, await selectReportProvenance())
+        : null
+    ),
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id),
     fallbackFilename: `${slugify(definition.shortTitle)}.pdf`,
+    matchesJob: (job) => matchesInstallHubReportProvenance(job, expectedReport.current),
   });
 
   async function createFormAmendment() {
@@ -165,12 +200,24 @@ function FormSummaryCard({
                 Amendment
               </span>
             ) : null}
+            {form.historicalMeterRemoved ? (
+              <span className="rounded-full bg-[var(--amber-soft)] px-2.5 py-1 text-xs font-bold text-[var(--amber)]">
+                Historical commissioning evidence
+              </span>
+            ) : null}
           </div>
           <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
             Updated {new Date(form.updatedAt).toLocaleString()} ·{' '}
             {form.attachments.length} evidence photo
             {form.attachments.length === 1 ? '' : 's'}
           </p>
+          {form.historicalMeterRemoved ? (
+            <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
+              The commissioned meter is no longer active. This completed form,
+              its original meter ID, and its evidence remain immutable in pinned
+              version history.
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <LinkButton
@@ -182,11 +229,16 @@ function FormSummaryCard({
           {form.status === 'Completed' ? (
             <>
               <Button
-                disabled={pdf.starting || pdf.active}
-                onClick={async () => {
-                  try {
+                  disabled={pdf.starting || pdf.active || !hasPinnedVersion}
+                  onClick={async () => {
+                    try {
+                    const expected = await selectReportProvenance();
                     await pdf.start(() =>
-                      startFormPdfJob(installationId, form.id),
+                      startFormPdfJob(
+                        installationId,
+                        form.id,
+                        expected.recordVersionNumber,
+                      ),
                     );
                     toast.success('Form PDF generation started.');
                   } catch (error) {
@@ -197,16 +249,23 @@ function FormSummaryCard({
                 <Icon name="file-text" size={17} />
                 {pdf.active ? 'Preparing PDF…' : 'Generate PDF'}
               </Button>
-              <Button
-                variant="ghost"
-                onClick={() => void createFormAmendment()}
-              >
-                Create amendment
-              </Button>
+              {!form.historicalMeterRemoved ? (
+                <Button
+                  variant="ghost"
+                  onClick={() => void createFormAmendment()}
+                >
+                  Create amendment
+                </Button>
+              ) : null}
             </>
           ) : null}
         </div>
       </div>
+      {form.status === 'Completed' && !hasPinnedVersion ? (
+        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">
+          A pinned record version is required before generating this authoritative PDF.
+        </p>
+      ) : null}
       <ExportJobStatus
         job={pdf.job}
         artifactName="form PDF"
@@ -242,6 +301,8 @@ export function InstallHubFormTypePickerPage() {
   const router = useRouter();
   const toast = useToast();
   const [busyType, setBusyType] = useState<FormType | null>(null);
+  const [selectedBoardId, setSelectedBoardId] = useState(search.get('boardId') || '');
+  const [boardSearch, setBoardSearch] = useState('');
   const context: FormContext = {
     zoneId: search.get('zoneId'),
     boardId: search.get('boardId'),
@@ -259,13 +320,30 @@ export function InstallHubFormTypePickerPage() {
   if (!tree || !user) return <ErrorBanner message="Installation not found." />;
   const currentUser = user;
   const definitions = allowedFormDefinitions(context);
+  const normalizedBoardSearch = boardSearch.trim().toLowerCase();
+  const boardCandidates = tree.electricalAssets.filter((board) => {
+    const zone = tree.zones.find((item) => item.id === board.zoneId);
+    return !normalizedBoardSearch || `${board.displayCode} ${board.assetName} ${zone?.zoneName || ''}`.toLowerCase().includes(normalizedBoardSearch);
+  }).slice(0, 100);
 
   async function start(type: FormType) {
+    if (type === 'ww-installation' && !selectedBoardId) {
+      toast.error('Choose a switchboard before starting the Installation Form (WW).');
+      document.getElementById('new-form-board')?.focus();
+      return;
+    }
     setBusyType(type);
     try {
       let formId = '';
       await writer.mutate((next) => {
-        const form = createFormSubmission(next, type, currentUser, context);
+        const effectiveContext = type === 'ww-installation'
+          ? {
+              ...context,
+              boardId: selectedBoardId,
+              zoneId: next.electricalAssets.find((board) => board.id === selectedBoardId)?.zoneId || context.zoneId,
+            }
+          : context;
+        const form = createFormSubmission(next, type, currentUser, effectiveContext);
         next.formSubmissions.push(form);
         formId = form.id;
       }, 'metadata');
@@ -298,6 +376,32 @@ export function InstallHubFormTypePickerPage() {
         title="New field form"
         subtitle="Choose the work record. Site, installer, switchboard, device, and asset details are prefilled when available."
       />
+      {definitions.some((definition) => definition.type === 'ww-installation') ? (
+        <Card className="mb-5">
+          <h2 className="font-extrabold text-[var(--text)]">Installation Form (WW) switchboard</h2>
+          <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Canonical board details are snapshotted from this exact record; free-text board identity is not accepted.</p>
+          <div className="mt-2 grid gap-x-4 lg:grid-cols-2">
+            <div>
+              <FieldLabel htmlFor="new-form-board-search">Find a switchboard</FieldLabel>
+              <Input id="new-form-board-search" type="search" value={boardSearch} placeholder="Search code, name, or physical zone" onChange={(event) => setBoardSearch(event.target.value)} />
+            </div>
+            <div>
+              <FieldLabel htmlFor="new-form-board">Switchboard *</FieldLabel>
+              <Select id="new-form-board" value={selectedBoardId} onChange={(event) => setSelectedBoardId(event.target.value)}>
+                <option value="">Choose a switchboard</option>
+                {boardCandidates.map((board) => {
+                  const zone = tree.zones.find((item) => item.id === board.zoneId);
+                  return <option key={board.id} value={board.id}>{board.displayCode} — {board.assetName} · {zone?.zoneName || 'Unknown zone'}</option>;
+                })}
+              </Select>
+              <FieldHint>Showing at most 100 matching records. Refine the search for large installations.</FieldHint>
+            </div>
+          </div>
+          {tree.electricalAssets.length === 0 ? (
+            <div className="mt-3"><LinkButton href={`/installhub/installations/${installationId}/zones`} variant="secondary"><Icon name="plus" size={16} />Create a switchboard first</LinkButton></div>
+          ) : null}
+        </Card>
+      ) : null}
       <div className="grid gap-4 lg:grid-cols-2">
         {definitions.map((definition) => (
           <Card key={definition.type} className="flex h-full flex-col">

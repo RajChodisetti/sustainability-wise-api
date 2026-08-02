@@ -148,7 +148,7 @@ export function InstallHubCloudPage() {
       />
       <PageHeader
         title="Cloud files & history"
-        subtitle={`${filesResponse?.installationName || 'InstallHub installation'} · Server originals and finalized versions are read-only.`}
+        subtitle={`${filesResponse?.installationName || 'Field App Complete installation'} · Server originals and finalized versions are read-only.`}
         actions={
           <Button
             variant="secondary"
@@ -163,7 +163,7 @@ export function InstallHubCloudPage() {
 
       <InlineNotice>
         Downloading creates a temporary browser copy. Original evidence,
-        generated reports, and version snapshots remain protected in InstallHub
+        generated reports, and version snapshots remain protected in Field App Complete
         cloud storage.
       </InlineNotice>
 
@@ -243,7 +243,7 @@ export function InstallHubCloudPage() {
         {versions.length === 0 ? (
           <EmptyState
             title="No finalized versions"
-            description="A version is created after a complete InstallHub cloud save."
+            description="A version is created after a Field App Complete cloud save finishes."
             icon="file-text"
           />
         ) : (
@@ -293,24 +293,26 @@ export function InstallHubCloudPage() {
               items={[
                 {
                   label: 'Site',
-                  value: snapshot.snapshot.installation.siteName,
+                  value: snapshot.snapshot.installationTree.installation.siteName,
                 },
-                { label: 'Zones', value: snapshot.snapshot.zones.length },
+                { label: 'Zones', value: snapshot.snapshot.installationTree.zones.length },
                 {
                   label: 'Switchboards',
-                  value: snapshot.snapshot.electricalAssets.length,
+                  value: snapshot.snapshot.installationTree.electricalAssets.length,
                 },
                 {
                   label: 'Site assets',
-                  value: snapshot.snapshot.siteAssets.length,
+                  value: snapshot.snapshot.installationTree.siteAssets.length,
                 },
                 {
                   label: 'Forms',
-                  value: snapshot.snapshot.formSubmissions.length,
+                  value: snapshot.snapshot.installationTree.formSubmissions.length,
                 },
                 {
-                  label: 'Save stage',
-                  value: snapshot.snapshot.syncStage || 'complete',
+                  label: 'Report eligibility',
+                  value: snapshot.snapshot.readiness.eligibility.authoritativeReport
+                    ? 'Authoritative'
+                    : 'Diagnostic only',
                 },
               ]}
             />

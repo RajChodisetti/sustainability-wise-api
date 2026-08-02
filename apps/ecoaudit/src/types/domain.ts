@@ -68,6 +68,9 @@ export type ExportJobStatus = {
   artifactType: ExportArtifactType;
   filename: string;
   contentType: 'application/pdf' | 'application/zip';
+  recordVersionNumber: number | null;
+  recordVersionPayloadHash: string | null;
+  reportSource: 'canonical-version' | 'diagnostic-live' | null;
   createdAt: string;
   updatedAt: string;
 };

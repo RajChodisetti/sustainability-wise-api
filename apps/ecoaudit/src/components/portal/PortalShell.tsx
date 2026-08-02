@@ -338,7 +338,7 @@ function SidebarNavigation({
               ) : null}
               {showFieldNavigation ? (
                 <AppNavigationSection
-                  label="Field App"
+                  label="Field App Complete"
                   href="/field"
                   icon="clipboard"
                   open={fieldOpen}
@@ -385,10 +385,10 @@ function SidebarNavigation({
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
-  if (pathname.startsWith('/installhub')) return { name: 'Field App · InstallHub', icon: 'tool' as IconName };
+  if (pathname.startsWith('/installhub')) return { name: 'Field App Complete', icon: 'tool' as IconName };
   if (pathname.startsWith('/fleet')) return { name: 'Wattwatchers Fleet', icon: 'activity' as IconName };
   if (pathname.startsWith('/scheduler')) return { name: 'Scheduler', icon: 'calendar' as IconName };
-  if (pathname.startsWith('/field')) return { name: 'Field App', icon: 'clipboard' as IconName };
+  if (pathname.startsWith('/field')) return { name: 'Field App Complete', icon: 'clipboard' as IconName };
   return { name: 'Portal overview', icon: 'grid' as IconName };
 }
 
@@ -511,7 +511,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
   ];
   const fieldChildren: ChildNavItem[] = [
-    { href: '/installhub/dashboard', label: 'InstallHub', icon: 'tool', exact: true },
+    { href: '/installhub/dashboard', label: 'Field App Complete', icon: 'tool', exact: true },
     { href: '/installhub/installations', label: 'Installations', icon: 'building' },
     { href: '/installhub/settings', label: 'Settings', icon: 'settings' },
     ...(ihAdmin
@@ -558,7 +558,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const appRoles: AppRole[] = [
     ...(eaUser ? [{ app: 'ecoaudit' as const, appName: 'Eco Audit Pro', role: eaUser.role }] : []),
     ...(ssUser ? [{ app: 'solarsense' as const, appName: 'SolarSense', role: ssUser.role }] : []),
-    ...(ihUser ? [{ app: 'installhub' as const, appName: 'InstallHub', role: ihUser.role }] : []),
+    ...(ihUser ? [{ app: 'installhub' as const, appName: 'Field App Complete', role: ihUser.role }] : []),
     ...(wwUser ? [{ app: 'wattwatchers' as const, appName: 'Wattwatchers Fleet', role: wwUser.role }] : []),
   ];
   const profileHref = pathname.startsWith('/solar')

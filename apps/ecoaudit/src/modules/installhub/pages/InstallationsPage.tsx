@@ -59,7 +59,7 @@ export function InstallHubInstallationsPage() {
       {filtered.length === 0 ? (
         <EmptyState
           title={query.data?.length ? 'No installations match' : 'No installations yet'}
-          description={query.data?.length ? 'Try another search or status.' : 'Create the first InstallHub installation.'}
+          description={query.data?.length ? 'Try another search or status.' : 'Create the first Field App Complete installation.'}
           icon="building"
         />
       ) : (

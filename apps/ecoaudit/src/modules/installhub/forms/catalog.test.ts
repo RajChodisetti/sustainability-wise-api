@@ -52,7 +52,7 @@ function submission(
   };
 }
 
-test('new-form catalog matches the six InstallHub iOS form families', () => {
+test('new-form catalog matches the six Field App Complete iOS form families', () => {
   assert.deepEqual(
     FORM_DEFINITIONS
       .filter((definition) => definition.availableForNew !== false)
@@ -106,10 +106,10 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 378);
+  assert.equal(fieldCount, 384);
   assert.equal(
     fingerprint,
-    '9958a5331dc1e23de309be118a0143ea0b66cac608f8a8334a90596e99b8e7e6',
+    'bcaf7b3343a39e7fd937c78ab7f150bb0e3fe236cbd32597758d7b6772665852',
   );
 });
 
@@ -148,17 +148,19 @@ test('conditional changes clear hidden values and identify hidden evidence', () 
     definition,
     {
       'device.type': 'A6M',
+      'channel.4.purpose': 'SUB_CIRCUIT',
       'channel.4.load': 'HVAC',
       'channel.4.rating': '120A',
       'channel.4.description': 'Warehouse HVAC',
       'commissioning.channel_4_polarity': 'yes',
       'commissioning.channel_4_current': '18.2',
     },
-    'channel.4.load',
-    'Not Used',
+    'channel.4.purpose',
+    'SPARE',
   );
 
-  assert.equal(result.answers['channel.4.load'], 'Not Used');
+  assert.equal(result.answers['channel.4.purpose'], 'SPARE');
+  assert.equal(result.answers['channel.4.load'], undefined);
   assert.equal(result.answers['channel.4.rating'], undefined);
   assert.equal(result.answers['channel.4.description'], undefined);
   assert.equal(

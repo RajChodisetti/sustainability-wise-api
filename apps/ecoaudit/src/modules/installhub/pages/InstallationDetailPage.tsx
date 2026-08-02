@@ -1,29 +1,51 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
+import { FieldLabel, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
-import { deleteCloudInstallation } from '@/modules/installhub/api/installhub';
+import {
+  completeInstallation,
+  deleteCloudInstallation,
+  reopenInstallation,
+} from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
-import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
+import {
+  useInstallationReadiness,
+  useInstallationTree,
+  useTreeWriter,
+} from '@/modules/installhub/hooks/useInstallationTree';
 import {
   Breadcrumbs,
   DefinitionList,
   WorkspaceLink,
 } from '@/modules/installhub/components/InstallHubUi';
+import {
+  ConfirmDialog,
+  SaveStateNotice,
+  TreeDraftNavigationGuard,
+} from '@/modules/installhub/components/WorkflowUi';
+import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
+import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 
 export function InstallHubInstallationDetailPage() {
   const { installationId } = useParams<{ installationId: string }>();
   const query = useInstallationTree(installationId);
+  const readinessQuery = useInstallationReadiness(installationId);
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
   const { user } = useInstallHubAuth();
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState('');
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
 
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -34,7 +56,9 @@ export function InstallHubInstallationDetailPage() {
   const canDelete =
     user?.role === 'admin' ||
     Boolean(user?.id && installation.createdByUserId === user.id);
-  const meters = tree.electricalAssets.reduce((total, board) => total + board.meters.length, 0);
+  const meters = meterDevices(tree).filter((meter) => meter.lifecycleState !== 'INACTIVE').length;
+  const readiness = readinessQuery.data;
+  const readinessAdvisory = readiness?.authority === 'LOCAL_ADVISORY';
   const evidenceCount =
     tree.zones.reduce((total, zone) => total + zone.photos.length, 0) +
     tree.electricalAssets.reduce(
@@ -59,25 +83,52 @@ export function InstallHubInstallationDetailPage() {
     ) +
     tree.formSubmissions.reduce((total, form) => total + form.attachments.length, 0);
 
-  async function toggleStatus() {
+  async function completeCurrentInstallation() {
+    if (!readiness?.readyToComplete) return;
+    setLifecycleBusy(true);
     try {
-      await writer.mutate((next) => {
-        next.installation.status =
-          next.installation.status === 'Completed' ? 'Draft' : 'Completed';
+      await completeInstallation(installationId, {
+        baseTreeRevision: tree.treeRevision || 0,
+        idempotencyKey: idempotencyKey(`complete-${installationId}`, tree.treeRevision || 0),
       });
-      toast.success(
-        installation.status === 'Completed'
-          ? 'Installation reopened.'
-          : 'Installation marked as completed.',
-      );
+      setCompleteOpen(false);
+      await writer.refresh();
+      await readinessQuery.refetch();
+      toast.success('Installation completed and authoritative version pinned.');
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  async function reopenCurrentInstallation() {
+    if (!reopenReason.trim()) {
+      toast.error('Enter a reason for reopening this installation.');
+      return;
+    }
+    setLifecycleBusy(true);
+    try {
+      await reopenInstallation(installationId, {
+        baseTreeRevision: tree.treeRevision || 0,
+        reason: reopenReason.trim(),
+        idempotencyKey: idempotencyKey(`reopen-${installationId}`, tree.treeRevision || 0),
+      });
+      setReopenOpen(false);
+      setReopenReason('');
+      await writer.refresh();
+      await readinessQuery.refetch();
+      toast.success('Installation reopened as a new draft revision.');
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setLifecycleBusy(false);
     }
   }
 
   async function removeInstallation() {
     const confirmation = window.prompt(
-      `Permanently delete ${installation.siteName} from InstallHub Cloud Backup?\n\nThis removes its forms, unshared originals, generated reports, and version history. Existing iOS cpN copies remain on their devices but lose this server source.\n\nType the site name to confirm.`,
+      `Permanently delete ${installation.siteName} from Field App Complete Cloud Backup?\n\nThis removes its forms, unshared originals, generated reports, and version history. Existing iOS cpN copies remain on their devices but lose this server source.\n\nType the site name to confirm.`,
     );
     if (confirmation !== installation.siteName) {
       if (confirmation !== null) {
@@ -108,7 +159,7 @@ export function InstallHubInstallationDetailPage() {
             <StatusBadge status={installation.status} />
             <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit</LinkButton>
             <Button variant="secondary" onClick={() => void writer.refresh()}><Icon name="refresh" size={17} />Refresh</Button>
-            <Button onClick={() => void toggleStatus()}>
+            <Button onClick={() => installation.status === 'Completed' ? setReopenOpen(true) : setCompleteOpen(true)}>
               {installation.status === 'Completed' ? 'Reopen' : 'Complete'}
             </Button>
             {canDelete ? (
@@ -120,6 +171,19 @@ export function InstallHubInstallationDetailPage() {
         }
       />
 
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-[var(--text-sub)]">
+          Tree revision <strong className="text-[var(--text)]">{tree.treeRevision || 0}</strong>
+          {tree.recordVersionNumber !== undefined ? <> · Pinned version <strong className="text-[var(--text)]">{tree.recordVersionNumber}</strong></> : null}
+        </p>
+        <SaveStateNotice
+          state={writer.writeState}
+          onRetry={() => void writer.retry().catch((error) => toast.error(installHubConnectionErrorMessage(error)))}
+          onDiscard={() => void writer.discard()}
+        />
+      </div>
+      <TreeDraftNavigationGuard active={writer.hasPendingTree} onDiscard={writer.discard} />
+
       <Card className="mb-6">
         <DefinitionList items={[
           { label: 'Installer', value: installation.inspectorName },
@@ -129,6 +193,47 @@ export function InstallHubInstallationDetailPage() {
           { label: 'Site assets', value: tree.siteAssets.length },
           { label: 'Meters', value: meters },
         ]} />
+      </Card>
+
+      <GridSupplyEditor
+        tree={tree}
+        mutate={writer.mutate}
+        onError={(error) => toast.error(installHubConnectionErrorMessage(error))}
+        onSuccess={(message) => toast.success(message)}
+      />
+
+      <Card className="mb-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-extrabold text-[var(--text)]">Completion readiness</h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Server-authoritative checks cover unresolved supply, measurement, form, code, and dependency rules.</p>
+          </div>
+          <span className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${readiness?.readyToComplete ? 'bg-[var(--green-soft)] text-[var(--green)]' : 'bg-[var(--amber-soft)] text-[var(--text)]'}`}>
+            {readinessQuery.isLoading
+              ? 'Checking…'
+              : readinessAdvisory
+                ? 'Local advisory only'
+                : readiness?.readyToComplete
+                  ? 'Ready to complete'
+                  : `${readiness?.issues.length || 0} issue${readiness?.issues.length === 1 ? '' : 's'}`}
+          </span>
+        </div>
+        {readinessQuery.error ? <p className="mt-3 text-sm text-[var(--red)]">{installHubConnectionErrorMessage(readinessQuery.error)}</p> : null}
+        {readinessAdvisory ? <div className="mt-3"><p className="text-sm font-semibold text-[var(--amber)]">Reconnect to obtain server-authoritative readiness. Local checks cannot complete or publish this installation.</p></div> : null}
+        {readiness?.issues.length ? (
+          <ul className="mt-4 space-y-2">
+            {readiness.issues.slice(0, 6).map((issue) => (
+              <li key={`${issue.code}-${issue.entityId}`} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 text-sm">
+                <p className="font-bold text-[var(--text)]">{issue.message}</p>
+                <p className="mt-1 text-xs text-[var(--text-sub)]">{issue.code} · {issue.entityType.replaceAll('_', ' ')}</p>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        <div className="mt-4 flex flex-wrap gap-2">
+          <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
+          <Button variant="secondary" onClick={() => void readinessQuery.refetch()}>Recheck</Button>
+        </div>
       </Card>
 
       <section className="mb-7" aria-labelledby="installhub-workspace">
@@ -183,6 +288,45 @@ export function InstallHubInstallationDetailPage() {
           </div>
         )}
       </section>
+
+      <ConfirmDialog
+        open={completeOpen}
+        title="Complete this installation?"
+        description="Completion is server-authoritative and pins an immutable record version from the exact current tree revision."
+        consequences={readiness?.issues.length
+          ? readiness.issues.slice(0, 8).map((issue) => issue.message)
+          : ['Authoritative reports and canonical mapping exports become eligible.', 'Further operational changes require an explicit reopen reason.']}
+        confirmLabel="Complete and pin version"
+        danger={false}
+        busy={lifecycleBusy}
+        blockedMessage={readinessAdvisory
+          ? 'Server-authoritative readiness is unavailable. Reconnect and recheck before completion.'
+          : !readiness?.readyToComplete
+          ? `Resolve all ${readiness?.issues.length || 0} readiness issue${readiness?.issues.length === 1 ? '' : 's'} before completion.`
+          : undefined}
+        onConfirm={() => void completeCurrentInstallation()}
+        onCancel={() => setCompleteOpen(false)}
+      >
+        {!readiness?.readyToComplete ? (
+          <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
+        ) : null}
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={reopenOpen}
+        title="Reopen this completed installation?"
+        description="The pinned record remains immutable. A new draft tree revision will record who reopened it and why."
+        consequences={['Authoritative exports continue to reference the pinned version.', 'New changes remain draft-only until the installation is completed again.']}
+        confirmLabel="Reopen as draft"
+        danger={false}
+        busy={lifecycleBusy}
+        blockedMessage={!reopenReason.trim() ? 'Enter a reopen reason to continue.' : undefined}
+        onConfirm={() => void reopenCurrentInstallation()}
+        onCancel={() => { setReopenOpen(false); setReopenReason(''); }}
+      >
+        <FieldLabel htmlFor="installation-reopen-reason" className="mt-0">Reason for reopening *</FieldLabel>
+        <Textarea id="installation-reopen-reason" value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} />
+      </ConfirmDialog>
     </div>
   );
 }

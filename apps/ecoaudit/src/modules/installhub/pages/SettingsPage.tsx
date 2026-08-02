@@ -45,7 +45,7 @@ export function InstallHubSettingsPage() {
     setHealth('checking');
     const healthy = await checkHealth();
     setHealth(healthy ? 'healthy' : 'unavailable');
-    if (healthy) toast.success('InstallHub reached the Sustainability Wise API.');
+    if (healthy) toast.success('Field App Complete reached the Sustainability Wise API.');
     else toast.error(`The API at ${API_DISPLAY_URL} could not be reached.`);
   }
 
@@ -56,9 +56,9 @@ export function InstallHubSettingsPage() {
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: 'InstallHub', href: '/installhub/dashboard' }, { label: 'Settings' }]} />
+      <Breadcrumbs items={[{ label: 'Field App Complete', href: '/installhub/dashboard' }, { label: 'Settings' }]} />
       <PageHeader
-        title="InstallHub settings"
+        title="Field App Complete settings"
         subtitle="Account security, cloud connection, appearance, and web-app diagnostics."
       />
 
@@ -77,7 +77,7 @@ export function InstallHubSettingsPage() {
                 ...(sourceLabel
                   ? [{
                       label: 'Account source',
-                      value: `${sourceLabel} (shared with Field App)`,
+                      value: `${sourceLabel} (shared with Field App Complete)`,
                     }]
                   : []),
               ]}
@@ -107,7 +107,7 @@ export function InstallHubSettingsPage() {
           </p>
           <p className="mt-3 text-sm leading-6 text-[var(--text-sub)]">
             The web app is cloud-first: installation edits and original
-            evidence are saved directly through the InstallHub API. Mobile
+            evidence are saved directly through the Field App Complete API. Mobile
             opt-in backup queues are therefore not required here.
           </p>
           {health !== 'idle' ? (
@@ -212,11 +212,11 @@ export function InstallHubSettingsPage() {
 
         <Card>
           <h2 className="text-lg font-extrabold text-[var(--text)]">About</h2>
-          <p className="mt-2 font-bold text-[var(--text)]">InstallHub Web</p>
+          <p className="mt-2 font-bold text-[var(--text)]">Field App Complete</p>
           <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
             Responsive cloud workspace for installation hierarchy,
             commissioning forms, original evidence, report packs, and access
-            management. It uses the same InstallHub API records as the iOS app.
+            management. It uses the same Field App Complete API records as the iOS app.
           </p>
         </Card>
       </div>
@@ -276,8 +276,8 @@ export function InstallHubPasswordPage() {
       await changeUserPassword(user.id, { currentPassword, newPassword });
       window.alert(
         sourceLabel
-          ? `Password changed for ${sourceLabel} and the Field App. Existing cloud refresh sessions for both apps were revoked. Sign in again with the new password.`
-          : 'Password changed. Your existing Field App refresh sessions were revoked. Sign in again with the new password.',
+          ? `Password changed for ${sourceLabel} and Field App Complete. Existing cloud refresh sessions for both apps were revoked. Sign in again with the new password.`
+          : 'Password changed. Your existing Field App Complete refresh sessions were revoked. Sign in again with the new password.',
       );
       await logout();
       router.replace('/login');
@@ -300,8 +300,8 @@ export function InstallHubPasswordPage() {
         title="Change your password"
         subtitle={
           sourceLabel
-            ? `This Field account is managed by ${sourceLabel}. Changing it updates the shared ${sourceLabel} credential and revokes refresh sessions in both apps.`
-            : 'Confirm your current password. A successful change revokes other Field App refresh sessions.'
+            ? `This Field App Complete account is managed by ${sourceLabel}. Changing it updates the shared ${sourceLabel} credential and revokes refresh sessions in both apps.`
+            : 'Confirm your current password. A successful change revokes other Field App Complete refresh sessions.'
         }
       />
       <form onSubmit={(event) => void submit(event)}>
@@ -440,7 +440,7 @@ export function InstallHubDiagnosticsPage() {
     await Promise.all([health.refetch(), trees.refetch()]);
   }
 
-  if (trees.isLoading && !trees.data) return <Spinner label="Inspecting InstallHub…" />;
+  if (trees.isLoading && !trees.data) return <Spinner label="Inspecting Field App Complete…" />;
 
   return (
     <div>
@@ -451,7 +451,7 @@ export function InstallHubDiagnosticsPage() {
         ]}
       />
       <PageHeader
-        title="InstallHub diagnostics"
+        title="Field App Complete diagnostics"
         subtitle="Live API, cloud-record, browser storage, and field-capture capability checks."
         actions={
           <Button
@@ -502,7 +502,7 @@ export function InstallHubDiagnosticsPage() {
             <DefinitionList
               items={[
                 {
-                  label: 'InstallHub session',
+                  label: 'Field App Complete session',
                   value: getStoredJwt() ? 'Present' : 'Missing',
                 },
                 {

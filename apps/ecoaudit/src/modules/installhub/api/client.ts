@@ -58,15 +58,15 @@ function parseErrorBody(text: string): { message: string; detail?: string } {
 export function installHubConnectionErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (error instanceof InstallHubAuthError) {
-    return error.message || 'Your InstallHub session expired. Please sign in again.';
+    return error.message || 'Your Field App Complete session expired. Please sign in again.';
   }
   if (error instanceof InstallHubApiError) {
     if (error.status === 401) return error.detail ?? 'Incorrect username or password.';
-    if (error.status === 403) return error.detail ?? 'You do not have access to this InstallHub record.';
-    if (error.status === 404) return error.detail ?? 'The requested InstallHub record was not found.';
-    if (error.status === 409) return error.detail ?? 'The requested change conflicts with current InstallHub data.';
-    if (error.status >= 500) return 'InstallHub is temporarily unavailable. Try again later.';
-    return error.detail ?? `InstallHub API error (${error.status}): ${message}`;
+    if (error.status === 403) return error.detail ?? 'You do not have access to this Field App Complete record.';
+    if (error.status === 404) return error.detail ?? 'The requested Field App Complete record was not found.';
+    if (error.status === 409) return error.detail ?? 'The requested change conflicts with current Field App Complete data.';
+    if (error.status >= 500) return 'Field App Complete is temporarily unavailable. Try again later.';
+    return error.detail ?? `Field App Complete API error (${error.status}): ${message}`;
   }
   if (
     error instanceof InstallHubNetworkError ||
@@ -74,7 +74,7 @@ export function installHubConnectionErrorMessage(error: unknown): string {
   ) {
     return `Cannot reach the API at ${API_DISPLAY_URL}. Check the portal connection and try again.`;
   }
-  return message || 'An unknown InstallHub error occurred.';
+  return message || 'An unknown Field App Complete error occurred.';
 }
 
 export function getStoredJwt(): string | null {
@@ -155,12 +155,12 @@ export async function tryRefreshToken(): Promise<string | null> {
 
 function sessionExpiredFor(jwt: string): InstallHubAuthError {
   clearTokensIfAccessToken(jwt);
-  return new InstallHubAuthError('InstallHub session expired.');
+  return new InstallHubAuthError('Field App Complete session expired.');
 }
 
 async function getJwt(): Promise<string> {
   const token = getStoredJwt();
-  if (!token) throw new InstallHubAuthError('Not signed in to InstallHub.');
+  if (!token) throw new InstallHubAuthError('Not signed in to Field App Complete.');
   return token;
 }
 

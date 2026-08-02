@@ -27,20 +27,20 @@ function FieldSessionFailure({
     <main className="flex min-h-screen items-center justify-center bg-[var(--bg)] p-4 sm:p-8">
       <div className="w-full max-w-lg">
         <p className="mb-2 text-xs font-extrabold uppercase tracking-[0.12em] text-[var(--primary)]">
-          Field App
+          Field App Complete
         </p>
         <h1 className="text-3xl font-extrabold tracking-[-0.04em] text-[var(--text)]">
-          Field App could not open automatically
+          Field App Complete could not open automatically
         </h1>
         <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
-          Your portal account is still signed in. Retry the automatic Field
-          access setup; no password or account selection is required.
+          Your portal account is still signed in. Retry the automatic Field App
+          Complete access setup; no password or account selection is required.
         </p>
 
         <Card className="mt-6 space-y-3 !p-5 sm:!p-6">
           {error ? <ErrorBanner message={error} /> : null}
           <Button className="w-full" onClick={onRetry}>
-            Retry Field App
+            Retry Field App Complete
           </Button>
         </Card>
       </div>

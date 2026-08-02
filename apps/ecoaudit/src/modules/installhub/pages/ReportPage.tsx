@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { StatusBadge } from '@/components/ui/Badges';
 import { Button, LinkButton } from '@/components/ui/Button';
@@ -19,8 +19,12 @@ import { useExportJob } from '@/hooks/useExportJob';
 import { slugify } from '@/lib/download';
 import {
   downloadExportJob,
+  findRecordVersionContainingForms,
+  getAuthoritativeReportProvenance,
   getExportJobStatus,
   getLatestExportJob,
+  matchesInstallHubReportProvenance,
+  requireRecordVersionNumber,
   startInstallationPdfJob,
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
@@ -31,18 +35,53 @@ import {
 } from '@/modules/installhub/components/InstallHubUi';
 import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
 import { useInstallationTree } from '@/modules/installhub/hooks/useInstallationTree';
+import type { InstallHubReportProvenance } from '@/modules/installhub/types/domain';
 
 export function InstallHubReportPage() {
   const { installationId } = useParams<{ installationId: string }>();
   const query = useInstallationTree(installationId);
   const toast = useToast();
   const [selectedOverride, setSelectedOverride] = useState<string[] | null>(null);
+  const completedForms = query.data?.formSubmissions.filter(
+    (form) => form.status === 'Completed',
+  ) ?? [];
+  const draftForms = query.data?.formSubmissions.filter(
+    (form) => form.status === 'Draft',
+  ) ?? [];
+  const selectedIds = selectedOverride ?? completedForms.map((form) => form.id);
+  const selectedIncludesHistoricalForm = completedForms.some(
+    (form) => selectedIds.includes(form.id) && form.historicalMeterRemoved,
+  );
+  const selectedScope = [...selectedIds].sort().join(',') || 'no-forms';
+  const expectedReport = useRef<InstallHubReportProvenance | null>(null);
   const report = useExportJob({
-    scopeKey: ['installhub-installation', installationId],
-    loadLatest: () => getLatestExportJob(installationId),
+    scopeKey: [
+      'installhub-installation',
+      installationId,
+      String(query.data?.recordVersionNumber ?? 'unversioned'),
+      selectedScope,
+    ],
+    loadLatest: async () => {
+      const versionNumber = query.data?.recordVersionNumber;
+      if (!Number.isInteger(versionNumber) || (versionNumber ?? 0) < 1) return null;
+      const reportVersion = selectedIncludesHistoricalForm
+        ? await findRecordVersionContainingForms(
+            installationId,
+            selectedIds,
+            versionNumber!,
+          )
+        : versionNumber!;
+      const expected = await getAuthoritativeReportProvenance(
+        installationId,
+        reportVersion,
+      );
+      expectedReport.current = expected;
+      return getLatestExportJob(installationId, expected);
+    },
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id),
-    fallbackFilename: `${slugify(query.data?.installation.siteName ?? 'installation')}-installhub-pack.pdf`,
+    fallbackFilename: `${slugify(query.data?.installation.siteName ?? 'installation')}-field-app-complete-pack.pdf`,
+    matchesJob: (job) => matchesInstallHubReportProvenance(job, expectedReport.current),
   });
 
   if (query.isLoading) return <Spinner />;
@@ -51,14 +90,8 @@ export function InstallHubReportPage() {
   }
   if (!query.data) return <ErrorBanner message="Installation not found." />;
   const tree = query.data;
-  const completedForms = tree.formSubmissions.filter(
-    (form) => form.status === 'Completed',
-  );
-  const draftForms = tree.formSubmissions.filter(
-    (form) => form.status === 'Draft',
-  );
-  const selectedIds =
-    selectedOverride ?? completedForms.map((form) => form.id);
+  const hasPinnedVersion = Number.isInteger(tree.recordVersionNumber)
+    && (tree.recordVersionNumber ?? 0) > 0;
   const meterCount = tree.electricalAssets.reduce(
     (total, board) => total + board.meters.length,
     0,
@@ -75,10 +108,25 @@ export function InstallHubReportPage() {
 
   async function generate() {
     try {
+      const preferredVersion = requireRecordVersionNumber(tree.recordVersionNumber);
+      const recordVersionNumber = selectedIncludesHistoricalForm
+        ? await findRecordVersionContainingForms(
+            installationId,
+            selectedIds,
+            preferredVersion,
+          )
+        : preferredVersion;
+      expectedReport.current = await getAuthoritativeReportProvenance(
+        installationId,
+        recordVersionNumber,
+      );
       await report.start(() =>
         startInstallationPdfJob(
           installationId,
-          completedForms.length ? selectedIds : undefined,
+          {
+            recordVersionNumber,
+            formSubmissionIds: completedForms.length ? selectedIds : undefined,
+          },
         ),
       );
       toast.success('Installation pack queued on the API server.');
@@ -109,7 +157,7 @@ export function InstallHubReportPage() {
       />
       <PageHeader
         title="Installation report"
-        subtitle="Generate the formal InstallHub PDF pack from the current cloud record and original evidence."
+        subtitle="Generate the formal Field App Complete PDF pack from the current cloud record and original evidence."
         actions={
           <LinkButton
             href={`/installhub/installations/${installationId}/client-report`}
@@ -125,7 +173,7 @@ export function InstallHubReportPage() {
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-xs font-extrabold uppercase tracking-[0.16em] text-[var(--primary)]">
-              InstallHub
+              Field App Complete
             </p>
             <h2 className="mt-2 text-2xl font-extrabold tracking-[-0.035em] text-[var(--text)]">
               {tree.installation.siteName}
@@ -188,6 +236,15 @@ export function InstallHubReportPage() {
         </InlineNotice>
       )}
 
+      {!hasPinnedVersion ? (
+        <div className="mt-5">
+          <InlineNotice tone="warning">
+            Authoritative PDF generation requires a pinned record version.
+            Complete the installation workflow before generating this report.
+          </InlineNotice>
+        </div>
+      ) : null}
+
       <Card className="my-5">
         <div className="mb-4">
           <h2 className="text-lg font-extrabold text-[var(--text)]">
@@ -241,8 +298,9 @@ export function InstallHubReportPage() {
               API server PDF
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--text-sub)]">
-              The server reads the current backed-up hierarchy and original
-              evidence, then keeps the finished PDF in cloud file history.
+              The server reads pinned record version {tree.recordVersionNumber ?? '—'}
+              {' '}and its original evidence, then keeps the finished PDF in
+              cloud file history.
             </p>
           </div>
           <Button
@@ -250,6 +308,7 @@ export function InstallHubReportPage() {
             disabled={
               report.active ||
               report.starting ||
+              !hasPinnedVersion ||
               (completedForms.length > 0 && selectedIds.length === 0)
             }
             onClick={() => void generate()}

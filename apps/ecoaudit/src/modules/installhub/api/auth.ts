@@ -23,7 +23,7 @@ type AuthResponse = {
 
 function persistAuth(data: AuthResponse): InstallHubUser {
   if (!data?.accessToken || !data?.refreshToken || !data?.user?.id) {
-    throw new Error('InstallHub authentication failed.');
+    throw new Error('Field App Complete authentication failed.');
   }
   saveTokens(data.accessToken, data.refreshToken);
   return data.user;
