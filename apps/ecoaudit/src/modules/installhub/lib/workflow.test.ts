@@ -33,6 +33,7 @@ import {
 import {
   createBoard,
   clearInstallationCreateAttempt,
+  createFormSubmission,
   createInstallationTree,
   createSiteAsset,
   createZone,
@@ -276,6 +277,24 @@ test('portal writes strip server-owned virtual definitions without mutating the 
 
   assert.deepEqual(wire.serverDerived, { virtualMeterDefinitions: [] });
   assert.equal(tree.serverDerived.virtualMeterDefinitions.length, 1);
+});
+
+test('fresh portal forms serialize an explicit non-historical meter marker', () => {
+  const tree = fixtureTree();
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: tree.zones[0].id,
+    boardId: tree.electricalAssets[0].id,
+    meterId: 'meter-a',
+  });
+  assert.equal(form.historicalMeterRemoved, undefined);
+  tree.formSubmissions.push(form);
+
+  const wire = serializeInstallationTree(tree);
+
+  assert.equal(
+    (wire.formSubmissions as Array<Record<string, unknown>>)[0].historicalMeterRemoved,
+    false,
+  );
 });
 
 test('fresh portal creation serializes the complete canonical-v2 installation handshake', () => {
