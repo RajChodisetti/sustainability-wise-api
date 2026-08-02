@@ -1482,7 +1482,9 @@ test('snapshot manifest pins only exact currently referenced confirmed remote ev
   const photo = (id: string, entityId: string, fieldName: string): Photo => ({
     id,
     checksum: `checksum-${id}`,
-    remoteUrl: `https://api.example.test/photos/${id}`,
+    remoteUrl: id === PHOTO_OLD
+      ? 'https://legacy-files.example.test/photos/confirmed-old-photo.jpg'
+      : `https://api.example.test/installations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/entities/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/photos/${id}`,
     onedriveItemId: null,
     storageKey: `installhub/photos/${id}.jpg`,
     contentType: 'image/jpeg',
@@ -1506,8 +1508,8 @@ test('snapshot manifest pins only exact currently referenced confirmed remote ev
   ];
   const historical = baseTree();
   historical.zones[0].photos = [
-    `https://api.example.test/photos/${PHOTO_A}`,
-    `https://api.example.test/photos/${PHOTO_OLD}`,
+    photos[0].remoteUrl!,
+    photos[2].remoteUrl!,
   ];
   historical.siteAssets[0].locationPhoto = `file:///temporary/${PHOTO_B}.jpg`;
   assert.deepEqual(
@@ -1516,11 +1518,25 @@ test('snapshot manifest pins only exact currently referenced confirmed remote ev
   );
 
   const current = structuredClone(historical);
-  current.zones[0].photos = [`https://api.example.test/photos/${PHOTO_A}`];
+  current.zones[0].photos = [photos[0].remoteUrl!];
   assert.deepEqual(
     projectCanonicalMediaManifest(current, photos).map((item) => item.id),
     [PHOTO_A],
   );
+
+  const mismatchedUrl = structuredClone(current);
+  mismatchedUrl.zones[0].photos = [`${photos[0].remoteUrl}?copy=${PHOTO_OLD}`];
+  assert.deepEqual(projectCanonicalMediaManifest(mismatchedUrl, photos), []);
+
+  const ambiguous = structuredClone(current);
+  assert.deepEqual(projectCanonicalMediaManifest(ambiguous, [
+    photos[0],
+    {
+      ...photos[0],
+      id: PHOTO_B,
+      checksum: `checksum-${PHOTO_B}`,
+    },
+  ]), []);
 });
 
 test('historical snapshot pins rendered labels, versions, readiness, and artifact bytes', () => {
@@ -1551,8 +1567,8 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
   const firstTree = baseTree();
   firstTree.installation.recordVersionNumber = 1;
   firstTree.zones[0].photos = [
-    `https://files.example.test/${photoB}`,
-    `https://files.example.test/${photoA}`,
+    `https://files.example.test/installations/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/zones/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/${photoB}`,
+    'https://legacy-files.example.test/photos/confirmed-photo-a.jpg',
   ];
   type Manifest = Parameters<typeof buildCanonicalSnapshotPayload>[0]['mediaManifest'];
   const firstManifest: Manifest = [

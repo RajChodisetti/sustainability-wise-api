@@ -210,6 +210,7 @@ export type PendingInstallationDraft = {
   installationId: string;
   capturedAt: string;
   baseRevision: number;
+  syncStage: 'metadata' | 'complete';
   tree: InstallationTree;
 };
 
@@ -227,11 +228,13 @@ export function pendingInstallationDraft(
   installationId: string,
   tree: InstallationTree,
   capturedAt = new Date().toISOString(),
+  syncStage: 'metadata' | 'complete' = DEFAULT_TREE_SYNC_STAGE,
 ): PendingInstallationDraft {
   return {
     installationId,
     capturedAt,
     baseRevision: tree.baseTreeRevision ?? tree.treeRevision ?? 0,
+    syncStage,
     tree: pendingTreeWithoutMedia(tree),
   };
 }
@@ -240,21 +243,27 @@ function volatilePendingInstallationDraft(
   installationId: string,
   tree: InstallationTree,
   capturedAt = new Date().toISOString(),
+  syncStage: 'metadata' | 'complete' = DEFAULT_TREE_SYNC_STAGE,
 ): PendingInstallationDraft {
   return {
     installationId,
     capturedAt,
     baseRevision: tree.baseTreeRevision ?? tree.treeRevision ?? 0,
+    syncStage,
     tree: cloneTree(tree),
   };
 }
 
-function storePendingTree(installationId: string, tree: InstallationTree): void {
+function storePendingTree(
+  installationId: string,
+  tree: InstallationTree,
+  syncStage: 'metadata' | 'complete',
+): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.setItem(
       installationTreeDraftKey(installationId),
-      JSON.stringify(pendingInstallationDraft(installationId, tree)),
+      JSON.stringify(pendingInstallationDraft(installationId, tree, undefined, syncStage)),
     );
   } catch {
     // Saving to the API still works if browser storage is unavailable or full.
@@ -392,7 +401,10 @@ export async function submitAndConfirmInstallationTree(
 type InstallationTreeRetryCallbacks = {
   refresh: () => Promise<void>;
   reviewConflict: (pendingDraft: PendingInstallationDraft) => Promise<void>;
-  resubmitOriginal: (tree: InstallationTree) => Promise<InstallationTree>;
+  resubmitOriginal: (
+    tree: InstallationTree,
+    syncStage: 'metadata' | 'complete',
+  ) => Promise<InstallationTree>;
 };
 
 export async function executeInstallationTreeRetry(
@@ -409,10 +421,13 @@ export async function executeInstallationTreeRetry(
     return null;
   }
   // A transient retry deliberately retains the original optimistic-lock precondition.
-  return callbacks.resubmitOriginal({
-    ...pendingDraft.tree,
-    baseTreeRevision: pendingDraft.baseRevision,
-  });
+  return callbacks.resubmitOriginal(
+    {
+      ...pendingDraft.tree,
+      baseTreeRevision: pendingDraft.baseRevision,
+    },
+    pendingDraft.syncStage,
+  );
 }
 
 function adjustedGeneratedCodes(
@@ -460,7 +475,7 @@ function hasStoredPendingTree(installationId: string): boolean {
   }
 }
 
-function restorePendingTree(installationId: string): PendingInstallationDraft | null {
+export function restorePendingTree(installationId: string): PendingInstallationDraft | null {
   if (typeof window === 'undefined') return null;
   try {
     const value = window.sessionStorage.getItem(installationTreeDraftKey(installationId));
@@ -475,6 +490,7 @@ function restorePendingTree(installationId: string): PendingInstallationDraft | 
       installationId,
       capturedAt: parsed.capturedAt || new Date(0).toISOString(),
       baseRevision: parsed.baseRevision ?? tree.baseTreeRevision ?? tree.treeRevision ?? 0,
+      syncStage: parsed.syncStage === 'complete' ? 'complete' : DEFAULT_TREE_SYNC_STAGE,
       tree,
     };
   } catch {
@@ -513,6 +529,7 @@ export function useTreeWriter(installationId: string) {
             installationId,
             recovery.tree,
             restoredDraft.capturedAt,
+            restoredDraft.syncStage,
           );
           queryClient.setQueryData(installationTreeKey(installationId), recovery.tree);
           setWriteState({
@@ -582,9 +599,14 @@ export function useTreeWriter(installationId: string) {
     const next = ensureCanonicalTree(cloneTree(tree));
     touchTree(next);
     next.baseTreeRevision = next.treeRevision ?? next.baseTreeRevision ?? 0;
-    pendingDraftRef.current = volatilePendingInstallationDraft(installationId, next);
+    pendingDraftRef.current = volatilePendingInstallationDraft(
+      installationId,
+      next,
+      undefined,
+      syncStage,
+    );
     setHasPendingTree(true);
-    storePendingTree(installationId, next);
+    storePendingTree(installationId, next, syncStage);
     setWriteState({
       phase: 'saving',
       message: 'Saving to cloud…',

@@ -1423,6 +1423,23 @@ function evidenceKey(input: { id: string; entityType: string; entityId: string; 
   return [input.id.toLowerCase(), input.entityType, input.entityId, input.fieldName].join('\0');
 }
 
+function evidenceReferenceKey(input: {
+  entityType: string;
+  entityId: string;
+  fieldName: string;
+}): string {
+  return [input.entityType, input.entityId, input.fieldName].join('\0');
+}
+
+function evidenceRemoteReferenceKey(input: {
+  entityType: string;
+  entityId: string;
+  fieldName: string;
+  uri: string;
+}): string {
+  return [evidenceReferenceKey(input), input.uri].join('\0');
+}
+
 function manifestRow(row: PhotoRow): CanonicalRecordVersionSnapshot['mediaManifest'][number] {
   return {
     id: row.id,
@@ -1442,7 +1459,7 @@ export function resolveCanonicalEvidence(input: {
   mediaManifest: CanonicalRecordVersionSnapshot['mediaManifest'];
   issues: ReadinessIssue[];
 } {
-  const confirmedByExactReference = new Map<string, PhotoRow>();
+  const confirmedByExactRemoteReference = new Map<string, PhotoRow[]>();
   for (const photo of input.photos) {
     if (
       photo.app !== 'installhub'
@@ -1451,16 +1468,25 @@ export function resolveCanonicalEvidence(input: {
       || !photo.storageKey
       || !photo.remoteUrl
     ) continue;
-    confirmedByExactReference.set(evidenceKey(photo), photo);
+    const key = evidenceRemoteReferenceKey({
+      entityType: photo.entityType,
+      entityId: photo.entityId,
+      fieldName: photo.fieldName,
+      uri: photo.remoteUrl,
+    });
+    const candidates = confirmedByExactRemoteReference.get(key) ?? [];
+    candidates.push(photo);
+    confirmedByExactRemoteReference.set(key, candidates);
   }
   const resolved = new Map<string, PhotoRow>();
   const issues: ReadinessIssue[] = [];
   for (const reference of canonicalEvidenceReferences(input.tree)) {
-    const ids = [...collectImmutablePhotoIds(reference.uri)];
-    const photo = ids.length === 1
-      ? confirmedByExactReference.get(evidenceKey({ id: ids[0], ...reference }))
-      : undefined;
-    if (!photo || reference.uri !== photo.remoteUrl) {
+    const candidates = confirmedByExactRemoteReference.get(
+      evidenceRemoteReferenceKey(reference),
+    ) ?? [];
+    const photosById = new Map(candidates.map((photo) => [photo.id.toLowerCase(), photo]));
+    const photo = photosById.size === 1 ? [...photosById.values()][0] : undefined;
+    if (!photo) {
       issues.push({
         code: 'EVIDENCE_NOT_CONFIRMED',
         severity: 'ERROR',
@@ -1575,10 +1601,17 @@ export function buildCanonicalSnapshotPayload(input: {
     `${left.entityType}:${left.entityId}:${left.fieldName}:${left.id}`
       .localeCompare(`${right.entityType}:${right.entityId}:${right.fieldName}:${right.id}`)
   ));
-  const manifestByReference = new Map(sourceMediaManifest.map((item) => [
-    evidenceKey(item),
-    item,
-  ]));
+  // Runtime callers pass only the exact reference-bound manifest projected by
+  // resolveCanonicalEvidence. Keep snapshot rewriting independent of URL
+  // shape: historical URLs may contain zero UUIDs and current named paths may
+  // contain several unrelated installation/entity UUIDs.
+  const manifestsByReference = new Map<string, typeof sourceMediaManifest>();
+  for (const item of sourceMediaManifest) {
+    const key = evidenceReferenceKey(item);
+    const candidates = manifestsByReference.get(key) ?? [];
+    candidates.push(item);
+    manifestsByReference.set(key, candidates);
+  }
   const entityRecord = (reference: CanonicalEvidenceReference): Record<string, unknown> | undefined => {
     if (reference.entityType === 'zone') {
       return canonicalTree.zones.find((item) => item.id === reference.entityId) as unknown as Record<string, unknown>;
@@ -1608,10 +1641,8 @@ export function buildCanonicalSnapshotPayload(input: {
     if (last !== undefined) (cursor as Record<string | number, unknown>)[last] = value;
   };
   for (const reference of canonicalEvidenceReferences(canonicalTree)) {
-    const ids = [...collectImmutablePhotoIds(reference.uri)];
-    const manifest = ids.length === 1
-      ? manifestByReference.get(evidenceKey({ id: ids[0], ...reference }))
-      : undefined;
+    const candidates = manifestsByReference.get(evidenceReferenceKey(reference)) ?? [];
+    const manifest = candidates.length === 1 ? candidates[0] : undefined;
     if (!manifest) {
       throw new Error(`CANONICAL_EVIDENCE_UNRESOLVED:${reference.entityType}:${reference.entityId}:${reference.fieldName}`);
     }

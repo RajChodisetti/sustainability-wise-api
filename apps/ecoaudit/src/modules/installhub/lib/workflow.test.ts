@@ -22,10 +22,12 @@ import {
 import {
   mergeRecoveredNonMediaTree,
   executeInstallationTreeRetry,
+  installationTreeDraftKey,
   localReadinessPage,
   pendingInstallationDraft,
   pendingTreeWithoutMedia,
   planInstallationDraftRecovery,
+  restorePendingTree,
   shouldRestoreInstallationDraft,
   submitAndConfirmInstallationTree,
   treeWriteFailurePhase,
@@ -1258,6 +1260,72 @@ test('form completion returns the server-confirmed version and a later retry doe
   assert.equal(refreshCount, 1);
   assert.equal(resubmitCount, 0);
   assert.equal(submissionCount, 1);
+});
+
+test('a failed form-completion retry resubmits the pending tree at the complete stage', async () => {
+  const attempted = fixtureTree();
+  const pending = pendingInstallationDraft(
+    attempted.installation.id,
+    attempted,
+    '2026-08-02T12:00:00.000Z',
+    FORM_COMPLETION_SYNC_STAGE,
+  );
+  let submittedStage: 'metadata' | 'complete' | null = null;
+
+  const retried = await executeInstallationTreeRetry(pending, 'failed', {
+    refresh: async () => assert.fail('A pending failed write must be resubmitted.'),
+    reviewConflict: async () => assert.fail('A transient failure must not enter conflict review.'),
+    resubmitOriginal: async (tree, syncStage) => {
+      submittedStage = syncStage;
+      assert.equal(tree.baseTreeRevision, pending.baseRevision);
+      return tree;
+    },
+  });
+
+  assert.equal(submittedStage, FORM_COMPLETION_SYNC_STAGE);
+  assert.equal(retried?.baseTreeRevision, pending.baseRevision);
+});
+
+test('metadata retry remains the default and legacy same-tab drafts recover compatibly', async () => {
+  const attempted = fixtureTree();
+  const pending = pendingInstallationDraft(
+    attempted.installation.id,
+    attempted,
+    '2026-08-02T12:00:00.000Z',
+  );
+  let submittedStage: 'metadata' | 'complete' | null = null;
+  await executeInstallationTreeRetry(pending, 'failed', {
+    refresh: async () => assert.fail('A pending failed write must be resubmitted.'),
+    reviewConflict: async () => assert.fail('A transient failure must not enter conflict review.'),
+    resubmitOriginal: async (tree, syncStage) => {
+      submittedStage = syncStage;
+      return tree;
+    },
+  });
+  assert.equal(submittedStage, DEFAULT_TREE_SYNC_STAGE);
+
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const key = installationTreeDraftKey(attempted.installation.id);
+  const legacyPending: Partial<typeof pending> = structuredClone(pending);
+  delete legacyPending.syncStage;
+  const values = new Map([[key, JSON.stringify(legacyPending)]]);
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (storageKey: string) => values.get(storageKey) ?? null,
+        removeItem: (storageKey: string) => values.delete(storageKey),
+      },
+    },
+  });
+  try {
+    const restored = restorePendingTree(attempted.installation.id);
+    assert.equal(restored?.syncStage, DEFAULT_TREE_SYNC_STAGE);
+    assert.equal(restored?.baseRevision, pending.baseRevision);
+  } finally {
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+  }
 });
 
 test('error-summary jumps make a non-control target focusable and move keyboard focus', () => {
