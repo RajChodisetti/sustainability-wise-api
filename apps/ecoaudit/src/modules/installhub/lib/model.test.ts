@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { FORM_DEFINITION_BY_TYPE } from '../forms/catalog';
 import {
+  allowedFormDefinitions,
   applyDraftFormSnapshot,
   canonicalSiteCode,
   canonicalSiteCodeForWrite,
@@ -64,6 +65,19 @@ function fixtureTree() {
     user,
   );
 }
+
+test('meter-linked reconciliation keeps the required WW installation form available', () => {
+  assert.deepEqual(
+    allowedFormDefinitions({ boardId: 'board-1', meterId: 'meter-1' })
+      .map((definition) => definition.type),
+    ['ww-installation', 'comms-fault'],
+  );
+  assert.deepEqual(
+    allowedFormDefinitions({ meterId: 'meter-1' })
+      .map((definition) => definition.type),
+    ['comms-fault'],
+  );
+});
 
 test('removeZone cascades owned records and marks surviving relationships TBC', () => {
   const tree = fixtureTree();

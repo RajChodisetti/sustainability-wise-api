@@ -432,7 +432,14 @@ export type FormContext = {
 export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
   return FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
-    if (context.meterId) return definition.type === 'comms-fault';
+    if (context.meterId) {
+      // A meter detail can start a comms-fault record. Reconciliation links
+      // carry both board and meter IDs so the required WW installation form
+      // can also retain the exact stable meter relationship.
+      return context.boardId
+        ? ['ww-installation', 'comms-fault'].includes(definition.type)
+        : definition.type === 'comms-fault';
+    }
     if (context.boardId) return ['ww-installation', 'ace-switchboard'].includes(definition.type);
     if (context.siteAssetId) {
       return ['honeywell-q400', 'captis-logger', 'sums-logger'].includes(definition.type);
