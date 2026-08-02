@@ -805,6 +805,10 @@ export function serializeInstallationTree(input: InstallationTree): Record<strin
     ...asset,
     displayCode: asset.displayCodeMeta,
   }));
+  // Virtual definitions are calculated by the API from the authoritative
+  // electrical/measurement graph. Keep them in the read model for display,
+  // but never echo them into a client write.
+  wire.serverDerived = { virtualMeterDefinitions: [] };
   return wire;
 }
 

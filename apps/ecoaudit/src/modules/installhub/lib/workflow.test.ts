@@ -259,6 +259,25 @@ test('portal meter commissioning fields serialize into canonical round-trip meta
   );
 });
 
+test('portal writes strip server-owned virtual definitions without mutating the read model', () => {
+  const tree = fixtureTree();
+  tree.serverDerived = {
+    virtualMeterDefinitions: [{
+      id: 'virtual-grid-a',
+      parentNodeId: 'grid-a',
+      totalMeasurementAssignmentId: 'assignment-grid-a',
+      subtractAssignmentIds: [],
+      formulaVersion: 1,
+      allocation: 'UNALLOCATED_RESIDUAL',
+    }],
+  };
+
+  const wire = serializeInstallationTree(tree);
+
+  assert.deepEqual(wire.serverDerived, { virtualMeterDefinitions: [] });
+  assert.equal(tree.serverDerived.virtualMeterDefinitions.length, 1);
+});
+
 test('fresh portal creation serializes the complete canonical-v2 installation handshake', () => {
   const tree = createInstallationTree({
     clientName: 'Fresh Client',
