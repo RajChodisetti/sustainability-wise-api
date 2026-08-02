@@ -167,6 +167,7 @@ test('reconciliation resolves exact measurement targets and safe unmetered state
   }];
   mainTree.measurementAssignments = [{
     id: 'assignment-main',
+    installationId: mainTree.installation.id,
     meterId: 'meter-1',
     channelIds: ['channel-main'],
     phaseMode: 'SINGLE_PHASE',
@@ -198,6 +199,7 @@ test('reconciliation resolves exact measurement targets and safe unmetered state
   }];
   subTree.measurementAssignments = [{
     id: 'assignment-sub',
+    installationId: subTree.installation.id,
     meterId: 'meter-1',
     channelIds: ['channel-sub'],
     phaseMode: 'SINGLE_PHASE',
@@ -206,6 +208,7 @@ test('reconciliation resolves exact measurement targets and safe unmetered state
     status: 'TBC',
   }, {
     id: 'assignment-owner',
+    installationId: subTree.installation.id,
     meterId: 'meter-2',
     channelIds: ['channel-owner'],
     phaseMode: 'SINGLE_PHASE',
@@ -268,6 +271,7 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
   }];
   tree.measurementAssignments = [{
     id: 'assignment-1',
+    installationId: tree.installation.id,
     meterId: 'meter-1',
     channelIds: ['channel-1'],
     phaseMode: 'SINGLE_PHASE',

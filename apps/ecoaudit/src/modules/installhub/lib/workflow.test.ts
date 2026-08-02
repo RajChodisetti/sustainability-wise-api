@@ -447,6 +447,7 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
 
   const main: MeasurementAssignment = {
     id: 'assignment-main',
+    installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: ['meter-a:1', 'meter-a:2', 'meter-a:3'],
     phaseMode: 'THREE_PHASE',
@@ -456,6 +457,7 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
   };
   const sub: MeasurementAssignment = {
     id: 'assignment-sub',
+    installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: ['meter-a:4', 'meter-a:5', 'meter-a:6'],
     phaseMode: 'THREE_PHASE',
@@ -477,6 +479,10 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
   }]), /only one active measurement assignment/);
   assert.deepEqual(tree.measurementAssignments || [], beforeDuplicateAttempt);
   replaceMeterAssignments(tree, meter.id, [main, sub]);
+  assert.deepEqual(
+    tree.measurementAssignments?.map((assignment) => assignment.installationId),
+    [tree.installation.id, tree.installation.id],
+  );
   assert.equal(localReadiness(tree).issues.some((item) => item.code === 'CHANNEL_UNASSIGNED'), false);
   assert.deepEqual(tree.siteAssets[0].meteringState, {
     kind: 'METERED',
@@ -543,6 +549,7 @@ test('meter assignment replacement rejects a silent cross-meter asset remap atom
   syncMeterDevice(tree, 'board-b', meterB);
   replaceMeterAssignments(tree, meterA.id, [{
     id: 'assignment-owner',
+    installationId: tree.installation.id,
     meterId: meterA.id,
     channelIds: ['meter-a:4'],
     phaseMode: 'SINGLE_PHASE',
@@ -556,6 +563,7 @@ test('meter assignment replacement rejects a silent cross-meter asset remap atom
   });
   assert.throws(() => replaceMeterAssignments(tree, meterB.id, [{
     id: 'assignment-takeover',
+    installationId: tree.installation.id,
     meterId: meterB.id,
     channelIds: ['meter-b:4'],
     phaseMode: 'SINGLE_PHASE',
@@ -577,6 +585,7 @@ test('local readiness zone filtering includes both meter and measured-target zon
   syncMeterDevice(tree, 'board-a', meter);
   tree.measurementAssignments = [{
     id: 'assignment-cross-zone',
+    installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: ['meter-a:4'],
     phaseMode: 'THREE_PHASE',

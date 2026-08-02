@@ -680,6 +680,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   function addAssignment() {
     setAssignmentDrafts((current) => [...current, {
       id: createInstallHubId('assignment'),
+      installationId,
       meterId: currentDraft.id,
       channelIds: [],
       phaseMode: 'SINGLE_PHASE',

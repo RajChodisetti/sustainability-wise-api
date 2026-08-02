@@ -405,6 +405,7 @@ export function measurementAssignments(tree: InstallationTree): MeasurementAssig
     if (!asset.meterId || !asset.meterChannelIds?.length) return [];
     return [{
       id: `assignment_${asset.id}`,
+      installationId: tree.installation.id,
       meterId: asset.meterId,
       channelIds: asset.meterChannelIds,
       phaseMode: asset.phaseMode || (asset.meterChannelIds.length === 3 ? 'THREE_PHASE' : 'SINGLE_PHASE'),
@@ -556,6 +557,7 @@ export function replaceMeterAssignments(
     } else {
       tree.measurementAssignments.push({
         ...structuredClone(assignment),
+        installationId: tree.installation.id,
         meterId,
         status: assignment.target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
       });
@@ -623,6 +625,7 @@ export function setAssetMetering(
   }
   const assignment: MeasurementAssignment = {
     id: input.assignmentId || current?.id || `assignment_${asset.id}`,
+    installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: unique,
     phaseMode: input.phaseMode,
@@ -665,7 +668,10 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
     isDefault: supply.id === selectedDefaultId,
   }));
   tree.meterDevices = meterDevices(tree);
-  tree.measurementAssignments = measurementAssignments(tree);
+  tree.measurementAssignments = measurementAssignments(tree).map((assignment) => ({
+    ...assignment,
+    installationId: tree.installation.id,
+  }));
   tree.serverDerived = tree.serverDerived || { virtualMeterDefinitions: [] };
 
   for (const board of tree.electricalAssets) {

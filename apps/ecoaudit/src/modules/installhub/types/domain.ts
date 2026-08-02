@@ -75,6 +75,7 @@ export type MeterDevice = {
 
 export type MeasurementAssignment = {
   id: string;
+  installationId: string;
   meterId: string;
   channelIds: string[];
   phaseMode: PhaseMode;
