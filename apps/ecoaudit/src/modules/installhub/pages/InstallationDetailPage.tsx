@@ -23,6 +23,7 @@ import {
 import {
   Breadcrumbs,
   DefinitionList,
+  InlineNotice,
   WorkspaceLink,
 } from '@/modules/installhub/components/InstallHubUi';
 import {
@@ -32,6 +33,7 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
+import { meteringInventorySummary } from '@/modules/installhub/lib/electricalPresentation';
 import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 
@@ -63,6 +65,7 @@ export function InstallHubInstallationDetailPage() {
     user?.role === 'admin' ||
     Boolean(user?.id && installation.createdByUserId === user.id);
   const meters = meterDevices(tree).filter((meter) => meter.lifecycleState !== 'INACTIVE').length;
+  const meteringInventory = meteringInventorySummary(tree);
   const readiness = readinessQuery.data;
   const readinessAdvisory = readiness?.authority === 'LOCAL_ADVISORY';
   const evidenceCount =
@@ -198,6 +201,10 @@ export function InstallHubInstallationDetailPage() {
           { label: 'Switchboards', value: tree.electricalAssets.length },
           { label: 'Site assets', value: tree.siteAssets.length },
           { label: 'Meters', value: meters },
+          { label: 'Directly metered', value: meteringInventory.assets.directlyMetered },
+          { label: 'Confirmed unmetered', value: meteringInventory.assets.confirmedUnmetered },
+          { label: 'Metering TBC', value: meteringInventory.assets.toBeConfirmed },
+          { label: 'Broken mappings', value: meteringInventory.assets.brokenMappings },
         ]} />
       </Card>
 
@@ -226,6 +233,13 @@ export function InstallHubInstallationDetailPage() {
         </div>
         {readinessQuery.error ? <p className="mt-3 text-sm text-[var(--red)]">{installHubConnectionErrorMessage(readinessQuery.error)}</p> : null}
         {readinessAdvisory ? <div className="mt-3"><p className="text-sm font-semibold text-[var(--amber)]">Reconnect to obtain server-authoritative readiness. Local checks cannot complete or publish this installation.</p></div> : null}
+        {meteringInventory.assets.confirmedUnmetered ? (
+          <div className="mt-3">
+            <InlineNotice tone="success">
+              {meteringInventory.assets.confirmedUnmetered} confirmed unmetered asset{meteringInventory.assets.confirmedUnmetered === 1 ? '' : 's'} remain in the asset register. That metering state alone does not block completion; TBC, broken mappings, and other readiness issues are still listed separately.
+            </InlineNotice>
+          </div>
+        ) : null}
         {readiness?.issues.length ? (
           <ul className="mt-4 space-y-2">
             {readiness.issues.slice(0, 6).map((issue) => (

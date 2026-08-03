@@ -1075,13 +1075,30 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
     if (assignment.channelIds.length !== expected || new Set(assignment.channelIds).size !== expected) {
       issues.push(issue('PHASE_GROUP_INVALID', 'measurement_assignment', assignment.id, `Select ${expected} distinct channel${expected === 1 ? '' : 's'} from one meter.`));
     }
+    const assignmentPurposes = new Set<MeterDeviceChannel['purpose']>();
     for (const channelId of assignment.channelIds) {
       const channel = meter.channels.find((item) => item.id === channelId);
-      if (!channel) issues.push(issue('CHANNEL_NOT_FOUND', 'measurement_assignment', assignment.id, `Channel ${channelId} is unavailable.`));
-      else if (channel.purpose === 'SPARE') issues.push(issue('CHANNEL_PURPOSE_CONFLICT', 'measurement_assignment', assignment.id, `Channel ${channel.ordinal} is marked spare.`));
+      if (!channel) {
+        issues.push(issue('CHANNEL_NOT_FOUND', 'measurement_assignment', assignment.id, `Channel ${channelId} is unavailable.`));
+        continue;
+      }
+      assignmentPurposes.add(channel.purpose);
+      if (channel.purpose === 'SPARE') issues.push(issue('CHANNEL_PURPOSE_CONFLICT', 'measurement_assignment', assignment.id, `Channel ${channel.ordinal} is marked spare.`));
       const prior = usedChannels.get(channelId);
       if (prior && prior !== assignment.id) issues.push(issue('CHANNEL_DUPLICATE_ASSIGNMENT', 'measurement_assignment', assignment.id, `Channel ${channelId} is already assigned.`));
       else usedChannels.set(channelId, assignment.id);
+    }
+    if (assignment.target.kind === 'SITE_ASSET') {
+      const targetAssetId = assignment.target.siteAssetId;
+      const target = tree.siteAssets.find((asset) => asset.id === targetAssetId);
+      if (!target) {
+        issues.push(issue('MEASUREMENT_TARGET_TBC', 'measurement_assignment', assignment.id, 'The target site asset is unavailable.'));
+      } else if (!meterBoardsForAsset(tree, target).some((board) => board.id === meter.installedOnBoardId)) {
+        issues.push(issue('METER_BOARD_MISMATCH', 'measurement_assignment', assignment.id, 'Meter installation board must lie on the target asset electrical path.'));
+      }
+      if (assignmentPurposes.has('MAIN_SUPPLY')) {
+        issues.push(issue('CHANNEL_PURPOSE_CONFLICT', 'measurement_assignment', assignment.id, 'Main-supply channels cannot target a site asset.'));
+      }
     }
   }
 
@@ -1222,12 +1239,59 @@ export function localElectricalTree(input: InstallationTree): ElectricalTreeRead
   };
 }
 
-export function coverageState(tree: InstallationTree, asset: SiteAsset): 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC' {
+export function coverageState(
+  tree: InstallationTree,
+  asset: SiteAsset,
+  providedReadinessIssues?: ReadinessIssue[],
+): 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC' | 'INVALID' {
   const state = siteAssetMeteringState(asset);
-  if (state.kind === 'METERED') return 'DIRECT';
+  const directAssignments = measurementAssignments(tree).filter((assignment) => (
+    assignment.target.kind === 'SITE_ASSET'
+    && assignment.target.siteAssetId === asset.id
+  ));
+  const hasDirectAssignments = directAssignments.length > 0;
+  const legacyMeterPresenceMatches = asset.meterPresent === hasDirectAssignments;
+  const readinessIssues = providedReadinessIssues ?? localReadiness(tree).issues;
+  const assignmentIds = new Set(directAssignments.map((assignment) => assignment.id));
+  const meterIds = new Set(directAssignments.map((assignment) => assignment.meterId));
+  const channelIds = new Set(directAssignments.flatMap((assignment) => assignment.channelIds));
+  const relationshipInvalid = readinessIssues.some((item) => {
+    if (item.severity !== 'ERROR') return false;
+    if (
+      item.entityType === 'site_asset'
+      && item.entityId === asset.id
+      && state.kind !== 'TBC'
+      && (item.code === 'METERING_STATE_INVALID' || item.code === 'METER_PRESENT_MISMATCH' || item.code === 'METER_DEVICE_REQUIRED')
+    ) return true;
+    if (item.entityType === 'measurement_assignment' && assignmentIds.has(item.entityId)) return true;
+    if (
+      item.entityType === 'channel'
+      && channelIds.has(item.entityId)
+      && ['CHANNEL_NOT_FOUND', 'CHANNEL_DUPLICATE_ASSIGNMENT', 'CHANNEL_PURPOSE_CONFLICT', 'METER_CAPABILITY_REQUIRED'].includes(item.code)
+    ) return true;
+    return item.entityType === 'meter'
+      && meterIds.has(item.entityId)
+      && ['METER_BOARD_MISMATCH', 'CHANNEL_NOT_FOUND', 'METER_CAPABILITY_REQUIRED'].includes(item.code);
+  });
+  if (state.kind === 'METERED') {
+    const declaredIds = new Set(state.measurementAssignmentIds);
+    const actualIds = new Set(directAssignments.map((assignment) => assignment.id));
+    const exactSingleAssignment = declaredIds.size === 1
+      && actualIds.size === 1
+      && [...declaredIds].every((id) => actualIds.has(id))
+      && directAssignments[0]?.status === 'CONFIRMED';
+    return exactSingleAssignment && legacyMeterPresenceMatches && !relationshipInvalid ? 'DIRECT' : 'INVALID';
+  }
+  if (hasDirectAssignments || !legacyMeterPresenceMatches || relationshipInvalid) return 'INVALID';
   if (state.kind === 'UNMETERED') {
+    const source = assetElectricalSource(asset);
+    const immediateParentId = source.kind === 'GRID'
+      ? source.gridSupplyId
+      : source.kind === 'BOARD'
+        ? source.boardId
+        : null;
     const virtual = tree.serverDerived?.virtualMeterDefinitions.some(
-      (definition) => assetElectricalAncestorIds(tree, asset).includes(definition.parentNodeId),
+      (definition) => immediateParentId === definition.parentNodeId,
     );
     return virtual ? 'VIRTUAL' : 'UNMETERED';
   }

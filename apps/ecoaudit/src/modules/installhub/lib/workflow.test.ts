@@ -767,7 +767,38 @@ test('shared residual coverage may identify several unmetered descendants withou
   assert.equal(coverageState(tree, asset), 'VIRTUAL');
   assert.equal(coverageState(tree, sibling), 'VIRTUAL');
   applyAssetElectricalSource(asset, { kind: 'BOARD', boardId: 'board-b' });
-  assert.equal(coverageState(tree, asset), 'VIRTUAL');
+  assert.equal(coverageState(tree, asset), 'UNMETERED');
+  asset.meteringState = { kind: 'METERED', measurementAssignmentIds: ['missing-assignment'] };
+  assert.equal(coverageState(tree, asset), 'INVALID');
+});
+
+test('coverage never presents a readiness-invalid direct assignment as mapped', () => {
+  const tree = fixtureTree();
+  const asset = tree.siteAssets[0];
+  const meter = sixChannelMeter();
+  tree.electricalAssets[0].meters = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+  syncMeterDevice(tree, 'board-a', meter);
+  applyAssetElectricalSource(asset, { kind: 'BOARD', boardId: 'board-a' });
+  tree.measurementAssignments = [{
+    id: 'invalid-direct-assignment',
+    installationId: tree.installation.id,
+    meterId: meter.id,
+    channelIds: ['missing-channel'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: asset.id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  asset.meterPresent = true;
+  asset.meteringState = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['invalid-direct-assignment'],
+  };
+  assert.ok(localReadiness(tree).issues.some((issue) => (
+    issue.code === 'CHANNEL_NOT_FOUND' && issue.entityId === 'invalid-direct-assignment'
+  )));
+  assert.equal(coverageState(tree, asset), 'INVALID');
 });
 
 test('local readiness and mapping remain explicitly advisory and missing external keys block local consistency', () => {

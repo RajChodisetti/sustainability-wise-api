@@ -211,6 +211,18 @@ Fault submissions require device number, device ID, A3RM/A6M type, and matching
 sensor selection. A3RM accepts only the three documented 3000A Rogowski sizes;
 A6M accepts only 60A, 120A, 200A, 400A, or 600A.
 
+A site asset explicitly classified `UNMETERED` with no direct measurement
+assignment remains in the all-assets register, and that metering state alone
+must not create a completion error. Other readiness errors on the same asset
+may still block completion. `TBC`, a declared `METERED` asset whose exact assignment is
+missing or contradictory, and every non-spare meter channel without a target
+remain blocking states. Coverage projections keep declared state and calculated
+coverage separate: a confirmed-unmetered asset may receive `VIRTUAL` residual
+coverage, while inconsistent metering relationships are `INVALID`/mapping
+issues and must never be presented as harmless unmetered inventory. Channels
+explicitly marked `SPARE` require no target and are excluded from unassigned
+active-channel counts.
+
 WW Installation exposes three channels for A3RM and six for A6M. Every visible
 current channel requires an explicit `channel.N.purpose`. `Main board supply`
 permits only the `Mains Supply` load. `Sub-circuit / asset` requires an active

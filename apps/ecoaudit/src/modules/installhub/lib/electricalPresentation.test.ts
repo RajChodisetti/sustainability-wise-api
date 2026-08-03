@@ -20,6 +20,7 @@ import {
   filterElectricalHierarchyRows,
   filterReadinessResolutionCandidates,
   measurementTargetDetails,
+  meteringInventorySummary,
   parseAssetMeterDraftSnapshot,
   pinSelectedResult,
   readinessCandidateDetails,
@@ -389,6 +390,62 @@ test('zone summaries distinguish mapping state and unresolved relationships', ()
     unresolvedSupply: 1,
     unresolvedMetering: 1,
     unresolved: 2,
+  });
+});
+
+test('metering inventory separates valid unmetered assets from broken mappings and unassigned channels', () => {
+  const tree = fixtureTree();
+  const unmetered = createSiteAsset(tree.installation.id, 'zone-1');
+  unmetered.id = 'asset-unmetered';
+  unmetered.assetName = 'Unmetered fan';
+  unmetered.displayCode = 'MAP-FAN-001';
+  unmetered.meteringState = { kind: 'UNMETERED' };
+  unmetered.meterPresent = false;
+  applyAssetElectricalSource(unmetered, { kind: 'BOARD', boardId: 'board-1' });
+  tree.siteAssets.push(unmetered);
+  tree.meterDevices = [{
+    id: 'meter-1',
+    installationId: tree.installation.id,
+    installedOnBoardId: 'board-1',
+    deviceFamily: 'WATTWATCHERS',
+    deviceModel: 'A3RM',
+    displayName: { value: 'MAP-A3RM-001', generatedValue: 'MAP-A3RM-001', isOverridden: false, ruleVersion: 1 },
+    serialNumber: 'SERIAL-1',
+    channels: [
+      { id: 'channel-active', ordinal: 1, purpose: 'SUB_CIRCUIT' },
+      { id: 'channel-spare-1', ordinal: 2, purpose: 'SPARE' },
+      { id: 'channel-spare-2', ordinal: 3, purpose: 'SPARE' },
+    ],
+  }];
+  tree.measurementAssignments = [{
+    id: 'wrong-meter-assignment',
+    installationId: tree.installation.id,
+    meterId: 'missing-meter',
+    channelIds: ['channel-active'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+  const summary = meteringInventorySummary(tree);
+  assert.deepEqual(summary.assets, {
+    total: 3,
+    directlyMetered: 0,
+    confirmedUnmetered: 1,
+    toBeConfirmed: 1,
+    brokenMappings: 1,
+  });
+  assert.deepEqual(summary.meters, {
+    total: 1,
+    withoutAssignments: 1,
+    allChannelsSpare: 0,
+    withUnassignedActiveChannels: 1,
+  });
+  assert.deepEqual(summary.channels, {
+    active: 1,
+    assignedActive: 0,
+    unassignedActive: 1,
+    spare: 2,
   });
 });
 

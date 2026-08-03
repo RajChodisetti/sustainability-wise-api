@@ -15,7 +15,7 @@ import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createZone, nowIso, removeZone } from '@/modules/installhub/lib/model';
 import { zoneElectricalSummary } from '@/modules/installhub/lib/electricalPresentation';
-import { siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
+import { coverageState, localReadiness, siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
 import { useToast } from '@/contexts/ToastContext';
 
 const ZONE_RECORD_PAGE_SIZE = 50;
@@ -195,6 +195,7 @@ export function InstallHubZoneDetailPage() {
   const tree = query.data;
   const zone = tree?.zones.find((item) => item.id === zoneId);
   if (!tree || !zone) return <ErrorBanner message="Zone not found." />;
+  const readinessIssues = localReadiness(tree).issues;
   const boards = tree.electricalAssets.filter((item) => item.zoneId === zoneId);
   const assets = tree.siteAssets.filter((item) => item.zoneId === zoneId);
   const normalizedBoardSearch = boardSearch.trim().toLocaleLowerCase('en-AU');
@@ -368,15 +369,27 @@ export function InstallHubZoneDetailPage() {
           {assets.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No site assets in this zone.</p> : filteredAssets.length ? (
             <>
             <div className="space-y-2">
-              {zonePageItems(filteredAssets, assetPage).map((asset) => (
-                <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
-                  <span>
-                    <span className="block text-sm font-bold text-[var(--text)]">{asset.assetName}</span>
-                    <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {siteAssetMeteringState(asset).kind.replaceAll('_', ' ')} · {asset.meterChannelIds?.length || asset.meterChannels?.length || 0} channels</span>
-                  </span>
-                  <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
-                </Link>
-              ))}
+              {zonePageItems(filteredAssets, assetPage).map((asset) => {
+                const state = siteAssetMeteringState(asset).kind;
+                const coverage = coverageState(tree, asset, readinessIssues);
+                const channelCount = asset.meterChannelIds?.length || asset.meterChannels?.length || 0;
+                const meteringLabel = coverage === 'INVALID'
+                  ? 'Metering mapping issue · blocks completion'
+                  : state === 'UNMETERED'
+                  ? 'Confirmed unmetered · metering state is non-blocking'
+                  : state === 'TBC'
+                    ? 'Metering to be confirmed · blocks completion'
+                    : `Metered · ${channelCount} channel${channelCount === 1 ? '' : 's'}`;
+                return (
+                  <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
+                    <span>
+                      <span className="block text-sm font-bold text-[var(--text)]">{asset.assetName}</span>
+                      <span className="block text-xs text-[var(--text-sub)]">{asset.assetType} · {meteringLabel}</span>
+                    </span>
+                    <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
+                  </Link>
+                );
+              })}
             </div>
             <ZoneListPager page={assetPage} total={filteredAssets.length} onPage={setAssetPage} />
             </>

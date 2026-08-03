@@ -1061,6 +1061,12 @@ test('views are deterministic, target-neutral, and mapping strips candidate hint
   assert.equal(electrical.nodes[1]?.kind, 'BOARD');
   assert.equal(assets.assets[0].coverage.kind, 'UNMETERED');
   assert.deepEqual(metering.rows, []);
+  assert.deepEqual(
+    metering.unassignedChannels.map((channel) => channel.channelId),
+    ['channel-1', 'channel-2', 'channel-3'],
+  );
+  assert.equal(metering.summary.metersWithUnassignedActiveChannels, 1);
+  assert.equal(metering.summary.unassignedActiveChannelCount, 3);
   assert.equal(mapping.schema, 'installation-mapping/v1');
   assert.equal(mapping.electricalNodes.find((node) => node.kind === 'BOARD')?.typeLabel, 'Main Switchboard');
   assert.deepEqual(mapping.channels[0], {
@@ -1079,6 +1085,79 @@ test('views are deterministic, target-neutral, and mapping strips candidate hint
     buildInstallationMappingExport(structuredClone(tree), 7).contentHash,
     mapping.contentHash,
   );
+});
+
+test('confirmed unmetered assets remain non-blocking while broken and TBC mappings stay distinct', () => {
+  const unmetered = baseTree();
+  assert.equal(installationReadiness(unmetered).readyToComplete, true);
+  assert.equal(buildAllAssetsView(unmetered, 1).assets[0]?.coverage.kind, 'UNMETERED');
+  const unmeteredAssetNode = buildElectricalTreeView(unmetered, 1).nodes.find(
+    (node) => node.id === 'asset-1',
+  );
+  assert.ok(unmeteredAssetNode?.kind === 'SITE_ASSET');
+  assert.equal(unmeteredAssetNode.coverageState, 'UNMETERED');
+
+  const broken = structuredClone(unmetered);
+  broken.siteAssets[0].meteringState = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['missing-assignment'],
+  };
+  const brokenReadiness = installationReadiness(broken);
+  assert.equal(brokenReadiness.readyToComplete, false);
+  assert.ok(brokenReadiness.issues.some((issue) => (
+    issue.code === 'METERING_STATE_INVALID' && issue.entityId === 'asset-1'
+  )));
+  assert.deepEqual(buildAllAssetsView(broken, 1).assets[0]?.coverage, {
+    kind: 'INVALID',
+    reason: 'MEASUREMENT_RELATIONSHIP_INVALID',
+  });
+  assert.equal(buildInstallationMappingExport(broken, 1).assetCoverage[0]?.state, 'INVALID');
+
+  const tbc = structuredClone(unmetered);
+  tbc.siteAssets[0].meteringState = { kind: 'TBC' };
+  assert.equal(installationReadiness(tbc).readyToComplete, false);
+  assert.equal(buildAllAssetsView(tbc, 1).assets[0]?.coverage.kind, 'TBC');
+
+  const invalidRelationship = structuredClone(unmetered);
+  const invalidMeter = a3Meter();
+  invalidRelationship.meterDevices = [invalidMeter];
+  invalidRelationship.measurementAssignments = [{
+    id: 'invalid-direct-assignment',
+    installationId: invalidRelationship.installation.id,
+    meterId: invalidMeter.id,
+    channelIds: ['missing-channel'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: invalidRelationship.siteAssets[0].id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  invalidRelationship.siteAssets[0].meterPresent = true;
+  invalidRelationship.siteAssets[0].meteringState = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['invalid-direct-assignment'],
+  };
+  assert.equal(installationReadiness(invalidRelationship).readyToComplete, false);
+  assert.deepEqual(buildAllAssetsView(invalidRelationship, 1).assets[0]?.coverage, {
+    kind: 'INVALID',
+    reason: 'MEASUREMENT_RELATIONSHIP_INVALID',
+  });
+  assert.deepEqual(
+    buildMeteringView(invalidRelationship, 1).unassignedChannels.map((channel) => channel.channelId),
+    invalidMeter.channels.map((channel) => channel.id),
+  );
+});
+
+test('metering inventory excludes explicitly spare channels from the unassigned cohort', () => {
+  const tree = baseTree();
+  const meter = a3Meter();
+  meter.channels = [channel(1, 'SPARE'), channel(2, 'SPARE'), channel(3, 'SPARE')];
+  tree.meterDevices = [meter];
+  const view = buildMeteringView(tree, 1);
+  assert.deepEqual(view.rows, []);
+  assert.deepEqual(view.unassignedChannels, []);
+  assert.equal(view.summary.allSpareMeters, 1);
+  assert.equal(view.summary.spareChannelCount, 3);
+  assert.equal(view.deviceSummaries[0]?.state, 'MAPPING_ISSUE');
 });
 
 test('invalid IANA timezone is a deterministic export warning and eligibility fence', () => {

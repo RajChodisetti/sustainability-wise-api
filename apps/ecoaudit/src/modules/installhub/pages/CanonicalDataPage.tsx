@@ -22,6 +22,7 @@ import {
   boardElectricalSource,
   coverageState,
   displayCodeValue,
+  localReadiness,
   measurementAssignments,
   meterDeviceName,
   meterDevices,
@@ -33,6 +34,7 @@ import {
   filterReadinessResolutionCandidates,
   filterElectricalHierarchyRows,
   measurementTargetDetails,
+  meteringInventorySummary,
   readinessCandidateDetails,
   readinessCorrectionAction,
   readinessEntityDetails,
@@ -115,6 +117,7 @@ function coverageLabel(state?: string): string {
   if (state === 'DIRECT') return 'DIRECT — exact assignment';
   if (state === 'UNMETERED') return 'UNMETERED — no residual identified';
   if (state === 'TBC') return 'TBC — unresolved';
+  if (state === 'INVALID') return 'MAPPING ISSUE — declared state and assignments disagree';
   return state || '—';
 }
 
@@ -261,6 +264,7 @@ export function InstallHubCanonicalDataPage() {
   if (treeQuery.isLoading) return <Spinner />;
   if (treeQuery.error || !treeQuery.data) return <ErrorBanner message={installHubConnectionErrorMessage(treeQuery.error || new Error('Installation not found.'))} />;
   const tree = treeQuery.data;
+  const meteringInventory = meteringInventorySummary(tree);
   const readiness = readinessQuery.data;
   const electrical = electricalQuery.data;
   const localAdvisory = readiness?.authority === 'LOCAL_ADVISORY' || mappingQuery.data?.authority === 'LOCAL_ADVISORY';
@@ -298,13 +302,18 @@ export function InstallHubCanonicalDataPage() {
       const zoneName = tree.zones.find((zone) => zone.id === asset.zoneId)?.zoneName || '';
       return !normalizedAssetSearch || `${displayCodeValue(asset)} ${asset.assetName} ${siteAssetTypeLabel(asset)} ${zoneName}`.toLowerCase().includes(normalizedAssetSearch);
     });
+  const currentElectrical = electrical?.treeRevision === tree.treeRevision ? electrical : undefined;
   const serverCoverageByAsset = new Map(
-    (electrical?.nodes || [])
+    (currentElectrical?.nodes || [])
       .filter((node) => node.kind === 'SITE_ASSET')
       .map((node) => [node.id, node.coverageState]),
   );
   const mappingCoverageByAsset = new Map(
-    (mappingQuery.data?.assetCoverage || []).map((item) => [item.assetId, item]),
+    (mappingQuery.data
+      && tree.installation.status === 'Completed'
+      && mappingQuery.data?.installation.recordVersionNumber === tree.recordVersionNumber
+      ? mappingQuery.data.assetCoverage
+      : []).map((item) => [item.assetId, item]),
   );
 
   async function saveIssueResolution(issue: ReadinessIssue, key: string) {
@@ -361,10 +370,22 @@ export function InstallHubCanonicalDataPage() {
         {[
           ['Physical zones', tree.zones.length],
           ['Electrical nodes', electrical?.nodes.length || 0],
-          ['Unresolved', fullIssueTotal],
+          ['Readiness issues', fullIssueTotal],
           ['All site assets', tree.siteAssets.length],
+          ['Confirmed unmetered', meteringInventory.assets.confirmedUnmetered],
+          ['Metering TBC', meteringInventory.assets.toBeConfirmed],
+          ['Broken mappings', meteringInventory.assets.brokenMappings],
+          ['Unassigned active channels', meteringInventory.channels.unassignedActive],
         ].map(([label, value]) => <Card key={label}><p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">{label}</p><p className="mt-2 text-3xl font-extrabold text-[var(--text)]">{value}</p></Card>)}
       </div>
+
+      {meteringInventory.assets.confirmedUnmetered ? (
+        <div className="mb-6">
+          <InlineNotice tone="success">
+            Confirmed unmetered assets are accepted inventory records. They stay visible here, and that metering state alone does not block installation completion; TBC, broken mappings, or other readiness errors still require reconciliation.
+          </InlineNotice>
+        </div>
+      ) : null}
 
       <Card className="mb-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -643,7 +664,7 @@ export function InstallHubCanonicalDataPage() {
             <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]"><th className="px-3 py-3">Asset</th><th className="px-3 py-3">Type</th><th className="px-3 py-3">Physical zone</th><th className="px-3 py-3">Electrical source</th><th className="px-3 py-3">Metering</th></tr></thead>
             <tbody>{pageItems(filteredAssets, assetPage, TABLE_PAGE_SIZE).map((asset) => {
               const mappedCoverage = mappingCoverageByAsset.get(asset.id);
-              const coverage = mappedCoverage?.state || serverCoverageByAsset.get(asset.id) || coverageState(tree, asset);
+              const coverage = serverCoverageByAsset.get(asset.id) || coverageState(tree, asset);
               const sourceId = mappedCoverage && 'source' in mappedCoverage && mappedCoverage.source && typeof mappedCoverage.source === 'object' && 'id' in mappedCoverage.source
                 ? String(mappedCoverage.source.id)
                 : '';
@@ -665,10 +686,11 @@ export function InstallHubCanonicalMeteringPage() {
   const mappingQuery = useInstallationMapping(installationId);
   const [search, setSearch] = useState('');
   const [coverageSearch, setCoverageSearch] = useState('');
+  const [coverageFilter, setCoverageFilter] = useState<'ALL' | 'DIRECT' | 'CONFIRMED_UNMETERED' | 'VIRTUAL' | 'UNMETERED' | 'TBC' | 'INVALID'>('ALL');
   const [meterPage, setMeterPage] = useState(0);
   const [coveragePage, setCoveragePage] = useState(0);
   const [metersOpen, setMetersOpen] = useState(true);
-  const [coverageOpen, setCoverageOpen] = useState(false);
+  const [coverageOpen, setCoverageOpen] = useState(true);
   const filtered = useMemo(() => {
     if (!query.data) return [];
     const normalized = search.trim().toLowerCase();
@@ -678,19 +700,68 @@ export function InstallHubCanonicalMeteringPage() {
   if (query.error || !query.data) return <ErrorBanner message={installHubConnectionErrorMessage(query.error || new Error('Installation not found.'))} />;
   const tree = query.data;
   const assignments = measurementAssignments(tree);
+  const inventory = meteringInventorySummary(tree);
+  const readinessIssues = localReadiness(tree).issues;
   const visibleMeters = pageItems(filtered, meterPage, METER_PAGE_SIZE);
   const normalizedCoverageSearch = coverageSearch.trim().toLowerCase();
+  const currentElectrical = electricalQuery.data?.treeRevision === tree.treeRevision
+    ? electricalQuery.data
+    : undefined;
+  const serverCoverageByAsset = new Map(
+    (currentElectrical?.nodes || [])
+      .filter((node) => node.kind === 'SITE_ASSET')
+      .map((node) => [node.id, node.coverageState]),
+  );
+  const mappingCoverageByAsset = new Map(
+    (mappingQuery.data
+      && tree.installation.status === 'Completed'
+      && mappingQuery.data?.installation.recordVersionNumber === tree.recordVersionNumber
+      ? mappingQuery.data.assetCoverage
+      : []).map((item) => [item.assetId, item]),
+  );
+  const coverageForAsset = (asset: InstallationTree['siteAssets'][number]): string => (
+    serverCoverageByAsset.get(asset.id)
+    || coverageState(tree, asset, readinessIssues)
+  );
+  const coverageCounts = tree.siteAssets.reduce((counts, asset) => {
+    const coverage = coverageForAsset(asset);
+    counts[coverage] = (counts[coverage] || 0) + 1;
+    return counts;
+  }, {} as Record<string, number>);
   const coverageAssets = [...tree.siteAssets]
     .sort((left, right) => left.id.localeCompare(right.id))
+    .filter((asset) => {
+      if (coverageFilter === 'ALL') return true;
+      const coverage = coverageForAsset(asset);
+      if (coverageFilter === 'CONFIRMED_UNMETERED') {
+        return siteAssetMeteringState(asset).kind === 'UNMETERED'
+          && (coverage === 'UNMETERED' || coverage === 'VIRTUAL');
+      }
+      return coverage === coverageFilter;
+    })
     .filter((asset) => !normalizedCoverageSearch || `${displayCodeValue(asset)} ${asset.assetName} ${siteAssetTypeLabel(asset)}`.toLowerCase().includes(normalizedCoverageSearch));
-  const serverCoverageByAsset = new Map(
-    (electricalQuery.data?.nodes || []).filter((node) => node.kind === 'SITE_ASSET').map((node) => [node.id, node.coverageState]),
-  );
-  const mappingCoverageByAsset = new Map((mappingQuery.data?.assetCoverage || []).map((item) => [item.assetId, item]));
   return (
     <div>
       <Breadcrumbs items={[{ label: 'Installations', href: '/installhub/installations' }, { label: tree.installation.siteName, href: `/installhub/installations/${installationId}` }, { label: 'Metering table' }]} />
       <PageHeader title="Metering table" subtitle="Exact devices, stable channel IDs, grouped measurement targets, and complete asset coverage." actions={<LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Data & reconciliation</LinkButton>} />
+      <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          ['Directly metered assets', inventory.assets.directlyMetered],
+          ['Confirmed unmetered assets', inventory.assets.confirmedUnmetered],
+          ['Metering TBC / broken', inventory.assets.toBeConfirmed + inventory.assets.brokenMappings],
+          ['Unassigned active channels', inventory.channels.unassignedActive],
+        ].map(([label, value]) => (
+          <Card key={label}>
+            <p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">{label}</p>
+            <p className="mt-2 text-3xl font-extrabold text-[var(--text)]">{value}</p>
+          </Card>
+        ))}
+      </div>
+      <div className="mb-6">
+        <InlineNotice tone="success">
+          Confirmed unmetered means no direct device/channel is installed. These assets remain in the complete register, and that metering state alone does not block completion. TBC, invalid mappings, and non-spare channels left unassigned remain separate readiness issues.
+        </InlineNotice>
+      </div>
       <Card className="mb-6">
         <button type="button" className="flex min-h-11 w-full items-center justify-between gap-3 text-left" aria-expanded={metersOpen} aria-controls="canonical-meter-devices" onClick={() => setMetersOpen((open) => !open)}>
           <span><span className="block font-extrabold text-[var(--text)]">Meter devices and channels</span><span className="mt-1 block text-xs text-[var(--text-sub)]">{filtered.length} matching devices · {meterDevices(tree).length} total</span></span>
@@ -702,13 +773,45 @@ export function InstallHubCanonicalMeteringPage() {
           {visibleMeters.map((meter) => {
             const board = tree.electricalAssets.find((item) => item.id === meter.installedOnBoardId);
             const meterAssignments = assignments.filter((item) => item.meterId === meter.id);
+            const assignedChannelIds = new Set(meterAssignments.flatMap((assignment) => assignment.channelIds));
+            const activeChannels = meter.channels.filter((channel) => channel.purpose !== 'SPARE');
+            const unassignedActiveChannels = activeChannels.filter((channel) => !assignedChannelIds.has(channel.id));
+            const spareChannelCount = meter.channels.filter((channel) => channel.purpose === 'SPARE').length;
+            const allChannelsSpare = meter.channels.length > 0 && spareChannelCount === meter.channels.length;
+            const meterAssignmentIds = new Set(meterAssignments.map((assignment) => assignment.id));
+            const meterChannelIds = new Set(meter.channels.map((channel) => channel.id));
+            const meterBlockingIssues = readinessIssues.filter((issue) => issue.severity === 'ERROR' && (
+              (issue.entityType === 'meter' && issue.entityId === meter.id)
+              || (issue.entityType === 'channel' && meterChannelIds.has(issue.entityId))
+              || (issue.entityType === 'measurement_assignment' && meterAssignmentIds.has(issue.entityId))
+            ));
+            const nonUnassignedIssues = meterBlockingIssues.filter((issue) => issue.code !== 'CHANNEL_UNASSIGNED');
+            const meterStatus = nonUnassignedIssues.length
+              ? `${nonUnassignedIssues.length} metering configuration issue${nonUnassignedIssues.length === 1 ? '' : 's'}`
+              : unassignedActiveChannels.length
+              ? `${unassignedActiveChannels.length} active channel${unassignedActiveChannels.length === 1 ? '' : 's'} unassigned`
+              : allChannelsSpare
+                ? 'No active measurements · all channels spare'
+                : activeChannels.length
+                  ? 'All active channels assigned'
+                  : 'No channels declared · needs attention';
+            const meterStatusTone = nonUnassignedIssues.length || !meter.channels.length
+              ? 'text-[var(--red)]'
+              : unassignedActiveChannels.length
+                ? 'text-[var(--amber)]'
+                : 'text-[var(--green)]';
             const meterHref = board
               ? `/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(board.zoneId)}/boards/${encodeURIComponent(board.id)}/meters/${encodeURIComponent(meter.id)}`
               : null;
             return (
               <div key={meter.id} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div><h2 className="font-extrabold text-[var(--text)]">{meterDeviceName(meter)}</h2><p className="mt-1 text-xs text-[var(--text-sub)]">{meter.deviceModel} · {meter.serialNumber} · {board ? `${displayCodeValue(board)} — ${board.assetName}` : 'Missing board'}</p></div>
+                  <div>
+                    <h2 className="font-extrabold text-[var(--text)]">{meterDeviceName(meter)}</h2>
+                    <p className="mt-1 text-xs text-[var(--text-sub)]">{meter.deviceModel} · {meter.serialNumber} · {board ? `${displayCodeValue(board)} — ${board.assetName}` : 'Missing board'}</p>
+                    <p className={`mt-2 text-xs font-extrabold ${meterStatusTone}`}>{meterStatus}</p>
+                    <p className="mt-1 text-xs text-[var(--text-sub)]">{meterAssignments.length} assignment{meterAssignments.length === 1 ? '' : 's'} · {activeChannels.length} active · {spareChannelCount} spare</p>
+                  </div>
                   {meterHref ? (
                     <div className="flex flex-wrap gap-2">
                       <LinkButton href={meterHref} variant="secondary">Open device</LinkButton>
@@ -734,7 +837,11 @@ export function InstallHubCanonicalMeteringPage() {
                               <span className="mt-1 block text-xs text-[var(--text-sub)]">{assignment.phaseMode.replaceAll('_', ' ')} · {assignment.direction} · {assignment.status}</span>
                               <span className="mt-1 block break-all font-mono text-xs text-[var(--muted)]">{target.kind}{target.id ? ` · ${target.id}` : ''}</span>
                             </>
-                          ) : channel.purpose === 'SPARE' ? 'Not applicable' : 'Unassigned'}</td>
+                          ) : channel.purpose === 'SPARE' ? (
+                            <span className="text-[var(--text-sub)]">Spare / unused — no target required</span>
+                          ) : (
+                            <span className="font-bold text-[var(--amber)]">Unassigned active channel — blocks completion</span>
+                          )}</td>
                         </tr>
                       );
                     })}</tbody>
@@ -753,12 +860,24 @@ export function InstallHubCanonicalMeteringPage() {
           <Icon name="chevron-down" size={18} className={coverageOpen ? 'rotate-180' : ''} />
         </button>
         {coverageOpen ? <div id="canonical-meter-coverage">
-          <Input className="mt-4" type="search" value={coverageSearch} placeholder="Search asset, code, or type" aria-label="Search asset coverage" onChange={(event) => { setCoverageSearch(event.target.value); setCoveragePage(0); }} />
+          <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(220px,320px)]">
+            <Input type="search" value={coverageSearch} placeholder="Search asset, code, or type" aria-label="Search asset coverage" onChange={(event) => { setCoverageSearch(event.target.value); setCoveragePage(0); }} />
+            <Select aria-label="Filter assets by metering coverage" value={coverageFilter} onChange={(event) => { setCoverageFilter(event.target.value as typeof coverageFilter); setCoveragePage(0); }}>
+              <option value="ALL">All coverage states ({tree.siteAssets.length})</option>
+              <option value="DIRECT">Direct ({coverageCounts.DIRECT || 0})</option>
+              <option value="CONFIRMED_UNMETERED">Confirmed unmetered ({inventory.assets.confirmedUnmetered})</option>
+              <option value="VIRTUAL">Virtual / residual ({coverageCounts.VIRTUAL || 0})</option>
+              <option value="UNMETERED">Unmetered · no residual ({coverageCounts.UNMETERED || 0})</option>
+              <option value="TBC">To be confirmed ({coverageCounts.TBC || 0})</option>
+              <option value="INVALID">Mapping issue ({coverageCounts.INVALID || 0})</option>
+            </Select>
+          </div>
           <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{pageItems(coverageAssets, coveragePage, TABLE_PAGE_SIZE).map((asset) => {
             const mappedCoverage = mappingCoverageByAsset.get(asset.id);
-            const coverage = mappedCoverage?.state || serverCoverageByAsset.get(asset.id) || coverageState(tree, asset);
+            const coverage = coverageForAsset(asset);
             const sourceId = mappedCoverage && 'source' in mappedCoverage && mappedCoverage.source && typeof mappedCoverage.source === 'object' && 'id' in mappedCoverage.source ? String(mappedCoverage.source.id) : '';
-            return <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${asset.zoneId}/assets/${asset.id}`} className="min-h-14 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 hover:border-[var(--primary)]"><span className="block text-sm font-bold text-[var(--text)]">{displayCodeValue(asset)} — {asset.assetName}</span><span className="mt-1 block text-xs text-[var(--text-sub)]">{coverageLabel(coverage)} · {sourceLabel(tree, assetElectricalSource(asset))}</span>{sourceId ? <span className="mt-1 block font-mono text-xs text-[var(--muted)]">Shared source {sourceId}</span> : null}</Link>;
+            const declaredState = siteAssetMeteringState(asset).kind;
+            return <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${asset.zoneId}/assets/${asset.id}`} className="min-h-14 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 hover:border-[var(--primary)]"><span className="block text-sm font-bold text-[var(--text)]">{displayCodeValue(asset)} — {asset.assetName}</span><span className="mt-1 block text-xs font-semibold text-[var(--text-sub)]">{coverageLabel(coverage)}</span><span className="mt-1 block text-xs text-[var(--text-sub)]">Declared: {declaredState === 'UNMETERED' ? 'Confirmed unmetered' : declaredState.replaceAll('_', ' ')} · Fed from {sourceLabel(tree, assetElectricalSource(asset))}</span>{sourceId ? <span className="mt-1 block font-mono text-xs text-[var(--muted)]">Shared source {sourceId}</span> : null}</Link>;
           })}</div>
           <ResultPager page={coveragePage} pageSize={TABLE_PAGE_SIZE} total={coverageAssets.length} onPage={setCoveragePage} />
         </div> : null}

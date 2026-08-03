@@ -6,7 +6,9 @@ import {
   installationReadiness,
   type CanonicalBoard,
   type CanonicalInstallationTree,
+  type CanonicalSiteAsset,
   type MeasurementAssignment,
+  type ReadinessIssue,
   type VirtualMeterDefinition,
 } from './canonical.js';
 
@@ -65,7 +67,7 @@ export type ElectricalTreeNode =
       typeLabel: string;
       displayCode: string;
       physicalLocationId: string;
-      coverageState: 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC';
+      coverageState: 'DIRECT' | 'VIRTUAL' | 'UNMETERED' | 'TBC' | 'INVALID';
     }
   | {
       kind: 'VIRTUAL_RESIDUAL';
@@ -82,6 +84,21 @@ export type ElectricalTreeEdge = {
   targetNodeId: string;
   relationship: 'FED_FROM' | 'MEASURES';
 };
+
+export type AssetCoverage =
+  | { kind: 'DIRECT'; measurementAssignmentIds: string[] }
+  | {
+      kind: 'VIRTUAL';
+      virtualMeterId: string;
+      parentNodeId: string;
+      allocation: 'UNALLOCATED_RESIDUAL';
+    }
+  | { kind: 'UNMETERED' }
+  | { kind: 'TBC' }
+  | {
+      kind: 'INVALID';
+      reason: 'METERING_STATE_MISMATCH' | 'MEASUREMENT_RELATIONSHIP_INVALID';
+    };
 
 export type UnresolvedElectricalRelationship = {
   id: string;
@@ -144,6 +161,8 @@ function electricalGraph(tree: CanonicalInstallationTree): {
 } {
   const boardIds = new Set(tree.electricalAssets.map((board) => board.id));
   const supplyIds = new Set(tree.gridSupplies.map((supply) => supply.id));
+  const assignmentsByAsset = targetAssignmentsByAsset(tree);
+  const readinessIssues = installationReadiness(tree).issues;
   const nodes: ElectricalTreeNode[] = [
     ...tree.gridSupplies.map((supply): ElectricalTreeNode => ({
       kind: 'GRID',
@@ -174,16 +193,12 @@ function electricalGraph(tree: CanonicalInstallationTree): {
         : ASSET_LABELS[asset.typeCode] ?? asset.typeCode,
       displayCode: asset.displayCode.value,
       physicalLocationId: asset.zoneId,
-      coverageState: (() => {
-        const direct = tree.measurementAssignments.some((assignment) => (
-          assignment.status === 'CONFIRMED'
-          && assignment.target.kind === 'SITE_ASSET'
-          && assignment.target.siteAssetId === asset.id
-        ));
-        if (direct) return 'DIRECT';
-        if (asset.meteringState.kind === 'TBC') return 'TBC';
-        return virtualForAsset(tree, asset.id) ? 'VIRTUAL' : 'UNMETERED';
-      })(),
+      coverageState: assetCoverageFor(
+        tree,
+        asset,
+        assignmentsByAsset.get(asset.id) ?? [],
+        readinessIssues,
+      ).kind,
     })),
     ...tree.serverDerived.virtualMeterDefinitions.map((virtual): ElectricalTreeNode => ({
       kind: 'VIRTUAL_RESIDUAL',
@@ -276,10 +291,10 @@ export function buildElectricalTreeView(
   return { ...payload, payloadHash: canonicalPayloadHash(payload) };
 }
 
-function directAssignmentsByAsset(tree: CanonicalInstallationTree): Map<string, MeasurementAssignment[]> {
+function targetAssignmentsByAsset(tree: CanonicalInstallationTree): Map<string, MeasurementAssignment[]> {
   const result = new Map<string, MeasurementAssignment[]>();
   for (const assignment of tree.measurementAssignments) {
-    if (assignment.target.kind !== 'SITE_ASSET' || assignment.status !== 'CONFIRMED') continue;
+    if (assignment.target.kind !== 'SITE_ASSET') continue;
     const entries = result.get(assignment.target.siteAssetId) ?? [];
     entries.push(assignment);
     result.set(assignment.target.siteAssetId, entries);
@@ -327,39 +342,88 @@ function virtualForAsset(
   return measuredAssetIds.has(asset.id) ? null : definition;
 }
 
-export type AssetCoverage =
-  | { kind: 'DIRECT'; measurementAssignmentIds: string[] }
-  | {
-      kind: 'VIRTUAL';
-      virtualMeterId: string;
-      parentNodeId: string;
-      allocation: 'UNALLOCATED_RESIDUAL';
-    }
-  | { kind: 'UNMETERED' }
-  | { kind: 'TBC' };
+function assetCoverageFor(
+  tree: CanonicalInstallationTree,
+  asset: CanonicalSiteAsset,
+  assignments: MeasurementAssignment[],
+  readinessIssues: ReadinessIssue[],
+): AssetCoverage {
+  const hasDirectAssignments = assignments.length > 0;
+  const legacyMeterPresenceMatches = asset.meterPresent === hasDirectAssignments;
+  const assignmentIds = new Set(assignments.map((assignment) => assignment.id));
+  const meterIds = new Set(assignments.map((assignment) => assignment.meterId));
+  const channelIds = new Set(assignments.flatMap((assignment) => assignment.channelIds));
+  const relationshipInvalid = readinessIssues.some((issue) => {
+    if (issue.severity !== 'ERROR') return false;
+    if (
+      issue.entityType === 'site_asset'
+      && issue.entityId === asset.id
+      && asset.meteringState.kind !== 'TBC'
+      && (issue.code === 'METERING_STATE_INVALID' || issue.code === 'METER_PRESENT_MISMATCH')
+    ) return true;
+    if (issue.entityType === 'measurement_assignment' && assignmentIds.has(issue.entityId)) return true;
+    if (
+      issue.entityType === 'channel'
+      && channelIds.has(issue.entityId)
+      && [
+        'CHANNEL_NOT_FOUND',
+        'CHANNEL_DUPLICATE_ASSIGNMENT',
+        'CHANNEL_PURPOSE_CONFLICT',
+        'METER_CAPABILITY_REQUIRED',
+        'SENSOR_RATING_INVALID',
+      ].includes(issue.code)
+    ) return true;
+    return issue.entityType === 'meter'
+      && meterIds.has(issue.entityId)
+      && ['METER_BOARD_MISMATCH', 'CHANNEL_NOT_FOUND', 'METER_CAPABILITY_REQUIRED'].includes(issue.code);
+  });
+  if (asset.meteringState.kind === 'METERED') {
+    const declaredIds = new Set(asset.meteringState.measurementAssignmentIds);
+    const actualIds = new Set(assignments.map((assignment) => assignment.id));
+    const exactSingleAssignment = declaredIds.size === 1
+      && actualIds.size === 1
+      && [...declaredIds].every((id) => actualIds.has(id))
+      && assignments[0]?.status === 'CONFIRMED';
+    return exactSingleAssignment && legacyMeterPresenceMatches && !relationshipInvalid
+      ? { kind: 'DIRECT', measurementAssignmentIds: [...actualIds].sort() }
+      : {
+          kind: 'INVALID',
+          reason: relationshipInvalid
+            ? 'MEASUREMENT_RELATIONSHIP_INVALID'
+            : 'METERING_STATE_MISMATCH',
+        };
+  }
+  if (hasDirectAssignments || !legacyMeterPresenceMatches || relationshipInvalid) {
+    return {
+      kind: 'INVALID',
+      reason: relationshipInvalid
+        ? 'MEASUREMENT_RELATIONSHIP_INVALID'
+        : 'METERING_STATE_MISMATCH',
+    };
+  }
+  if (asset.meteringState.kind === 'TBC') return { kind: 'TBC' };
+  const residual = virtualForAsset(tree, asset.id);
+  return residual
+    ? {
+        kind: 'VIRTUAL',
+        virtualMeterId: residual.id,
+        parentNodeId: residual.parentNodeId,
+        allocation: 'UNALLOCATED_RESIDUAL',
+      }
+    : { kind: 'UNMETERED' };
+}
 
 export function buildAllAssetsView(
   tree: CanonicalInstallationTree,
   recordVersionNumber: number,
 ) {
-  const direct = directAssignmentsByAsset(tree);
+  const assignmentsByAsset = targetAssignmentsByAsset(tree);
+  const readinessIssues = installationReadiness(tree).issues;
   const zoneNames = new Map(tree.zones.map((zone) => [zone.id, zone.zoneName]));
   const boardNames = new Map(tree.electricalAssets.map((board) => [board.id, board.assetName]));
   const assets = tree.siteAssets.map((asset) => {
-    const assignments = direct.get(asset.id) ?? [];
-    const residual = assignments.length ? null : virtualForAsset(tree, asset.id);
-    const coverage: AssetCoverage = assignments.length
-      ? { kind: 'DIRECT', measurementAssignmentIds: assignments.map((assignment) => assignment.id) }
-      : asset.meteringState.kind === 'TBC'
-        ? { kind: 'TBC' }
-        : residual
-          ? {
-              kind: 'VIRTUAL',
-              virtualMeterId: residual.id,
-              parentNodeId: residual.parentNodeId,
-              allocation: 'UNALLOCATED_RESIDUAL',
-            }
-          : { kind: 'UNMETERED' };
+    const assignments = assignmentsByAsset.get(asset.id) ?? [];
+    const coverage = assetCoverageFor(tree, asset, assignments, readinessIssues);
     return {
       id: asset.id,
       name: asset.assetName,
@@ -391,6 +455,18 @@ export function buildMeteringView(
 ) {
   const boardById = new Map(tree.electricalAssets.map((board) => [board.id, board]));
   const meterById = new Map(tree.meterDevices.map((meter) => [meter.id, meter]));
+  const readinessIssues = installationReadiness(tree).issues;
+  const assignedChannelIdsByMeter = new Map<string, Set<string>>();
+  for (const assignment of tree.measurementAssignments) {
+    const meter = meterById.get(assignment.meterId);
+    if (!meter) continue;
+    const meterChannelIds = new Set(meter.channels.map((channel) => channel.id));
+    const assigned = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    for (const channelId of assignment.channelIds) {
+      if (meterChannelIds.has(channelId)) assigned.add(channelId);
+    }
+    assignedChannelIdsByMeter.set(meter.id, assigned);
+  }
   const rows = tree.measurementAssignments.flatMap((assignment) => {
     const meter = meterById.get(assignment.meterId);
     if (!meter) return [];
@@ -420,10 +496,88 @@ export function buildMeteringView(
     `${left.meterId}:${String(left.channelOrdinal ?? 0).padStart(6, '0')}:${left.assignmentId}`
       .localeCompare(`${right.meterId}:${String(right.channelOrdinal ?? 0).padStart(6, '0')}:${right.assignmentId}`)
   ));
+  const deviceSummaries = tree.meterDevices.map((meter) => {
+    const board = boardById.get(meter.installedOnBoardId);
+    const meterAssignments = tree.measurementAssignments.filter((assignment) => assignment.meterId === meter.id);
+    const assignedChannelIds = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    const activeChannels = meter.channels.filter((channel) => channel.purpose !== 'SPARE');
+    const assignedActiveChannels = activeChannels.filter((channel) => assignedChannelIds.has(channel.id));
+    const unassignedActiveChannels = activeChannels.filter((channel) => !assignedChannelIds.has(channel.id));
+    const spareChannels = meter.channels.filter((channel) => channel.purpose === 'SPARE');
+    const meterAssignmentIds = new Set(meterAssignments.map((assignment) => assignment.id));
+    const meterChannelIds = new Set(meter.channels.map((channel) => channel.id));
+    const blockingIssues = readinessIssues.filter((issue) => issue.severity === 'ERROR' && (
+      (issue.entityType === 'meter' && issue.entityId === meter.id)
+      || (issue.entityType === 'channel' && meterChannelIds.has(issue.entityId))
+      || (issue.entityType === 'measurement_assignment' && meterAssignmentIds.has(issue.entityId))
+    ));
+    const nonAssignmentIssues = blockingIssues.filter((issue) => issue.code !== 'CHANNEL_UNASSIGNED');
+    const state = unassignedActiveChannels.length
+      ? 'UNASSIGNED_ACTIVE'
+      : nonAssignmentIssues.length
+        ? 'MAPPING_ISSUE'
+      : activeChannels.length
+        ? 'MAPPED'
+        : spareChannels.length === meter.channels.length && meter.channels.length > 0
+          ? 'ALL_SPARE'
+          : 'NO_ACTIVE_CHANNELS';
+    return {
+      meterId: meter.id,
+      meterDisplayName: meter.displayName.value,
+      installedOnBoardId: meter.installedOnBoardId,
+      installedOnBoardName: board?.assetName ?? null,
+      assignmentCount: meterAssignments.length,
+      activeChannelCount: activeChannels.length,
+      assignedActiveChannelCount: assignedActiveChannels.length,
+      unassignedActiveChannelCount: unassignedActiveChannels.length,
+      spareChannelCount: spareChannels.length,
+      blockingIssueCount: blockingIssues.length,
+      blockingIssueCodes: [...new Set(blockingIssues.map((issue) => issue.code))].sort(),
+      state,
+    };
+  }).sort((left, right) => left.meterId.localeCompare(right.meterId));
+  const unassignedChannels = tree.meterDevices.flatMap((meter) => {
+    const board = boardById.get(meter.installedOnBoardId);
+    const assignedChannelIds = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    return meter.channels.flatMap((channel) => (
+      channel.purpose === 'SPARE' || assignedChannelIds.has(channel.id)
+        ? []
+        : [{
+            meterId: meter.id,
+            meterDisplayName: meter.displayName.value,
+            installedOnBoardId: meter.installedOnBoardId,
+            installedOnBoardName: board?.assetName ?? null,
+            channelId: channel.id,
+            channelOrdinal: channel.ordinal,
+            channelPurpose: channel.purpose,
+            channelDescription: channel.description ?? null,
+          }]
+    ));
+  }).sort((left, right) => (
+    `${left.meterId}:${String(left.channelOrdinal).padStart(6, '0')}`
+      .localeCompare(`${right.meterId}:${String(right.channelOrdinal).padStart(6, '0')}`)
+  ));
+  const activeChannelCount = deviceSummaries.reduce((total, meter) => total + meter.activeChannelCount, 0);
+  const assignedActiveChannelCount = deviceSummaries.reduce((total, meter) => total + meter.assignedActiveChannelCount, 0);
+  const spareChannelCount = deviceSummaries.reduce((total, meter) => total + meter.spareChannelCount, 0);
   return withHash({
     schemaVersion: 1,
     metadata: artifactMetadata(tree, recordVersionNumber),
     rows,
+    deviceSummaries,
+    unassignedChannels,
+    summary: {
+      meterCount: tree.meterDevices.length,
+      metersWithUnassignedActiveChannels: deviceSummaries.filter((meter) => meter.unassignedActiveChannelCount > 0).length,
+      metersWithoutAssignments: deviceSummaries.filter((meter) => meter.assignmentCount === 0).length,
+      allSpareMeters: deviceSummaries.filter((meter) => (
+        meter.activeChannelCount === 0 && meter.spareChannelCount > 0
+      )).length,
+      activeChannelCount,
+      assignedActiveChannelCount,
+      unassignedActiveChannelCount: activeChannelCount - assignedActiveChannelCount,
+      spareChannelCount,
+    },
   });
 }
 
@@ -433,7 +587,7 @@ export function buildInstallationMappingExport(
 ) {
   const graph = electricalGraph(tree);
   const readiness = installationReadiness(tree);
-  const direct = directAssignmentsByAsset(tree);
+  const assignmentsByAsset = targetAssignmentsByAsset(tree);
   const payload = {
     schema: 'installation-mapping/v1' as const,
     installation: {
@@ -498,30 +652,37 @@ export function buildInstallationMappingExport(
     }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     assetCoverage: tree.siteAssets.map((asset) => {
-      const assignments = direct.get(asset.id) ?? [];
-      if (assignments.length) {
+      const assignments = assignmentsByAsset.get(asset.id) ?? [];
+      const coverage = assetCoverageFor(tree, asset, assignments, readiness.issues);
+      if (coverage.kind === 'DIRECT') {
         return {
           assetId: asset.id,
           state: 'DIRECT' as const,
-          source: { kind: 'MEASUREMENT_ASSIGNMENT' as const, id: assignments[0].id },
+          source: { kind: 'MEASUREMENT_ASSIGNMENT' as const, id: coverage.measurementAssignmentIds[0] },
         };
       }
-      const virtual = asset.meteringState.kind === 'TBC' ? null : virtualForAsset(tree, asset.id);
-      if (virtual) {
+      if (coverage.kind === 'VIRTUAL') {
         return {
           assetId: asset.id,
           state: 'VIRTUAL' as const,
           source: {
             kind: 'VIRTUAL_METER' as const,
-            id: virtual.id,
-            parentNodeId: virtual.parentNodeId,
+            id: coverage.virtualMeterId,
+            parentNodeId: coverage.parentNodeId,
             allocation: 'UNALLOCATED_RESIDUAL' as const,
           },
         };
       }
+      if (coverage.kind === 'INVALID') {
+        return {
+          assetId: asset.id,
+          state: 'INVALID' as const,
+          reason: coverage.reason,
+        };
+      }
       return {
         assetId: asset.id,
-        state: asset.meteringState.kind === 'TBC' ? 'TBC' as const : 'UNMETERED' as const,
+        state: coverage.kind,
       };
     }).sort((left, right) => left.assetId.localeCompare(right.assetId)),
     virtualMeters: tree.serverDerived.virtualMeterDefinitions,

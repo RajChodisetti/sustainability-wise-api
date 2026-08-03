@@ -14,7 +14,9 @@ import {
   boardSupplyPath,
   boardElectricalSource,
   boardTypeLabel,
+  coverageState,
   displayCodeValue,
+  localReadiness,
   measurementAssignments,
   meterDeviceName,
   meterDevices,
@@ -763,6 +765,91 @@ export function zoneElectricalSummary(
     unresolvedSupply,
     unresolvedMetering: counts.tbc,
     unresolved: unresolvedSupply + counts.tbc,
+  };
+}
+
+export type MeteringInventorySummary = {
+  assets: {
+    total: number;
+    directlyMetered: number;
+    confirmedUnmetered: number;
+    toBeConfirmed: number;
+    brokenMappings: number;
+  };
+  meters: {
+    total: number;
+    withoutAssignments: number;
+    allChannelsSpare: number;
+    withUnassignedActiveChannels: number;
+  };
+  channels: {
+    active: number;
+    assignedActive: number;
+    unassignedActive: number;
+    spare: number;
+  };
+};
+
+export function meteringInventorySummary(tree: InstallationTree): MeteringInventorySummary {
+  const assignments = measurementAssignments(tree);
+  const devices = meterDevices(tree);
+  const readinessIssues = localReadiness(tree).issues;
+  const deviceById = new Map(devices.map((device) => [device.id, device]));
+  const assignedChannelIdsByMeter = new Map<string, Set<string>>();
+  for (const assignment of assignments) {
+    const device = deviceById.get(assignment.meterId);
+    if (!device) continue;
+    const validChannelIds = new Set(device.channels.map((channel) => channel.id));
+    const assigned = assignedChannelIdsByMeter.get(device.id) ?? new Set<string>();
+    assignment.channelIds.forEach((channelId) => {
+      if (validChannelIds.has(channelId)) assigned.add(channelId);
+    });
+    assignedChannelIdsByMeter.set(device.id, assigned);
+  }
+  const assetCounts = tree.siteAssets.reduce((counts, asset) => {
+    const coverage = coverageState(tree, asset, readinessIssues);
+    if (coverage === 'DIRECT') counts.directlyMetered += 1;
+    else if (coverage === 'TBC') counts.toBeConfirmed += 1;
+    else if (coverage === 'INVALID') counts.brokenMappings += 1;
+    else counts.confirmedUnmetered += 1;
+    return counts;
+  }, {
+    total: tree.siteAssets.length,
+    directlyMetered: 0,
+    confirmedUnmetered: 0,
+    toBeConfirmed: 0,
+    brokenMappings: 0,
+  });
+  const deviceStats = devices.map((meter) => {
+    const assignedChannelIds = assignedChannelIdsByMeter.get(meter.id) ?? new Set<string>();
+    const activeChannels = meter.channels.filter((channel) => channel.purpose !== 'SPARE');
+    const assignedActive = activeChannels.filter((channel) => assignedChannelIds.has(channel.id)).length;
+    const spare = meter.channels.filter((channel) => channel.purpose === 'SPARE').length;
+    return {
+      assignmentCount: assignments.filter((assignment) => assignment.meterId === meter.id).length,
+      active: activeChannels.length,
+      assignedActive,
+      unassignedActive: activeChannels.length - assignedActive,
+      spare,
+      allChannelsSpare: meter.channels.length > 0 && spare === meter.channels.length,
+    };
+  });
+  const active = deviceStats.reduce((total, meter) => total + meter.active, 0);
+  const assignedActive = deviceStats.reduce((total, meter) => total + meter.assignedActive, 0);
+  return {
+    assets: assetCounts,
+    meters: {
+      total: devices.length,
+      withoutAssignments: deviceStats.filter((meter) => meter.assignmentCount === 0).length,
+      allChannelsSpare: deviceStats.filter((meter) => meter.allChannelsSpare).length,
+      withUnassignedActiveChannels: deviceStats.filter((meter) => meter.unassignedActive > 0).length,
+    },
+    channels: {
+      active,
+      assignedActive,
+      unassignedActive: active - assignedActive,
+      spare: deviceStats.reduce((total, meter) => total + meter.spare, 0),
+    },
   };
 }
 
