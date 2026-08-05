@@ -353,7 +353,7 @@ const communicationsFault: InstallHubReportDefinition = {
           key: 'works.replace_device',
           equals: 'yes',
         }),
-        photo('commissioning.completed_photos', 'Final completed-work photos'),
+        photo('commissioning.completed_photos', 'Final completed-work photos (include the antenna)'),
         value('commissioning.final_comments', 'Final comments'),
       ],
     },
