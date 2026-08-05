@@ -20,6 +20,7 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
+import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createMeter, nowIso } from '@/modules/installhub/lib/model';
 import type {
@@ -34,18 +35,17 @@ import {
   CHANNEL_PURPOSE_OPTIONS,
   assignmentForAsset,
   assetElectricalSource,
+  boardTypeLabel,
   boardSupplyPath,
-  displayCodeMetadata,
-  displayCodeValue,
   measurementAssignments,
   meterChannelId,
   meterDependencyPreview,
   meterEditorHasChanges,
   meterBoardsForAsset,
-  meterDevices,
   reachableGridSuppliesForBoard,
   replaceMeterAssignments,
   syncMeterDevice,
+  siteAssetTypeLabel,
 } from '@/modules/installhub/lib/workflow';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
 import {
@@ -55,6 +55,8 @@ import {
   type AssetMeterReturnRequest,
 } from '@/modules/installhub/lib/electricalPresentation';
 import { useToast } from '@/contexts/ToastContext';
+import { createReplacementForm } from '@/modules/installhub/lib/deviceSearch';
+import { suggestedDeviceDisplayName, unassignedChannelMessage } from '@/modules/installhub/lib/meterPresentation';
 
 const prestartQuestions: Array<[keyof WattwatcherPrestart, string]> = [
   ['siteInduction', 'Site induction required?'],
@@ -113,8 +115,10 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
+  const { user } = useInstallHubAuth();
   const [draft, setDraft] = useState<Meter | null>(null);
   const [busy, setBusy] = useState(false);
+  const [replacementBusy, setReplacementBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -162,15 +166,15 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       )),
   );
   const dependencyPreview = meterDependencyPreview(tree, draft.id);
-  const existingDevice = meterDevices(tree).find((meter) => meter.id === draft.id);
-  const meterDisplayMeta = displayCodeMetadata(
-    tree,
-    draft.deviceType === 'Other' ? 'OTHER' : draft.deviceType,
-    draft.deviceNameOverridden ? draft.deviceName : '',
-    existingDevice?.displayName,
-    draft.id,
-  );
-  const generatedDeviceName = meterDisplayMeta.value;
+  const suggestedDeviceName = suggestedDeviceDisplayName({
+    siteName: tree.installation.siteName,
+    zoneName: zone?.zoneName || 'Unknown zone',
+    deviceModel: draft.deviceType === 'Other'
+      ? draft.customModelName?.trim() || 'Metering device'
+      : draft.deviceType,
+    serialNumber: draft.deviceId,
+  });
+  const visibleDeviceName = draft.deviceNameOverridden ? draft.deviceName : suggestedDeviceName;
   const sourceAssignments = source
     ? measurementAssignments(tree).filter((assignment) => assignment.meterId === source.id)
     : [];
@@ -181,6 +185,33 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     sourceAssignments,
     mode,
   );
+
+  async function startReplacement() {
+    if (!user || !meterId) {
+      toast.error('Sign in before starting a replacement.');
+      return;
+    }
+    if (hasLocalChanges) {
+      toast.error('Save or discard the current device edits before starting its replacement.');
+      return;
+    }
+    setReplacementBusy(true);
+    try {
+      let formId = '';
+      await writer.mutate((next) => {
+        formId = createReplacementForm(next, user, {
+          zoneId,
+          boardId,
+          meterId,
+        }).id;
+      }, 'metadata');
+      toast.success('Replacement form created with this device selected.');
+      router.push(`/installhub/installations/${installationId}/forms/${formId}`);
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+      setReplacementBusy(false);
+    }
+  }
   const reachableGridSupplies = reachableGridSuppliesForBoard(tree, boardId);
 
   function set<K extends keyof Meter>(key: K, value: Meter[K]) {
@@ -206,7 +237,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   async function save(event?: FormEvent) {
     event?.preventDefault();
     const nextErrors: Array<{ id?: string; message: string }> = [];
-    if (!currentDraft.deviceName.trim()) nextErrors.push({ id: 'meter-name', message: 'Enter or generate the device name.' });
+    if (!visibleDeviceName.trim()) nextErrors.push({ id: 'meter-name', message: 'Enter the device name.' });
     if (!currentDraft.deviceId.trim()) nextErrors.push({ id: 'meter-serial', message: 'Enter or scan the device ID / serial.' });
     if (currentDraft.deviceType === 'Other' && !currentDraft.customModelName?.trim()) {
       nextErrors.push({ id: 'meter-custom-model', message: 'Enter the custom device model.' });
@@ -305,7 +336,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     if (unassigned.length && !assetReturn) {
       nextErrors.push({
         id: 'meter-assignments',
-        message: `Assign every active channel. ${unassigned.map(([channelId]) => channelId).join(', ')} ${unassigned.length === 1 ? 'is' : 'are'} unresolved.`,
+        message: unassignedChannelMessage(channels, unassigned.map(([channelId]) => channelId)),
       });
     }
     setErrors(nextErrors);
@@ -331,8 +362,10 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         const editableChannels = editableDraft.wwChannels || [];
         const value: Meter = {
           ...editableDraft,
-          deviceName: currentDraft.deviceName.trim(),
+          deviceName: visibleDeviceName.trim(),
+          deviceNameOverridden: true,
           deviceId: editableDraft.deviceId.trim(),
+          deviceNumber: editableDraft.deviceId.trim(),
           customManufacturerName: editableDraft.deviceFamily === 'OTHER' ? editableDraft.customManufacturerName?.trim() : null,
           customModelName: editableDraft.deviceType === 'Other' ? editableDraft.customModelName?.trim() : null,
           lifecycleState: 'ACTIVE',
@@ -541,16 +574,6 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         ...current,
         deviceFamily: value,
         deviceType: 'Other',
-        deviceName: current.deviceNameOverridden
-          ? current.deviceName
-          : displayCodeMetadata(
-              tree,
-              'OTHER',
-              '',
-              existingDevice?.displayName,
-              current.id,
-              !saved,
-            ).value,
         wwChannels: current.wwChannels?.length ? current.wwChannels : [{ id: meterChannelId(current.id, 0), ordinal: 1, purpose: 'SPARE' }],
       };
     });
@@ -560,14 +583,6 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     setDraft((current) => {
       if (!current) return current;
       const count = type === 'A3RM' ? 3 : type === 'A6M' ? 6 : Math.max(1, current.wwChannels?.length || 1);
-      const nextDisplay = displayCodeMetadata(
-        tree,
-        type === 'Other' ? 'OTHER' : type,
-        '',
-        existingDevice?.displayName,
-        current.id,
-        !saved,
-      );
       const channels = Array.from({ length: count }, (_, index) => ({
         ...(current.wwChannels?.[index] || {}),
         id: current.wwChannels?.[index]?.id || meterChannelId(current.id, index),
@@ -584,22 +599,9 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         deviceFamily: type === 'Other' ? 'OTHER' : current.deviceFamily,
         deviceType: type,
         customModelName: type === 'Other' ? current.customModelName : null,
-        deviceName: current.deviceNameOverridden
-          ? current.deviceName
-          : nextDisplay.value,
         wwChannels: channels,
       };
     });
-  }
-
-  function setDeviceNameOverride(checked: boolean) {
-    setDraft((current) => current ? {
-      ...current,
-      deviceNameOverridden: checked,
-      deviceName: checked
-        ? current.deviceName
-        : displayCodeMetadata(tree, current.deviceType === 'Other' ? 'OTHER' : current.deviceType, '', undefined, current.id).value,
-    } : current);
   }
 
   function updateChannel(index: number, change: Partial<NonNullable<Meter['wwChannels']>[number]>) {
@@ -708,7 +710,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       .sort((left, right) => left.id.localeCompare(right.id));
     const matching = allCandidates.filter((item) => {
       const zoneName = tree.zones.find((zone) => zone.id === item.zoneId)?.zoneName || '';
-      return !normalized || `${displayCodeValue(item)} ${item.assetName} ${zoneName}`.toLowerCase().includes(normalized);
+      return !normalized || `${item.assetName} ${boardTypeLabel(item)} ${zoneName}`.toLowerCase().includes(normalized);
     });
     return pinSelectedResult(matching, allCandidates, selectedId, (item) => item.id);
   }
@@ -727,7 +729,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       .sort((left, right) => left.id.localeCompare(right.id));
     const matching = allCandidates.filter((item) => {
       const zoneName = tree.zones.find((zone) => zone.id === item.zoneId)?.zoneName || '';
-      return !normalized || `${displayCodeValue(item)} ${item.assetName} ${zoneName}`.toLowerCase().includes(normalized);
+      return !normalized || `${item.assetName} ${siteAssetTypeLabel(item)} ${zoneName}`.toLowerCase().includes(normalized);
     });
     return pinSelectedResult(matching, allCandidates, selectedId, (item) => item.id);
   }
@@ -782,10 +784,10 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         { label: tree.installation.siteName, href: `/installhub/installations/${installationId}` },
         { label: zone?.zoneName ?? 'Zone', href: `/installhub/installations/${installationId}/zones/${zoneId}` },
         { label: board.assetName, href: `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}` },
-        { label: mode === 'new' ? 'New meter' : draft.deviceName },
+        { label: mode === 'new' ? 'New meter' : visibleDeviceName },
       ]} />
       <PageHeader
-        title={mode === 'new' ? 'New Wattwatcher meter' : draft.deviceName}
+        title={mode === 'new' ? 'New Wattwatcher meter' : visibleDeviceName}
         subtitle="Device identity, safety, switchboard, channels, verification, commissioning, and evidence."
         actions={saved ? (
           <>
@@ -794,9 +796,10 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 <Icon name="clipboard" size={17} />View record / amend
               </LinkButton>
             ) : null}
-            <LinkButton href={`/installhub/installations/${installationId}/forms/new?zoneId=${zoneId}&boardId=${boardId}&meterId=${meterId}`}>
-              <Icon name="tool" size={17} />Comms fault form
-            </LinkButton>
+            <Button disabled={replacementBusy} onClick={() => void startReplacement()}>
+              <Icon name="tool" size={17} />
+              {replacementBusy ? 'Opening replacement…' : 'Replace device / Comms'}
+            </Button>
             <Button variant="danger" onClick={() => setConfirmDelete(true)}>Remove</Button>
           </>
         ) : undefined}
@@ -804,7 +807,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
 
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-[var(--text-sub)]">
-          Installed on: <strong className="text-[var(--text)]">{board.displayCode} — {board.assetName}</strong>
+          Installed on: <strong className="text-[var(--text)]">{board.assetName} · {boardTypeLabel(board)}</strong>
         </p>
         <SaveStateNotice
           state={writer.writeState}
@@ -827,7 +830,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
               href: `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}`,
               icon: 'zap',
               label: 'Installed switchboard',
-              description: `${board.displayCode} — ${board.assetName}`,
+              description: `${board.assetName} · ${boardTypeLabel(board)}`,
             },
             {
               href: '#meter-device',
@@ -917,15 +920,17 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
               <FieldLabel htmlFor="meter-name">Device name *</FieldLabel>
               <Input
                 id="meter-name"
-                value={draft.deviceNameOverridden ? draft.deviceName : generatedDeviceName}
-                readOnly={!draft.deviceNameOverridden}
+                value={visibleDeviceName}
                 required
                 aria-invalid={errors.some((item) => item.id === 'meter-name')}
-                onChange={(event) => set('deviceName', event.target.value)}
+                onChange={(event) => setDraft((current) => current ? {
+                  ...current,
+                  deviceName: event.target.value,
+                  deviceNameOverridden: true,
+                } : current)}
               />
-              <FieldHint>Generated from the model unless deliberately overridden.</FieldHint>
+              <FieldHint>Suggested from the site, zone, device type, and ID. Change it if another name is clearer.</FieldHint>
               <FieldError message={errors.find((item) => item.id === 'meter-name')?.message} />
-              <Checkbox label="Use a custom device name" checked={Boolean(draft.deviceNameOverridden)} onChange={setDeviceNameOverride} />
             </div>
             <div>
               <FieldLabel>Device ID / serial *</FieldLabel>
@@ -933,10 +938,6 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 <ScannerInput value={draft.deviceId} onChange={(value) => set('deviceId', value)} modes={['barcode', 'qr']} disabled={Boolean(commissionedForm)} />
               </div>
               <FieldError message={errors.find((item) => item.id === 'meter-serial')?.message} />
-            </div>
-            <div>
-              <FieldLabel>Device number</FieldLabel>
-              <ScannerInput value={draft.deviceNumber ?? ''} onChange={(value) => set('deviceNumber', value)} modes={['barcode', 'qr']} disabled={Boolean(commissionedForm)} />
             </div>
             <div>
               <FieldLabel>Classification</FieldLabel>
@@ -1300,7 +1301,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                     >
                       <option value="">Choose a switchboard</option>
                       {assignmentBoardCandidates(assignment).map((item) => (
-                        <option key={item.id} value={item.id}>{displayCodeValue(item)} — {item.assetName}</option>
+                        <option key={item.id} value={item.id}>{item.assetName} · {boardTypeLabel(item)}</option>
                       ))}
                     </Select>
                     <FieldHint>{assignmentPurpose(assignment) === 'MAIN_SUPPLY' ? 'A confirmed main-supply board total must target this device’s installed switchboard.' : assignmentPurpose(assignment) === 'SUB_CIRCUIT' ? 'Sub-circuit channels may target only a downstream switchboard.' : 'Choose channels to constrain the eligible switchboards. Showing up to 100 matches.'}</FieldHint>
@@ -1324,7 +1325,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                     >
                       <option value="">Choose a site asset</option>
                       {assignmentAssetCandidates(assignment).map((item) => (
-                        <option key={item.id} value={item.id}>{displayCodeValue(item)} — {item.assetName}</option>
+                        <option key={item.id} value={item.id}>{item.assetName} · {siteAssetTypeLabel(item)}</option>
                       ))}
                     </Select>
                     <FieldHint>Only assets on this meter board’s confirmed supply path and not already measured by another meter are eligible. Showing up to 100 matches.</FieldHint>

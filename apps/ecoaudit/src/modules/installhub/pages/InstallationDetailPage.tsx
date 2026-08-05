@@ -1,11 +1,10 @@
 'use client';
 
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
-import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
+import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { FieldLabel, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
@@ -22,7 +21,6 @@ import {
 } from '@/modules/installhub/hooks/useInstallationTree';
 import {
   Breadcrumbs,
-  DefinitionList,
   InlineNotice,
   WorkspaceLink,
 } from '@/modules/installhub/components/InstallHubUi';
@@ -34,6 +32,7 @@ import {
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
 import { meteringInventorySummary } from '@/modules/installhub/lib/electricalPresentation';
+import { groupReadinessIssues } from '@/modules/installhub/lib/readinessPresentation';
 import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 
@@ -68,30 +67,7 @@ export function InstallHubInstallationDetailPage() {
   const meteringInventory = meteringInventorySummary(tree);
   const readiness = readinessQuery.data;
   const readinessAdvisory = readiness?.authority === 'LOCAL_ADVISORY';
-  const evidenceCount =
-    tree.zones.reduce((total, zone) => total + zone.photos.length, 0) +
-    tree.electricalAssets.reduce(
-      (total, board) =>
-        total +
-        (board.photo ? 1 : 0) +
-        board.extraPhotos.length +
-        board.meters.reduce(
-          (meterTotal, meter) =>
-            meterTotal +
-            (meter.wwPhotos?.deviceInstalled ? 1 : 0) +
-            (meter.wwPhotos?.switchboardOverview ? 1 : 0) +
-            (meter.wwPhotos?.labeling ? 1 : 0) +
-            (meter.wwPhotos?.extra?.length ?? 0),
-          0,
-        ),
-      0,
-    ) +
-    tree.siteAssets.reduce(
-      (total, asset) => total + (asset.locationPhoto ? 1 : 0) + asset.extraPhotos.length,
-      0,
-    ) +
-    tree.formSubmissions.reduce((total, form) => total + form.attachments.length, 0);
-
+  const readinessGroups = groupReadinessIssues(readiness?.issues || []);
   async function completeCurrentInstallation() {
     if (!readiness?.readyToComplete) return;
     setLifecycleBusy(true);
@@ -182,8 +158,7 @@ export function InstallHubInstallationDetailPage() {
 
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-[var(--text-sub)]">
-          Tree revision <strong className="text-[var(--text)]">{tree.treeRevision || 0}</strong>
-          {tree.recordVersionNumber !== undefined ? <> · Pinned version <strong className="text-[var(--text)]">{tree.recordVersionNumber}</strong></> : null}
+          <strong className="text-[var(--text)]">{tree.zones.length}</strong> zones · <strong className="text-[var(--text)]">{tree.electricalAssets.length}</strong> switchboards · <strong className="text-[var(--text)]">{tree.siteAssets.length}</strong> site assets · <strong className="text-[var(--text)]">{meters}</strong> devices
         </p>
         <SaveStateNotice
           state={writer.writeState}
@@ -193,20 +168,27 @@ export function InstallHubInstallationDetailPage() {
       </div>
       <TreeDraftNavigationGuard active={writer.hasPendingTree} onDiscard={writer.discard} />
 
-      <Card className="mb-6">
-        <DefinitionList items={[
-          { label: 'Installer', value: installation.inspectorName },
-          { label: 'Date', value: installation.auditDate },
-          { label: 'Zones', value: tree.zones.length },
-          { label: 'Switchboards', value: tree.electricalAssets.length },
-          { label: 'Site assets', value: tree.siteAssets.length },
-          { label: 'Meters', value: meters },
-          { label: 'Directly metered', value: meteringInventory.assets.directlyMetered },
-          { label: 'Confirmed unmetered', value: meteringInventory.assets.confirmedUnmetered },
-          { label: 'Metering TBC', value: meteringInventory.assets.toBeConfirmed },
-          { label: 'Broken mappings', value: meteringInventory.assets.brokenMappings },
-        ]} />
-      </Card>
+      <section className="mb-7" aria-labelledby="installhub-workspace">
+        <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <WorkspaceLink href={`/installhub/installations/${installationId}/zones`} icon="building" title="Zones & assets" description="Manage zones, switchboards, devices, and site assets." count={tree.zones.length} />
+          <WorkspaceLink href={`/installhub/installations/${installationId}/forms`} icon="clipboard" title="Field forms" description="Complete installation and service workflows." count={tree.formSubmissions.length} />
+          <WorkspaceLink href="/installhub/devices" icon="search" title="Find devices" description="Search all accessible sites and replace a device." />
+          <WorkspaceLink href={`/installhub/installations/${installationId}/report`} icon="file-text" title="Report pack" description="Generate and download the installation report." />
+        </div>
+      </section>
+
+      <details className="mb-6 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
+        <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">More tools</summary>
+        <p className="mt-3 text-xs leading-5 text-[var(--text-sub)]">Detailed review and administration tools used when needed.</p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Reconciliation</LinkButton>
+          <LinkButton href={`/installhub/installations/${installationId}/metering`} variant="secondary">Metering table</LinkButton>
+          <LinkButton href={`/installhub/installations/${installationId}/photos`} variant="secondary">Photo gallery</LinkButton>
+          <LinkButton href={`/installhub/installations/${installationId}/cloud`} variant="secondary">Files & history</LinkButton>
+          {user?.role === 'admin' ? <LinkButton href={`/installhub/installations/${installationId}/access`} variant="secondary">Access</LinkButton> : null}
+        </div>
+      </details>
 
       <GridSupplyEditor
         tree={tree}
@@ -219,7 +201,7 @@ export function InstallHubInstallationDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="font-extrabold text-[var(--text)]">Completion readiness</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Server-authoritative checks cover unresolved supply, measurement, form, code, and dependency rules.</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Server-authoritative checks cover unresolved supply, measurement, form, naming, and dependency rules.</p>
           </div>
           <span className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${readiness?.readyToComplete ? 'bg-[var(--green-soft)] text-[var(--green)]' : 'bg-[var(--amber-soft)] text-[var(--text)]'}`}>
             {readinessQuery.isLoading
@@ -240,74 +222,32 @@ export function InstallHubInstallationDetailPage() {
             </InlineNotice>
           </div>
         ) : null}
-        {readiness?.issues.length ? (
-          <ul className="mt-4 space-y-2">
-            {readiness.issues.slice(0, 6).map((issue) => (
-              <li key={`${issue.code}-${issue.entityId}`} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 text-sm">
-                <p className="font-bold text-[var(--text)]">{issue.message}</p>
-                <p className="mt-1 text-xs text-[var(--text-sub)]">{issue.code} · {issue.entityType.replaceAll('_', ' ')}</p>
-              </li>
-            ))}
-          </ul>
+        {readinessGroups.length ? (
+          <details className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
+            <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">
+              Review {readinessGroups.length} issue categor{readinessGroups.length === 1 ? 'y' : 'ies'}
+            </summary>
+            <div className="mt-3 space-y-2">
+              {readinessGroups.map((group) => (
+                <details key={group.key} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
+                  <summary className="cursor-pointer text-sm font-bold text-[var(--text)]">
+                    {group.title} · {group.count}
+                  </summary>
+                  <ul className="mt-2 space-y-2 text-sm text-[var(--text-sub)]">
+                    {group.details.map((detail) => (
+                      <li key={detail.message}>{detail.message}{detail.count > 1 ? ` (${detail.count})` : ''}</li>
+                    ))}
+                  </ul>
+                </details>
+              ))}
+            </div>
+          </details>
         ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
           <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
           <Button variant="secondary" onClick={() => void readinessQuery.refetch()}>Recheck</Button>
         </div>
       </Card>
-
-      <section className="mb-7" aria-labelledby="installhub-workspace">
-        <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          <WorkspaceLink href={`/installhub/installations/${installationId}/zones`} icon="building" title="Zones & assets" description="Zones, switchboards, meters, and site assets." count={tree.zones.length} />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/forms`} icon="clipboard" title="Field forms" description="Six current workflows plus legacy form history." count={tree.formSubmissions.length} />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/data`} icon="grid" title="Data view" description="Review hierarchy and resolve TBC relationships." />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/metering`} icon="gauge" title="Metering table" description="Meter devices, channels, and coverage." count={meters} />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/photos`} icon="camera" title="Photo gallery" description="All installation and form evidence." count={evidenceCount} />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/report`} icon="file-text" title="Report pack" description="Generate and download server PDF packs." />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/client-report`} icon="eye" title="Client report" description="Client-facing installation summary and readiness." />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/cloud`} icon="cloud" title="Cloud files & history" description="Stored originals, PDFs, and version snapshots." />
-          {user?.role === 'admin' ? (
-            <WorkspaceLink href={`/installhub/installations/${installationId}/access`} icon="users" title="Access" description="View or manage inspector assignment." />
-          ) : null}
-        </div>
-      </section>
-
-      <section aria-labelledby="installation-zones">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 id="installation-zones" className="text-lg font-extrabold text-[var(--text)]">Zones</h2>
-            <p className="mt-1 text-sm text-[var(--text-sub)]">Open a zone to manage its boards, meters, and assets.</p>
-          </div>
-          <LinkButton href={`/installhub/installations/${installationId}/zones/new`}>
-            <Icon name="plus" size={17} />Add zone
-          </LinkButton>
-        </div>
-        {tree.zones.length === 0 ? (
-          <EmptyState title="No zones yet" description="Add a zone to start mapping the installation." icon="building" />
-        ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
-            {tree.zones.map((zone) => {
-              const boards = tree.electricalAssets.filter((item) => item.zoneId === zone.id).length;
-              const assets = tree.siteAssets.filter((item) => item.zoneId === zone.id).length;
-              return (
-                <Link key={zone.id} href={`/installhub/installations/${installationId}/zones/${zone.id}`} className="block">
-                  <Card className="interactive-card h-full">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-extrabold text-[var(--text)]">{zone.zoneName}</p>
-                        <p className="mt-1 text-sm text-[var(--text-sub)]">{zone.zoneDescription || 'No description'}</p>
-                        <p className="mt-3 text-xs font-semibold text-[var(--muted)]">{boards} boards · {assets} assets · {zone.photos.length} photos</p>
-                      </div>
-                      <Icon name="chevron-right" size={18} className="text-[var(--muted)]" />
-                    </div>
-                  </Card>
-                </Link>
-              );
-            })}
-          </div>
-        )}
-      </section>
 
       <ConfirmDialog
         open={completeOpen}

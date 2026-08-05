@@ -340,7 +340,7 @@ function wwCommissioningFields(): FormFieldDefinition[] {
     photo('commissioning.energy_screenshot', 'Energy page screenshot'),
     photo(
       'commissioning.completed_photos',
-      'Completed installation photos',
+      'Completed installation photos (include the antenna)',
     ),
     multiline('commissioning.final_comments', 'Final comments'),
   ];
@@ -372,7 +372,6 @@ const wwInstallation: FormDefinition = {
           'Circuit breaker location photos',
         ),
         deviceType('device.type'),
-        scan('device.number', 'Device Number'),
         scan('device.id', 'Device ID / serial'),
       ],
     },
@@ -430,7 +429,6 @@ const commsFault: FormDefinition = {
           'existing.device_type',
           'Existing Meter / Device Type',
         ),
-        scan('existing.device_number', 'Existing Device Number'),
         scan('existing.device_id', 'Existing Device ID / serial'),
         sensor(
           'existing.sensor_rating',
@@ -469,10 +467,6 @@ const commsFault: FormDefinition = {
           'New Meter / Device Type',
           replacementVisible,
         ),
-        {
-          ...scan('works.new_device_number', 'New Device Number'),
-          showWhen: replacementVisible,
-        },
         {
           ...scan('works.new_device_id', 'New Device ID / serial'),
           showWhen: replacementVisible,
@@ -552,7 +546,7 @@ const commsFault: FormDefinition = {
         ),
         photo(
           'commissioning.completed_photos',
-          'Final completed-work photos',
+          'Final completed-work photos (include the antenna)',
         ),
         multiline('commissioning.final_comments', 'Final comments'),
       ],
@@ -1035,7 +1029,7 @@ function legacyDefinition(
           ),
           photo(
             'commissioning.completed_photos',
-            'Completed installation photos',
+            'Completed installation photos (include the antenna)',
           ),
           multiline(
             'commissioning.final_comments',
@@ -1266,7 +1260,7 @@ export function meterAfterCommsReplacement(
     deviceName: `${typedDevice} Auditor`,
     deviceType: typedDevice,
     deviceId: String(answers['works.new_device_id'] ?? ''),
-    deviceNumber: String(answers['works.new_device_number'] ?? ''),
+    deviceNumber: String(answers['works.new_device_id'] ?? ''),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const current = meter.wwChannels?.[index] ?? {};
       return {
@@ -1282,6 +1276,7 @@ export function meterAfterCommsReplacement(
 export function operationalMeterForCompletedForm(
   form: FormSubmission,
   existing?: Meter,
+  suggestedName?: string,
 ): Meter | null {
   if (form.formType !== 'ww-installation') return null;
   const deviceType = form.answers['device.type'] as 'A3RM' | 'A6M';
@@ -1306,12 +1301,12 @@ export function operationalMeterForCompletedForm(
   }
   return {
     id: form.meterId || createInstallHubId('meter'),
-    deviceName: `${deviceType} Auditor`,
+    deviceName: suggestedName?.trim() || `${deviceType} Auditor`,
     deviceType,
     deviceId: form.answers['device.id'] || '',
-    deviceNumber: form.answers['device.number'] || '',
+    deviceNumber: form.answers['device.id'] || '',
     deviceFamily: 'WATTWATCHERS',
-    deviceNameOverridden: false,
+    deviceNameOverridden: Boolean(suggestedName?.trim()),
     ...(Object.keys(wwPrestart).length ? { wwPrestart } : {}),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const prefix = `channel.${index + 1}`;

@@ -77,10 +77,7 @@ import {
   wwFormCompletionContextError,
 } from '@/modules/installhub/lib/model';
 import {
-  boardElectricalSource,
   boardTypeLabel,
-  displayCodeValue,
-  meterDeviceName,
   meterDevices,
   syncMeterDevice,
 } from '@/modules/installhub/lib/workflow';
@@ -89,6 +86,12 @@ import type {
   FormSubmission,
   InstallHubReportProvenance,
 } from '@/modules/installhub/types/domain';
+import { humanDeviceName } from '@/modules/installhub/lib/deviceSearch';
+import {
+  assetMeterReturnHref,
+  assetMeterReturnRequest,
+  type AssetMeterReturnRequest,
+} from '@/modules/installhub/lib/electricalPresentation';
 
 type FormCompletionError = {
   id: string;
@@ -121,6 +124,11 @@ export function InstallHubFormEditorPage() {
   const [uploadingSlot, setUploadingSlot] = useState<string | null>(null);
   const [completing, setCompleting] = useState(false);
   const [completionErrors, setCompletionErrors] = useState<FormCompletionError[]>([]);
+  const [assetReturn, setAssetReturn] = useState<AssetMeterReturnRequest | null>(null);
+
+  useEffect(() => {
+    setAssetReturn(assetMeterReturnRequest(new URLSearchParams(window.location.search)));
+  }, []);
 
   const source = query.data?.formSubmissions.find(
     (item) => item.id === formId,
@@ -264,16 +272,6 @@ export function InstallHubFormEditorPage() {
   const canonicalMeter = source.formType === 'ww-installation' && source.meterId
     ? meterDevices(tree).find((item) => item.id === source.meterId)
     : null;
-  const canonicalSupply = canonicalBoard ? boardElectricalSource(canonicalBoard) : null;
-  const canonicalSupplyLabel = canonicalSupply?.kind === 'GRID'
-    ? tree.gridSupplies?.find((item) => item.id === canonicalSupply.gridSupplyId)?.name || `Missing Grid supply ${canonicalSupply.gridSupplyId}`
-    : canonicalSupply?.kind === 'BOARD'
-      ? (() => {
-          const parent = tree.electricalAssets.find((item) => item.id === canonicalSupply.boardId);
-          return parent ? `${displayCodeValue(parent)} — ${parent.assetName}` : `Missing switchboard ${canonicalSupply.boardId}`;
-        })()
-      : 'To be confirmed';
-
   function change(key: string, value: string) {
     if (isWwCanonicalBoardAnswer(currentForm, key)) return;
     const result = answersAfterChange(definition, answers, key, value);
@@ -426,7 +424,9 @@ export function InstallHubFormEditorPage() {
           (item) => item.id === completed?.boardId,
         );
         if (completedBoard && completed?.meterId) {
-          router.replace(`/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}/meters/${completed.meterId}#meter-assignments`);
+          router.replace(assetReturn
+            ? assetMeterReturnHref(installationId, assetReturn, completed.meterId)
+            : `/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}/meters/${completed.meterId}#meter-assignments`);
         }
       }
     } catch (error) {
@@ -535,8 +535,8 @@ export function InstallHubFormEditorPage() {
           <Card id="form-canonical-context" className="mb-5">
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h2 className="font-extrabold text-[var(--text)]">Canonical switchboard context</h2>
-                <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Read-only installation identity used by this WW field record. Change the switchboard or device record—not form answers—to correct this context.</p>
+                <h2 className="font-extrabold text-[var(--text)]">Switchboard details</h2>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Already filled from the selected switchboard. These details stay read-only here so you do not have to enter them again.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 {canonicalMeter ? <LinkButton href={`/installhub/installations/${installationId}/zones/${canonicalBoard.zoneId}/boards/${canonicalBoard.id}/meters/${canonicalMeter.id}#meter-assignments`}>Open meter assignments</LinkButton> : null}
@@ -544,12 +544,12 @@ export function InstallHubFormEditorPage() {
               </div>
             </div>
             <DefinitionList items={[
-              { label: 'Switchboard', value: `${displayCodeValue(canonicalBoard)} — ${canonicalBoard.assetName}` },
-              { label: 'Stable board ID', value: <span className="font-mono text-xs">{canonicalBoard.id}</span> },
-              { label: 'Board type', value: boardTypeLabel(canonicalBoard) },
-              { label: 'Physical zone', value: canonicalBoardZone?.zoneName || 'Unknown zone' },
-              { label: 'FED_FROM source', value: canonicalSupplyLabel },
-              { label: 'Meter device', value: canonicalMeter ? `${meterDeviceName(canonicalMeter)} · ${canonicalMeter.serialNumber}` : source.meterId ? `Missing device ${source.meterId}` : 'No device linked' },
+              { label: 'Switchboard', value: canonicalBoard.assetName },
+              { label: 'Type', value: boardTypeLabel(canonicalBoard) },
+              { label: 'Zone', value: canonicalBoardZone?.zoneName || 'Unknown zone' },
+              { label: 'Location', value: canonicalBoard.locationDescription?.trim() || canonicalBoardZone?.zoneName || 'Not recorded' },
+              { label: 'Site NMI', value: canonicalBoard.siteNmi?.trim() || 'Not recorded' },
+              ...(canonicalMeter ? [{ label: 'Device', value: `${humanDeviceName(canonicalMeter)} · ${canonicalMeter.serialNumber}` }] : []),
             ]} />
           </Card>
         ) : (

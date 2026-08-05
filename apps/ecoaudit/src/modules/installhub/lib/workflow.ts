@@ -24,13 +24,13 @@ import type {
 } from '@/modules/installhub/types/domain';
 
 export const BOARD_TYPE_OPTIONS = [
-  { code: 'MSB', label: 'MSB — Main Switchboard' },
-  { code: 'MSSB', label: 'MSSB — Main Sub-Switchboard' },
-  { code: 'DB', label: 'DB — Distribution Board' },
-  { code: 'HVAC_DB', label: 'HVAC-DB — HVAC Distribution Board' },
-  { code: 'LX_DB', label: 'LX-DB — Lighting Distribution Board' },
-  { code: 'PV_DB', label: 'PV-DB — Solar / PV Distribution Board' },
-  { code: 'MCC', label: 'MCC — Motor Control Centre' },
+  { code: 'MSB', label: 'Main switchboard' },
+  { code: 'MSSB', label: 'Main sub-switchboard' },
+  { code: 'DB', label: 'Distribution board' },
+  { code: 'HVAC_DB', label: 'HVAC distribution board' },
+  { code: 'LX_DB', label: 'Lighting distribution board' },
+  { code: 'PV_DB', label: 'Solar / PV distribution board' },
+  { code: 'MCC', label: 'Motor control centre' },
   { code: 'OTHER', label: 'Other' },
 ] as const;
 
@@ -159,7 +159,7 @@ export function defaultGridSupply(installationId: string, nmi?: string | null): 
   return {
     id: `grid_${installationId}_primary`,
     installationId,
-    name: 'Grid supply',
+    name: 'Incoming grid connection',
     isDefault: true,
     nmi: nmi || null,
   };
@@ -928,6 +928,13 @@ function issue(
   };
 }
 
+function isValidDisplayLabel(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length >= 1
+    && trimmed.length <= 64
+    && !/[\u0000-\u001f\u007f]/.test(trimmed);
+}
+
 export function localReadiness(input: InstallationTree): InstallationReadiness {
   const tree = normalizeInstallationTree(input);
   const issues: ReadinessIssue[] = [];
@@ -970,8 +977,8 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
       issues.push(issue('CUSTOM_TYPE_REQUIRED', 'board', board.id, 'Enter the custom switchboard type.'));
     }
     const code = displayCodeValue(board).trim().toUpperCase();
-    if (!code || code.length > 64 || !/^[A-Z0-9][A-Z0-9._-]*$/.test(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'board', board.id, 'Display code must be 1-64 characters using letters, digits, period, underscore or hyphen.'));
-    else if (duplicateCandidates(code, board.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'board', board.id, `Display code ${code} is already used.`, duplicateCandidates(code, board.id)));
+    if (!isValidDisplayLabel(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'board', board.id, 'Display name must be 1-64 visible characters.'));
+    else if (duplicateCandidates(code, board.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'board', board.id, `Display name ${code} is already used.`, duplicateCandidates(code, board.id)));
     if (board.meterPresent && !meterDevices(tree).some((meter) => meter.installedOnBoardId === board.id && meter.lifecycleState !== 'INACTIVE')) {
       issues.push(issue('METER_PRESENT_MISMATCH', 'board', board.id, 'The switchboard says a meter is installed, but no active metering device exists.'));
     }
@@ -979,8 +986,8 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
 
   for (const meter of devices) {
     const code = meter.displayName.value.trim().toUpperCase();
-    if (!code || code.length > 64 || !/^[A-Z0-9][A-Z0-9._-]*$/.test(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'meter', meter.id, 'Display code must be 1-64 characters using letters, digits, period, underscore or hyphen.'));
-    else if (duplicateCandidates(code, meter.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'meter', meter.id, `Display code ${code} is already used.`, duplicateCandidates(code, meter.id)));
+    if (!isValidDisplayLabel(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'meter', meter.id, 'Display name must be 1-64 visible characters.'));
+    else if (duplicateCandidates(code, meter.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'meter', meter.id, `Display name ${code} is already used.`, duplicateCandidates(code, meter.id)));
     if (!meter.serialNumber.trim()) issues.push(issue('METER_DEVICE_REQUIRED', 'meter', meter.id, 'Enter the metering-device serial number.'));
     if (meter.deviceFamily === 'OTHER' && !meter.customManufacturerName?.trim()) {
       issues.push(issue('CUSTOM_TYPE_REQUIRED', 'meter', meter.id, 'Enter the custom meter manufacturer.'));
@@ -1042,8 +1049,8 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
       issues.push(issue('CUSTOM_TYPE_REQUIRED', 'site_asset', asset.id, 'Enter the custom site-asset type.'));
     }
     const code = displayCodeValue(asset).trim().toUpperCase();
-    if (!code || code.length > 64 || !/^[A-Z0-9][A-Z0-9._-]*$/.test(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'site_asset', asset.id, 'Display code must be 1-64 characters using letters, digits, period, underscore or hyphen.'));
-    else if (duplicateCandidates(code, asset.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'site_asset', asset.id, `Display code ${code} is already used.`, duplicateCandidates(code, asset.id)));
+    if (!isValidDisplayLabel(code)) issues.push(issue('DISPLAY_CODE_INVALID', 'site_asset', asset.id, 'Display name must be 1-64 visible characters.'));
+    else if (duplicateCandidates(code, asset.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'site_asset', asset.id, `Display name ${code} is already used.`, duplicateCandidates(code, asset.id)));
     const state = siteAssetMeteringState(asset);
     if (state.kind === 'TBC') {
       issues.push(issue('METERING_STATE_INVALID', 'site_asset', asset.id, 'Confirm whether this asset is metered or unmetered.'));

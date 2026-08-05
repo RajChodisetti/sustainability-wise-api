@@ -207,8 +207,9 @@ Field App Complete has six user-facing schema-v2 form families: WW Installation,
 Comms Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS
 Logger. Schema-v1 A3RM/A6M installation types remain accepted for installed-data
 compatibility but are not new-form choices. Completed WW and Communications
-Fault submissions require device number, device ID, A3RM/A6M type, and matching
-sensor selection. A3RM accepts only the three documented 3000A Rogowski sizes;
+Fault submissions require one canonical device ID / serial, A3RM/A6M type, and
+matching sensor selection. The historical device-number answer remains optional
+at compatibility boundaries. A3RM accepts only the three documented 3000A Rogowski sizes;
 A6M accepts only 60A, 120A, 200A, 400A, or 600A.
 
 A site asset explicitly classified `UNMETERED` with no direct measurement

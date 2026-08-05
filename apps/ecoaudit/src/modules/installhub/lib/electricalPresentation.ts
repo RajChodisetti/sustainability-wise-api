@@ -685,7 +685,7 @@ export function readinessCorrectionAction(
     return {
       href: `${entity.href}${hash}`,
       label: 'Open site-asset correction',
-      instruction: 'Correct the highlighted supply, type, display code, or exact metering state, then choose Save site asset.',
+      instruction: 'Correct the highlighted supply, type, name, or exact metering state, then choose Save site asset.',
     };
   }
   if (issue.entityType === 'board') {

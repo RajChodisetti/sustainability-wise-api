@@ -107,10 +107,10 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 390);
+  assert.equal(fieldCount, 387);
   assert.equal(
     fingerprint,
-    'df5cda7af9d65d9f6c19bdcaec182a61d248b1d9fe47bb29478f1d736e1b482a',
+    '0c1396a261ee66acefdb0b8f5955a2939f4792029ce7d8c09ab62060171fa150',
   );
 });
 
@@ -306,13 +306,12 @@ test('Comms replacement mirrors iOS meter reshaping', () => {
   const replacement = meterAfterCommsReplacement(meter, {
     'works.new_device_type': 'A3RM',
     'works.new_device_id': 'NEW-ID',
-    'works.new_device_number': 'NEW-NUMBER',
     'works.new_sensor_rating': '3000A - 20cm',
   });
 
   assert.equal(replacement.deviceType, 'A3RM');
   assert.equal(replacement.deviceId, 'NEW-ID');
-  assert.equal(replacement.deviceNumber, 'NEW-NUMBER');
+  assert.equal(replacement.deviceNumber, 'NEW-ID');
   assert.equal(replacement.wwChannels?.length, 3);
   assert.equal(
     replacement.wwChannels?.[0].rogowskiSize,
@@ -334,11 +333,8 @@ test('scanner modes match iOS ingestion fields', () => {
   );
 
   for (const key of [
-    'ww-installation:device.number',
     'ww-installation:device.id',
-    'comms-fault:existing.device_number',
     'comms-fault:existing.device_id',
-    'comms-fault:works.new_device_number',
     'comms-fault:works.new_device_id',
     'ace-switchboard:job.number',
     'ace-switchboard:install.ct_serial_a',

@@ -4,9 +4,9 @@
 import Link from 'next/link';
 import { useEffect, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Button, LinkButton } from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
+import { FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
@@ -32,15 +32,17 @@ import {
   boardDependencyPreview,
   boardElectricalSource,
   boardTypeCode,
+  boardTypeLabel,
   displayCodeMetadata,
-  displayCodeValue,
   legacyBoardType,
   primaryGridSupply,
   reconcileRemovedMeter,
   setAssetMetering,
+  siteAssetTypeLabel,
   validBoardParents,
 } from '@/modules/installhub/lib/workflow';
-import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
+import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
+import { createDeviceCommissioningForm } from '@/modules/installhub/lib/deviceSearch';
 import { useToast } from '@/contexts/ToastContext';
 
 export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
@@ -53,12 +55,13 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
+  const { user } = useInstallHubAuth();
   const [draft, setDraft] = useState<ElectricalAsset | null>(null);
   const [busy, setBusy] = useState(false);
+  const [commissioning, setCommissioning] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [parentSearch, setParentSearch] = useState('');
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
-  const [confirmMeterRemoval, setConfirmMeterRemoval] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const source = query.data?.electricalAssets.find((item) => item.id === boardId);
@@ -83,7 +86,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const matchingParents = allAvailableParents.filter((item) => {
     if (!normalizedSearch) return true;
     const itemZone = tree.zones.find((candidate) => candidate.id === item.zoneId);
-    return `${displayCodeValue(item)} ${item.assetName} ${item.assetType} ${itemZone?.zoneName || ''}`
+    return `${item.assetName} ${boardTypeLabel(item)} ${itemZone?.zoneName || ''}`
       .toLowerCase()
       .includes(normalizedSearch);
   });
@@ -92,7 +95,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     ? sourceForParentSelection.boardId
     : null;
   const availableParents = pinSelectedResult(matchingParents, allAvailableParents, selectedParentId, (item) => item.id);
-  const forms = tree.formSubmissions.filter((item) => item.boardId === boardId);
   const draftSource = boardElectricalSource(draft);
   const sourceKind = draftSource.kind;
   const parentBoard = draftSource.kind === 'BOARD'
@@ -107,13 +109,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     return electricalSource.kind === 'BOARD' && electricalSource.boardId === draft.id;
   });
   const dependencyPreview = boardDependencyPreview(tree, draft.id);
-  const codeMeta = displayCodeMetadata(
-    tree,
-    boardTypeCode(draft),
-    draft.displayCode,
-    draft.displayCodeMeta,
-    draft.id,
-  );
   const hasLocalChanges = mode === 'new'
     || Boolean(source && JSON.stringify(draft) !== JSON.stringify(source));
 
@@ -139,7 +134,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       currentDraft.displayCodeMeta,
       currentDraft.id,
     ).value;
-    if (!code.trim()) nextErrors.push({ id: 'board-code', message: 'Enter or generate a display code.' });
     setErrors(nextErrors);
     if (nextErrors.length) {
       document.getElementById(nextErrors[0].id || '')?.focus();
@@ -149,15 +143,11 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     setBusy(true);
     try {
       await writer.mutate((next) => {
-        if (!currentDraft.meterPresent) {
-          const existing = next.electricalAssets.find((item) => item.id === currentDraft.id);
-          for (const meter of existing?.meters || []) reconcileRemovedMeter(next, meter.id);
-        }
+        const activeMeters = currentDraft.meters.filter((meter) => meter.lifecycleState !== 'INACTIVE');
         const value: ElectricalAsset = {
           ...structuredClone(currentDraft),
-          meters: currentDraft.meterPresent
-            ? currentDraft.meters.filter((meter) => meter.lifecycleState !== 'INACTIVE')
-            : [],
+          meters: activeMeters,
+          meterPresent: activeMeters.length > 0,
           assetName: currentDraft.assetName.trim(),
           assetType: legacyBoardType(boardTypeCode(currentDraft)),
           typeCode: boardTypeCode(currentDraft),
@@ -313,27 +303,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     });
   }
 
-  function chooseMeterPresent(value: 'YES' | 'NO') {
-    if (value === 'YES') {
-      set('meterPresent', true);
-      return;
-    }
-    if (currentDraft.meters.length > 0 || forms.length > 0) {
-      setConfirmMeterRemoval(true);
-      return;
-    }
-    set('meterPresent', false);
-  }
-
-  function confirmNoMeter() {
-    setDraft((current) => current ? {
-      ...current,
-      meterPresent: false,
-      meters: [],
-    } : current);
-    setConfirmMeterRemoval(false);
-  }
-
   function chooseBoardType(value: string) {
     setDraft((current) => {
       if (!current) return current;
@@ -358,20 +327,27 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     });
   }
 
-  function setCodeOverride(checked: boolean) {
-    setDraft((current) => {
-      if (!current) return current;
-      const nextMeta = displayCodeMetadata(tree, boardTypeCode(current), '', undefined, current.id);
-      return {
-        ...current,
-        displayCode: checked ? displayCodeValue(current) : nextMeta.value,
-        displayCodeMeta: {
-          ...nextMeta,
-          value: checked ? displayCodeValue(current) : nextMeta.value,
-          isOverridden: checked,
-        },
-      };
-    });
+  async function commissionNewDevice() {
+    if (!boardId || !user) {
+      toast.error('Sign in before starting device commissioning.');
+      return;
+    }
+    setCommissioning(true);
+    try {
+      let formId = '';
+      await writer.mutate((next) => {
+        const form = createDeviceCommissioningForm(next, user, {
+          zoneId,
+          boardId,
+        });
+        formId = form.id;
+      }, 'metadata');
+      toast.success('Device commissioning form created.');
+      router.push(`/installhub/installations/${installationId}/forms/${formId}`);
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+      setCommissioning(false);
+    }
   }
 
   const latest = query.data!.electricalAssets.find((item) => item.id === boardId) ?? draft;
@@ -389,12 +365,9 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         subtitle="Electrical hierarchy, installed Wattwatcher meters, and switchboard evidence."
         actions={saved ? (
           <>
-            <LinkButton href={`/installhub/installations/${installationId}/forms/new?zoneId=${zoneId}&boardId=${boardId}`} variant="secondary">
-              <Icon name="clipboard" size={17} />New field form
-            </LinkButton>
-            <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/new`}>
-              <Icon name="plus" size={17} />Add meter
-            </LinkButton>
+            <Button onClick={() => void commissionNewDevice()} disabled={commissioning}>
+              <Icon name="plus" size={17} />{commissioning ? 'Opening form…' : 'Commission new device'}
+            </Button>
             <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
           </>
         ) : undefined}
@@ -426,7 +399,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               href: `/installhub/installations/${installationId}/zones/${parentBoard.zoneId}/boards/${parentBoard.id}`,
               icon: 'zap' as const,
               label: 'Electrical parent',
-              description: `${displayCodeValue(parentBoard)} — ${parentBoard.assetName}`,
+              description: `${parentBoard.assetName} · ${boardTypeLabel(parentBoard)}`,
             }] : [{
               href: '#board-supply',
               icon: 'grid' as const,
@@ -499,27 +472,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               </div>
             ) : null}
             <div>
-              <FieldLabel htmlFor="board-code">Display code *</FieldLabel>
-              <Input
-                id="board-code"
-                value={codeMeta.value}
-                readOnly={!codeMeta.isOverridden}
-                required
-                aria-invalid={errors.some((item) => item.id === 'board-code')}
-                aria-describedby="board-code-hint"
-                onChange={(event) => setDraft((current) => current ? {
-                  ...current,
-                  displayCode: event.target.value,
-                  displayCodeMeta: { ...codeMeta, value: event.target.value, isOverridden: true },
-                } : current)}
-              />
-              <FieldHint id="board-code-hint">
-                Generated from site and type. The custom-code option preserves an intentional override.
-              </FieldHint>
-              <FieldError message={errors.find((item) => item.id === 'board-code')?.message} />
-              <Checkbox label="Use a custom display code" checked={codeMeta.isOverridden} onChange={setCodeOverride} />
-            </div>
-            <div>
               <FieldLabel htmlFor="board-location">Location description</FieldLabel>
               <Input id="board-location" value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
             </div>
@@ -577,7 +529,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                   id="board-parent-search"
                   type="search"
                   value={parentSearch}
-                  placeholder="Search code, name, type, or zone"
+                  placeholder="Search name, type, or zone"
                   onChange={(event) => setParentSearch(event.target.value)}
                 />
                 <FieldLabel htmlFor="board-parent">Confirmed parent *</FieldLabel>
@@ -598,7 +550,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                     const parentZone = tree.zones.find((item) => item.id === board.zoneId);
                     return (
                       <option key={board.id} value={board.id}>
-                        {displayCodeValue(board)} — {board.assetName} · {parentZone?.zoneName || 'Unknown zone'}
+                        {board.assetName} · {boardTypeLabel(board)} · {parentZone?.zoneName || 'Unknown zone'}
                       </option>
                     );
                   })}
@@ -613,18 +565,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             ) : null}
           </div>
 
-          <div id="board-meter-presence" tabIndex={-1}>
-            <ChoiceGroup<'YES' | 'NO'>
-              label="Is a metering device installed on this switchboard?"
-              value={draft.meterPresent || draft.meters.some((meter) => meter.lifecycleState !== 'INACTIVE') ? 'YES' : 'NO'}
-              options={[
-                { value: 'YES', label: 'Yes', description: 'Capture the installed device and channels after saving.' },
-                { value: 'NO', label: 'No', description: 'This switchboard has no installed meter.' },
-              ]}
-              onChange={chooseMeterPresent}
-            />
-          </div>
-
           <FieldLabel htmlFor="board-subcircuits">Sub-circuits description</FieldLabel>
           <Textarea id="board-subcircuits" value={draft.subCircuitsDescription ?? ''} onChange={(event) => set('subCircuitsDescription', event.target.value)} />
           <FieldLabel htmlFor="board-comments">Comments</FieldLabel>
@@ -635,21 +575,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
           </div>
         </Card>
       </form>
-
-      <ConfirmDialog
-        open={confirmMeterRemoval}
-        title="Record no installed meter?"
-        description="Meters leave the active register and dependent channel mappings become unresolved. Completed forms and evidence remain in history."
-        consequences={[
-          `${draft.meters.length} metering device${draft.meters.length === 1 ? '' : 's'} will leave the active register`,
-          `${forms.filter((item) => item.meterId).length} linked meter form${forms.filter((item) => item.meterId).length === 1 ? '' : 's'} will remain in history`,
-          'Affected site-asset mappings will move to To be confirmed',
-        ]}
-        confirmLabel="Record no meter"
-        blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before changing metering.' : undefined}
-        onConfirm={confirmNoMeter}
-        onCancel={() => setConfirmMeterRemoval(false)}
-      />
 
       <ConfirmDialog
         open={confirmDelete}
@@ -664,7 +589,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       />
 
       {!saved ? (
-        <InlineNotice>Save the switchboard first, then add meter records, evidence, and field forms.</InlineNotice>
+        <InlineNotice>Save the switchboard first, then commission devices and add evidence.</InlineNotice>
       ) : (
         <>
           <Card id="board-relationships" tabIndex={-1} className="mb-5 scroll-mt-4">
@@ -682,8 +607,8 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                       return (
                         <Link key={child.id} href={`/installhub/installations/${installationId}/zones/${child.zoneId}/boards/${child.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-bold text-[var(--text)]">{displayCodeValue(child)} — {child.assetName}</span>
-                            <span className="block truncate text-xs text-[var(--text-sub)]">{child.assetType} · {childZone?.zoneName || 'Unknown zone'}</span>
+                            <span className="block truncate text-sm font-bold text-[var(--text)]">{child.assetName}</span>
+                            <span className="block truncate text-xs text-[var(--text-sub)]">{boardTypeLabel(child)} · {childZone?.zoneName || 'Unknown zone'}</span>
                           </span>
                           <Icon name="chevron-right" size={17} className="shrink-0 text-[var(--muted)]" />
                         </Link>
@@ -701,8 +626,8 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                       return (
                         <Link key={asset.id} href={`/installhub/installations/${installationId}/zones/${asset.zoneId}/assets/${asset.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                           <span className="min-w-0">
-                            <span className="block truncate text-sm font-bold text-[var(--text)]">{displayCodeValue(asset)} — {asset.assetName}</span>
-                            <span className="block truncate text-xs text-[var(--text-sub)]">{asset.assetType} · {assetZone?.zoneName || 'Unknown zone'}</span>
+                            <span className="block truncate text-sm font-bold text-[var(--text)]">{asset.assetName}</span>
+                            <span className="block truncate text-xs text-[var(--text-sub)]">{siteAssetTypeLabel(asset)} · {assetZone?.zoneName || 'Unknown zone'}</span>
                           </span>
                           <Icon name="chevron-right" size={17} className="shrink-0 text-[var(--muted)]" />
                         </Link>
@@ -713,14 +638,13 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               </section>
             </div>
           </Card>
-          <div className="mb-5 grid gap-5 xl:grid-cols-2">
-            <Card id="board-meters" tabIndex={-1} className="scroll-mt-4">
+          <Card id="board-meters" tabIndex={-1} className="mb-5 scroll-mt-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
                   <h2 className="font-extrabold text-[var(--text)]">Meters</h2>
                   <p className="mt-1 text-xs text-[var(--text-sub)]">Device identity, channels, verification, and commissioning.</p>
                 </div>
-                <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/new`}><Icon name="plus" size={16} />Add</LinkButton>
+                <Button onClick={() => void commissionNewDevice()} disabled={commissioning}><Icon name="plus" size={16} />{commissioning ? 'Opening form…' : 'Commission new device'}</Button>
               </div>
               {latest.meters.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No meters installed.</p> : (
                 <div className="space-y-2">
@@ -735,30 +659,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                   ))}
                 </div>
               )}
-            </Card>
-            <Card>
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-extrabold text-[var(--text)]">Field forms</h2>
-                  <p className="mt-1 text-xs text-[var(--text-sub)]">Installation, ACE, and device fault records.</p>
-                </div>
-                <LinkButton href={`/installhub/installations/${installationId}/forms/new?zoneId=${zoneId}&boardId=${boardId}`}><Icon name="plus" size={16} />Start</LinkButton>
-              </div>
-              {forms.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No forms linked to this board.</p> : (
-                <div className="space-y-2">
-                  {forms.map((form) => (
-                    <Link key={form.id} href={`/installhub/installations/${installationId}/forms/${form.id}`} className="flex min-h-12 items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
-                      <span>
-                        <span className="block text-sm font-bold text-[var(--text)]">{FORM_DEFINITION_BY_TYPE[form.formType]?.shortTitle ?? form.formType}</span>
-                        <span className="block text-xs text-[var(--text-sub)]">{form.status} · {form.attachments.length} attachments</span>
-                      </span>
-                      <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
-                    </Link>
-                  ))}
-                </div>
-              )}
-            </Card>
-          </div>
+          </Card>
           <Card id="board-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Switchboard evidence</h2>
             <EvidenceField

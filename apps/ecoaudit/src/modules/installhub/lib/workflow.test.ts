@@ -848,6 +848,36 @@ test('custom meters require explicit channels, positive ordinals, and non-empty 
   assert.equal(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED'), false);
 });
 
+test('local readiness accepts human-readable display names with spaces', () => {
+  const tree = createInstallationTree({
+    clientName: 'Client',
+    siteName: 'Inchcape Essendon',
+    siteAddress: '1 Test Street',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-05',
+    timezone: 'Australia/Sydney',
+  }, user);
+  tree.installation.externalKey = 'installation-human-labels';
+  const zone = createZone(tree.installation.id, { zoneName: 'Workshop', zoneDescription: '' });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.assetName = 'Main switchboard';
+  board.displayCode = 'Inchcape Essendon - Main Switchboard';
+  board.displayCodeMeta = {
+    value: board.displayCode,
+    generatedValue: 'INCHCAPE-MSB-001',
+    isOverridden: true,
+    ruleVersion: 1,
+  };
+  applyBoardElectricalSource(board, { kind: 'GRID', gridSupplyId: tree.gridSupplies![0].id });
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+
+  assert.equal(
+    localReadiness(tree).issues.some((issue) => issue.code === 'DISPLAY_CODE_INVALID'),
+    false,
+  );
+});
+
 test('same-tab recovery strips all media and only overlays a draft when the server revision is unchanged', () => {
   const draftTree = fixtureTree();
   draftTree.zones[0].photos = ['/v1/photos/zone'];

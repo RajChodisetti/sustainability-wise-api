@@ -14,8 +14,9 @@ and inspector records remain scoped to their own or explicitly assigned installa
   `ace-switchboard`, `honeywell-q400`, `captis-logger`, and `sums-logger`.
   Preserve `a3rm-installation` and `a6m-installation` as schema-v1 read/sync
   compatibility types.
-- Completed WW Installation and Comms Fault payloads require device
-  number, device ID, A3RM/A6M type, and an exact matching sensor value. A3RM
+- Completed WW Installation and Comms Fault payloads require one canonical
+  device ID / serial, A3RM/A6M type, and an exact matching sensor value. The
+  older device-number answer remains an optional read/sync compatibility alias. A3RM
   permits only the three 3000A Rogowski sizes; A6M permits only
   60A/120A/200A/400A/600A CT values.
 - A push is a complete installation snapshot. All four child arrays are

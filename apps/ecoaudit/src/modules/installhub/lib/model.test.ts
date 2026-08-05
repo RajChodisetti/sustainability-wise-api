@@ -79,6 +79,11 @@ test('meter-linked reconciliation keeps the required WW installation form availa
       .map((definition) => definition.type),
     ['comms-fault'],
   );
+  assert.equal(
+    allowedFormDefinitions({})
+      .some((definition) => definition.type === 'comms-fault'),
+    false,
+  );
 });
 
 test('board-only WW forms may create a meter while stale linked-meter context is blocked', () => {
@@ -267,7 +272,7 @@ test('meter-linked WW forms prefill canonical device and channel context', () =>
 
   assert.equal(form.answers['device.type'], 'A3RM');
   assert.equal(form.answers['device.id'], 'A3RM-001');
-  assert.equal(form.answers['device.number'], '7');
+  assert.equal(form.answers['device.number'], undefined);
   assert.equal(form.answers['channel.1.purpose'], 'Main board supply');
   assert.equal(form.answers['channel.1.load'], 'Mains Supply');
   assert.equal(form.answers['channel.1.rating'], '3000A - 9cm');
@@ -487,6 +492,12 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   assert.equal(board.meters.length, 1);
   assert.equal(board.meters[0].deviceType, 'A3RM');
   assert.equal(board.meters[0].deviceId, 'A3RM-001');
+  assert.equal(board.meters[0].deviceNumber, 'A3RM-001');
+  assert.match(board.meters[0].deviceName, /Site/);
+  assert.match(board.meters[0].deviceName, /A3RM/);
+  assert.match(board.meters[0].deviceName, /A3RM-001/);
+  assert.ok(board.meters[0].deviceName.length <= 64);
+  assert.equal(board.meters[0].deviceNameOverridden, true);
   assert.equal(board.meters[0].wwChannels?.length, 3);
   assert.equal(board.meters[0].wwChannels?.[0].description, 'Incoming mains');
   assert.equal(board.meters[0].wwChannels?.[0].purpose, 'MAIN_SUPPLY');

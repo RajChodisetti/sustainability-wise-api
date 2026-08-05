@@ -336,7 +336,7 @@ export function InstallHubZoneDetailPage() {
             </div>
             <LinkButton href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/new`}><Icon name="plus" size={16} />Add</LinkButton>
           </div>
-          {boards.length ? <Input type="search" value={boardSearch} placeholder="Search switchboard code, name, or type" aria-label="Search switchboards in this zone" onChange={(event) => { setBoardSearch(event.target.value); setBoardPage(0); }} /> : null}
+          {boards.length ? <Input type="search" value={boardSearch} placeholder="Search switchboard name or type" aria-label="Search switchboards in this zone" onChange={(event) => { setBoardSearch(event.target.value); setBoardPage(0); }} /> : null}
           {boards.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No switchboards in this zone.</p> : filteredBoards.length ? (
             <>
             <div className="space-y-2">
@@ -344,7 +344,7 @@ export function InstallHubZoneDetailPage() {
                 <Link key={board.id} href={`/installhub/installations/${installationId}/zones/${zoneId}/boards/${board.id}`} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
                   <span>
                     <span className="block text-sm font-bold text-[var(--text)]">{board.assetName}</span>
-                    <span className="block text-xs text-[var(--text-sub)]">{board.displayCode} · {board.assetType} · {board.meters.length} meters</span>
+                    <span className="block text-xs text-[var(--text-sub)]">{board.assetType} · {board.meters.length} meters</span>
                   </span>
                   <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
                 </Link>

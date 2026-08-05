@@ -287,7 +287,9 @@ const wwInstallation: InstallHubContractDefinition = {
         photo('auditor.sensor_before'),
         photo('auditor.cb_before'),
         deviceType('device.type'),
-        text('device.number', true),
+        // Kept as an optional compatibility alias for installed clients. New
+        // authoring uses device.id as the single visible identity field.
+        text('device.number'),
         text('device.id', true),
       ],
     },
@@ -320,7 +322,7 @@ const commsFault: InstallHubContractDefinition = {
         text('existing.site_nmi'),
         photo('existing.switchboard_photos'),
         deviceType('existing.device_type'),
-        text('existing.device_number', true),
+        text('existing.device_number'),
         text('existing.device_id', true),
         sensor(
           'existing.sensor_rating',
@@ -340,7 +342,7 @@ const commsFault: InstallHubContractDefinition = {
         yesNo('works.leds_visible'),
         yesNo('works.replace_device'),
         deviceType('works.new_device_type', replacementVisible),
-        { ...text('works.new_device_number', true), showWhen: replacementVisible },
+        { ...text('works.new_device_number'), showWhen: replacementVisible },
         { ...text('works.new_device_id', true), showWhen: replacementVisible },
         sensor(
           'works.new_sensor_rating',

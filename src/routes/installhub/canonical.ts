@@ -1232,6 +1232,13 @@ function issueSortKey(issue: ReadinessIssue): string {
   return [issue.severity, issue.code, issue.entityType, issue.entityId, issue.field ?? ''].join('\u0000');
 }
 
+function isValidDisplayLabel(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length >= 1
+    && trimmed.length <= 64
+    && !/[\u0000-\u001f\u007f]/.test(trimmed);
+}
+
 function displayCodeIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
   const issues: ReadinessIssue[] = [];
   const byCode = new Map<string, Array<{ entityType: 'board' | 'site_asset' | 'meter'; entityId: string }>>();
@@ -1256,14 +1263,14 @@ function displayCodeIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
     })),
   ]) {
     const code = entity.display.value;
-    if (!code || code.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(code)) {
+    if (!isValidDisplayLabel(code)) {
       issues.push({
         code: 'DISPLAY_CODE_INVALID',
         severity: 'ERROR',
         entityType: entity.entityType,
         entityId: entity.id,
         field: 'displayCode.value',
-        message: 'Display code must be 1-64 characters using letters, digits, period, underscore or hyphen.',
+        message: 'Display name must be 1-64 visible characters.',
       });
       continue;
     }
@@ -1281,7 +1288,7 @@ function displayCodeIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         entityType: duplicate.entityType,
         entityId: duplicate.entityId,
         field: 'displayCode.value',
-        message: 'Display code is already used by another entity in this installation.',
+        message: 'Display name is already used by another item in this installation.',
         candidateIds: boundedCandidateIds(duplicates.filter((item) => item.entityId !== duplicate.entityId).map((item) => item.entityId)),
       });
     }
@@ -2354,7 +2361,7 @@ export function allocateDisplayCodes(input: {
     const collision = normalized ? claimed.get(normalized) : undefined;
     if (collision && (entity.display.isOverridden || !entity.display.provisional)) {
       throw new CanonicalInputError(
-        `Display code ${entity.display.value} is already claimed for ${collision.entityType} ${collision.entityId}`,
+        `Display name ${entity.display.value} is already used by ${collision.entityType} ${collision.entityId}`,
         'display_code_conflict',
       );
     }

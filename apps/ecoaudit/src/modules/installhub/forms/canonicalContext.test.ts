@@ -54,10 +54,13 @@ test('WW duplicate switchboard answers are canonical, stable, and not editable f
   assert.deepEqual(normalized, {
     'auditor.switchboard_name': 'Canonical main board',
     'auditor.switchboard_location': 'North wall',
-    'auditor.switchboard_type': 'MSB — Main Switchboard',
+    'auditor.switchboard_type': 'Main switchboard',
     'auditor.site_nmi': 'NMI-CANONICAL',
     'unrelated.answer': 'preserved',
   });
   assert.equal(isWwCanonicalBoardAnswer(form, 'auditor.switchboard_name'), true);
+  assert.equal(isWwCanonicalBoardAnswer(form, 'auditor.switchboard_location'), true);
+  assert.equal(isWwCanonicalBoardAnswer(form, 'auditor.switchboard_type'), true);
+  assert.equal(isWwCanonicalBoardAnswer(form, 'auditor.site_nmi'), true);
   assert.equal(isWwCanonicalBoardAnswer(form, 'notes'), false);
 });

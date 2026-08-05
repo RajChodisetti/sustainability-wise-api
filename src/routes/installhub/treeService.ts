@@ -607,7 +607,8 @@ export function wwCommissioningFormMatchesMeter(
   const model = form.answers['device.type'];
   if ((model !== 'A3RM' && model !== 'A6M') || meter.deviceModel !== model) return false;
   if (meter.deviceFamily !== 'WATTWATCHERS') return false;
-  if (meter.deviceNumber !== (form.answers['device.number'] || null)) return false;
+  const legacyDeviceNumber = form.answers['device.number']?.trim();
+  if (legacyDeviceNumber && meter.deviceNumber !== legacyDeviceNumber) return false;
   if (meter.serialNumber !== form.answers['device.id']) return false;
   const channelCount = model === 'A3RM' ? 3 : 6;
   if (meter.channels.length !== channelCount) return false;

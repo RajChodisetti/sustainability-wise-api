@@ -1423,6 +1423,21 @@ test('high-card readiness and candidate search stay deterministically bounded an
   assert.equal(searched.issuePage.nextOffset, null);
 });
 
+test('readiness accepts human-readable display names without code-format noise', () => {
+  const tree = baseTree();
+  tree.meterDevices = [a3Meter()];
+  tree.electricalAssets[0].meterPresent = true;
+  tree.electricalAssets[0].displayCode = display('Inchcape Essendon - Main Switchboard', true);
+  tree.siteAssets[0].displayCode = display('Inchcape Essendon - Workshop HVAC', true);
+  tree.meterDevices[0].displayName = display('Inchcape Essendon - Basement - A3RM', true);
+
+  const readiness = installationReadiness(tree);
+  assert.equal(
+    readiness.issues.some((issue) => issue.code === 'DISPLAY_CODE_INVALID'),
+    false,
+  );
+});
+
 test('readiness paging filters the full result set by severity, type, and physical zone before slicing', () => {
   const tree = baseTree();
   const zoneEntityIds = readinessEntityIdsForZone(tree, 'zone-1');
@@ -1514,6 +1529,10 @@ test('WW commissioning matching uses explicit channel purpose with bounded legac
 
   const current = completedWwForm('form-current', meter);
   assert.equal(wwCommissioningFormMatchesMeter(current, meter), true);
+
+  const withoutLegacyDeviceNumber = structuredClone(current);
+  delete withoutLegacyDeviceNumber.answers['device.number'];
+  assert.equal(wwCommissioningFormMatchesMeter(withoutLegacyDeviceNumber, meter), true);
 
   current.answers['channel.1.purpose'] = 'Sub-circuit / asset';
   assert.equal(wwCommissioningFormMatchesMeter(current, meter), false);

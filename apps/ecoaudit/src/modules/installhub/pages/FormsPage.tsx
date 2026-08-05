@@ -92,7 +92,7 @@ export function InstallHubFormsPage() {
       {forms.length === 0 ? (
         <EmptyState
           title="No field forms yet"
-          description="Start an installation, comms-fault, switchboard, water-meter, or logger workflow."
+          description="Start an installation, switchboard, water-meter, or logger workflow. Device replacements start from Find devices so the correct device is retained."
           icon="clipboard"
           actions={
             <LinkButton
@@ -383,7 +383,7 @@ export function InstallHubFormTypePickerPage() {
           <div className="mt-2 grid gap-x-4 lg:grid-cols-2">
             <div>
               <FieldLabel htmlFor="new-form-board-search">Find a switchboard</FieldLabel>
-              <Input id="new-form-board-search" type="search" value={boardSearch} placeholder="Search code, name, or physical zone" onChange={(event) => setBoardSearch(event.target.value)} />
+              <Input id="new-form-board-search" type="search" value={boardSearch} placeholder="Search name, type, or physical zone" onChange={(event) => setBoardSearch(event.target.value)} />
             </div>
             <div>
               <FieldLabel htmlFor="new-form-board">Switchboard *</FieldLabel>
@@ -391,7 +391,7 @@ export function InstallHubFormTypePickerPage() {
                 <option value="">Choose a switchboard</option>
                 {boardCandidates.map((board) => {
                   const zone = tree.zones.find((item) => item.id === board.zoneId);
-                  return <option key={board.id} value={board.id}>{board.displayCode} — {board.assetName} · {zone?.zoneName || 'Unknown zone'}</option>;
+                  return <option key={board.id} value={board.id}>{board.assetName} · {board.assetType} · {zone?.zoneName || 'Unknown zone'}</option>;
                 })}
               </Select>
               <FieldHint>Showing at most 100 matching records. Refine the search for large installations.</FieldHint>

@@ -1,10 +1,9 @@
 'use client';
 /* eslint-disable react-hooks/set-state-in-effect -- initializes the keyed asset editor from its server query record */
 
-import Link from 'next/link';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Button, LinkButton } from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
@@ -21,7 +20,7 @@ import {
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
-import { createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
+import { createBoard, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
 import {
   assetMeterDraftKey,
   parseAssetMeterDraftSnapshot,
@@ -38,11 +37,14 @@ import type {
   SiteAsset,
 } from '@/modules/installhub/types/domain';
 import {
+  BOARD_TYPE_OPTIONS,
   SITE_ASSET_TYPE_OPTIONS,
   applyAssetElectricalSource,
+  applyBoardElectricalSource,
   assetElectricalSource,
+  boardTypeLabel,
   displayCodeMetadata,
-  displayCodeValue,
+  legacyBoardType,
   legacySiteAssetType,
   measurementAssignments,
   meterBoardsForAsset,
@@ -53,8 +55,9 @@ import {
   siteAssetMeteringState,
   siteAssetTypeCode,
 } from '@/modules/installhub/lib/workflow';
-import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
 import { useToast } from '@/contexts/ToastContext';
+import { createDeviceCommissioningForm, humanDeviceName } from '@/modules/installhub/lib/deviceSearch';
+import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 
 export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const { installationId, zoneId, assetId } = useParams<{
@@ -66,6 +69,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
+  const { user } = useInstallHubAuth();
   const [draft, setDraft] = useState<SiteAsset | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -74,8 +78,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const [meterSearch, setMeterSearch] = useState('');
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [pendingMeteringKind, setPendingMeteringKind] = useState<MeteringStateKind | null>(null);
+  const [pendingMeteringKind, setPendingMeteringKind] = useState<'UNMETERED' | null>(null);
+  const [quickBoardOpen, setQuickBoardOpen] = useState(false);
+  const [quickBoardIntent, setQuickBoardIntent] = useState<'source' | 'meter'>('source');
+  const [quickBoardName, setQuickBoardName] = useState('');
+  const [quickBoardType, setQuickBoardType] = useState('DB');
+  const [quickBoardCustomType, setQuickBoardCustomType] = useState('');
+  const [quickBoardError, setQuickBoardError] = useState('');
+  const [quickBoardCustomTypeError, setQuickBoardCustomTypeError] = useState('');
+  const [quickBoardBusy, setQuickBoardBusy] = useState(false);
   const [detourHref, setDetourHref] = useState<string | null>(null);
+  const [detourBusy, setDetourBusy] = useState(false);
   const [resumeMessage, setResumeMessage] = useState<string | null>(null);
   const [activeResumeDraftKey, setActiveResumeDraftKey] = useState<string | null>(null);
   const initializedEditorRef = useRef<string | null>(null);
@@ -135,18 +148,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const forms = tree.formSubmissions.filter((item) => item.siteAssetId === assetId);
   const draftSource = assetElectricalSource(draft);
   const meteringState = siteAssetMeteringState(draft);
-  const codeMeta = displayCodeMetadata(
-    tree,
-    siteAssetTypeCode(draft),
-    draft.displayCode || '',
-    draft.displayCodeMeta,
-    draft.id,
-  );
   const normalizedBoardSearch = boardSearch.trim().toLowerCase();
   const allSourceBoards = [...tree.electricalAssets].sort((left, right) => left.id.localeCompare(right.id));
   const matchingSourceBoards = allSourceBoards.filter((board) => {
     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
-    return !normalizedBoardSearch || `${displayCodeValue(board)} ${board.assetName} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedBoardSearch);
+    return !normalizedBoardSearch || `${board.assetName} ${boardTypeLabel(board)} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedBoardSearch);
   });
   const sourceBoards = pinSelectedResult(
     matchingSourceBoards,
@@ -158,7 +164,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const normalizedMeterBoardSearch = meterBoardSearch.trim().toLowerCase();
   const matchingMeterBoards = eligibleMeterBoards.filter((board) => {
     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
-    return !normalizedMeterBoardSearch || `${displayCodeValue(board)} ${board.assetName} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedMeterBoardSearch);
+    return !normalizedMeterBoardSearch || `${board.assetName} ${boardTypeLabel(board)} ${boardZone?.zoneName || ''}`.toLowerCase().includes(normalizedMeterBoardSearch);
   }).sort((left, right) => left.id.localeCompare(right.id));
   const filteredMeterBoards = pinSelectedResult(matchingMeterBoards, eligibleMeterBoards, draft.meterSwitchboardId, (item) => item.id);
   const eligibleMeters = meterDevices(tree).filter(
@@ -232,8 +238,10 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       currentDraft.displayCodeMeta,
       currentDraft.id,
     ).value;
-    if (!displayCode.trim()) nextErrors.push({ id: 'asset-code', message: 'Enter or generate a display code.' });
     const state = siteAssetMeteringState(currentDraft);
+    if (state.kind === 'TBC') {
+      nextErrors.push({ id: 'asset-metering', message: 'Choose Metered or Unmetered before saving this asset.' });
+    }
     if (state.kind === 'METERED') {
       if (!currentDraft.meterSwitchboardId) nextErrors.push({ id: 'asset-meter-board', message: 'Choose the switchboard where the meter is installed.' });
       if (!currentDraft.meterId) nextErrors.push({ id: 'asset-meter', message: 'Choose the exact metering device.' });
@@ -444,23 +452,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     });
   }
 
-  function setCodeOverride(checked: boolean) {
-    setDraft((current) => {
-      if (!current) return current;
-      const generated = displayCodeMetadata(tree, siteAssetTypeCode(current), '', undefined, current.id);
-      return {
-        ...current,
-        displayCode: checked ? displayCodeValue(current) : generated.value,
-        displayCodeMeta: {
-          ...generated,
-          value: checked ? displayCodeValue(current) : generated.value,
-          isOverridden: checked,
-        },
-      };
-    });
-  }
-
-  function applyMeteringChoice(kind: MeteringStateKind) {
+  function applyMeteringChoice(kind: 'METERED' | 'UNMETERED') {
     setDraft((current) => {
       if (!current) return current;
       if (kind === 'METERED') return {
@@ -474,9 +466,9 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       return {
         ...current,
         meterPresent: false,
-        meteringState: { kind },
+        meteringState: { kind: 'UNMETERED' },
         meterSwitchboardId: null,
-        meterSwitchboardTbc: kind === 'TBC',
+        meterSwitchboardTbc: false,
         meterId: null,
         meterChannelIds: [],
         meterChannels: [],
@@ -486,7 +478,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     });
   }
 
-  function chooseMetering(kind: MeteringStateKind) {
+  function chooseMetering(kind: 'METERED' | 'UNMETERED') {
     if (
       meteringState.kind === 'METERED'
       && kind !== 'METERED'
@@ -496,6 +488,73 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       return;
     }
     applyMeteringChoice(kind);
+  }
+
+  function openQuickBoard(intent: 'source' | 'meter') {
+    setQuickBoardIntent(intent);
+    setQuickBoardName('');
+    setQuickBoardType('DB');
+    setQuickBoardCustomType('');
+    setQuickBoardError('');
+    setQuickBoardCustomTypeError('');
+    setQuickBoardOpen(true);
+  }
+
+  async function addQuickBoard() {
+    if (!quickBoardName.trim()) {
+      setQuickBoardError('Enter the switchboard name.');
+      document.getElementById('quick-board-name')?.focus();
+      return;
+    }
+    if (quickBoardType === 'OTHER' && !quickBoardCustomType.trim()) {
+      setQuickBoardCustomTypeError('Enter the custom switchboard type.');
+      document.getElementById('quick-board-custom-type')?.focus();
+      return;
+    }
+    setQuickBoardBusy(true);
+    try {
+      let createdBoardId = '';
+      await writer.mutate((next) => {
+        const board = createBoard(installationId, zoneId);
+        board.assetName = quickBoardName.trim();
+        board.typeCode = quickBoardType;
+        board.assetType = legacyBoardType(quickBoardType);
+        board.customTypeName = quickBoardType === 'OTHER'
+          ? quickBoardCustomType.trim()
+          : null;
+        const upstream = assetElectricalSource(currentDraft);
+        if (upstream.kind === 'BOARD' && next.electricalAssets.some((item) => item.id === upstream.boardId)) {
+          applyBoardElectricalSource(board, { kind: 'BOARD', boardId: upstream.boardId });
+        } else if (upstream.kind === 'GRID' && (next.gridSupplies || []).some((item) => item.id === upstream.gridSupplyId)) {
+          applyBoardElectricalSource(board, upstream);
+        } else {
+          applyBoardElectricalSource(board, { kind: 'GRID', gridSupplyId: primaryGridSupply(next).id });
+        }
+        const displayName = displayCodeMetadata(next, quickBoardType, '', undefined, board.id, true);
+        board.displayCode = displayName.value;
+        board.displayCodeMeta = displayName;
+        board.updatedAt = nowIso();
+        next.electricalAssets.push(board);
+        createdBoardId = board.id;
+      }, 'metadata');
+      setDraft((current) => {
+        if (!current) return current;
+        const next = structuredClone(current);
+        applyAssetElectricalSource(next, { kind: 'BOARD', boardId: createdBoardId });
+        next.meterSwitchboardId = quickBoardIntent === 'meter' ? createdBoardId : null;
+        next.meterSwitchboardTbc = false;
+        next.meterId = null;
+        next.meterChannelIds = [];
+        next.meterChannels = [];
+        return next;
+      });
+      setQuickBoardOpen(false);
+      toast.success(`${quickBoardName.trim()} added and selected.`);
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setQuickBoardBusy(false);
+    }
   }
 
   function chooseMeterBoard(boardId: string) {
@@ -518,7 +577,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     } : current);
   }
 
-  function addDeviceToMeterBoard() {
+  async function addDeviceToMeterBoard() {
     const meterBoardId = currentDraft.meterSwitchboardId;
     const meterBoard = tree.electricalAssets.find((item) => item.id === meterBoardId);
     if (!meterBoardId || !meterBoard) {
@@ -542,13 +601,31 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       toast.error('The site asset draft could not be held for the device detour. Save the asset and try again.');
       return;
     }
+    if (!user) {
+      toast.error('Sign in before starting device commissioning.');
+      return;
+    }
+    setDetourBusy(true);
+    let formId = '';
+    try {
+      await writer.mutate((next) => {
+        formId = createDeviceCommissioningForm(next, user, {
+          zoneId: meterBoard.zoneId,
+          boardId: meterBoard.id,
+        }).id;
+      }, 'metadata');
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+      setDetourBusy(false);
+      return;
+    }
     const params = new URLSearchParams({
       returnAssetMode: mode,
       returnAssetZoneId: zoneId,
       returnAssetId: currentDraft.id,
       resumeDraftKey,
     });
-    setDetourHref(`/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(meterBoard.zoneId)}/boards/${encodeURIComponent(meterBoard.id)}/meters/new?${params.toString()}`);
+    setDetourHref(`/installhub/installations/${encodeURIComponent(installationId)}/forms/${encodeURIComponent(formId)}?${params.toString()}`);
   }
 
   function clearActiveResumeDraft() {
@@ -586,12 +663,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         title={mode === 'new' ? 'New site asset' : draft.assetName || 'Site asset'}
         subtitle="Equipment identity, electrical and metering relationships, channels, and evidence."
         actions={saved ? (
-          <>
-            <LinkButton href={`/installhub/installations/${installationId}/forms/new?zoneId=${zoneId}&siteAssetId=${assetId}`}>
-              <Icon name="clipboard" size={17} />New field form
-            </LinkButton>
-            <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
-          </>
+          <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
         ) : undefined}
       />
 
@@ -621,7 +693,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               href: `/installhub/installations/${installationId}/zones/${selectedSupplyBoard.zoneId}/boards/${selectedSupplyBoard.id}`,
               icon: 'zap' as const,
               label: 'Supplying switchboard',
-              description: `${displayCodeValue(selectedSupplyBoard)} — ${selectedSupplyBoard.assetName}`,
+              description: `${selectedSupplyBoard.assetName} · ${boardTypeLabel(selectedSupplyBoard)}`,
             }] : [{
               href: '#asset-supply',
               icon: 'grid' as const,
@@ -632,7 +704,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               href: `/installhub/installations/${installationId}/zones/${selectedMeterBoard.zoneId}/boards/${selectedMeterBoard.id}/meters/${selectedMeter.id}`,
               icon: 'gauge' as const,
               label: 'Metering device',
-              description: meterDeviceName(selectedMeter),
+              description: humanDeviceName(selectedMeter),
             }] : [{
               href: '#asset-metering',
               icon: 'gauge' as const,
@@ -704,25 +776,6 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               </div>
             ) : null}
             <div>
-              <FieldLabel htmlFor="asset-code">Display code *</FieldLabel>
-              <Input
-                id="asset-code"
-                required
-                value={codeMeta.value}
-                readOnly={!codeMeta.isOverridden}
-                aria-invalid={errors.some((item) => item.id === 'asset-code')}
-                aria-describedby="asset-code-hint"
-                onChange={(event) => setDraft((current) => current ? {
-                  ...current,
-                  displayCode: event.target.value,
-                  displayCodeMeta: { ...codeMeta, value: event.target.value, isOverridden: true },
-                } : current)}
-              />
-              <FieldHint id="asset-code-hint">Generated from site and asset type unless deliberately overridden.</FieldHint>
-              <FieldError message={errors.find((item) => item.id === 'asset-code')?.message} />
-              <Checkbox label="Use a custom display code" checked={codeMeta.isOverridden} onChange={setCodeOverride} />
-            </div>
-            <div>
               <FieldLabel htmlFor="asset-location">Location description</FieldLabel>
               <Input id="asset-location" value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
             </div>
@@ -734,7 +787,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               hint="This electrical relationship may cross physical zones."
               value={draftSource.kind}
               options={[
-                { value: 'GRID', label: 'Grid', description: primaryGridSupply(tree).name },
+                { value: 'GRID', label: 'Incoming grid connection', description: primaryGridSupply(tree).name },
                 { value: 'BOARD', label: 'Switchboard', description: 'Choose from every switchboard already captured.' },
                 { value: 'TBC', label: 'To be confirmed', description: 'Reconcile this relationship before completion.' },
               ]}
@@ -764,7 +817,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             {draftSource.kind === 'BOARD' ? (
               <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
                 <FieldLabel htmlFor="asset-source-search" className="mt-0">Find a supplying switchboard</FieldLabel>
-                <Input id="asset-source-search" type="search" value={boardSearch} placeholder="Search code, name, or zone" onChange={(event) => setBoardSearch(event.target.value)} />
+                <Input id="asset-source-search" type="search" value={boardSearch} placeholder="Search name, type, or zone" onChange={(event) => setBoardSearch(event.target.value)} />
                 <FieldLabel htmlFor="asset-source-board">Confirmed supplying switchboard *</FieldLabel>
                 <Select
                   id="asset-source-board"
@@ -783,10 +836,15 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   <option value="">Choose a switchboard</option>
                   {sourceBoards.map((board) => {
                     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
-                    return <option key={board.id} value={board.id}>{displayCodeValue(board)} — {board.assetName} · {boardZone?.zoneName || 'Unknown zone'}</option>;
+                    return <option key={board.id} value={board.id}>{board.assetName} · {boardTypeLabel(board)} · {boardZone?.zoneName || 'Unknown zone'}</option>;
                   })}
                 </Select>
                 <FieldError message={errors.find((item) => item.id === 'asset-source-board')?.message} />
+                <div className="mt-3">
+                  <Button variant="secondary" onClick={() => openQuickBoard('source')} disabled={busy || quickBoardBusy}>
+                    <Icon name="plus" size={16} />Add new switchboard
+                  </Button>
+                </div>
               </div>
             ) : null}
             {draftSource.kind === 'TBC' ? <InlineNotice>Unresolved supply will appear in reconciliation and block completion.</InlineNotice> : null}
@@ -800,10 +858,13 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               options={[
                 { value: 'METERED', label: 'Metered', description: 'Map an exact device and channel group.' },
                 { value: 'UNMETERED', label: 'Unmetered', description: 'Confirmed: no direct metering is installed.' },
-                { value: 'TBC', label: 'To be confirmed', description: 'The metering relationship is not yet known.' },
               ]}
-              onChange={chooseMetering}
+              onChange={(value) => chooseMetering(value as 'METERED' | 'UNMETERED')}
             />
+            <FieldError message={errors.find((item) => item.id === 'asset-metering')?.message} />
+            {meteringState.kind === 'TBC' ? (
+              <InlineNotice>This older asset has no confirmed metering state. Choose Metered or Unmetered before saving.</InlineNotice>
+            ) : null}
 
             {meteringState.kind === 'METERED' ? (
               <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
@@ -819,10 +880,15 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   <option value="">Choose a switchboard</option>
                   {filteredMeterBoards.map((board) => {
                     const boardZone = tree.zones.find((item) => item.id === board.zoneId);
-                    return <option key={board.id} value={board.id}>{displayCodeValue(board)} — {board.assetName} · {boardZone?.zoneName || 'Unknown zone'}</option>;
+                    return <option key={board.id} value={board.id}>{board.assetName} · {boardTypeLabel(board)} · {boardZone?.zoneName || 'Unknown zone'}</option>;
                   })}
                 </Select>
                 <FieldError message={errors.find((item) => item.id === 'asset-meter-board')?.message} />
+                <div className="mt-3">
+                  <Button variant="secondary" onClick={() => openQuickBoard('meter')} disabled={busy || quickBoardBusy}>
+                    <Icon name="plus" size={16} />Add and select a switchboard
+                  </Button>
+                </div>
 
                 <FieldLabel htmlFor="asset-meter-search">Find an exact metering device</FieldLabel>
                 <Input
@@ -842,7 +908,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   onChange={(event) => chooseMeter(event.target.value)}
                 >
                   <option value="">Choose a device</option>
-                  {availableMeters.map((meter) => <option key={meter.id} value={meter.id}>{meterDeviceName(meter)} · {meter.deviceModel} · {meter.serialNumber || 'No serial'}</option>)}
+                  {availableMeters.map((meter) => <option key={meter.id} value={meter.id}>{meter.serialNumber || 'No device ID'} · {humanDeviceName(meter)}</option>)}
                 </Select>
                 <FieldError message={errors.find((item) => item.id === 'asset-meter')?.message} />
                 <FieldHint>Showing {availableMeters.length} of {eligibleMeters.length} eligible devices. Refine the search to reach any device; the current selection remains visible.</FieldHint>
@@ -851,15 +917,16 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                 ) : null}
                 {draft.meterSwitchboardId ? (
                   <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <Button variant="secondary" disabled={Boolean(detourHref) || busy} onClick={addDeviceToMeterBoard}>
-                      <Icon name="plus" size={16} />{detourHref ? 'Opening device editor…' : 'Add device to this board'}
+                    <Button variant="secondary" disabled={Boolean(detourHref) || detourBusy || busy} onClick={() => void addDeviceToMeterBoard()}>
+                      <Icon name="plus" size={16} />{detourHref || detourBusy ? 'Opening installation form…' : 'Commission a new device'}
                     </Button>
-                    <p className="text-xs leading-5 text-[var(--text-sub)]">Your current asset draft will be restored here after the device is saved.</p>
+                    <p className="text-xs leading-5 text-[var(--text-sub)]">Opens the full WW installation form. After commissioning, this asset draft returns so you can select the new device’s exact channels.</p>
                   </div>
                 ) : null}
 
                 <ChoiceGroup<PhaseMode>
-                  label="Phase grouping"
+                  label="How many phases does this asset use?"
+                  hint="This choice sets the exact number of meter channels required below."
                   value={draft.phaseMode || 'SINGLE_PHASE'}
                   options={[
                     { value: 'SINGLE_PHASE', label: 'Single phase', description: 'Select exactly one channel.' },
@@ -873,7 +940,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                 />
 
                 <ChoiceGroup<MeasurementDirection>
-                  label="Measurement direction"
+                  label="What energy flow does the device measure for this asset?"
                   value={draft.measurementDirection || 'CONSUMPTION'}
                   options={[
                     { value: 'CONSUMPTION', label: 'Consumption', description: 'Load consumes energy.' },
@@ -885,7 +952,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
 
                 <fieldset id="asset-channels" className="mt-5" tabIndex={-1} aria-describedby="asset-channel-group-status">
                   <legend className="text-sm font-bold text-[var(--text)]">Measured channels *</legend>
-                  <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Only non-spare channels on the selected device can be assigned.</p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Select the physical channel or channels wired to this asset. The count must match the phase choice above; spare or already-used channels cannot be selected.</p>
                   <p id="asset-channel-group-status" className="mt-1 text-xs font-semibold text-[var(--text-sub)]" role="status" aria-live="polite" aria-atomic="true">{channelGroupAnnouncement}</p>
                   {!selectedMeter ? <p className="mt-3 text-sm text-[var(--text-sub)]">Choose a device to see its channels.</p> : (
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
@@ -913,7 +980,6 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               </div>
             ) : null}
             {meteringState.kind === 'UNMETERED' ? <InlineNotice>This asset is intentionally retained in the full asset register without a direct channel assignment.</InlineNotice> : null}
-            {meteringState.kind === 'TBC' ? <InlineNotice>Unresolved metering will appear in reconciliation and block completion.</InlineNotice> : null}
           </div>
 
           <FieldLabel htmlFor="asset-comments">Comments</FieldLabel>
@@ -926,13 +992,69 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       </form>
 
       <ConfirmDialog
+        open={quickBoardOpen}
+        title="Add a switchboard"
+        description="The new switchboard will be added in this asset’s physical zone, inherit the asset’s current upstream supply, and be selected when you return to this form."
+        confirmLabel="Add and select switchboard"
+        danger={false}
+        busy={quickBoardBusy}
+        onConfirm={() => void addQuickBoard()}
+        onCancel={() => {
+          setQuickBoardOpen(false);
+          setQuickBoardError('');
+          setQuickBoardCustomTypeError('');
+        }}
+      >
+        <div className="grid gap-x-4 sm:grid-cols-2">
+          <div>
+            <FieldLabel htmlFor="quick-board-name" className="mt-0">Switchboard name *</FieldLabel>
+            <Input
+              id="quick-board-name"
+              value={quickBoardName}
+              autoFocus
+              aria-invalid={Boolean(quickBoardError)}
+              onChange={(event) => {
+                setQuickBoardName(event.target.value);
+                setQuickBoardError('');
+              }}
+            />
+            <FieldError message={quickBoardError} />
+          </div>
+          <div>
+            <FieldLabel htmlFor="quick-board-type" className="mt-0">Switchboard type *</FieldLabel>
+            <Select id="quick-board-type" value={quickBoardType} onChange={(event) => {
+              setQuickBoardType(event.target.value);
+              setQuickBoardCustomTypeError('');
+            }}>
+              {BOARD_TYPE_OPTIONS.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
+            </Select>
+          </div>
+          {quickBoardType === 'OTHER' ? (
+            <div className="sm:col-span-2">
+              <FieldLabel htmlFor="quick-board-custom-type">Custom switchboard type *</FieldLabel>
+              <Input
+                id="quick-board-custom-type"
+                value={quickBoardCustomType}
+                aria-invalid={Boolean(quickBoardCustomTypeError)}
+                onChange={(event) => {
+                  setQuickBoardCustomType(event.target.value);
+                  setQuickBoardCustomTypeError('');
+                }}
+              />
+              <FieldError message={quickBoardCustomTypeError} />
+            </div>
+          ) : null}
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
         open={Boolean(pendingMeteringKind)}
-        title={`Change metering to ${pendingMeteringKind === 'UNMETERED' ? 'Unmetered' : 'To be confirmed'}?`}
+        title="Change metering to Unmetered?"
         description="The exact active meter and channel relationship will be removed from this asset."
         consequences={[
           `${draft.meterChannelIds?.length || existingAssignment?.channelIds.length || 0} assigned channel${(draft.meterChannelIds?.length || existingAssignment?.channelIds.length || 0) === 1 ? '' : 's'} will be released`,
           draft.meterId ? `Meter ${draft.meterId} will remain in the active device register` : 'The metering device remains unchanged',
-          pendingMeteringKind === 'TBC' ? 'The unresolved metering state will block completion' : 'The asset will remain in full coverage as confirmed unmetered',
+          'The asset will remain in the register as confirmed unmetered',
         ]}
         confirmLabel="Change metering"
         blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before changing metering.' : undefined}
@@ -958,32 +1080,9 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       />
 
       {!saved ? (
-        <InlineNotice>Save the site asset first, then add evidence and water/logger field forms.</InlineNotice>
+        <InlineNotice>Save the site asset first, then add evidence.</InlineNotice>
       ) : (
-        <>
-          <Card id="asset-forms" className="mb-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="font-extrabold text-[var(--text)]">Field forms</h2>
-                <p className="mt-1 text-xs text-[var(--text-sub)]">Honeywell, Captis, and SUMS installation records.</p>
-              </div>
-              <LinkButton href={`/installhub/installations/${installationId}/forms/new?zoneId=${zoneId}&siteAssetId=${assetId}`}><Icon name="plus" size={16} />Start form</LinkButton>
-            </div>
-            {forms.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No forms linked to this asset.</p> : (
-              <div className="space-y-2">
-                {forms.map((form) => (
-                  <Link key={form.id} href={`/installhub/installations/${installationId}/forms/${form.id}`} className="flex min-h-12 items-center justify-between rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 hover:border-[var(--primary)]">
-                    <span>
-                      <span className="block text-sm font-bold text-[var(--text)]">{FORM_DEFINITION_BY_TYPE[form.formType]?.shortTitle ?? form.formType}</span>
-                      <span className="block text-xs text-[var(--text-sub)]">{form.status} · {form.attachments.length} attachments</span>
-                    </span>
-                    <Icon name="chevron-right" size={17} className="text-[var(--muted)]" />
-                  </Link>
-                ))}
-              </div>
-            )}
-          </Card>
-          <Card id="asset-evidence" tabIndex={-1} className="scroll-mt-4">
+        <Card id="asset-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Site asset evidence</h2>
             <EvidenceField
               label="Location photo"
@@ -999,8 +1098,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               onFiles={uploadExtra}
               onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}
             />
-          </Card>
-        </>
+        </Card>
       )}
     </div>
   );

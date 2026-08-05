@@ -12,6 +12,11 @@ export type EvidenceItem = {
   caption?: string | null;
 };
 
+export function evidenceActionLabel(itemCount: number, busy = false): string {
+  if (busy) return 'Uploading…';
+  return itemCount > 0 ? 'Add more photos' : 'Take or choose photos';
+}
+
 export function EvidenceField({
   label,
   items,
@@ -46,7 +51,9 @@ export function EvidenceField({
       <FieldLabel htmlFor={inputId}>
         {label}{required ? <span className="text-[var(--red)]"> *</span> : null}
       </FieldLabel>
-      {hint ? <FieldHint>{hint}</FieldHint> : null}
+      {hint ? <FieldHint>{hint}</FieldHint> : !readOnly ? (
+        <FieldHint>You can choose several photos now and use “Add more photos” later.</FieldHint>
+      ) : null}
       {items.length ? (
         <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {items.map((item, index) => (
@@ -97,7 +104,7 @@ export function EvidenceField({
           className="mt-3 inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-4 py-2 text-sm font-bold text-[var(--text)] shadow-[var(--shadow-xs)] transition hover:border-[var(--primary)] hover:bg-[var(--primary-soft)] hover:text-[var(--primary)]"
         >
           <Icon name="camera" size={17} />
-          {busy ? 'Uploading…' : 'Take or choose photos'}
+          {evidenceActionLabel(items.length, busy)}
           <input
             id={inputId}
             className="sr-only"

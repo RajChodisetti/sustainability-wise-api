@@ -883,7 +883,7 @@ export function planLegacyInstallationBackfill(input: {
         severity: 'BLOCKING',
         entityType: 'installation',
         entityId: form.id,
-        detail: 'Completed WW form must match exactly one stable meter by board, model, serial, and device number.',
+        detail: 'Completed WW form must match exactly one stable meter by board, model, and Device ID / serial number.',
       });
       continue;
     }

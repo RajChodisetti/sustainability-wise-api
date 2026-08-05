@@ -17,6 +17,7 @@ import type {
   Zone,
 } from '@/modules/installhub/types/domain';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
+import { suggestedDeviceDisplayName } from '@/modules/installhub/lib/meterPresentation';
 
 export function createId(prefix: string): string {
   return createInstallHubId(prefix);
@@ -126,7 +127,7 @@ export function createInstallationTree(
     gridSupplies: [{
       id: `grid_${installationId}_primary`,
       installationId,
-      name: 'Grid supply',
+      name: 'Incoming grid connection',
       isDefault: true,
     }],
     zones: [],
@@ -530,7 +531,10 @@ export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
     if (context.siteAssetId) {
       return ['honeywell-q400', 'captis-logger', 'sums-logger'].includes(definition.type);
     }
-    return true;
+    // A comms record represents work on a known installed device. Keep it out
+    // of the general form picker so the replacement workflow always retains
+    // the exact device, switchboard, and zone context.
+    return definition.type !== 'comms-fault';
   });
 }
 
@@ -679,6 +683,12 @@ export function syncOperationalMeter(
         completed.meterId
           ? board.meters.find((item) => item.id === completed.meterId)
           : undefined,
+        suggestedDeviceDisplayName({
+          siteName: tree.installation.siteName,
+          zoneName: tree.zones.find((item) => item.id === board.zoneId)?.zoneName || 'Unknown zone',
+          deviceModel: completed.answers['device.type'] || 'Metering device',
+          serialNumber: completed.answers['device.id'],
+        }),
       )
     : (() => {
         const deviceType = completed.formType === 'a3rm-installation' ? 'A3RM' : 'A6M';

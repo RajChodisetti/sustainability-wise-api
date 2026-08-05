@@ -522,6 +522,10 @@ test('communications replacement requires conditional fields and evidence only w
   assert.equal(replacement.answers['works.replace_device'], 'yes');
   assert.doesNotThrow(() => validateInstallHubFormContract(replacement));
 
+  delete replacement.answers['existing.device_number'];
+  delete replacement.answers['works.new_device_number'];
+  assert.doesNotThrow(() => validateInstallHubFormContract(replacement));
+
   delete replacement.answers['works.new_device_id'];
   assert.throws(
     () => validateInstallHubFormContract(replacement),
@@ -544,6 +548,18 @@ test('communications replacement requires conditional fields and evidence only w
   assert.throws(
     () => validateInstallHubFormContract(noReplacement),
     detailMatches(/commissioning\.start_screenshot.*hidden/),
+  );
+});
+
+test('WW installation uses device ID as the single required identity', () => {
+  const fixture = generatedCompletedFixture('ww-installation');
+  delete fixture.answers['device.number'];
+  assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
+
+  delete fixture.answers['device.id'];
+  assert.throws(
+    () => validateInstallHubFormContract(fixture),
+    detailMatches(/answers\.device\.id/),
   );
 });
 

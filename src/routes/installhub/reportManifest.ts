@@ -185,7 +185,7 @@ function commissioningFields(
     value('commissioning.phase_c_voltage', 'Phase C voltage - multi meter'),
     ...channelVerification,
     photo('commissioning.energy_screenshot', 'Energy page screenshot'),
-    photo('commissioning.completed_photos', 'Completed installation photos'),
+    photo('commissioning.completed_photos', 'Completed installation photos (include the antenna)'),
     value('commissioning.final_comments', 'Final comments'),
   ];
 }
@@ -231,7 +231,6 @@ function installationDefinition(
           ...(dynamic
             ? [
                 value('device.type', 'Meter / Device Type'),
-                value('device.number', 'Device Number'),
                 value('device.id', 'Device ID / serial'),
               ]
             : [
@@ -277,7 +276,6 @@ const communicationsFault: InstallHubReportDefinition = {
         value('existing.site_nmi', 'Site NMI'),
         photo('existing.switchboard_photos', 'Whole switchboard photos'),
         value('existing.device_type', 'Existing Meter / Device Type'),
-        value('existing.device_number', 'Existing Device Number'),
         value('existing.device_id', 'Existing Device ID / serial'),
         value('existing.sensor_rating', 'Existing CT / Rogowski coil rating', {
           key: 'existing.device_type',
@@ -297,10 +295,6 @@ const communicationsFault: InstallHubReportDefinition = {
         yesNo('works.leds_visible', 'Relevant LEDs visible after reboot?'),
         yesNo('works.replace_device', 'Does the device need replacement?'),
         value('works.new_device_type', 'New Meter / Device Type', {
-          key: 'works.replace_device',
-          equals: 'yes',
-        }),
-        value('works.new_device_number', 'New Device Number', {
           key: 'works.replace_device',
           equals: 'yes',
         }),

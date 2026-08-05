@@ -122,6 +122,17 @@ test('dynamic installation report sections follow A3RM and A6M channel visibilit
   assert.ok(a6m.includes('Channel 6'));
 });
 
+test('WW report uses one device identity and preserves the antenna photo instruction', () => {
+  const fields = INSTALLHUB_REPORT_DEFINITION_BY_TYPE['ww-installation'].sections
+    .flatMap((section) => section.fields);
+  assert.ok(fields.some((field) => field.key === 'device.id' && field.label === 'Device ID / serial'));
+  assert.equal(fields.some((field) => field.key === 'device.number'), false);
+  assert.ok(fields.some((field) => (
+    field.key === 'commissioning.completed_photos'
+    && field.label === 'Completed installation photos (include the antenna)'
+  )));
+});
+
 test('photo evidence resolves only through the exact attachment registry field', () => {
   const firstId = '11111111-1111-4111-8111-111111111111';
   const secondUri = 'https://files.example/completed.jpg';
