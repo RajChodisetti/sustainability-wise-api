@@ -1,5 +1,27 @@
 import type { ReadinessIssue } from '@/modules/installhub/types/domain';
 
+export function isUserDeferredReadinessIssue(issue: ReadinessIssue): boolean {
+  return issue.code === 'SUPPLY_TBC'
+    || issue.code === 'MEASUREMENT_TARGET_TBC'
+    || (
+      issue.code === 'METERING_STATE_INVALID'
+      && issue.entityType === 'site_asset'
+      && issue.field === 'meteringState'
+    );
+}
+
+export function partitionReadinessIssues(issues: ReadinessIssue[]): {
+  reconciliation: ReadinessIssue[];
+  completion: ReadinessIssue[];
+} {
+  const reconciliation: ReadinessIssue[] = [];
+  const completion: ReadinessIssue[] = [];
+  for (const issue of issues) {
+    (isUserDeferredReadinessIssue(issue) ? reconciliation : completion).push(issue);
+  }
+  return { reconciliation, completion };
+}
+
 const READINESS_LABELS: Record<string, string> = {
   CHANNEL_UNASSIGNED: 'Unassigned device channels',
   CHANNEL_DUPLICATE_ASSIGNMENT: 'Channels assigned more than once',

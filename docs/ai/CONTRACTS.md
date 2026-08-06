@@ -186,6 +186,17 @@ durable media queue to the current exact installation references so removed or
 replaced failed uploads cannot block the final snapshot. A `file://` or
 `content://` URI must never be persisted by the API.
 
+Canonical naming rule 2 applies only to newly unclaimed boards, site assets,
+and meter devices. Each zone has a persisted, installation-unique `zoneCode`
+(1–16 uppercase letters/numbers in hyphen-separated groups). Generated entity
+identity is `INSTALLATION-ZONE-NN-CUSTOMNAME`, capped at 64 characters, with one
+retained sequence shared by every entity kind in that zone. Sequence claims are
+never reused after soft deletion. Board/site-asset `assetName` and meter
+`customName` are editable human labels; they seed the suffix before the first
+server claim but do not rewrite a claimed identity later. Offline client values
+remain provisional until sync. Existing rule-1 and explicit override claims are
+immutable compatibility identities and must round-trip unchanged.
+
 Field App Complete deduplication is exact and scoped by app, installation, entity type,
 entity ID, field name, and SHA-256 checksum. Upload-session creation and
 confirmation require owner access to both the installation and referenced
@@ -207,10 +218,26 @@ Field App Complete has six user-facing schema-v2 form families: WW Installation,
 Comms Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS
 Logger. Schema-v1 A3RM/A6M installation types remain accepted for installed-data
 compatibility but are not new-form choices. Completed WW and Communications
-Fault submissions require one canonical device ID / serial, A3RM/A6M type, and
-matching sensor selection. The historical device-number answer remains optional
-at compatibility boundaries. A3RM accepts only the three documented 3000A Rogowski sizes;
-A6M accepts only 60A, 120A, 200A, 400A, or 600A.
+Fault submissions require a canonical device ID / serial, A3RM/A6M type, and
+matching sensor selection. The optional device-number field remains a distinct,
+barcode-capable production field and falls back to the device ID only when it is
+left blank. WW Installation also retains the optional switchboard address/map
+locator used by the production form. New A3RM records present `10cm-200A`,
+`10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and `Not Used`.
+New A6M records present `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`,
+`CT-600A`, and `Not Used`. Historical sensor strings remain accepted and are
+injected into editors and reports when already persisted; they are not offered
+as new-record defaults.
+
+Adding a meter from a switchboard or an in-progress site asset first branches
+by device family. A3RM/A6M always opens the full WW Installation form. `Other`
+opens the canonical meter editor and requires an editable human name,
+manufacturer, model, serial, at least one explicit channel, and non-empty
+capabilities for every channel. Device number remains separate from serial,
+and a blank direct-Other device number remains blank rather than being copied
+from the serial. Classification/coverage use the controlled production choices
+while still showing any persisted legacy value. The A3RM/A6M Comms Fault
+workflow must not be offered for `Other` meters.
 
 A site asset explicitly classified `UNMETERED` with no direct measurement
 assignment remains in the all-assets register, and that metering state alone

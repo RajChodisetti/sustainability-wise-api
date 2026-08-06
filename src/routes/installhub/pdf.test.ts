@@ -98,6 +98,7 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
     zones: [{
       id: 'zone-1',
       installationId: 'installation-diagnostic',
+      zoneCode: 'PLANT-ROOM',
       zoneName: 'Plant room',
       zoneDescription: '',
       photos: [],

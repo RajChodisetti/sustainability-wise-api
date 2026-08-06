@@ -188,15 +188,20 @@ test('drafts remain incomplete but validate any value they do contain', () => {
   );
 });
 
-test('WW installation enforces exact A3RM and A6M conditional sensor choices', () => {
+test('WW installation presents Base44 choices and accepts persisted legacy choices', () => {
   const a3rm = generatedCompletedFixture('ww-installation', {
     'device.type': 'A3RM',
   });
   assert.doesNotThrow(() => validateInstallHubFormContract(a3rm));
-  assert.equal(a3rm.answers['channel.1.rating'], '3000A - 9cm');
+  assert.equal(a3rm.answers['channel.1.rating'], '10cm-200A');
   assert.equal(a3rm.answers['channel.4.load'], undefined);
 
-  a3rm.answers['channel.1.rating'] = '60A';
+  a3rm.answers['channel.1.rating'] = '3000A - 9cm';
+  a3rm.answers['commissioning.signal_strength'] = 'Excellent';
+  a3rm.answers['commissioning.antenna_type'] = 'N/A';
+  assert.doesNotThrow(() => validateInstallHubFormContract(a3rm));
+
+  a3rm.answers['channel.1.rating'] = 'CT-60A';
   assert.throws(
     () => validateInstallHubFormContract(a3rm),
     detailMatches(/channel\.1\.rating is not a valid selection/),
@@ -205,7 +210,9 @@ test('WW installation enforces exact A3RM and A6M conditional sensor choices', (
   const a6m = generatedCompletedFixture('ww-installation', {
     'device.type': 'A6M',
   });
-  assert.equal(a6m.answers['channel.1.rating'], '60A');
+  assert.equal(a6m.answers['channel.1.rating'], 'CT-60A');
+  assert.doesNotThrow(() => validateInstallHubFormContract(a6m));
+  a6m.answers['channel.1.rating'] = '60A';
   assert.doesNotThrow(() => validateInstallHubFormContract(a6m));
 });
 
@@ -292,6 +299,27 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
           optionsWhen: {
             key: 'device.type',
             values: {
+              A3RM: [
+                '10cm-200A',
+                '10cm-333mV',
+                '20cm-3000A',
+                '30cm-3000A',
+                '45cm-3000A',
+                'Not Used',
+              ],
+              A6M: [
+                'CT-60A',
+                'CT-120A',
+                'CT-250A',
+                'CT-400A',
+                'CT-600A',
+                'Not Used',
+              ],
+            },
+          },
+          legacyOptionsWhen: {
+            key: 'device.type',
+            values: {
               A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
               A6M: ['60A', '120A', '200A', '400A', '600A'],
             },
@@ -315,7 +343,7 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
   }));
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
+    '3b00b0da4b860d09c8fbe38771a186a4a314dc4b8775fe04d487f2f93a596713',
   );
 
   assert.doesNotThrow(() => validateInstallHubFormContract({
@@ -551,7 +579,7 @@ test('communications replacement requires conditional fields and evidence only w
   );
 });
 
-test('WW installation uses device ID as the single required identity', () => {
+test('WW installation keeps device number optional while requiring the device ID', () => {
   const fixture = generatedCompletedFixture('ww-installation');
   delete fixture.answers['device.number'];
   assert.doesNotThrow(() => validateInstallHubFormContract(fixture));

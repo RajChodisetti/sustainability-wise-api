@@ -23,6 +23,7 @@ import {
   measurementAssignments,
   meterDevices,
 } from '@/modules/installhub/lib/workflow';
+import { isUserDeferredReadinessIssue } from '@/modules/installhub/lib/readinessPresentation';
 import { InstallHubApiError } from '@/modules/installhub/api/client';
 import type { InstallationTree, ReadinessIssue } from '@/modules/installhub/types/domain';
 
@@ -60,6 +61,7 @@ export type InstallationReadinessQuery = {
   q?: string;
   severity?: 'ERROR' | 'WARNING';
   entityType?: string;
+  category?: 'RECONCILIATION' | 'COMPLETION';
   zoneId?: string;
 };
 
@@ -114,6 +116,11 @@ export function localReadinessPage(
       .includes(query))
     && (!options.severity || issue.severity === options.severity)
     && (!options.entityType || issue.entityType === options.entityType)
+    && (!options.category || (
+      options.category === 'RECONCILIATION'
+        ? isUserDeferredReadinessIssue(issue)
+        : !isUserDeferredReadinessIssue(issue)
+    ))
     && (!options.zoneId || readinessIssueZoneIds(tree, issue).has(options.zoneId))
   ));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
@@ -147,6 +154,7 @@ export function useInstallationReadiness(
       options.q?.trim() ?? '',
       options.severity ?? 'all-severities',
       options.entityType?.trim() ?? 'all-entities',
+      options.category ?? 'all-categories',
       options.zoneId?.trim() ?? 'all-zones',
     ],
     enabled: Boolean(installationId && treeQuery.data),

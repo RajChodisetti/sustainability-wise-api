@@ -32,6 +32,10 @@ import {
 export type ElectricalNode = ElectricalTreeReadModel['nodes'][number];
 export type ElectricalEdge = ElectricalTreeReadModel['edges'][number];
 
+export const ASSET_METER_FILTER_LABEL = 'Filter eligible metering devices';
+export const ASSET_METER_FILTER_HINT =
+  'This field only filters the eligible-device list. Select the device from the Exact metering device dropdown below.';
+
 export type ElectricalHierarchyRow = {
   node: ElectricalNode;
   depth: number;
@@ -736,6 +740,19 @@ export function pinSelectedResult<T>(
   if (!selectedId || bounded.some((item) => getId(item) === selectedId)) return bounded;
   const selected = all.find((item) => getId(item) === selectedId);
   return selected ? [selected, ...bounded].slice(0, Math.max(1, limit)) : bounded;
+}
+
+export function shouldShowMeterLocationOverride(input: {
+  overrideRequested: boolean;
+  directSupplyBoardId?: string | null;
+  meterSwitchboardId?: string | null;
+  meterSwitchboardTbc?: boolean | null;
+}): boolean {
+  return input.overrideRequested
+    || !input.directSupplyBoardId
+    || !input.meterSwitchboardId
+    || Boolean(input.meterSwitchboardTbc)
+    || input.meterSwitchboardId !== input.directSupplyBoardId;
 }
 
 export type ZoneElectricalSummary = {

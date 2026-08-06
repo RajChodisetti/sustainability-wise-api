@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  classifyLegacyMeterLoadType,
   deterministicLegacyGridId,
   planLegacyInstallationBackfill,
   type LegacyBoardRow,
@@ -93,6 +94,53 @@ function existingStableMeter(id = 'meter-1') {
     })),
   };
 }
+
+test('legacy classification promotes known cold-service aliases and preserves arbitrary labels', () => {
+  const plan = planLegacyInstallationBackfill({
+    installationId: 'installation-1',
+    siteCode: 'SITE',
+    grids: [],
+    boards: [board()],
+    siteAssets: [
+      asset({
+        id: 'asset-refrigeration',
+        assetType: 'Refrigeration',
+        displayCode: 'SITE-REFRIGERATION-001',
+      }),
+      asset({
+        id: 'asset-compressed-air',
+        assetType: 'Compressed Air',
+        displayCode: 'SITE-COMPRESSED-AIR-001',
+      }),
+      asset({
+        id: 'asset-custom',
+        assetType: 'Blast Freezer',
+        displayCode: 'SITE-OTHER-001',
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    plan.siteAssetUpdates.map((update) => [update.typeCode, update.customTypeName]),
+    [
+      ['REFRIGERATION', null],
+      ['COMPRESSED_AIR', null],
+      ['OTHER', 'Blast Freezer'],
+    ],
+  );
+  assert.deepEqual(classifyLegacyMeterLoadType('Refrigeration'), {
+    code: 'REFRIGERATION',
+    custom: null,
+  });
+  assert.deepEqual(classifyLegacyMeterLoadType('Compressed Air'), {
+    code: 'COMPRESSED_AIR',
+    custom: null,
+  });
+  assert.deepEqual(classifyLegacyMeterLoadType('Blast Freezer'), {
+    code: 'OTHER',
+    custom: 'Blast Freezer',
+  });
+});
 
 test('backfill creates a deterministic default Grid but never guesses null+false supply', () => {
   const first = planLegacyInstallationBackfill({

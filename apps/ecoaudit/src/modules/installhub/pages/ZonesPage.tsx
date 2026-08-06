@@ -6,7 +6,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
+import { FieldError, FieldHint, FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import { Breadcrumbs, DefinitionList, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
@@ -14,6 +14,14 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createZone, nowIso, removeZone } from '@/modules/installhub/lib/model';
+import {
+  ZONE_CODE_MAX_LENGTH,
+  availableZoneCode,
+  isValidZoneCode,
+  isZoneCodeAvailable,
+  refreshProvisionalCodesForZone,
+  resolvedZoneCodes,
+} from '@/modules/installhub/lib/naming';
 import { zoneElectricalSummary } from '@/modules/installhub/lib/electricalPresentation';
 import { coverageState, localReadiness, siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
 import { useToast } from '@/contexts/ToastContext';
@@ -108,6 +116,9 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
   const toast = useToast();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [zoneCode, setZoneCode] = useState('');
+  const [zoneCodePristine, setZoneCodePristine] = useState(true);
+  const [zoneCodeError, setZoneCodeError] = useState('');
   const [busy, setBusy] = useState(false);
 
   const zone = query.data?.zones.find((item) => item.id === zoneId);
@@ -115,7 +126,18 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
     if (!zone) return;
     setName(zone.zoneName);
     setDescription(zone.zoneDescription);
-  }, [zone]);
+    setZoneCode(
+      zone.zoneCode
+      || resolvedZoneCodes(query.data?.zones || []).get(zone.id)
+      || availableZoneCode(query.data!, zone.zoneName, zone.id),
+    );
+    setZoneCodePristine(!zone.zoneCode);
+  }, [query.data, zone]);
+
+  useEffect(() => {
+    if (mode !== 'new' || !query.data) return;
+    setZoneCode((current) => current || availableZoneCode(query.data!, name || 'Zone'));
+  }, [mode, name, query.data]);
 
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -128,24 +150,51 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
       toast.error('Zone name is required.');
       return;
     }
+    const normalizedCode = zoneCode.trim().toUpperCase();
+    if (!isValidZoneCode(normalizedCode)) {
+      const message = `Use 1–${ZONE_CODE_MAX_LENGTH} uppercase letters, numbers, or single hyphens.`;
+      setZoneCodeError(message);
+      document.getElementById('zone-code')?.focus();
+      toast.error('Check the zone short code.');
+      return;
+    }
+    if (!isZoneCodeAvailable(query.data!, normalizedCode, zoneId)) {
+      const message = 'This short code is already used by another zone in the installation.';
+      setZoneCodeError(message);
+      document.getElementById('zone-code')?.focus();
+      toast.error('Choose a unique zone short code.');
+      return;
+    }
     setBusy(true);
     try {
-      let nextZoneId = zoneId;
       await writer.mutate((tree) => {
         if (mode === 'new') {
-          const created = createZone(installationId, { zoneName: name, zoneDescription: description });
+          const created = createZone(installationId, {
+            zoneName: name,
+            zoneDescription: description,
+            zoneCode: normalizedCode,
+          });
           tree.zones.push(created);
-          nextZoneId = created.id;
         } else {
           const target = tree.zones.find((item) => item.id === zoneId);
           if (!target) throw new Error('Zone not found.');
+          const previousZoneCode = target.zoneCode
+            || resolvedZoneCodes(tree.zones).get(target.id);
           target.zoneName = name.trim();
           target.zoneDescription = description.trim();
+          target.zoneCode = normalizedCode;
           target.updatedAt = nowIso();
+          if (previousZoneCode !== target.zoneCode) {
+            refreshProvisionalCodesForZone(
+              tree,
+              target.id,
+              previousZoneCode,
+            );
+          }
         }
       });
       toast.success(mode === 'new' ? 'Zone created.' : 'Zone saved.');
-      router.replace(`/installhub/installations/${installationId}/zones/${nextZoneId}`);
+      router.replace(`/installhub/installations/${installationId}/zones`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -165,7 +214,32 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
       <form onSubmit={(event) => void submit(event)}>
         <Card className="max-w-2xl">
           <FieldLabel>Zone name *</FieldLabel>
-          <Input required value={name} onChange={(event) => setName(event.target.value)} />
+          <Input required value={name} onChange={(event) => {
+            const value = event.target.value;
+            setName(value);
+            if (zoneCodePristine) {
+              setZoneCode(availableZoneCode(query.data!, value || 'Zone', zoneId));
+              setZoneCodeError('');
+            }
+          }} />
+          <FieldLabel htmlFor="zone-code">Zone short code *</FieldLabel>
+          <Input
+            id="zone-code"
+            required
+            maxLength={ZONE_CODE_MAX_LENGTH}
+            value={zoneCode}
+            aria-invalid={Boolean(zoneCodeError)}
+            aria-describedby={zoneCodeError ? 'zone-code-error' : 'zone-code-hint'}
+            onChange={(event) => {
+              setZoneCode(event.target.value.toUpperCase());
+              setZoneCodePristine(false);
+              setZoneCodeError('');
+            }}
+          />
+          <FieldHint id="zone-code-hint">
+            Auto-derived from the zone name and used in generated asset IDs. You can edit it before saving.
+          </FieldHint>
+          <FieldError id="zone-code-error" message={zoneCodeError} />
           <FieldLabel>Description</FieldLabel>
           <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
           <div className="mt-6 flex gap-2 border-t border-[var(--border)] pt-5">

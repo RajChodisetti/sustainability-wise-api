@@ -17,7 +17,7 @@ import type {
   Zone,
 } from '@/modules/installhub/types/domain';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
-import { suggestedDeviceDisplayName } from '@/modules/installhub/lib/meterPresentation';
+import { defaultMeterCustomName } from '@/modules/installhub/lib/naming';
 
 export function createId(prefix: string): string {
   return createInstallHubId(prefix);
@@ -319,12 +319,13 @@ export function touchTree(tree: InstallationTree): InstallationTree {
 
 export function createZone(
   installationId: string,
-  input: Pick<Zone, 'zoneName' | 'zoneDescription'>,
+  input: Pick<Zone, 'zoneName' | 'zoneDescription'> & Partial<Pick<Zone, 'zoneCode'>>,
 ): Zone {
   const timestamp = nowIso();
   return {
     id: createId('zone'),
     installationId,
+    ...(input.zoneCode ? { zoneCode: input.zoneCode.trim().toUpperCase() } : {}),
     zoneName: input.zoneName.trim(),
     zoneDescription: input.zoneDescription.trim(),
     photos: [],
@@ -343,7 +344,7 @@ export function createBoard(
     id: createId('board'),
     installationId,
     zoneId,
-    assetName: '',
+    assetName: 'Distribution board',
     displayCode: '',
     assetType: 'DB',
     typeCode: 'DB',
@@ -352,7 +353,7 @@ export function createBoard(
     electricalParentId: null,
     electricalParentTbc: true,
     locationDescription: '',
-    phase: '',
+    phase: null,
     amperageRating: '',
     siteNmi: '',
     photo: null,
@@ -376,7 +377,7 @@ export function createSiteAsset(
     id: createId('site-asset'),
     installationId,
     zoneId,
-    assetName: '',
+    assetName: 'AC / HVAC',
     assetType: 'HVAC',
     typeCode: 'HVAC',
     customTypeName: null,
@@ -404,7 +405,8 @@ export function createMeter(): Meter {
   return {
     id,
     deviceFamily: 'WATTWATCHERS',
-    deviceName: 'A3RM Auditor',
+    customName: 'A3RM Meter',
+    deviceName: 'A3RM Meter',
     deviceNameOverridden: false,
     deviceType: 'A3RM',
     deviceId: '',
@@ -460,12 +462,16 @@ const WW_LOAD_LABEL_BY_CODE: Record<string, string> = {
   EV_CHARGER: 'Other',
   VEHICLE_HOIST: 'Other',
   EXHAUST_FAN_SYSTEM: 'Other',
+  REFRIGERATION: 'Other',
+  COMPRESSED_AIR: 'Other',
 };
 
 const WW_CUSTOM_LOAD_LABEL_BY_CODE: Record<string, string> = {
   EV_CHARGER: 'EV Charger',
   VEHICLE_HOIST: 'Vehicle Hoist',
   EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
 };
 
 function prefillWwInstallationAnswers(
@@ -474,6 +480,12 @@ function prefillWwInstallationAnswers(
 ): void {
   if (meter.deviceType !== 'A3RM' && meter.deviceType !== 'A6M') return;
   answers['device.type'] = meter.deviceType;
+  answers['device.name'] = meter.customName?.trim()
+    || defaultMeterCustomName({
+      deviceModel: meter.deviceType,
+      customManufacturerName: meter.customManufacturerName,
+      customModelName: meter.customModelName,
+    });
   answers['device.id'] = meter.deviceId;
   answers['device.number'] = meter.deviceNumber ?? '';
 
@@ -564,6 +576,10 @@ export function createFormSubmission(
   const definition = FORM_DEFINITIONS.find((item) => item.type === type);
   if (!definition) throw new Error('Unknown Field App Complete form type.');
   const answers = createInitialFormAnswers(tree.installation, user);
+  if (type === 'ww-installation') {
+    answers['device.type'] = 'A3RM';
+    answers['device.name'] = defaultMeterCustomName({ deviceModel: 'A3RM' });
+  }
   if (context.boardId) {
     const board = tree.electricalAssets.find((item) => item.id === context.boardId);
     if (board) {
@@ -642,6 +658,26 @@ export function createAmendment(source: FormSubmission): FormSubmission {
   };
 }
 
+export function deleteDraftForm(
+  tree: InstallationTree,
+  formId: string,
+): FormSubmission {
+  const target = tree.formSubmissions.find((item) => item.id === formId);
+  if (!target) throw new Error('Form not found.');
+  if (target.status !== 'Draft') {
+    throw new Error('Completed forms are immutable and cannot be deleted.');
+  }
+  if (tree.formSubmissions.some((item) => item.supersedesId === formId)) {
+    throw new Error(
+      'This draft cannot be deleted while a later amendment refers to it.',
+    );
+  }
+  tree.formSubmissions = tree.formSubmissions.filter(
+    (item) => item.id !== formId,
+  );
+  return target;
+}
+
 export function applyDraftFormSnapshot(
   tree: InstallationTree,
   formId: string,
@@ -683,12 +719,6 @@ export function syncOperationalMeter(
         completed.meterId
           ? board.meters.find((item) => item.id === completed.meterId)
           : undefined,
-        suggestedDeviceDisplayName({
-          siteName: tree.installation.siteName,
-          zoneName: tree.zones.find((item) => item.id === board.zoneId)?.zoneName || 'Unknown zone',
-          deviceModel: completed.answers['device.type'] || 'Metering device',
-          serialNumber: completed.answers['device.id'],
-        }),
       )
     : (() => {
         const deviceType = completed.formType === 'a3rm-installation' ? 'A3RM' : 'A6M';
@@ -696,7 +726,8 @@ export function syncOperationalMeter(
         return {
           id,
           deviceFamily: 'WATTWATCHERS' as const,
-          deviceName: `${deviceType} Auditor`,
+          customName: defaultMeterCustomName({ deviceModel: deviceType }),
+          deviceName: defaultMeterCustomName({ deviceModel: deviceType }),
           deviceNameOverridden: false,
           deviceType,
           deviceId: String(completed.answers['auditor.serial_number'] ?? ''),

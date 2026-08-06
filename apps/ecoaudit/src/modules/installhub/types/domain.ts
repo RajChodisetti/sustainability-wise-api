@@ -17,6 +17,7 @@ export type DisplayCodeMetadata = {
   isOverridden: boolean;
   ruleVersion: number;
   overrideReason?: string | null;
+  provisional?: boolean;
 };
 
 export type ElectricalSource =
@@ -60,6 +61,7 @@ export type MeterDevice = {
   id: string;
   installationId: string;
   installedOnBoardId: string;
+  customName?: string | null;
   deviceFamily: 'WATTWATCHERS' | 'OTHER';
   deviceModel: MeterDeviceModel;
   customManufacturerName?: string | null;
@@ -257,6 +259,7 @@ export type Zone = {
   id: string;
   serverId?: string | null;
   installationId: string;
+  zoneCode?: string;
   zoneName: string;
   zoneDescription: string;
   photos: string[];
@@ -351,6 +354,7 @@ export type WattwatcherPhotos = {
 export type Meter = {
   id: string;
   deviceFamily?: 'WATTWATCHERS' | 'OTHER';
+  customName?: string | null;
   deviceName: string;
   deviceType: MeterDeviceType;
   deviceId: string;

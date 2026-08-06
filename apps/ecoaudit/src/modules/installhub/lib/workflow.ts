@@ -1,5 +1,10 @@
 import { validateForm } from '@/modules/installhub/forms/catalog';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
+import {
+  defaultMeterCustomName,
+  provisionalDisplayCodeV2,
+  resolvedZoneCodes,
+} from '@/modules/installhub/lib/naming';
 import type {
   BoardType,
   ChannelPurpose,
@@ -44,6 +49,8 @@ export const SITE_ASSET_TYPE_OPTIONS = [
   { code: 'EXHAUST_FAN_SYSTEM', label: 'Exhaust Fan System' },
   { code: 'POWER_OUTLET', label: 'Power Outlet' },
   { code: 'HEATER_GEYSER', label: 'Heater / Geyser' },
+  { code: 'REFRIGERATION', label: 'Refrigeration' },
+  { code: 'COMPRESSED_AIR', label: 'Compressed Air' },
   { code: 'OTHER', label: 'Other' },
 ] as const;
 
@@ -107,8 +114,10 @@ const ASSET_CODE_BY_LEGACY: Record<string, string> = {
   'General Power': 'POWER_OUTLET',
   'Hot Water': 'HEATER_GEYSER',
   'Heater / Geyser': 'HEATER_GEYSER',
-  Refrigeration: 'OTHER',
-  'Compressed Air': 'OTHER',
+  REFRIGERATION: 'REFRIGERATION',
+  Refrigeration: 'REFRIGERATION',
+  COMPRESSED_AIR: 'COMPRESSED_AIR',
+  'Compressed Air': 'COMPRESSED_AIR',
   Other: 'OTHER',
 };
 
@@ -151,6 +160,8 @@ export function legacySiteAssetType(code: string): SiteAssetType {
     EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
     POWER_OUTLET: 'Power Outlet',
     HEATER_GEYSER: 'Heater / Geyser',
+    REFRIGERATION: 'Refrigeration',
+    COMPRESSED_AIR: 'Compressed Air',
     OTHER: 'Other',
   } as Record<string, SiteAssetType>)[code] || (code as SiteAssetType);
 }
@@ -350,13 +361,30 @@ export function canonicalMeterDevice(
   prior?: MeterDevice,
 ): MeterDevice {
   const typeCode = meter.deviceType === 'Other' ? 'OTHER' : meter.deviceType;
-  const displayName = displayCodeMetadata(
-    tree,
-    typeCode,
-    meter.deviceNameOverridden ? meter.deviceName : '',
-    prior?.displayName,
-    meter.id,
-  );
+  const defaultCustomName = defaultMeterCustomName({
+    deviceModel: meter.deviceType,
+    customManufacturerName: meter.customManufacturerName,
+    customModelName: meter.customModelName,
+  });
+  const customName = meter.customName?.trim()
+    || prior?.customName?.trim()
+    || defaultCustomName;
+  const installedBoard = tree.electricalAssets.find((board) => board.id === boardId);
+  const displayName = (prior?.displayName || meter.customName?.trim())
+    ? provisionalDisplayCodeV2(tree, {
+        zoneId: installedBoard?.zoneId || 'ZONE',
+        customName,
+        fallbackType: defaultCustomName,
+        excludeId: meter.id,
+        current: prior?.displayName,
+      })
+    : displayCodeMetadata(
+        tree,
+        typeCode,
+        meter.deviceNameOverridden ? meter.deviceName : '',
+        undefined,
+        meter.id,
+      );
   const priorChannels = new Map(prior?.channels.map((channel) => [channel.id, channel]));
   const channels = canonicalChannels(meter).map((channel) => ({
     ...priorChannels.get(channel.id),
@@ -370,15 +398,12 @@ export function canonicalMeterDevice(
       id: meter.id,
       installationId: tree.installation.id,
       installedOnBoardId: boardId,
+      customName,
       deviceFamily: meter.deviceFamily || 'WATTWATCHERS',
       deviceModel: meter.deviceType === 'Other' ? 'OTHER' as const : meter.deviceType,
       customManufacturerName: meter.customManufacturerName || null,
       customModelName: meter.customModelName || null,
-      displayName: {
-        ...displayName,
-        value: meter.deviceNameOverridden ? meter.deviceName : displayName.value,
-        isOverridden: Boolean(meter.deviceNameOverridden),
-      },
+      displayName,
       serialNumber: meter.deviceId,
       deviceNumber: meter.deviceNumber || null,
       lifecycleState: meter.lifecycleState || 'ACTIVE',
@@ -687,7 +712,26 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
     ...supply,
     isDefault: supply.id === selectedDefaultId,
   }));
-  tree.meterDevices = meterDevices(tree);
+  const zoneCodes = resolvedZoneCodes(tree.zones);
+  tree.zones = tree.zones.map((zone) => ({
+    ...zone,
+    zoneCode: zoneCodes.get(zone.id) || 'ZONE',
+  }));
+  tree.meterDevices = meterDevices(tree).map((meter) => ({
+    ...meter,
+    customName: meter.customName?.trim() || defaultMeterCustomName(meter),
+  }));
+  const canonicalMetersById = new Map(
+    tree.meterDevices.map((meter) => [meter.id, meter]),
+  );
+  for (const board of tree.electricalAssets) {
+    board.meters = board.meters.map((meter) => {
+      const canonical = canonicalMetersById.get(meter.id);
+      return canonical
+        ? { ...meter, customName: canonical.customName }
+        : meter;
+    });
+  }
   tree.measurementAssignments = measurementAssignments(tree).map((assignment) => ({
     ...assignment,
     installationId: tree.installation.id,
@@ -911,6 +955,25 @@ export function meterBoardsForAsset(tree: InstallationTree, asset: SiteAsset): E
   return tree.electricalAssets.filter((board) => allowed.has(board.id));
 }
 
+/**
+ * Insert a newly-created board immediately upstream of an asset's supplying
+ * board. The asset's direct supply remains unchanged while the new board
+ * becomes an eligible meter location on its confirmed supply path.
+ */
+export function insertBoardUpstreamOfAssetSupply(
+  tree: InstallationTree,
+  asset: SiteAsset,
+  board: ElectricalAsset,
+): ElectricalAsset | null {
+  const source = assetElectricalSource(asset);
+  if (source.kind !== 'BOARD') return null;
+  const supplyingBoard = tree.electricalAssets.find((item) => item.id === source.boardId);
+  if (!supplyingBoard || supplyingBoard.id === board.id) return null;
+  applyBoardElectricalSource(board, boardElectricalSource(supplyingBoard));
+  applyBoardElectricalSource(supplyingBoard, { kind: 'BOARD', boardId: board.id });
+  return supplyingBoard;
+}
+
 function issue(
   code: string,
   entityType: ReadinessIssue['entityType'],
@@ -1053,7 +1116,10 @@ export function localReadiness(input: InstallationTree): InstallationReadiness {
     else if (duplicateCandidates(code, asset.id).length) issues.push(issue('DISPLAY_CODE_DUPLICATE', 'site_asset', asset.id, `Display name ${code} is already used.`, duplicateCandidates(code, asset.id)));
     const state = siteAssetMeteringState(asset);
     if (state.kind === 'TBC') {
-      issues.push(issue('METERING_STATE_INVALID', 'site_asset', asset.id, 'Confirm whether this asset is metered or unmetered.'));
+      issues.push({
+        ...issue('METERING_STATE_INVALID', 'site_asset', asset.id, 'Confirm whether this asset is metered or unmetered.'),
+        field: 'meteringState',
+      });
     }
     if (state.kind === 'METERED') {
       const assignment = assignments.find((item) => state.measurementAssignmentIds.includes(item.id));

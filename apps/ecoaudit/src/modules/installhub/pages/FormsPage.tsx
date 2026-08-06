@@ -30,6 +30,7 @@ import {
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs } from '@/modules/installhub/components/InstallHubUi';
+import { ConfirmDialog } from '@/modules/installhub/components/WorkflowUi';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
 import {
@@ -40,6 +41,7 @@ import {
   allowedFormDefinitions,
   createAmendment,
   createFormSubmission,
+  deleteDraftForm,
   type FormContext,
 } from '@/modules/installhub/lib/model';
 import type {
@@ -131,6 +133,8 @@ function FormSummaryCard({
   const router = useRouter();
   const toast = useToast();
   const definition = FORM_DEFINITION_BY_TYPE[form.formType];
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const hasPinnedVersion = Number.isInteger(recordVersionNumber)
     && (recordVersionNumber ?? 0) > 0;
   const expectedReport = useRef<InstallHubReportProvenance | null>(null);
@@ -186,7 +190,23 @@ function FormSummaryCard({
     }
   }
 
+  async function removeDraft() {
+    setDeleteBusy(true);
+    try {
+      await writer.mutate((tree) => {
+        deleteDraftForm(tree, form.id);
+      }, 'metadata');
+      setDeleteOpen(false);
+      toast.success('Draft deleted.');
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
+    <>
     <Card>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
@@ -226,6 +246,15 @@ function FormSummaryCard({
           >
             {form.status === 'Completed' ? 'View record' : 'Continue draft'}
           </LinkButton>
+          {form.status === 'Draft' ? (
+            <Button
+              variant="danger"
+              onClick={() => setDeleteOpen(true)}
+            >
+              <Icon name="trash" size={17} />
+              Delete draft
+            </Button>
+          ) : null}
           {form.status === 'Completed' ? (
             <>
               <Button
@@ -289,6 +318,20 @@ function FormSummaryCard({
         </div>
       ) : null}
     </Card>
+    <ConfirmDialog
+      open={deleteOpen}
+      title={`Delete ${definition.shortTitle} draft?`}
+      description="This removes the unfinished form and its evidence references from the installation."
+      consequences={[
+        `${form.attachments.length} evidence photo reference${form.attachments.length === 1 ? '' : 's'} will be removed`,
+        'Completed forms and operational records are unchanged',
+      ]}
+      confirmLabel="Delete draft"
+      busy={deleteBusy}
+      onConfirm={() => void removeDraft()}
+      onCancel={() => setDeleteOpen(false)}
+    />
+    </>
   );
 }
 

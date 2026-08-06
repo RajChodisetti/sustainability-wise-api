@@ -6,10 +6,12 @@ import {
   assertStructurallySafeTree,
   canonicalPayloadHash,
   canonicalTreeMutationFingerprint,
+  deriveZoneCode,
   deriveVirtualMeterDefinitions,
   installationReadiness,
   installationDisplayCodePrefix,
   isValidInstallationSiteCode,
+  isValidInstallationZoneCode,
   normalizeInstallationTreeV2,
   type CanonicalFormSubmission,
   type CanonicalInstallationTree,
@@ -32,6 +34,41 @@ test('historical site codes project to one bounded display-code prefix without m
   assert.equal(installationDisplayCodePrefix('Legacy Site Code / 2024'), 'LEGACY-SITE-CODE');
   assert.equal(installationDisplayCodePrefix('---'), 'SITE');
   assert.equal(installationDisplayCodePrefix('123456789012345-678'), '123456789012345');
+});
+
+test('zone-code contract derives bounded slugs and rejects invalid explicit codes', () => {
+  assert.equal(deriveZoneCode('  Plant room / Level 1  '), 'PLANT-ROOM-LEVEL');
+  assert.equal(deriveZoneCode('---'), 'ZONE');
+  assert.equal(isValidInstallationZoneCode('PLANT-1'), true);
+  assert.equal(isValidInstallationZoneCode('plant-1'), false);
+
+  const legacy = structuredClone(baseTree()) as unknown as Record<string, unknown>;
+  (legacy.zones as Array<Record<string, unknown>>)[0].zoneCode = undefined;
+  assert.equal(normalizeInstallationTreeV2(legacy).zones[0].zoneCode, 'PLANT-ROOM');
+
+  const duplicate = baseTree();
+  duplicate.zones.push({
+    ...duplicate.zones[0],
+    id: 'zone-2',
+  });
+  assert.throws(() => normalizeInstallationTreeV2(duplicate), /Duplicate zoneCode/);
+});
+
+test('canonicalizer backfills an editable meter custom name for legacy wire payloads', () => {
+  const raw = structuredClone(baseTree()) as unknown as Record<string, unknown>;
+  const meter = structuredClone(a3Meter()) as unknown as Record<string, unknown>;
+  delete meter.customName;
+  raw.meterDevices = [meter];
+  (raw.electricalAssets as Array<Record<string, unknown>>)[0].meterPresent = true;
+  const normalized = normalizeInstallationTreeV2(raw);
+  assert.equal(normalized.meterDevices[0].customName, 'A3RM Meter');
+
+  const editable = structuredClone(raw);
+  (editable.meterDevices as Array<Record<string, unknown>>)[0].customName = 'Main incomer meter';
+  assert.equal(
+    normalizeInstallationTreeV2(editable).meterDevices[0].customName,
+    'Main incomer meter',
+  );
 });
 
 test('canonicalizer preserves a non-empty historical site code for immutable replay', () => {
@@ -103,6 +140,7 @@ function baseTree(): CanonicalInstallationTree {
     zones: [{
       id: 'zone-1',
       installationId: 'installation-1',
+      zoneCode: 'PLANT-ROOM',
       zoneName: 'Plant room',
       zoneDescription: '',
       photos: [],
@@ -158,6 +196,7 @@ function a3Meter(serialNumber = 'serial-old'): MeterDevice {
     id: 'meter-1',
     installationId: 'installation-1',
     installedOnBoardId: 'board-1',
+    customName: 'A3RM Meter',
     deviceFamily: 'WATTWATCHERS',
     deviceModel: 'A3RM',
     deviceNumber: 'device-1',
@@ -181,6 +220,8 @@ const WW_FORM_CUSTOM_LOAD_BY_CODE: Readonly<Record<string, string>> = {
   EV_CHARGER: 'EV Charger',
   VEHICLE_HOIST: 'Vehicle Hoist',
   EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
 };
 
 function wwAnswers(meter: MeterDevice): Record<string, string> {
@@ -250,20 +291,65 @@ test('legacy meter projection uses friendly load labels without weakening canoni
   meter.channels = [
     channel(1, 'MAIN_SUPPLY'),
     { ...channel(2), loadTypeCode: 'LIGHTING' },
-    { ...channel(3), loadTypeCode: 'OTHER', customLoadTypeName: 'Refrigeration' },
-    channel(4, 'SPARE'),
+    { ...channel(3), loadTypeCode: 'REFRIGERATION' },
+    { ...channel(4), loadTypeCode: 'COMPRESSED_AIR' },
+    { ...channel(5), loadTypeCode: 'OTHER', customLoadTypeName: 'Blast Freezer' },
+    channel(6, 'SPARE'),
   ];
   tree.meterDevices = [meter];
   tree.electricalAssets[0].meterPresent = true;
 
   const legacy = projectLegacyInstallationTree(tree);
+  assert.equal(legacy.electricalAssets[0]?.meters[0]?.deviceName, 'A3RM Meter');
   assert.deepEqual(
     legacy.electricalAssets[0]?.meters[0]?.wwChannels.map((item) => item.loadType),
-    ['Mains Supply', 'Lighting', 'Refrigeration', 'Not Used'],
+    ['Mains Supply', 'Lighting', 'Refrigeration', 'Compressed Air', 'Blast Freezer', 'Not Used'],
   );
   assert.deepEqual(
     tree.meterDevices[0]?.channels.map((item) => item.loadTypeCode ?? null),
-    [null, 'LIGHTING', 'OTHER', null],
+    [null, 'LIGHTING', 'REFRIGERATION', 'COMPRESSED_AIR', 'OTHER', null],
+  );
+});
+
+test('canonical taxonomy accepts cold-service assets while retaining arbitrary custom types', () => {
+  const tree = baseTree();
+  tree.siteAssets = [
+    {
+      ...tree.siteAssets[0],
+      id: 'asset-refrigeration',
+      assetName: 'Cool room',
+      typeCode: 'REFRIGERATION',
+      displayCode: display('ACME-REFRIGERATION-001'),
+    },
+    {
+      ...tree.siteAssets[0],
+      id: 'asset-compressed-air',
+      assetName: 'Workshop compressor',
+      typeCode: 'COMPRESSED_AIR',
+      displayCode: display('ACME-COMPRESSED-AIR-001'),
+    },
+    {
+      ...tree.siteAssets[0],
+      id: 'asset-custom',
+      assetName: 'Blast freezer',
+      typeCode: 'OTHER',
+      customTypeName: 'Blast Freezer',
+      displayCode: display('ACME-OTHER-001'),
+    },
+  ];
+
+  const normalized = normalizeInstallationTreeV2(tree);
+  assert.deepEqual(
+    normalized.siteAssets.map((asset) => [asset.typeCode, asset.customTypeName ?? null]),
+    [
+      ['COMPRESSED_AIR', null],
+      ['OTHER', 'Blast Freezer'],
+      ['REFRIGERATION', null],
+    ],
+  );
+  assert.deepEqual(
+    buildAllAssetsView(normalized, 1).assets.map((asset) => asset.typeLabel),
+    ['Compressed Air', 'Blast Freezer', 'Refrigeration'],
   );
 });
 
@@ -664,28 +750,59 @@ test('strict v2 form lineage and historical meter state are structurally enforce
   );
 });
 
-test('display allocation is deterministic, installation-wide, and never reuses claims', () => {
+test('display allocation v2 is deterministic, zone-scoped across entity kinds, and never reuses claims', () => {
   const initial = baseTree();
   initial.electricalAssets[0].displayCode = display('');
   initial.siteAssets[0].displayCode = display('');
+  const meter = a3Meter();
+  meter.displayName = display('');
+  initial.meterDevices = [meter];
   const claims = allocateDisplayCodes({ tree: initial, existingClaims: [] });
-  assert.equal(initial.electricalAssets[0].displayCode.value, 'ACME-MSB-001');
-  assert.equal(initial.siteAssets[0].displayCode.value, 'ACME-HVAC-001');
+  assert.equal(initial.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
+  assert.equal(initial.meterDevices[0].displayName.value, 'ACME-PLANT-ROOM-02-A3RM-METER');
+  assert.equal(initial.siteAssets[0].displayCode.value, 'ACME-PLANT-ROOM-03-AIR-CONDITIONER');
+  assert.deepEqual(claims.map((claim) => claim.sequence), [1, 2, 3]);
+  assert.ok(claims.every((claim) => claim.zoneId === 'zone-1' && claim.ruleVersion === 2));
 
   const replacement = baseTree();
   replacement.electricalAssets = [{
     ...replacement.electricalAssets[0],
     id: 'board-2',
+    assetName: 'Replacement main board',
     displayCode: display(''),
   }];
   replacement.siteAssets[0].electricalSource = { kind: 'GRID', gridSupplyId: 'grid-1' };
   allocateDisplayCodes({ tree: replacement, existingClaims: claims });
-  assert.equal(replacement.electricalAssets[0].displayCode.value, 'ACME-MSB-002');
+  assert.equal(
+    replacement.electricalAssets[0].displayCode.value,
+    'ACME-PLANT-ROOM-04-REPLACEMENT-MAIN-BOARD',
+  );
   assert.ok(claims.some((claim) => claim.entityId === 'board-1'));
+
+  const otherZone = baseTree();
+  otherZone.zones.push({
+    ...otherZone.zones[0],
+    id: 'zone-2',
+    zoneCode: 'WAREHOUSE',
+    zoneName: 'Warehouse',
+  });
+  otherZone.electricalAssets[0] = {
+    ...otherZone.electricalAssets[0],
+    id: 'warehouse-board',
+    zoneId: 'zone-2',
+    assetName: 'Distribution board',
+    displayCode: display(''),
+  };
+  otherZone.siteAssets = [];
+  allocateDisplayCodes({ tree: otherZone, existingClaims: claims });
+  assert.equal(
+    otherZone.electricalAssets[0].displayCode.value,
+    'ACME-WAREHOUSE-01-DISTRIBUTION-BOARD',
+  );
 
   const collision = baseTree();
   collision.siteAssets[0].id = 'asset-new';
-  collision.siteAssets[0].displayCode = display('ACME-MSB-001', true);
+  collision.siteAssets[0].displayCode = display('ACME-PLANT-ROOM-01-MAIN-BOARD', true);
   assert.throws(
     () => allocateDisplayCodes({ tree: collision, existingClaims: claims }),
     (error: unknown) => error instanceof CanonicalInputError
@@ -693,46 +810,66 @@ test('display allocation is deterministic, installation-wide, and never reuses c
   );
 
   const defensive = baseTree();
-  defensive.electricalAssets[0].displayCode = display('');
+  defensive.electricalAssets[0].id = 'legacy-board';
+  defensive.electricalAssets[0].displayCode = display('FORGED-CLIENT-VALUE');
+  defensive.siteAssets = [];
   allocateDisplayCodes({
     tree: defensive,
     existingClaims: [{
       entityType: 'board',
       entityId: 'legacy-board',
+      zoneId: null,
       typeCode: 'MSB',
       sequence: null,
       displayCode: 'ACME-MSB-001',
       normalizedDisplayCode: 'ACME-MSB-001',
-      generated: false,
+      generated: true,
       ruleVersion: 1,
     }],
   });
-  assert.equal(defensive.electricalAssets[0].displayCode.value, 'ACME-MSB-002');
+  assert.equal(defensive.electricalAssets[0].displayCode.value, 'ACME-MSB-001');
+  assert.equal(defensive.electricalAssets[0].displayCode.ruleVersion, 1);
 
   const frozen = structuredClone(initial);
   frozen.installation.siteCode = 'RENAMED';
+  frozen.zones[0].zoneCode = 'RENAMED-ZONE';
   frozen.electricalAssets[0].typeCode = 'DB';
   frozen.electricalAssets[0].displayCode.ruleVersion = 99;
   const frozenNewClaims = allocateDisplayCodes({ tree: frozen, existingClaims: claims });
-  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-MSB-001');
-  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 1);
+  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
+  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 2);
   assert.equal(frozenNewClaims.length, 0);
 
   frozen.electricalAssets[0].displayCode = display('CUSTOM-MAIN', true);
   const overrideClaims = allocateDisplayCodes({ tree: frozen, existingClaims: claims });
   assert.equal(overrideClaims.length, 0);
-  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-MSB-001');
+  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
   assert.equal(frozen.electricalAssets[0].displayCode.isOverridden, false);
 
   const newRuleEntity = baseTree();
   newRuleEntity.electricalAssets[0].id = 'board-new-rule';
+  newRuleEntity.siteAssets = [];
   newRuleEntity.electricalAssets[0].displayCode = {
-    ...display(''),
+    ...display('CLIENT-PROVISIONAL'),
     ruleVersion: 99,
+    provisional: true,
   };
-  const newRuleClaims = allocateDisplayCodes({ tree: newRuleEntity, existingClaims: claims });
+  const newRuleClaims = allocateDisplayCodes({ tree: newRuleEntity, existingClaims: [] });
   assert.equal(newRuleClaims[0].entityId, 'board-new-rule');
-  assert.equal(newRuleClaims[0].ruleVersion, 99);
+  assert.equal(newRuleClaims[0].ruleVersion, 2);
+  assert.equal(
+    newRuleEntity.electricalAssets[0].displayCode.value,
+    'ACME-PLANT-ROOM-01-MAIN-BOARD',
+  );
+
+  const longName = baseTree();
+  longName.electricalAssets[0].id = 'long-name-board';
+  longName.electricalAssets[0].assetName = 'A very long custom switchboard name '.repeat(5);
+  longName.electricalAssets[0].displayCode = display('');
+  longName.siteAssets = [];
+  allocateDisplayCodes({ tree: longName, existingClaims: [] });
+  assert.equal(longName.electricalAssets[0].displayCode.value.length, 64);
+  assert.match(longName.electricalAssets[0].displayCode.value, /^ACME-PLANT-ROOM-01-/);
 });
 
 test('historical site code stays unchanged while new display codes use the bounded prefix', () => {
@@ -742,7 +879,10 @@ test('historical site code stays unchanged while new display codes use the bound
   tree.siteAssets = [];
   allocateDisplayCodes({ tree, existingClaims: [] });
   assert.equal(tree.installation.siteCode, 'Legacy Site Code / 2024');
-  assert.equal(tree.electricalAssets[0].displayCode.value, 'LEGACY-SITE-CODE-MSB-001');
+  assert.equal(
+    tree.electricalAssets[0].displayCode.value,
+    'LEGACY-SITE-CODE-PLANT-ROOM-01-MAIN-BOARD',
+  );
 });
 
 test('readiness enforces exact A3/A6 ordinals, grouping, purpose, and WW context', () => {
@@ -1118,6 +1258,33 @@ test('confirmed unmetered assets remain non-blocking while broken and TBC mappin
   assert.equal(installationReadiness(tbc).readyToComplete, false);
   assert.equal(buildAllAssetsView(tbc, 1).assets[0]?.coverage.kind, 'TBC');
 
+  const unmeteredWithAssignment = structuredClone(unmetered);
+  const assignedMeter = a3Meter();
+  unmeteredWithAssignment.meterDevices = [assignedMeter];
+  unmeteredWithAssignment.measurementAssignments = [{
+    id: 'unexpected-direct-assignment',
+    installationId: unmeteredWithAssignment.installation.id,
+    meterId: assignedMeter.id,
+    channelIds: [assignedMeter.channels[0].id],
+    phaseMode: 'SINGLE_PHASE',
+    target: {
+      kind: 'SITE_ASSET',
+      siteAssetId: unmeteredWithAssignment.siteAssets[0].id,
+    },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  unmeteredWithAssignment.siteAssets[0].meterPresent = true;
+  const unmeteredAssignmentIssue = installationReadiness(unmeteredWithAssignment).issues.find(
+    (issue) => issue.code === 'METERING_STATE_INVALID'
+      && issue.entityId === 'asset-1'
+      && issue.message.startsWith('Confirmed-unmetered'),
+  );
+  assert.equal(
+    unmeteredAssignmentIssue?.field,
+    'meteringState.measurementAssignmentIds',
+  );
+
   const invalidRelationship = structuredClone(unmetered);
   const invalidMeter = a3Meter();
   invalidRelationship.meterDevices = [invalidMeter];
@@ -1221,7 +1388,7 @@ test('custom labels are bounded before persistence', () => {
   assert.throws(() => normalizeInstallationTreeV2(tree), /at most 120 characters/);
 });
 
-test('only custom channels require explicit capabilities and A3/A6 ratings use pinned vocabularies', () => {
+test('only custom channels require capabilities and WW ratings accept Base44 plus persisted vocabularies', () => {
   const custom = baseTree();
   custom.electricalAssets[0].meterPresent = true;
   custom.meterDevices = [{
@@ -1239,11 +1406,16 @@ test('only custom channels require explicit capabilities and A3/A6 ratings use p
   const meter = a3Meter();
   meter.channels.forEach((item) => {
     item.capabilities = { current: true };
-    item.sensorRating = '3000A - 9cm';
+    item.sensorRating = '10cm-200A';
   });
   a3.electricalAssets[0].meterPresent = true;
   a3.meterDevices = [meter];
   a3.formSubmissions = [completedWwForm('form-1', meter)];
+  assert.equal(
+    installationReadiness(a3).issues.some((issue) => issue.code === 'SENSOR_RATING_INVALID'),
+    false,
+  );
+  meter.channels[0].sensorRating = '3000A - 9cm';
   assert.equal(
     installationReadiness(a3).issues.some((issue) => issue.code === 'SENSOR_RATING_INVALID'),
     false,
@@ -1702,7 +1874,7 @@ test('historical snapshot pins rendered labels, versions, readiness, and artifac
   tree.installation.timezone = 'Invalid/Timezone';
 
   assert.equal(snapshot.controlledLabelCatalog.boards.MSSB, 'Main Sub-Switchboard');
-  assert.equal(snapshot.displayCodeRuleVersion, 1);
+  assert.equal(snapshot.displayCodeRuleVersion, 2);
   assert.equal(snapshot.virtualMeterFormulaVersion, 1);
   assert.equal(snapshot.viewArtifacts.mapping.installation.recordVersionNumber, 9);
   assert.equal(
@@ -1787,5 +1959,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.3');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.4');
 });

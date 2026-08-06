@@ -89,6 +89,7 @@ export function getInstallationReadiness(
     q?: string;
     severity?: 'ERROR' | 'WARNING';
     entityType?: string;
+    category?: 'RECONCILIATION' | 'COMPLETION';
     zoneId?: string;
   } = {},
 ): Promise<InstallationReadiness> {
@@ -101,6 +102,7 @@ export function getInstallationReadiness(
   if (options.q?.trim()) query.set('q', options.q.trim());
   if (options.severity) query.set('severity', options.severity);
   if (options.entityType?.trim()) query.set('entityType', options.entityType.trim());
+  if (options.category) query.set('category', options.category);
   if (options.zoneId?.trim()) query.set('zoneId', options.zoneId.trim());
   const suffix = query.size ? `?${query}` : '';
   return installHubRequest(

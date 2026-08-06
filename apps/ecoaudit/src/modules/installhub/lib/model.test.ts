@@ -12,6 +12,7 @@ import {
   createInstallationTree,
   createSiteAsset,
   createZone,
+  deleteDraftForm,
   removeZone,
   syncOperationalMeter,
   wwFormCompletionContextError,
@@ -55,6 +56,11 @@ test('site-code editing preserves only the unchanged authoritative historical va
   );
 });
 
+test('new switchboards do not create a switchboard-level phase value', () => {
+  const board = createBoard('installation-1', 'zone-1');
+  assert.equal(board.phase, null);
+});
+
 function fixtureTree() {
   return createInstallationTree(
     {
@@ -67,6 +73,32 @@ function fixtureTree() {
     user,
   );
 }
+
+test('draft forms can be deleted while completed and referenced records remain immutable', () => {
+  const tree = fixtureTree();
+  const removable = createFormSubmission(tree, 'captis-logger', user);
+  removable.attachments.push({
+    id: 'attachment-1',
+    slot: 'site.photo',
+    uri: 'https://example.test/evidence.jpg',
+    mimeType: 'image/jpeg',
+    capturedAt: '2026-08-05T00:00:00.000Z',
+  });
+  tree.formSubmissions.push(removable);
+
+  assert.equal(deleteDraftForm(tree, removable.id).id, removable.id);
+  assert.equal(tree.formSubmissions.some((form) => form.id === removable.id), false);
+
+  const completed = createFormSubmission(tree, 'captis-logger', user);
+  completed.status = 'Completed';
+  tree.formSubmissions.push(completed);
+  assert.throws(() => deleteDraftForm(tree, completed.id), /immutable/);
+
+  const referenced = createFormSubmission(tree, 'captis-logger', user);
+  const amendment = createAmendment(referenced);
+  tree.formSubmissions.push(referenced, amendment);
+  assert.throws(() => deleteDraftForm(tree, referenced.id), /later amendment/);
+});
 
 test('meter-linked reconciliation keeps the required WW installation form available', () => {
   assert.deepEqual(
@@ -271,8 +303,9 @@ test('meter-linked WW forms prefill canonical device and channel context', () =>
   });
 
   assert.equal(form.answers['device.type'], 'A3RM');
+  assert.equal(form.answers['device.name'], 'A3RM Meter');
   assert.equal(form.answers['device.id'], 'A3RM-001');
-  assert.equal(form.answers['device.number'], undefined);
+  assert.equal(form.answers['device.number'], '7');
   assert.equal(form.answers['channel.1.purpose'], 'Main board supply');
   assert.equal(form.answers['channel.1.load'], 'Mains Supply');
   assert.equal(form.answers['channel.1.rating'], '3000A - 9cm');
@@ -286,6 +319,49 @@ test('meter-linked WW forms prefill canonical device and channel context', () =>
   assert.equal(form.answers['channel.3.rating'], undefined);
   assert.equal(form.answers['channel.3.description'], undefined);
   assert.equal(form.answers['existing.device_id'], undefined);
+});
+
+test('WW forms project first-class cold-service load types through editable Other labels', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Cold services',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.meters = [{
+    id: 'meter-cold-services',
+    deviceFamily: 'WATTWATCHERS',
+    deviceName: 'A3RM Meter',
+    deviceType: 'A3RM',
+    deviceId: 'A3RM-COLD-001',
+    wwChannels: [
+      {
+        id: 'meter-cold-services:2',
+        ordinal: 2,
+        purpose: 'SUB_CIRCUIT',
+        loadType: 'REFRIGERATION',
+      },
+      {
+        id: 'meter-cold-services:3',
+        ordinal: 3,
+        purpose: 'SUB_CIRCUIT',
+        loadType: 'COMPRESSED_AIR',
+      },
+    ],
+  }];
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+    meterId: 'meter-cold-services',
+  });
+
+  assert.equal(form.answers['channel.2.load'], 'Other');
+  assert.equal(form.answers['channel.2.custom_load_type'], 'Refrigeration');
+  assert.equal(form.answers['channel.3.load'], 'Other');
+  assert.equal(form.answers['channel.3.custom_load_type'], 'Compressed Air');
 });
 
 test('removeZone cascades owned records and marks surviving relationships TBC', () => {
@@ -492,12 +568,10 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   assert.equal(board.meters.length, 1);
   assert.equal(board.meters[0].deviceType, 'A3RM');
   assert.equal(board.meters[0].deviceId, 'A3RM-001');
-  assert.equal(board.meters[0].deviceNumber, 'A3RM-001');
-  assert.match(board.meters[0].deviceName, /Site/);
-  assert.match(board.meters[0].deviceName, /A3RM/);
-  assert.match(board.meters[0].deviceName, /A3RM-001/);
-  assert.ok(board.meters[0].deviceName.length <= 64);
-  assert.equal(board.meters[0].deviceNameOverridden, true);
+  assert.equal(board.meters[0].deviceNumber, '7');
+  assert.equal(board.meters[0].customName, 'A3RM Meter');
+  assert.equal(board.meters[0].deviceName, 'A3RM Meter');
+  assert.equal(board.meters[0].deviceNameOverridden, false);
   assert.equal(board.meters[0].wwChannels?.length, 3);
   assert.equal(board.meters[0].wwChannels?.[0].description, 'Incoming mains');
   assert.equal(board.meters[0].wwChannels?.[0].purpose, 'MAIN_SUPPLY');

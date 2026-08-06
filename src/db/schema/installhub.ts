@@ -98,6 +98,7 @@ export const ihZones = pgTable('ih_zones', {
   id: text('id').primaryKey(),
   ...syncColumns,
   installationId: text('installation_id').notNull(),
+  zoneCode: text('zone_code').notNull().default('ZONE'),
   zoneName: text('zone_name').notNull(),
   zoneDescription: text('zone_description').notNull().default(''),
   photos: jsonb('photos').notNull().default([]).$type<string[]>(),
@@ -105,6 +106,9 @@ export const ihZones = pgTable('ih_zones', {
 }, (table) => [
   index('ih_zones_installation_idx').on(table.installationId),
   uniqueIndex('ih_zones_installation_id_unique').on(table.installationId, table.id),
+  uniqueIndex('ih_zones_active_code_unique')
+    .on(table.installationId, table.zoneCode)
+    .where(sql`${table.deletedAt} IS NULL`),
   foreignKey({
     columns: [table.installationId],
     foreignColumns: [ihInstallations.id],
@@ -247,6 +251,7 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   ...syncColumns,
   installationId: text('installation_id').notNull(),
   installedOnBoardId: text('installed_on_board_id').notNull(),
+  customName: text('custom_name').notNull().default('Meter'),
   deviceFamily: text('device_family').notNull(),
   deviceModel: text('device_model').notNull(),
   customManufacturerName: text('custom_manufacturer_name'),
@@ -471,6 +476,7 @@ export const ihFormSubmissions = pgTable('ih_form_submissions', {
 export const ihDisplayCodeClaims = pgTable('ih_display_code_claims', {
   id: text('id').primaryKey(),
   installationId: text('installation_id').notNull(),
+  zoneId: text('zone_id'),
   entityType: text('entity_type').notNull(),
   entityId: text('entity_id').notNull(),
   typeCode: text('type_code').notNull(),
@@ -490,6 +496,9 @@ export const ihDisplayCodeClaims = pgTable('ih_display_code_claims', {
     table.typeCode,
     table.sequence,
   ),
+  uniqueIndex('ih_display_code_claims_zone_sequence_unique')
+    .on(table.installationId, table.zoneId, table.sequence)
+    .where(sql`${table.ruleVersion} = 2 AND ${table.zoneId} IS NOT NULL AND ${table.sequence} IS NOT NULL`),
   index('ih_display_code_claims_entity_idx').on(
     table.installationId,
     table.entityType,
@@ -499,6 +508,11 @@ export const ihDisplayCodeClaims = pgTable('ih_display_code_claims', {
     columns: [table.installationId],
     foreignColumns: [ihInstallations.id],
     name: 'ih_display_code_claims_installation_fk',
+  }).onDelete('restrict'),
+  foreignKey({
+    columns: [table.installationId, table.zoneId],
+    foreignColumns: [ihZones.installationId, ihZones.id],
+    name: 'ih_display_code_claims_zone_fk',
   }).onDelete('restrict'),
 ]);
 

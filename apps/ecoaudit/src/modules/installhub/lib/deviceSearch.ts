@@ -21,6 +21,7 @@ export type DeviceSearchRecord = {
   meterId: string;
   deviceName: string;
   deviceModel: string;
+  supportsCommsReplacement: boolean;
   serialNumber: string;
   deviceNumber: string;
   searchText: string;
@@ -61,6 +62,8 @@ export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchReco
         deviceModel: meter.deviceModel === 'OTHER'
           ? meter.customModelName?.trim() || 'Other device'
           : meter.deviceModel,
+        supportsCommsReplacement: meter.deviceFamily === 'WATTWATCHERS'
+          && (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M'),
         serialNumber: meter.serialNumber,
         deviceNumber: meter.deviceNumber?.trim() || '',
         searchText: '',
@@ -109,6 +112,21 @@ export function createReplacementForm(
   user: InstallHubUser,
   record: Pick<DeviceSearchRecord, 'zoneId' | 'boardId' | 'meterId'>,
 ): FormSubmission {
+  const meter = meterDevices(tree).find((item) => item.id === record.meterId);
+  if (
+    meter?.deviceFamily !== 'WATTWATCHERS'
+    || (meter.deviceModel !== 'A3RM' && meter.deviceModel !== 'A6M')
+  ) {
+    throw new Error('The comms-fault replacement form supports A3RM and A6M devices only.');
+  }
+  const board = tree.electricalAssets.find((item) => item.id === record.boardId);
+  if (
+    !board
+    || board.zoneId !== record.zoneId
+    || meter.installedOnBoardId !== record.boardId
+  ) {
+    throw new Error('The selected device is not installed on this switchboard. Refresh the installation and try again.');
+  }
   const form = createFormSubmission(tree, 'comms-fault', user, record);
   form.answers['works.replace_device'] = 'yes';
   tree.formSubmissions.push(form);

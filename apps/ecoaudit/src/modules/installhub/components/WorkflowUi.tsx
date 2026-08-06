@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import type { TreeWriteState } from '@/modules/installhub/hooks/useInstallationTree';
@@ -443,15 +443,21 @@ export function ConfirmDialog({
   const descriptionId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
+  const cancelFromDialogEffect = useEffectEvent(() => {
+    if (!busy) onCancel();
+  });
 
   useEffect(() => {
     if (!open) return;
     const prior = document.activeElement as HTMLElement | null;
-    window.setTimeout(() => summaryRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => {
+      if (dialogRef.current?.contains(document.activeElement)) return;
+      summaryRef.current?.focus();
+    }, 0);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !busy) {
+      if (event.key === 'Escape') {
         event.preventDefault();
-        onCancel();
+        cancelFromDialogEffect();
         return;
       }
       if (event.key !== 'Tab' || !dialogRef.current) return;
@@ -473,10 +479,11 @@ export function ConfirmDialog({
     };
     document.addEventListener('keydown', onKeyDown);
     return () => {
+      window.clearTimeout(focusTimer);
       document.removeEventListener('keydown', onKeyDown);
       prior?.focus();
     };
-  }, [busy, onCancel, open]);
+  }, [open]);
 
   if (!open) return null;
   return (

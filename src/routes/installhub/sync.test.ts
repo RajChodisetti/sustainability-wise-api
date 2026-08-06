@@ -473,6 +473,85 @@ test('canonical update preparation hydrates server metadata but preserves top-le
   );
 });
 
+test('canonical update preparation preserves authoritative zone codes for legacy clients', () => {
+  const write = {
+    ...freshCanonicalWrite('zone-code-existing', {
+      externalKey: 'ih_zone_code',
+      siteCode: 'ZONE-SITE',
+      timezone: 'Australia/Sydney',
+      treeRevision: 4,
+      recordVersionNumber: 1,
+    }, 4),
+    zones: [{
+      id: 'zone-existing',
+      installationId: 'zone-code-existing',
+      zoneName: 'Renamed by old client',
+      zoneDescription: '',
+      photos: [],
+    }, {
+      id: 'zone-new',
+      installationId: 'zone-code-existing',
+      zoneName: 'Loading dock',
+      zoneDescription: '',
+      photos: [],
+    }],
+  };
+  const prepared = prepareCanonicalInstallHubWrite(write, {
+    externalKey: 'ih_zone_code',
+    siteCode: 'ZONE-SITE',
+    timezone: 'Australia/Sydney',
+    treeRevision: 4,
+    recordVersionNumber: 1,
+    zoneCodes: new Map([['zone-existing', 'ORIGINAL-ZONE']]),
+  }, 'unused');
+  const normalized = normalizeInstallationTreeV2(prepared);
+  assert.equal(normalized.zones.find((zone) => zone.id === 'zone-existing')?.zoneCode, 'ORIGINAL-ZONE');
+  assert.equal(normalized.zones.find((zone) => zone.id === 'zone-new')?.zoneCode, 'LOADING-DOCK');
+});
+
+test('canonical update preparation preserves meter custom names omitted by legacy clients', () => {
+  const write = {
+    ...freshCanonicalWrite('meter-name-existing', {
+      externalKey: 'ih_meter_name',
+      siteCode: 'METER-SITE',
+      timezone: 'Australia/Sydney',
+      treeRevision: 5,
+      recordVersionNumber: 2,
+    }, 5),
+    meterDevices: [{
+      id: 'meter-omitted',
+    }, {
+      id: 'meter-blank',
+      customName: '   ',
+    }, {
+      id: 'meter-explicit',
+      customName: 'Client-edited meter',
+    }, {
+      id: 'meter-new',
+    }],
+  };
+  const prepared = prepareCanonicalInstallHubWrite(write, {
+    externalKey: 'ih_meter_name',
+    siteCode: 'METER-SITE',
+    timezone: 'Australia/Sydney',
+    treeRevision: 5,
+    recordVersionNumber: 2,
+    meterCustomNames: new Map([
+      ['meter-omitted', 'Main incomer meter'],
+      ['meter-blank', 'Solar export meter'],
+      ['meter-explicit', 'Prior meter name'],
+    ]),
+  }, 'unused');
+
+  assert.equal(prepared.meterDevices?.[0]?.customName, 'Main incomer meter');
+  assert.equal(prepared.meterDevices?.[1]?.customName, 'Solar export meter');
+  assert.equal(prepared.meterDevices?.[2]?.customName, 'Client-edited meter');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(prepared.meterDevices?.[3] ?? {}, 'customName'),
+    false,
+  );
+});
+
 test('canonical write preparation keeps explicit invalid metadata fail-closed', () => {
   for (const installation of [
     { treeRevision: '0', recordVersionNumber: 0 },

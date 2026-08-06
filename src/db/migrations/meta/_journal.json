@@ -148,6 +148,13 @@
       "when": 1785687470633,
       "tag": "0020_installhub_meter_commissioning_data",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785984485599,
+      "tag": "0021_installhub_naming_rule_v2",
+      "breakpoints": true
     }
   ]
 }

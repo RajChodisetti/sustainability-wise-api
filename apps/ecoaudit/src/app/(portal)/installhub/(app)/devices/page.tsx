@@ -1,3 +1,5 @@
-import { InstallHubDeviceSearchPage } from '@/modules/installhub/pages/DeviceSearchPage';
+import { redirect } from 'next/navigation';
 
-export default InstallHubDeviceSearchPage;
+export default function LegacyInstallHubDeviceSearchPage() {
+  redirect('/installhub/installations');
+}

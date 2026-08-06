@@ -513,7 +513,6 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const fieldChildren: ChildNavItem[] = [
     { href: '/installhub/dashboard', label: 'Field App Complete', icon: 'tool', exact: true },
     { href: '/installhub/installations', label: 'Installations', icon: 'building' },
-    { href: '/installhub/devices', label: 'Find devices', icon: 'search' },
     { href: '/installhub/settings', label: 'Settings', icon: 'settings' },
     ...(ihAdmin
       ? [{ href: '/installhub/admin/users', label: 'User management', icon: 'shield' as IconName }]

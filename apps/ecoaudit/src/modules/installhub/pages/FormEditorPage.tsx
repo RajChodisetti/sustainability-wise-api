@@ -53,10 +53,10 @@ import {
 import {
   FORM_DEFINITION_BY_TYPE,
   answersAfterChange,
+  editorOptionsForField,
   formValidationIssues,
   isFieldVisible,
   isSectionVisible,
-  optionsForField,
   requiredProgress,
   type FormFieldDefinition,
 } from '@/modules/installhub/forms/catalog';
@@ -71,6 +71,7 @@ import {
 import {
   applyDraftFormSnapshot,
   createAmendment,
+  deleteDraftForm,
   newFormAttachment,
   nowIso,
   syncOperationalMeter,
@@ -272,6 +273,18 @@ export function InstallHubFormEditorPage() {
   const canonicalMeter = source.formType === 'ww-installation' && source.meterId
     ? meterDevices(tree).find((item) => item.id === source.meterId)
     : null;
+  function parentHref(form: FormSubmission = currentForm): string {
+    if (assetReturn) {
+      return assetMeterReturnHref(installationId, assetReturn);
+    }
+    if (form.boardId) {
+      const board = tree.electricalAssets.find((item) => item.id === form.boardId);
+      if (board) {
+        return `/installhub/installations/${installationId}/zones/${board.zoneId}/boards/${board.id}`;
+      }
+    }
+    return `/installhub/installations/${installationId}/forms`;
+  }
   function change(key: string, value: string) {
     if (isWwCanonicalBoardAnswer(currentForm, key)) return;
     const result = answersAfterChange(definition, answers, key, value);
@@ -305,7 +318,10 @@ export function InstallHubFormEditorPage() {
       }, 'metadata');
       setAnswers(normalizedAnswers);
       setDirty(false);
-      if (showToast) toast.success('Draft saved.');
+      if (showToast) {
+        toast.success('Draft saved.');
+        router.replace(parentHref());
+      }
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
       throw error;
@@ -418,17 +434,26 @@ export function InstallHubFormEditorPage() {
           ? `Form completed. Version ${confirmed.recordVersionNumber} is confirmed and the record is now read-only.`
           : 'Form completed. The record is now read-only.',
       );
+      const completed = confirmed.formSubmissions.find((item) => item.id === formId);
+      let destination = parentHref(completed);
       if (currentForm.formType === 'ww-installation') {
-        const completed = confirmed.formSubmissions.find((item) => item.id === formId);
         const completedBoard = confirmed.electricalAssets.find(
           (item) => item.id === completed?.boardId,
         );
         if (completedBoard && completed?.meterId) {
-          router.replace(assetReturn
+          destination = assetReturn
             ? assetMeterReturnHref(installationId, assetReturn, completed.meterId)
-            : `/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}/meters/${completed.meterId}#meter-assignments`);
+            : `/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}`;
+        }
+      } else if (currentForm.formType === 'comms-fault') {
+        const completedBoard = confirmed.electricalAssets.find(
+          (item) => item.id === completed?.boardId,
+        );
+        if (completedBoard) {
+          destination = `/installhub/installations/${installationId}/zones/${completedBoard.zoneId}/boards/${completedBoard.id}`;
         }
       }
+      router.replace(destination);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -442,24 +467,11 @@ export function InstallHubFormEditorPage() {
     }
     try {
       await writer.mutate((next) => {
-        if (
-          next.formSubmissions.some(
-            (item) => item.supersedesId === formId,
-          )
-        ) {
-          throw new Error(
-            'This draft cannot be deleted while a later amendment refers to it.',
-          );
-        }
-        next.formSubmissions = next.formSubmissions.filter(
-          (item) => item.id !== formId,
-        );
-      });
+        deleteDraftForm(next, formId);
+      }, 'metadata');
       setDirty(false);
       toast.success('Draft deleted.');
-      router.replace(
-        `/installhub/installations/${installationId}/forms`,
-      );
+      router.replace(parentHref());
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     }
@@ -829,7 +841,7 @@ function FormField({
           onChange={(event) => onChange(field.key, event.target.value)}
         >
           <option value="">Select an option</option>
-          {optionsForField(field, answers).map((option) => (
+          {editorOptionsForField(field, answers).map((option) => (
             <option key={option}>{option}</option>
           ))}
         </Select>

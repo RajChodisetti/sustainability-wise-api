@@ -6,6 +6,10 @@ import type {
   Meter,
 } from '@/modules/installhub/types/domain';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
+import {
+  defaultMeterCustomName,
+  nameAfterTypeChange,
+} from '@/modules/installhub/lib/naming';
 
 export type FormFieldKind =
   | 'text'
@@ -26,6 +30,7 @@ export type FormFieldDefinition = {
   kind: FormFieldKind;
   required?: boolean;
   options?: readonly string[];
+  legacyOptions?: readonly string[];
   placeholder?: string;
   multiple?: boolean;
   showWhen?: Visibility | readonly Visibility[];
@@ -33,6 +38,11 @@ export type FormFieldDefinition = {
     key: string;
     values: Readonly<Record<string, readonly string[]>>;
   };
+  legacyOptionsWhen?: {
+    key: string;
+    values: Readonly<Record<string, readonly string[]>>;
+  };
+  acceptUnlistedLegacyValue?: boolean;
   scanModes?: readonly ScanMode[];
   allowNotApplicable?: boolean;
 };
@@ -100,9 +110,43 @@ export const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 export const SENSOR_OPTIONS_BY_DEVICE: Readonly<
   Record<(typeof DEVICE_TYPES)[number], readonly string[]>
 > = {
+  A3RM: [
+    '10cm-200A',
+    '10cm-333mV',
+    '20cm-3000A',
+    '30cm-3000A',
+    '45cm-3000A',
+    'Not Used',
+  ],
+  A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
+};
+const LEGACY_SENSOR_OPTIONS_BY_DEVICE: Readonly<
+  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
+> = {
   A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
   A6M: ['60A', '120A', '200A', '400A', '600A'],
 };
+const ACCEPTED_USED_SENSOR_OPTIONS_BY_DEVICE: Readonly<
+  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
+> = {
+  A3RM: [
+    ...SENSOR_OPTIONS_BY_DEVICE.A3RM.filter((option) => option !== 'Not Used'),
+    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A3RM,
+  ],
+  A6M: [
+    ...SENSOR_OPTIONS_BY_DEVICE.A6M.filter((option) => option !== 'Not Used'),
+    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A6M,
+  ],
+};
+export const SWITCHBOARD_TYPES = [
+  'Main Switchboard',
+  'Sub / Distribution Board',
+  'HVAC DB',
+  'Lighting DB',
+  'Solar/PV DB',
+  'MCC',
+  'Other',
+] as const;
 const LOADS = [
   'Mains Supply',
   'HVAC',
@@ -122,7 +166,12 @@ const LOADS_BY_PURPOSE: Readonly<Record<string, readonly string[]>> = {
   'Sub-circuit / asset': SUB_CIRCUIT_LOADS,
 };
 const USED_LOADS = LOADS.filter((load) => load !== 'Not Used');
-const SIGNALS = [
+export const SIGNALS = [
+  'Low',
+  'Medium',
+  'High',
+] as const;
+const LEGACY_SIGNALS = [
   'Excellent',
   'Good',
   'Fair',
@@ -130,10 +179,13 @@ const SIGNALS = [
   'No signal',
   'N/A',
 ] as const;
-const ANTENNAS = [
+export const ANTENNAS = [
   'Internal',
+  'External',
   'CSM550 - External High Gain',
   'Other',
+] as const;
+const LEGACY_ANTENNAS = [
   'N/A',
 ] as const;
 
@@ -167,7 +219,28 @@ function sensor(
       key: deviceTypeKey,
       values: SENSOR_OPTIONS_BY_DEVICE,
     },
+    legacyOptionsWhen: {
+      key: deviceTypeKey,
+      values: LEGACY_SENSOR_OPTIONS_BY_DEVICE,
+    },
     ...(showWhen ? { showWhen } : {}),
+  };
+}
+
+function switchboardType(
+  key: string,
+  label = 'Type of switchboard',
+  required = true,
+): FormFieldDefinition {
+  return {
+    key,
+    label,
+    kind: 'select',
+    options: SWITCHBOARD_TYPES,
+    required,
+    // Historical versions stored this as unrestricted text. Keep any current
+    // persisted value selectable while constraining newly-authored values.
+    acceptUnlistedLegacyValue: true,
   };
 }
 
@@ -308,6 +381,7 @@ function wwCommissioningFields(): FormFieldDefinition[] {
       label: '4G signal strength',
       kind: 'select',
       options: SIGNALS,
+      legacyOptions: LEGACY_SIGNALS,
       required: true,
     },
     {
@@ -315,6 +389,7 @@ function wwCommissioningFields(): FormFieldDefinition[] {
       label: 'Antenna type',
       kind: 'select',
       options: ANTENNAS,
+      legacyOptions: LEGACY_ANTENNAS,
       required: true,
     },
     yes('commissioning.start_complete', 'Start page completed?'),
@@ -360,7 +435,11 @@ const wwInstallation: FormDefinition = {
       fields: [
         text('auditor.switchboard_name', 'Switchboard name', true),
         text('auditor.switchboard_location', 'Switchboard location', true),
-        text('auditor.switchboard_type', 'Type of switchboard', true),
+        text(
+          'auditor.address_map_locator',
+          'Address map locator (latitude / longitude)',
+        ),
+        switchboardType('auditor.switchboard_type'),
         text('auditor.site_nmi', 'Site NMI'),
         photo('auditor.location_before', 'Auditor location photos'),
         photo(
@@ -372,6 +451,13 @@ const wwInstallation: FormDefinition = {
           'Circuit breaker location photos',
         ),
         deviceType('device.type'),
+        text('device.name', 'Device name'),
+        scan(
+          'device.number',
+          'Site / asset tag (optional — not the Device ID / serial)',
+          ['barcode'],
+          false,
+        ),
         scan('device.id', 'Device ID / serial'),
       ],
     },
@@ -422,12 +508,18 @@ const commsFault: FormDefinition = {
           'Switchboard location',
           true,
         ),
-        text('existing.switchboard_type', 'Type of switchboard', true),
+        switchboardType('existing.switchboard_type'),
         text('existing.site_nmi', 'Site NMI'),
         photo('existing.switchboard_photos', 'Whole switchboard photos'),
         deviceType(
           'existing.device_type',
           'Existing Meter / Device Type',
+        ),
+        scan(
+          'existing.device_number',
+          'Existing site / asset tag (optional — not the Device ID / serial)',
+          ['barcode'],
+          false,
         ),
         scan('existing.device_id', 'Existing Device ID / serial'),
         sensor(
@@ -444,12 +536,14 @@ const commsFault: FormDefinition = {
           label: 'Existing signal strength',
           kind: 'select',
           options: SIGNALS,
+          legacyOptions: LEGACY_SIGNALS,
         },
         {
           key: 'existing.antenna',
           label: 'Existing antenna type',
           kind: 'select',
           options: ANTENNAS,
+          legacyOptions: LEGACY_ANTENNAS,
         },
       ],
     },
@@ -467,6 +561,15 @@ const commsFault: FormDefinition = {
           'New Meter / Device Type',
           replacementVisible,
         ),
+        {
+          ...scan(
+            'works.new_device_number',
+            'New site / asset tag (optional — not the Device ID / serial)',
+            ['barcode'],
+            false,
+          ),
+          showWhen: replacementVisible,
+        },
         {
           ...scan('works.new_device_id', 'New Device ID / serial'),
           showWhen: replacementVisible,
@@ -486,6 +589,7 @@ const commsFault: FormDefinition = {
           label: 'New device signal strength',
           kind: 'select',
           options: SIGNALS,
+          legacyOptions: LEGACY_SIGNALS,
           showWhen: replacementVisible,
         },
         yes(
@@ -497,6 +601,7 @@ const commsFault: FormDefinition = {
           label: 'Signal after external antenna',
           kind: 'select',
           options: SIGNALS,
+          legacyOptions: LEGACY_SIGNALS,
           showWhen: {
             key: 'works.external_antenna',
             equals: 'yes',
@@ -508,6 +613,7 @@ const commsFault: FormDefinition = {
           label: 'Signal after antenna extension',
           kind: 'select',
           options: SIGNALS,
+          legacyOptions: LEGACY_SIGNALS,
           showWhen: {
             key: 'works.extend_antenna',
             equals: 'yes',
@@ -859,7 +965,8 @@ function legacyDefinition(
             key: `channel.${channel}.rating`,
             label: `${sensorName} ${kind === 'A3RM' ? 'size' : 'rating'}`,
             kind: 'select',
-            options: [...sensorOptions, 'Not Used'],
+            options: sensorOptions,
+            legacyOptions: LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
             required: true,
           },
           {
@@ -885,7 +992,7 @@ function legacyDefinition(
       const channel = index + 1;
       const visible: Visibility = {
         key: `channel.${channel}.rating`,
-        equals: sensorOptions,
+        equals: ACCEPTED_USED_SENSOR_OPTIONS_BY_DEVICE[kind],
       };
       return [
         {
@@ -925,7 +1032,7 @@ function legacyDefinition(
             'Switchboard location',
             true,
           ),
-          text('auditor.switchboard_type', 'Type of switchboard', true),
+          switchboardType('auditor.switchboard_type'),
           text('auditor.site_nmi', 'Site NMI'),
           photo('auditor.location_before', 'Auditor location photos'),
           photo(
@@ -982,6 +1089,7 @@ function legacyDefinition(
             label: '4G signal strength',
             kind: 'select',
             options: SIGNALS,
+            legacyOptions: LEGACY_SIGNALS,
             required: true,
           },
           {
@@ -989,6 +1097,7 @@ function legacyDefinition(
             label: 'Antenna type',
             kind: 'select',
             options: ANTENNAS,
+            legacyOptions: LEGACY_ANTENNAS,
             required: true,
           },
           yes(
@@ -1096,6 +1205,34 @@ export function optionsForField(
   );
 }
 
+export function acceptedOptionsForField(
+  field: FormFieldDefinition,
+  answers: Record<string, string>,
+): readonly string[] {
+  const legacy = field.legacyOptionsWhen
+    ? field.legacyOptionsWhen.values[
+        String(answers[field.legacyOptionsWhen.key] ?? '')
+      ] ?? []
+    : field.legacyOptions ?? [];
+  return [...new Set([...optionsForField(field, answers), ...legacy])];
+}
+
+export function editorOptionsForField(
+  field: FormFieldDefinition,
+  answers: Record<string, string>,
+): readonly string[] {
+  const options = optionsForField(field, answers);
+  const current = String(answers[field.key] ?? '').trim();
+  if (!current || options.includes(current)) return options;
+  if (
+    field.acceptUnlistedLegacyValue
+    || acceptedOptionsForField(field, answers).includes(current)
+  ) {
+    return [current, ...options];
+  }
+  return options;
+}
+
 export function answersAfterChange(
   definition: FormDefinition,
   answers: Record<string, string>,
@@ -1106,6 +1243,18 @@ export function answersAfterChange(
   hiddenPhotoSlots: string[];
 } {
   const next = { ...answers, [key]: value };
+  if (
+    definition.type === 'ww-installation'
+    && key === 'device.type'
+    && (value === 'A3RM' || value === 'A6M')
+  ) {
+    const priorType = answers['device.type'] === 'A6M' ? 'A6M' : 'A3RM';
+    next['device.name'] = nameAfterTypeChange(
+      answers['device.name'] || '',
+      defaultMeterCustomName({ deviceModel: priorType }),
+      defaultMeterCustomName({ deviceModel: value }),
+    );
+  }
   const hiddenPhotoSlots: string[] = [];
   for (const section of definition.sections) {
     const sectionVisible = isSectionVisible(section, next);
@@ -1120,7 +1269,7 @@ export function answersAfterChange(
       const selected = String(next[field.key] ?? '');
       if (
         selected &&
-        !optionsForField(field, next).includes(selected)
+        !acceptedOptionsForField(field, next).includes(selected)
       ) {
         delete next[field.key];
       }
@@ -1189,7 +1338,8 @@ export function formValidationIssues(
       } else if (
         value &&
         field.kind === 'select' &&
-        !optionsForField(field, form.answers).includes(value)
+        !field.acceptUnlistedLegacyValue &&
+        !acceptedOptionsForField(field, form.answers).includes(value)
       ) {
         errors.push({
           fieldKey: field.key,
@@ -1255,12 +1405,27 @@ export function meterAfterCommsReplacement(
     answers['works.new_sensor_rating'] ?? '',
   );
   const channelCount = typedDevice === 'A3RM' ? 3 : 6;
+  const priorDefaultName = defaultMeterCustomName({
+    deviceModel: meter.deviceType,
+    customManufacturerName: meter.customManufacturerName,
+    customModelName: meter.customModelName,
+  });
+  const nextDefaultName = defaultMeterCustomName({ deviceModel: typedDevice });
   return {
     ...meter,
-    deviceName: `${typedDevice} Auditor`,
+    customName: nameAfterTypeChange(
+      meter.customName || priorDefaultName,
+      priorDefaultName,
+      nextDefaultName,
+    ),
+    deviceName: nextDefaultName,
     deviceType: typedDevice,
     deviceId: String(answers['works.new_device_id'] ?? ''),
-    deviceNumber: String(answers['works.new_device_id'] ?? ''),
+    deviceNumber: String(
+      answers['works.new_device_number']
+      || answers['works.new_device_id']
+      || '',
+    ),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const current = meter.wwChannels?.[index] ?? {};
       return {
@@ -1276,7 +1441,6 @@ export function meterAfterCommsReplacement(
 export function operationalMeterForCompletedForm(
   form: FormSubmission,
   existing?: Meter,
-  suggestedName?: string,
 ): Meter | null {
   if (form.formType !== 'ww-installation') return null;
   const deviceType = form.answers['device.type'] as 'A3RM' | 'A6M';
@@ -1299,14 +1463,20 @@ export function operationalMeterForCompletedForm(
     if (answer === 'yes') wwPrestart[field] = true;
     if (answer === 'no') wwPrestart[field] = false;
   }
+  const fallbackName = defaultMeterCustomName({ deviceModel: deviceType });
+  const customName = form.answers['device.name']?.trim()
+    || existing?.customName?.trim()
+    || fallbackName;
   return {
     id: form.meterId || createInstallHubId('meter'),
-    deviceName: suggestedName?.trim() || `${deviceType} Auditor`,
+    customName,
+    deviceName: customName,
     deviceType,
     deviceId: form.answers['device.id'] || '',
-    deviceNumber: form.answers['device.id'] || '',
+    deviceNumber:
+      form.answers['device.number'] || form.answers['device.id'] || '',
     deviceFamily: 'WATTWATCHERS',
-    deviceNameOverridden: Boolean(suggestedName?.trim()),
+    deviceNameOverridden: existing?.deviceNameOverridden ?? false,
     ...(Object.keys(wwPrestart).length ? { wwPrestart } : {}),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const prefix = `channel.${index + 1}`;

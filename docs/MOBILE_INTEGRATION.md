@@ -61,6 +61,16 @@ post-upload push `syncStage: "complete"`. Metadata pushes return
 `versionNumber: null`; complete pushes create/deduplicate an immutable version.
 For backward compatibility, an absent stage is treated as complete.
 
+New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
+numbers, and hyphens; maximum 16 characters). New unclaimed boards, site assets,
+and meter devices receive rule-2 identities in the form
+`INSTALLATION-ZONE-NN-CUSTOMNAME`, capped at 64 characters. `NN` is a single
+zone-wide sequence shared across all three entity kinds, and retained claims
+prevent reuse after deletion. Mobile may show a provisional offline value, but
+must accept and round-trip the server value after sync. Existing rule-1 claims
+remain frozen. Human board/asset names and meter `customName` remain separately
+editable and do not mutate an already claimed identity.
+
 ### User and installation-access endpoints
 
 | Method and route | Access | Purpose |
@@ -182,10 +192,13 @@ New submissions use schema version 2 and expose six form families:
 `ww-installation`, `comms-fault`, `ace-switchboard`, `honeywell-q400`,
 `captis-logger`, and `sums-logger`. The API continues accepting schema-v1
 `a3rm-installation` and `a6m-installation` records for existing mobile data.
-Completed Installation and Comms Fault submissions are rejected unless
-device type, device number, device ID, and the exact type-compatible CT/Rogowski
-selection are present. Scanner modality is a mobile capture concern; the API
-validates the resulting identifiers and conditional values.
+Completed Installation and Comms Fault submissions are rejected unless the
+device type, device ID, and exact type-compatible CT/Rogowski selection are
+present. Device number is a separate optional production field and falls back
+to the device ID only when blank in WW/comms form projection. Direct `Other`
+meter entry preserves a blank number separately from the serial. Scanner
+modality is a mobile capture concern; the API validates the resulting
+identifiers and conditional values.
 
 For Installation, A3RM exposes exactly three channels and A6M exactly six.
 Every visible current channel requires a `channel.N.purpose`. `Main board
@@ -193,11 +206,13 @@ supply` permits only `Mains Supply`. `Sub-circuit / asset` requires HVAC,
 Lighting, Solar PV, Forklift Charger, Hot Water, General Power, or `Other`; an
 `Other` load also requires a non-empty `channel.N.custom_load_type`. `Spare /
 unused` hides and clears load, custom load, rating, and description, along with
-its load evidence and commissioning values. Each active channel requires an
-A3RM Rogowski value (`3000A - 9cm`, `3000A - 20cm`, or `3000A - 29cm`) or an
-A6M CT value (`60A`, `120A`, `200A`, `400A`, or `600A`). A3RM submissions must
-not carry hidden channel 4-6 values; the mobile condition engine clears those
-hidden fields.
+its load evidence and commissioning values. New A3RM records present
+`10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and
+`Not Used`; new A6M records present `CT-60A`, `CT-120A`, `CT-250A`,
+`CT-400A`, `CT-600A`, and `Not Used`. Persisted legacy sensor strings remain
+accepted and visible for compatibility but are not offered for new choices.
+A3RM submissions must not carry hidden channel 4-6 values; the mobile
+condition engine clears those hidden fields.
 
 Current schema-v2 purpose/custom-load payloads are validated strictly. Load-only
 schema-v2 Drafts from installed clients remain syncable when their entire

@@ -44,8 +44,10 @@ import {
 } from '../../auth/uploadCapability.js';
 import {
   CanonicalInputError,
+  INSTALLATION_ZONE_CODE_MAX_LENGTH,
   canonicalTreeMutationFingerprint,
   deriveSiteCode,
+  deriveZoneCode,
   installationReadiness,
   isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
@@ -122,6 +124,8 @@ type CanonicalInstallationAuthority = {
   timezone: string;
   treeRevision: number;
   recordVersionNumber: number;
+  zoneCodes?: ReadonlyMap<string, string>;
+  meterCustomNames?: ReadonlyMap<string, string>;
 };
 
 function isMissingCanonicalValue(value: unknown): boolean {
@@ -179,8 +183,47 @@ export function prepareCanonicalInstallHubWrite(
     : (typeof suppliedExternalKey === 'string' || suppliedExternalKey == null
         ? externalKey
         : suppliedExternalKey);
+  const reservedZoneCodes = new Set(authority?.zoneCodes?.values() ?? []);
+  for (const zone of body.zones ?? []) {
+    if (typeof zone.zoneCode === 'string' && zone.zoneCode.trim()) {
+      reservedZoneCodes.add(zone.zoneCode.trim());
+    }
+  }
+  const generatedZoneCodes = new Map<string, string>();
+  for (const zone of [...(body.zones ?? [])].sort((left, right) => (
+    String(left.id ?? '').localeCompare(String(right.id ?? ''))
+  ))) {
+    const zoneId = typeof zone.id === 'string' ? zone.id : null;
+    const zoneCodeMissing = zone.zoneCode == null
+      || (typeof zone.zoneCode === 'string' && !zone.zoneCode.trim());
+    if (!zoneId || !zoneCodeMissing) continue;
+    const authoritativeZoneCode = authority?.zoneCodes?.get(zoneId);
+    if (authoritativeZoneCode) {
+      generatedZoneCodes.set(zoneId, authoritativeZoneCode);
+      continue;
+    }
+    if (typeof zone.zoneName !== 'string' || !zone.zoneName.trim()) continue;
+    const zoneCode = nextLegacyZoneCode(deriveZoneCode(zone.zoneName), reservedZoneCodes);
+    reservedZoneCodes.add(zoneCode);
+    generatedZoneCodes.set(zoneId, zoneCode);
+  }
+  const preparedZones = body.zones?.map((zone) => {
+    const zoneId = typeof zone.id === 'string' ? zone.id : null;
+    const zoneCode = zoneId ? generatedZoneCodes.get(zoneId) : undefined;
+    return zoneCode ? { ...zone, zoneCode } : zone;
+  });
+  const preparedMeterDevices = body.meterDevices?.map((meter) => {
+    const meterId = typeof meter.id === 'string' ? meter.id : null;
+    if (!meterId || !isMissingCanonicalValue(meter.customName)) return meter;
+    const authoritativeCustomName = authority?.meterCustomNames?.get(meterId);
+    return authoritativeCustomName === undefined
+      ? meter
+      : { ...meter, customName: authoritativeCustomName };
+  });
   return {
     ...body,
+    ...(preparedZones ? { zones: preparedZones } : {}),
+    ...(preparedMeterDevices ? { meterDevices: preparedMeterDevices } : {}),
     installation: {
       ...installation,
       treeSchemaVersion: installation.treeSchemaVersion ?? 2,
@@ -386,8 +429,24 @@ export function parseInstallHubUploadBaseTreeRevision(
   return value;
 }
 
-function zoneValues(item: JsonRecord, installationId: string, existing?: typeof ihZones.$inferSelect) {
+function nextLegacyZoneCode(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base;
+  for (let ordinal = 2; ; ordinal += 1) {
+    const suffix = `-${ordinal}`;
+    const candidate = `${base.slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH - suffix.length)
+      .replace(/-+$/g, '')}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+function zoneValues(
+  item: JsonRecord,
+  installationId: string,
+  existing?: typeof ihZones.$inferSelect,
+  allocatedZoneCode?: string,
+) {
   requireParentId(item, installationId);
+  const zoneName = requiredString(item, 'zoneName');
   return {
     id: requiredString(item, 'id'),
     serverId: existing?.serverId ?? optionalString(item, 'serverId') ?? randomUUID(),
@@ -395,7 +454,8 @@ function zoneValues(item: JsonRecord, installationId: string, existing?: typeof 
     updatedAt: dateOrNow(item.updatedAt),
     deletedAt: optionalDate(item.deletedAt),
     installationId,
-    zoneName: requiredString(item, 'zoneName'),
+    zoneCode: existing?.zoneCode ?? allocatedZoneCode ?? deriveZoneCode(zoneName),
+    zoneName,
     zoneDescription: optionalString(item, 'zoneDescription') ?? '',
     photos: jsonArray<string>(item.photos),
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
@@ -1022,6 +1082,22 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       } else if (body.baseTreeRevision !== undefined && body.baseTreeRevision !== 0) {
         throw conflict('snapshot_conflict');
       }
+      const existingZoneCodes = existingInstallation
+        ? await db.select({ id: ihZones.id, zoneCode: ihZones.zoneCode })
+            .from(ihZones)
+            .where(and(
+              eq(ihZones.installationId, installationId),
+              isNull(ihZones.deletedAt),
+            ))
+        : [];
+      const existingMeterCustomNames = existingInstallation
+        ? await db.select({ id: ihMeterDevices.id, customName: ihMeterDevices.customName })
+            .from(ihMeterDevices)
+            .where(and(
+              eq(ihMeterDevices.installationId, installationId),
+              isNull(ihMeterDevices.deletedAt),
+            ))
+        : [];
 
       const now = new Date();
       const serverExternalKey = existingInstallation?.externalKey ?? `ih_${randomUUID()}`;
@@ -1034,6 +1110,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               timezone: existingInstallation.timezone,
               treeRevision: existingInstallation.treeRevision,
               recordVersionNumber: existingInstallation.recordVersionNumber,
+              zoneCodes: new Map(existingZoneCodes.map((zone) => [zone.id, zone.zoneCode])),
+              meterCustomNames: new Map(existingMeterCustomNames.map((meter) => [
+                meter.id,
+                meter.customName,
+              ])),
             }
           : undefined,
         serverExternalKey,
@@ -1468,11 +1549,22 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       }
       serverIds.installationId = persistedInstallationValues.serverId;
 
+      const retainedZoneCodes = new Set((await tx.select({ zoneCode: ihZones.zoneCode })
+        .from(ihZones)
+        .where(eq(ihZones.installationId, installationId)))
+        .map((zone) => zone.zoneCode));
       for (const item of zones) {
         const id = requiredString(item, 'id');
         const [existing] = await tx.select().from(ihZones).where(eq(ihZones.id, id));
         if (existing && existing.installationId !== installationId) throw forbidden('Zone belongs to another installation');
-        const values = zoneValues(item, installationId, existing);
+        const allocatedZoneCode = existing
+          ? existing.zoneCode
+          : nextLegacyZoneCode(
+              deriveZoneCode(requiredString(item, 'zoneName')),
+              retainedZoneCodes,
+            );
+        retainedZoneCodes.add(allocatedZoneCode);
+        const values = zoneValues(item, installationId, existing, allocatedZoneCode);
         const { id: _id, ...update } = values;
         await tx.insert(ihZones).values(values).onConflictDoUpdate({ target: ihZones.id, set: update });
         serverIds.zoneIds[id] = values.serverId;

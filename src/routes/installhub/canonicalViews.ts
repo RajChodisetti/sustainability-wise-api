@@ -33,6 +33,8 @@ export const INSTALLATION_CONTROLLED_LABEL_CATALOG = Object.freeze({
   EXHAUST_FAN_SYSTEM: 'Exhaust Fan System',
   POWER_OUTLET: 'Power Outlet',
   HEATER_GEYSER: 'Heater / Geyser',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
   OTHER: 'Other',
   }),
 });

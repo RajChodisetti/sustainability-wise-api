@@ -14,6 +14,18 @@ export type ReadinessIssuePage = {
   };
 };
 
+export type ReadinessIssueCategory = 'RECONCILIATION' | 'COMPLETION';
+
+export function isUserDeferredReadinessIssue(issue: ReadinessIssue): boolean {
+  return issue.code === 'SUPPLY_TBC'
+    || issue.code === 'MEASUREMENT_TARGET_TBC'
+    || (
+      issue.code === 'METERING_STATE_INVALID'
+      && issue.entityType === 'site_asset'
+      && issue.field === 'meteringState'
+    );
+}
+
 export function readinessEntityIdsForZone(
   tree: CanonicalInstallationTree,
   zoneId: string,
@@ -86,6 +98,7 @@ export function paginateReadiness(
     q?: unknown;
     severity?: unknown;
     entityType?: unknown;
+    category?: unknown;
     entityIds?: ReadonlySet<string>;
   } = {},
 ): InstallationReadiness & { issuePage: ReadinessIssuePage['page'] } {
@@ -98,9 +111,18 @@ export function paginateReadiness(
   const entityType = typeof input.entityType === 'string' && input.entityType.trim()
     ? input.entityType.trim()
     : null;
+  const category: ReadinessIssueCategory | null =
+    input.category === 'RECONCILIATION' || input.category === 'COMPLETION'
+      ? input.category
+      : null;
   const filtered = readiness.issues
     .filter((issue) => !severity || issue.severity === severity)
     .filter((issue) => !entityType || issue.entityType === entityType)
+    .filter((issue) => !category || (
+      category === 'RECONCILIATION'
+        ? isUserDeferredReadinessIssue(issue)
+        : !isUserDeferredReadinessIssue(issue)
+    ))
     .filter((issue) => !input.entityIds || input.entityIds.has(issue.entityId))
     .filter((issue) => !query || [
         issue.code,

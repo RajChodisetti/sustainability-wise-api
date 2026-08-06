@@ -197,6 +197,7 @@ export async function loadCanonicalInstallationTree(
     zones: zoneRows.map((row) => ({
       id: row.id,
       installationId: row.installationId,
+      zoneCode: row.zoneCode,
       zoneName: row.zoneName,
       zoneDescription: row.zoneDescription,
       photos: row.photos,
@@ -273,6 +274,7 @@ export async function loadCanonicalInstallationTree(
       id: row.id,
       installationId: row.installationId,
       installedOnBoardId: row.installedOnBoardId,
+      customName: row.customName,
       deviceFamily: row.deviceFamily as MeterDevice['deviceFamily'],
       deviceModel: row.deviceModel as MeterDevice['deviceModel'],
       customManufacturerName: row.customManufacturerName,
@@ -370,6 +372,8 @@ function assetTypeLabel(code: string, custom: string | null | undefined): string
     EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
     POWER_OUTLET: 'Power Outlet',
     HEATER_GEYSER: 'Heater / Geyser',
+    REFRIGERATION: 'Refrigeration',
+    COMPRESSED_AIR: 'Compressed Air',
   }[code] ?? 'Other');
 }
 
@@ -383,6 +387,8 @@ const METER_LOAD_TYPE_LABEL_BY_CODE: Record<string, string> = {
   EXHAUST_FAN_SYSTEM: 'Exhaust Fan System',
   POWER_OUTLET: 'General Power',
   HEATER_GEYSER: 'Hot Water',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed Air',
 };
 
 function meterChannelLoadTypeLabel(channel: MeterDevice['channels'][number]): string {
@@ -423,7 +429,7 @@ export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
         .sort((left, right) => left.id.localeCompare(right.id))
         .map((meter) => ({
           id: meter.id,
-          deviceName: meter.displayName.value,
+          deviceName: meter.customName,
           deviceType: meter.deviceModel === 'OTHER' ? 'Other' : meter.deviceModel,
           deviceId: meter.serialNumber,
           deviceNumber: meter.deviceNumber,
@@ -643,11 +649,20 @@ export function wwCommissioningFormMatchesMeter(
     const expectedLoadType = expectedPurpose === 'SUB_CIRCUIT'
       ? classifiedCustomLoad?.code ?? WW_LOAD_TYPE_CODES[load] ?? 'OTHER'
       : null;
-    if ((channel.loadTypeCode ?? null) !== expectedLoadType) return false;
     const expectedCustom = expectedPurpose === 'SUB_CIRCUIT'
       ? classifiedCustomLoad?.custom ?? null
       : null;
-    if ((channel.customLoadTypeName ?? null) !== expectedCustom) return false;
+    const actualLoadType = channel.loadTypeCode ?? null;
+    const actualCustom = channel.customLoadTypeName ?? null;
+    const matchesCurrentTaxonomy = actualLoadType === expectedLoadType
+      && actualCustom === expectedCustom;
+    // A completed form must continue to attest a channel canonicalized before
+    // its friendly Other label was promoted into the controlled taxonomy.
+    const matchesHistoricalOther = expectedPurpose === 'SUB_CIRCUIT'
+      && load === 'Other'
+      && actualLoadType === 'OTHER'
+      && actualCustom === customLoadLabel;
+    if (!matchesCurrentTaxonomy && !matchesHistoricalOther) return false;
     const expectedRating = expectedPurpose === 'SPARE'
       ? null
       : form.answers[`channel.${ordinal}.rating`] || null;
@@ -757,6 +772,7 @@ async function existingDisplayCodeClaims(
   return rows.map((row) => ({
     entityType: row.entityType as DisplayCodeClaim['entityType'],
     entityId: row.entityId,
+    zoneId: row.zoneId,
     typeCode: row.typeCode,
     sequence: row.sequence,
     displayCode: row.displayCode,
@@ -969,6 +985,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       installationId,
       entityType: claim.entityType,
       entityId: claim.entityId,
+      zoneId: claim.zoneId,
       typeCode: claim.typeCode,
       sequence: claim.sequence,
       displayCode: claim.displayCode,
@@ -1001,6 +1018,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
     const values = {
       id: zone.id,
       installationId,
+      zoneCode: zone.zoneCode,
       zoneName: zone.zoneName,
       zoneDescription: zone.zoneDescription,
       photos: zone.photos,
@@ -1095,6 +1113,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       id: meter.id,
       installationId,
       installedOnBoardId: meter.installedOnBoardId,
+      customName: meter.customName,
       deviceFamily: meter.deviceFamily,
       deviceModel: meter.deviceModel,
       customManufacturerName: meter.customManufacturerName ?? null,

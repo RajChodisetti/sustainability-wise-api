@@ -153,8 +153,28 @@ function commissioningFields(
             key: `channel.${channel}.rating`,
             equals:
               deviceType === 'A3RM'
-                ? ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm']
-                : ['60A', '120A', '200A', '400A', '600A'],
+                ? [
+                    '10cm-200A',
+                    '10cm-333mV',
+                    '20cm-3000A',
+                    '30cm-3000A',
+                    '45cm-3000A',
+                    '3000A - 9cm',
+                    '3000A - 20cm',
+                    '3000A - 29cm',
+                  ]
+                : [
+                    'CT-60A',
+                    'CT-120A',
+                    'CT-250A',
+                    'CT-400A',
+                    'CT-600A',
+                    '60A',
+                    '120A',
+                    '200A',
+                    '400A',
+                    '600A',
+                  ],
           };
     return [
       yesNo(
@@ -223,6 +243,10 @@ function installationDefinition(
         fields: [
           value('auditor.switchboard_name', 'Switchboard name'),
           value('auditor.switchboard_location', 'Switchboard location'),
+          value(
+            'auditor.address_map_locator',
+            'Address map locator (latitude / longitude)',
+          ),
           value('auditor.switchboard_type', 'Type of switchboard'),
           value('auditor.site_nmi', 'Site NMI'),
           photo('auditor.location_before', 'Auditor location photos'),
@@ -231,6 +255,8 @@ function installationDefinition(
           ...(dynamic
             ? [
                 value('device.type', 'Meter / Device Type'),
+                value('device.name', 'Device name'),
+                value('device.number', 'Device number'),
                 value('device.id', 'Device ID / serial'),
               ]
             : [
@@ -276,6 +302,7 @@ const communicationsFault: InstallHubReportDefinition = {
         value('existing.site_nmi', 'Site NMI'),
         photo('existing.switchboard_photos', 'Whole switchboard photos'),
         value('existing.device_type', 'Existing Meter / Device Type'),
+        value('existing.device_number', 'Existing device number'),
         value('existing.device_id', 'Existing Device ID / serial'),
         value('existing.sensor_rating', 'Existing CT / Rogowski coil rating', {
           key: 'existing.device_type',
@@ -295,6 +322,10 @@ const communicationsFault: InstallHubReportDefinition = {
         yesNo('works.leds_visible', 'Relevant LEDs visible after reboot?'),
         yesNo('works.replace_device', 'Does the device need replacement?'),
         value('works.new_device_type', 'New Meter / Device Type', {
+          key: 'works.replace_device',
+          equals: 'yes',
+        }),
+        value('works.new_device_number', 'New device number', {
           key: 'works.replace_device',
           equals: 'yes',
         }),

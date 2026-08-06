@@ -253,6 +253,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       q?: unknown;
       severity?: unknown;
       entityType?: unknown;
+      category?: unknown;
       zoneId?: unknown;
     };
     const recordVersionNumber = positiveVersion(

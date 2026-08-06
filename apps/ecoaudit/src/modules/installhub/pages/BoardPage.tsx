@@ -23,7 +23,13 @@ import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
 import { pinSelectedResult } from '@/modules/installhub/lib/electricalPresentation';
-import type { ElectricalAsset, ElectricalSourceKind } from '@/modules/installhub/types/domain';
+import type { ElectricalAsset, ElectricalSourceKind, InstallationTree } from '@/modules/installhub/types/domain';
+import {
+  defaultCustomNameForType,
+  ENTITY_NAME_MAX_LENGTH,
+  nameAfterTypeChange,
+  provisionalDisplayCodeV2,
+} from '@/modules/installhub/lib/naming';
 import {
   BOARD_TYPE_OPTIONS,
   applyAssetElectricalSource,
@@ -33,7 +39,6 @@ import {
   boardElectricalSource,
   boardTypeCode,
   boardTypeLabel,
-  displayCodeMetadata,
   legacyBoardType,
   primaryGridSupply,
   reconcileRemovedMeter,
@@ -41,9 +46,30 @@ import {
   siteAssetTypeLabel,
   validBoardParents,
 } from '@/modules/installhub/lib/workflow';
-import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
-import { createDeviceCommissioningForm } from '@/modules/installhub/lib/deviceSearch';
 import { useToast } from '@/contexts/ToastContext';
+
+function defaultBoardName(typeCode: string, customTypeName?: string | null): string {
+  return defaultCustomNameForType(
+    BOARD_TYPE_OPTIONS,
+    typeCode,
+    customTypeName,
+  );
+}
+
+function boardDisplayMetadata(
+  tree: InstallationTree,
+  board: ElectricalAsset,
+  customName = board.assetName,
+  typeCode = boardTypeCode(board),
+) {
+  return provisionalDisplayCodeV2(tree, {
+    zoneId: board.zoneId,
+    customName,
+    fallbackType: defaultBoardName(typeCode, board.customTypeName),
+    excludeId: board.id,
+    current: board.displayCodeMeta,
+  });
+}
 
 export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const { installationId, zoneId, boardId } = useParams<{
@@ -55,10 +81,8 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
-  const { user } = useInstallHubAuth();
   const [draft, setDraft] = useState<ElectricalAsset | null>(null);
   const [busy, setBusy] = useState(false);
-  const [commissioning, setCommissioning] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [parentSearch, setParentSearch] = useState('');
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
@@ -66,12 +90,19 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
 
   const source = query.data?.electricalAssets.find((item) => item.id === boardId);
   useEffect(() => {
-    if (mode === 'new') {
-      setDraft((current) => current ?? createBoard(installationId, zoneId));
+    if (mode === 'new' && query.data) {
+      setDraft((current) => {
+        if (current) return current;
+        const created = createBoard(installationId, zoneId);
+        created.assetName = defaultBoardName(boardTypeCode(created));
+        created.displayCodeMeta = boardDisplayMetadata(query.data!, created);
+        created.displayCode = created.displayCodeMeta.value;
+        return created;
+      });
     } else if (source) {
       setDraft(structuredClone(source));
     }
-  }, [installationId, mode, source, zoneId]);
+  }, [installationId, mode, query.data, source, zoneId]);
 
   if (query.isLoading || !draft) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -116,10 +147,39 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     setDraft((current) => current ? { ...current, [key]: value } : current);
   }
 
+  function setBoardName(value: string) {
+    setDraft((current) => {
+      if (!current) return current;
+      const display = boardDisplayMetadata(tree, current, value);
+      return {
+        ...current,
+        assetName: value,
+        displayCode: display.value,
+        displayCodeMeta: display,
+      };
+    });
+  }
+
+  function setBoardCustomType(value: string) {
+    setDraft((current) => {
+      if (!current) return current;
+      const previousDefault = defaultBoardName('OTHER', current.customTypeName);
+      const nextName = nameAfterTypeChange(
+        current.assetName,
+        previousDefault,
+        defaultBoardName('OTHER', value),
+      );
+      const next = { ...current, customTypeName: value, assetName: nextName };
+      const display = boardDisplayMetadata(tree, next, nextName, 'OTHER');
+      return { ...next, displayCode: display.value, displayCodeMeta: display };
+    });
+  }
+
   async function save(event?: FormEvent) {
     event?.preventDefault();
     const nextErrors: Array<{ id?: string; message: string }> = [];
     if (!currentDraft.assetName.trim()) nextErrors.push({ id: 'board-name', message: 'Enter the switchboard name.' });
+    else if (currentDraft.assetName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'board-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the switchboard name.` });
     if (boardTypeCode(currentDraft) === 'OTHER' && !currentDraft.customTypeName?.trim()) {
       nextErrors.push({ id: 'board-custom-type', message: 'Enter the custom switchboard type.' });
     }
@@ -127,13 +187,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     if (electricalSource.kind === 'BOARD' && !electricalSource.boardId) {
       nextErrors.push({ id: 'board-parent', message: 'Choose the confirmed parent switchboard.' });
     }
-    const code = displayCodeMetadata(
-      tree,
-      boardTypeCode(currentDraft),
-      currentDraft.displayCode,
-      currentDraft.displayCodeMeta,
-      currentDraft.id,
-    ).value;
     setErrors(nextErrors);
     if (nextErrors.length) {
       document.getElementById(nextErrors[0].id || '')?.focus();
@@ -144,6 +197,11 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     try {
       await writer.mutate((next) => {
         const activeMeters = currentDraft.meters.filter((meter) => meter.lifecycleState !== 'INACTIVE');
+        const display = boardDisplayMetadata(
+          next,
+          currentDraft,
+          currentDraft.assetName.trim(),
+        );
         const value: ElectricalAsset = {
           ...structuredClone(currentDraft),
           meters: activeMeters,
@@ -152,11 +210,8 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
           assetType: legacyBoardType(boardTypeCode(currentDraft)),
           typeCode: boardTypeCode(currentDraft),
           customTypeName: boardTypeCode(currentDraft) === 'OTHER' ? currentDraft.customTypeName?.trim() : null,
-          displayCode: code.trim(),
-          displayCodeMeta: {
-            ...displayCodeMetadata(next, boardTypeCode(currentDraft), code, currentDraft.displayCodeMeta, currentDraft.id),
-            value: code.trim(),
-          },
+          displayCode: display.value,
+          displayCodeMeta: display,
           updatedAt: nowIso(),
         };
         applyBoardElectricalSource(value, electricalSource);
@@ -166,9 +221,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       });
       setErrors([]);
       toast.success(saved ? 'Switchboard saved.' : 'Switchboard created.');
-      if (!saved) {
-        router.replace(`/installhub/installations/${installationId}/zones/${zoneId}/boards/${currentDraft.id}`);
-      }
+      router.replace(`/installhub/installations/${installationId}/zones/${zoneId}`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -306,48 +359,26 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   function chooseBoardType(value: string) {
     setDraft((current) => {
       if (!current) return current;
-      const nextMeta = displayCodeMetadata(
-        tree,
-        value,
-        '',
-        current.displayCodeMeta,
-        current.id,
-        !saved,
+      const nextName = nameAfterTypeChange(
+        current.assetName,
+        defaultBoardName(boardTypeCode(current), current.customTypeName),
+        defaultBoardName(value, value === 'OTHER' ? current.customTypeName : null),
       );
-      return {
+      const next = {
         ...current,
+        assetName: nextName,
         typeCode: value,
         assetType: legacyBoardType(value),
         customTypeName: value === 'OTHER' ? current.customTypeName : null,
-        displayCode: current.displayCodeMeta?.isOverridden ? current.displayCode : nextMeta.value,
-        displayCodeMeta: current.displayCodeMeta?.isOverridden
-          ? { ...current.displayCodeMeta, generatedValue: nextMeta.generatedValue }
-          : nextMeta,
       };
+      const display = boardDisplayMetadata(tree, next, nextName, value);
+      return { ...next, displayCode: display.value, displayCodeMeta: display };
     });
   }
 
-  async function commissionNewDevice() {
-    if (!boardId || !user) {
-      toast.error('Sign in before starting device commissioning.');
-      return;
-    }
-    setCommissioning(true);
-    try {
-      let formId = '';
-      await writer.mutate((next) => {
-        const form = createDeviceCommissioningForm(next, user, {
-          zoneId,
-          boardId,
-        });
-        formId = form.id;
-      }, 'metadata');
-      toast.success('Device commissioning form created.');
-      router.push(`/installhub/installations/${installationId}/forms/${formId}`);
-    } catch (error) {
-      toast.error(installHubConnectionErrorMessage(error));
-      setCommissioning(false);
-    }
+  function openNewMeter() {
+    if (!boardId) return;
+    router.push(`/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/new`);
   }
 
   const latest = query.data!.electricalAssets.find((item) => item.id === boardId) ?? draft;
@@ -365,8 +396,8 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         subtitle="Electrical hierarchy, installed Wattwatcher meters, and switchboard evidence."
         actions={saved ? (
           <>
-            <Button onClick={() => void commissionNewDevice()} disabled={commissioning}>
-              <Icon name="plus" size={17} />{commissioning ? 'Opening form…' : 'Commission new device'}
+            <Button onClick={openNewMeter}>
+              <Icon name="plus" size={17} />Add meter
             </Button>
             <Button variant="danger" onClick={() => setConfirmDelete(true)}>Delete</Button>
           </>
@@ -444,10 +475,12 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                 id="board-name"
                 value={draft.assetName}
                 required
+                maxLength={ENTITY_NAME_MAX_LENGTH}
                 aria-invalid={errors.some((item) => item.id === 'board-name')}
                 aria-describedby={errors.some((item) => item.id === 'board-name') ? 'board-name-error' : undefined}
-                onChange={(event) => set('assetName', event.target.value)}
+                onChange={(event) => setBoardName(event.target.value)}
               />
+              <FieldHint>Defaults from the switchboard type, remains editable, and accepts up to {ENTITY_NAME_MAX_LENGTH} characters.</FieldHint>
               <FieldError id="board-name-error" message={errors.find((item) => item.id === 'board-name')?.message} />
             </div>
             <div>
@@ -466,11 +499,24 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                   value={draft.customTypeName ?? ''}
                   aria-invalid={errors.some((item) => item.id === 'board-custom-type')}
                   aria-describedby={errors.some((item) => item.id === 'board-custom-type') ? 'board-custom-type-error' : undefined}
-                  onChange={(event) => set('customTypeName', event.target.value)}
+                  onChange={(event) => setBoardCustomType(event.target.value)}
                 />
                 <FieldError id="board-custom-type-error" message={errors.find((item) => item.id === 'board-custom-type')?.message} />
               </div>
             ) : null}
+            <div>
+              <FieldLabel htmlFor="board-display-code">Generated asset ID</FieldLabel>
+              <Input
+                id="board-display-code"
+                readOnly
+                value={draft.displayCodeMeta?.value || draft.displayCode}
+              />
+              <FieldHint>
+                {draft.displayCodeMeta?.provisional !== true
+                  ? 'This confirmed identifier is fixed.'
+                  : 'Built from installation code, zone code, shared sequence, and switchboard name. The server confirms it on save.'}
+              </FieldHint>
+            </div>
             <div>
               <FieldLabel htmlFor="board-location">Location description</FieldLabel>
               <Input id="board-location" value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
@@ -478,10 +524,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             <div>
               <FieldLabel htmlFor="board-nmi">Site NMI</FieldLabel>
               <Input id="board-nmi" value={draft.siteNmi ?? ''} onChange={(event) => set('siteNmi', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel htmlFor="board-phase">Phase</FieldLabel>
-              <Input id="board-phase" value={draft.phase ?? ''} onChange={(event) => set('phase', event.target.value)} />
             </div>
             <div>
               <FieldLabel htmlFor="board-amperage">Amperage rating</FieldLabel>
@@ -644,7 +686,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                   <h2 className="font-extrabold text-[var(--text)]">Meters</h2>
                   <p className="mt-1 text-xs text-[var(--text-sub)]">Device identity, channels, verification, and commissioning.</p>
                 </div>
-                <Button onClick={() => void commissionNewDevice()} disabled={commissioning}><Icon name="plus" size={16} />{commissioning ? 'Opening form…' : 'Commission new device'}</Button>
+                <Button onClick={openNewMeter}><Icon name="plus" size={16} />Add meter</Button>
               </div>
               {latest.meters.length === 0 ? <p className="text-sm text-[var(--text-sub)]">No meters installed.</p> : (
                 <div className="space-y-2">

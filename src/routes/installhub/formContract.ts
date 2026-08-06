@@ -32,7 +32,12 @@ export type InstallHubContractField = {
   kind: FieldKind;
   required?: boolean;
   options?: readonly string[];
+  legacyOptions?: readonly string[];
   optionsWhen?: {
+    key: string;
+    values: Readonly<Record<string, readonly string[]>>;
+  };
+  legacyOptionsWhen?: {
     key: string;
     values: Readonly<Record<string, readonly string[]>>;
   };
@@ -60,6 +65,26 @@ export type InstallHubFormAttachment = {
 
 const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 const SENSOR_OPTIONS: Readonly<Record<(typeof DEVICE_TYPES)[number], readonly string[]>> = {
+  A3RM: [
+    '10cm-200A',
+    '10cm-333mV',
+    '20cm-3000A',
+    '30cm-3000A',
+    '45cm-3000A',
+    'Not Used',
+  ],
+  A6M: [
+    'CT-60A',
+    'CT-120A',
+    'CT-250A',
+    'CT-400A',
+    'CT-600A',
+    'Not Used',
+  ],
+};
+const LEGACY_SENSOR_OPTIONS: Readonly<
+  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
+> = {
   A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
   A6M: ['60A', '120A', '200A', '400A', '600A'],
 };
@@ -87,11 +112,26 @@ const CHANNEL_LOADS_BY_PURPOSE: Readonly<Record<string, readonly string[]>> = {
   )),
 };
 const USED_CHANNEL_LOADS = CHANNEL_LOADS.filter((load) => load !== 'Not Used');
-const SIGNAL_OPTIONS = ['Excellent', 'Good', 'Fair', 'Poor', 'No signal', 'N/A'] as const;
+const SIGNAL_OPTIONS = [
+  'Low',
+  'Medium',
+  'High',
+] as const;
+const LEGACY_SIGNAL_OPTIONS = [
+  'Excellent',
+  'Good',
+  'Fair',
+  'Poor',
+  'No signal',
+  'N/A',
+] as const;
 const ANTENNA_OPTIONS = [
   'Internal',
+  'External',
   'CSM550 - External High Gain',
   'Other',
+] as const;
+const LEGACY_ANTENNA_OPTIONS = [
   'N/A',
 ] as const;
 
@@ -111,8 +151,15 @@ function select(
   key: string,
   options: readonly string[],
   required = false,
+  legacyOptions?: readonly string[],
 ): InstallHubContractField {
-  return { key, kind: 'select', options, required };
+  return {
+    key,
+    kind: 'select',
+    options,
+    required,
+    ...(legacyOptions?.length ? { legacyOptions } : {}),
+  };
 }
 
 function photo(
@@ -145,6 +192,10 @@ function sensor(
     optionsWhen: {
       key: deviceTypeKey,
       values: SENSOR_OPTIONS,
+    },
+    legacyOptionsWhen: {
+      key: deviceTypeKey,
+      values: LEGACY_SENSOR_OPTIONS,
     },
     ...(showWhen ? { showWhen } : {}),
   };
@@ -257,8 +308,8 @@ function wwCommissioningFields(): InstallHubContractField[] {
     yesNo('commissioning.energised'),
     yesNo('commissioning.leds_visible'),
     yesNo('commissioning.online'),
-    select('commissioning.signal_strength', SIGNAL_OPTIONS, true),
-    select('commissioning.antenna_type', ANTENNA_OPTIONS, true),
+    select('commissioning.signal_strength', SIGNAL_OPTIONS, true, LEGACY_SIGNAL_OPTIONS),
+    select('commissioning.antenna_type', ANTENNA_OPTIONS, true, LEGACY_ANTENNA_OPTIONS),
     yesNo('commissioning.start_complete'),
     photo('commissioning.start_screenshot'),
     yesNo('commissioning.channels_complete'),
@@ -281,12 +332,14 @@ const wwInstallation: InstallHubContractDefinition = {
       fields: [
         text('auditor.switchboard_name', true),
         text('auditor.switchboard_location', true),
+        text('auditor.address_map_locator'),
         text('auditor.switchboard_type', true),
         text('auditor.site_nmi'),
         photo('auditor.location_before'),
         photo('auditor.sensor_before'),
         photo('auditor.cb_before'),
         deviceType('device.type'),
+        text('device.name'),
         // Kept as an optional compatibility alias for installed clients. New
         // authoring uses device.id as the single visible identity field.
         text('device.number'),
@@ -332,8 +385,8 @@ const commsFault: InstallHubContractDefinition = {
         yesNo('existing.energised'),
         yesNo('existing.leds_visible'),
         yesNo('existing.online'),
-        select('existing.signal', SIGNAL_OPTIONS),
-        select('existing.antenna', ANTENNA_OPTIONS),
+        select('existing.signal', SIGNAL_OPTIONS, false, LEGACY_SIGNAL_OPTIONS),
+        select('existing.antenna', ANTENNA_OPTIONS, false, LEGACY_ANTENNA_OPTIONS),
       ],
     },
     {
@@ -351,17 +404,17 @@ const commsFault: InstallHubContractDefinition = {
         ),
         { ...yesNo('works.new_online'), showWhen: replacementVisible },
         {
-          ...select('works.new_signal', SIGNAL_OPTIONS),
+          ...select('works.new_signal', SIGNAL_OPTIONS, false, LEGACY_SIGNAL_OPTIONS),
           showWhen: replacementVisible,
         },
         yesNo('works.external_antenna'),
         {
-          ...select('works.external_signal', SIGNAL_OPTIONS),
+          ...select('works.external_signal', SIGNAL_OPTIONS, false, LEGACY_SIGNAL_OPTIONS),
           showWhen: { key: 'works.external_antenna', equals: 'yes' },
         },
         yesNo('works.extend_antenna'),
         {
-          ...select('works.extended_signal', SIGNAL_OPTIONS),
+          ...select('works.extended_signal', SIGNAL_OPTIONS, false, LEGACY_SIGNAL_OPTIONS),
           showWhen: { key: 'works.extend_antenna', equals: 'yes' },
         },
       ],
@@ -561,6 +614,18 @@ function optionsForField(
   return field.options ?? [];
 }
 
+function acceptedOptionsForField(
+  field: InstallHubContractField,
+  answers: Record<string, string>,
+): readonly string[] {
+  const legacyOptions = field.legacyOptionsWhen
+    ? field.legacyOptionsWhen.values[
+        answer(answers, field.legacyOptionsWhen.key)
+      ] ?? []
+    : field.legacyOptions ?? [];
+  return [...new Set([...optionsForField(field, answers), ...legacyOptions])];
+}
+
 /**
  * Installed clients may still sync schema-v2 WW drafts authored before
  * purpose/custom-load fields existed. Persisted Completed forms from that era
@@ -697,7 +762,10 @@ function validateFieldAnswer(
   if (field.kind === 'number' && !Number.isFinite(Number(value))) {
     throw badRequest(`answers.${field.key} must be a number`);
   }
-  if (field.kind === 'select' && !optionsForField(field, answers).includes(value)) {
+  if (
+    field.kind === 'select'
+    && !acceptedOptionsForField(field, answers).includes(value)
+  ) {
     throw badRequest(`answers.${field.key} is not a valid selection`);
   }
 }

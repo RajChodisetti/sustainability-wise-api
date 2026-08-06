@@ -162,6 +162,7 @@ export function InstallHubCanonicalDataPage() {
   const toast = useToast();
   const [issueSearch, setIssueSearch] = useState('');
   const [issuePage, setIssuePage] = useState(0);
+  const [issueCategory, setIssueCategory] = useState<'RECONCILIATION' | 'COMPLETION'>('RECONCILIATION');
   const [issueSeverity, setIssueSeverity] = useState<'ALL' | 'ERROR' | 'WARNING'>('ALL');
   const [issueEntityType, setIssueEntityType] = useState('ALL');
   const [issueZoneId, setIssueZoneId] = useState('ALL');
@@ -178,9 +179,20 @@ export function InstallHubCanonicalDataPage() {
     q: deferredIssueSearch,
     ...(issueSeverity === 'ALL' ? {} : { severity: issueSeverity }),
     ...(issueEntityType === 'ALL' ? {} : { entityType: issueEntityType }),
+    category: issueCategory,
     ...(issueZoneId === 'ALL' ? {} : { zoneId: issueZoneId }),
   });
   const readinessSummaryQuery = useInstallationReadiness(installationId, { offset: 0, limit: 1 });
+  const reconciliationSummaryQuery = useInstallationReadiness(installationId, {
+    offset: 0,
+    limit: 1,
+    category: 'RECONCILIATION',
+  });
+  const completionSummaryQuery = useInstallationReadiness(installationId, {
+    offset: 0,
+    limit: 1,
+    category: 'COMPLETION',
+  });
   const electricalQuery = useInstallationElectricalTree(installationId);
   const mappingQuery = useInstallationMapping(installationId);
   const [electricalSearch, setElectricalSearch] = useState('');
@@ -271,6 +283,8 @@ export function InstallHubCanonicalDataPage() {
   const visibleIssues = readiness?.issues || [];
   const issueTotal = readiness?.issuePage?.total ?? visibleIssues.length;
   const fullIssueTotal = readinessSummaryQuery.data?.issuePage?.total ?? issueTotal;
+  const reconciliationTotal = reconciliationSummaryQuery.data?.issuePage?.total ?? 0;
+  const completionTotal = completionSummaryQuery.data?.issuePage?.total ?? 0;
   const issueRows = visibleIssues.map((issue) => ({
     issue,
     key: readinessIssueKey(issue),
@@ -280,7 +294,14 @@ export function InstallHubCanonicalDataPage() {
     correction: readinessCorrectionAction(tree, issue),
   }));
   const visibleIssueRows = issueRows;
-  const reviewedCount = Math.min(reviewedIssueKeys.size, fullIssueTotal);
+  const reviewedPrefix = `${issueCategory}:`;
+  const reviewTotal = issueCategory === 'RECONCILIATION'
+    ? reconciliationTotal
+    : completionTotal;
+  const reviewedCount = Math.min(
+    [...reviewedIssueKeys].filter((key) => key.startsWith(reviewedPrefix)).length,
+    reviewTotal,
+  );
   const allElectricalRows = electricalHierarchyRows(electrical);
   const filteredElectricalRows = filterElectricalHierarchyRows(allElectricalRows, electricalSearch);
   const electricalParentIds = new Set(allElectricalRows.flatMap((row) => row.parent ? [row.parent.id] : []));
@@ -329,7 +350,7 @@ export function InstallHubCanonicalDataPage() {
           throw new Error('This candidate is no longer valid. Recheck the reconciliation queue.');
         }
       });
-      setReviewedIssueKeys((current) => new Set(current).add(key));
+      setReviewedIssueKeys((current) => new Set(current).add(`${issueCategory}:${key}`));
       setResolutionSelections((current) => {
         const next = { ...current };
         delete next[key];
@@ -390,8 +411,14 @@ export function InstallHubCanonicalDataPage() {
       <Card className="mb-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="font-extrabold text-[var(--text)]">Reconciliation queue</h2>
-            <p className="mt-1 text-xs text-[var(--text-sub)]">Server issue codes link back to the record that needs attention. Search and paging run across the full reconciliation queue.</p>
+            <h2 className="font-extrabold text-[var(--text)]">
+              {issueCategory === 'RECONCILIATION' ? 'Reconciliation queue' : 'Completion issues'}
+            </h2>
+            <p className="mt-1 text-xs text-[var(--text-sub)]">
+              {issueCategory === 'RECONCILIATION'
+                ? 'Only relationships deliberately left To be confirmed appear here.'
+                : 'Validation, forms, evidence, naming, and mapping defects appear here without being labelled as reconciliation.'}
+            </p>
           </div>
           <Button
             disabled={!readiness?.eligibility.mappingExport || !mappingQuery.data || localAdvisory}
@@ -400,19 +427,41 @@ export function InstallHubCanonicalDataPage() {
             <Icon name="download" size={16} />Download pinned mapping
           </Button>
         </div>
+        <div className="mt-4 flex flex-wrap gap-2" aria-label="Readiness issue category">
+          <Button
+            variant={issueCategory === 'RECONCILIATION' ? 'primary' : 'secondary'}
+            aria-pressed={issueCategory === 'RECONCILIATION'}
+            onClick={() => {
+              setIssueCategory('RECONCILIATION');
+              setIssuePage(0);
+            }}
+          >
+            To be confirmed ({reconciliationTotal})
+          </Button>
+          <Button
+            variant={issueCategory === 'COMPLETION' ? 'primary' : 'secondary'}
+            aria-pressed={issueCategory === 'COMPLETION'}
+            onClick={() => {
+              setIssueCategory('COMPLETION');
+              setIssuePage(0);
+            }}
+          >
+            Other completion issues ({completionTotal})
+          </Button>
+        </div>
         <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-extrabold text-[var(--text)]">Review progress</p>
-              <p className="mt-1 text-xs text-[var(--text-sub)]">{reviewedCount} of {fullIssueTotal} queue items reviewed in this browser. Your search, page, filters, and reviewed markers resume automatically.</p>
+              <p className="mt-1 text-xs text-[var(--text-sub)]">{reviewedCount} of {reviewTotal} {issueCategory === 'RECONCILIATION' ? 'reconciliation' : 'completion'} items reviewed in this browser. Your search, page, filters, and reviewed markers resume automatically.</p>
             </div>
             {reviewedCount ? <Button variant="ghost" onClick={() => setReviewedIssueKeys(new Set())}>Reset reviewed</Button> : null}
           </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface)]" role="progressbar" aria-label="Reconciliation review progress" aria-valuemin={0} aria-valuemax={fullIssueTotal} aria-valuenow={reviewedCount}>
-            <div className="h-full rounded-full bg-[var(--primary)]" style={{ width: `${fullIssueTotal ? (reviewedCount / fullIssueTotal) * 100 : 100}%` }} />
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface)]" role="progressbar" aria-label={`${issueCategory === 'RECONCILIATION' ? 'Reconciliation' : 'Completion issue'} review progress`} aria-valuemin={0} aria-valuemax={reviewTotal} aria-valuenow={reviewedCount}>
+            <div className="h-full rounded-full bg-[var(--primary)]" style={{ width: `${reviewTotal ? (reviewedCount / reviewTotal) * 100 : 0}%` }} />
           </div>
         </div>
-        <Input className="mt-4" type="search" value={issueSearch} placeholder="Search the full queue by code, message, entity, ID, or field" aria-label="Search reconciliation issues" onChange={(event) => { setIssueSearch(event.target.value); setIssuePage(0); }} />
+        <Input className="mt-4" type="search" value={issueSearch} placeholder="Search by code, message, record, ID, or field" aria-label={`Search ${issueCategory === 'RECONCILIATION' ? 'reconciliation' : 'completion'} issues`} onChange={(event) => { setIssueSearch(event.target.value); setIssuePage(0); }} />
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <div>
             <label className="mb-1.5 block text-xs font-bold text-[var(--text-sub)]" htmlFor="reconciliation-severity">Severity</label>
@@ -437,13 +486,16 @@ export function InstallHubCanonicalDataPage() {
             </Select>
           </div>
         </div>
-        <p className="mt-2 text-xs text-[var(--text-sub)]">Search and every filter are applied by the server before paging. {issueTotal} issue{issueTotal === 1 ? '' : 's'} match the current criteria across the full queue.</p>
+        <p className="mt-2 text-xs text-[var(--text-sub)]">
+          Search, category, and every filter are applied by the server before paging. {issueTotal} item{issueTotal === 1 ? '' : 's'} match this category.
+        </p>
         {readinessQuery.isLoading ? <div className="mt-4"><Spinner /></div> : readinessQuery.error ? (
           <div className="mt-4"><ErrorBanner message={installHubConnectionErrorMessage(readinessQuery.error)} /></div>
         ) : visibleIssueRows.length ? (
           <div className="mt-4 space-y-3">
             {visibleIssueRows.map(({ issue, key, entity, candidates, resolutions, correction }) => {
-              const reviewed = reviewedIssueKeys.has(key);
+              const reviewedKey = `${issueCategory}:${key}`;
+              const reviewed = reviewedIssueKeys.has(reviewedKey);
               const resolutionSearch = resolutionSearches[key] || '';
               const visibleResolutions = filterReadinessResolutionCandidates(
                 resolutions,
@@ -471,8 +523,8 @@ export function InstallHubCanonicalDataPage() {
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" onClick={() => setReviewedIssueKeys((current) => {
                         const next = new Set(current);
-                        if (next.has(key)) next.delete(key);
-                        else next.add(key);
+                        if (next.has(reviewedKey)) next.delete(reviewedKey);
+                        else next.add(reviewedKey);
                         return next;
                       })}>{reviewed ? 'Mark unreviewed' : 'Mark reviewed'}</Button>
                       <LinkButton href={entity.href}>Open record <Icon name="chevron-right" size={16} /></LinkButton>
@@ -533,7 +585,7 @@ export function InstallHubCanonicalDataPage() {
           </div>
         ) : (
           <div>
-            <p className="mt-4 text-sm text-[var(--text-sub)]">No reconciliation issues match the current search, page, and filters.</p>
+            <p className="mt-4 text-sm text-[var(--text-sub)]">No {issueCategory === 'RECONCILIATION' ? 'To be confirmed relationships' : 'other completion issues'} match the current search and filters.</p>
             {issueTotal ? <ResultPager page={issuePage} pageSize={ISSUE_PAGE_SIZE} total={issueTotal} onPage={setIssuePage} /> : null}
           </div>
         )}

@@ -6,10 +6,15 @@ import type {
   Meter,
 } from '@/modules/installhub/types/domain';
 import {
+  ANTENNAS,
   FORM_DEFINITION_BY_TYPE,
   FORM_DEFINITIONS,
   SENSOR_OPTIONS_BY_DEVICE,
+  SIGNALS,
+  SWITCHBOARD_TYPES,
+  acceptedOptionsForField,
   answersAfterChange,
+  editorOptionsForField,
   formValidationIssues,
   isFieldVisible,
   isSectionVisible,
@@ -107,10 +112,10 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
     .digest('hex');
 
   assert.equal(sectionCount, 56);
-  assert.equal(fieldCount, 387);
+  assert.equal(fieldCount, 392);
   assert.equal(
     fingerprint,
-    '0c1396a261ee66acefdb0b8f5955a2939f4792029ce7d8c09ab62060171fa150',
+    '3158844d3c6de08a24b1a067062419584a5208696ce1d3fec2bca5e3a3db5bde',
   );
 });
 
@@ -129,6 +134,22 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   assert.ok(firstRating);
   assert.ok(firstLoad);
   assert.equal(channels.length, 6);
+  assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A3RM, [
+    '10cm-200A',
+    '10cm-333mV',
+    '20cm-3000A',
+    '30cm-3000A',
+    '45cm-3000A',
+    'Not Used',
+  ]);
+  assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, [
+    'CT-60A',
+    'CT-120A',
+    'CT-250A',
+    'CT-400A',
+    'CT-600A',
+    'Not Used',
+  ]);
   assert.deepEqual(
     optionsForField(firstRating, { 'device.type': 'A3RM' }),
     SENSOR_OPTIONS_BY_DEVICE.A3RM,
@@ -155,6 +176,42 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   );
 });
 
+test('WW Base44 choices are presented while persisted legacy selections remain editable', () => {
+  assert.deepEqual(SIGNALS, ['Low', 'Medium', 'High']);
+  assert.deepEqual(ANTENNAS, [
+    'Internal',
+    'External',
+    'CSM550 - External High Gain',
+    'Other',
+  ]);
+
+  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const fields = definition.sections.flatMap((section) => section.fields);
+  const switchboard = fields.find((field) => field.key === 'auditor.switchboard_type');
+  const rating = fields.find((field) => field.key === 'channel.1.rating');
+  assert.ok(switchboard);
+  assert.ok(rating);
+  assert.equal(switchboard.kind, 'select');
+  assert.deepEqual(switchboard.options, SWITCHBOARD_TYPES);
+  assert.deepEqual(
+    editorOptionsForField(switchboard, {
+      'auditor.switchboard_type': 'Historic custom board type',
+    }),
+    ['Historic custom board type', ...SWITCHBOARD_TYPES],
+  );
+  assert.ok(
+    acceptedOptionsForField(rating, { 'device.type': 'A3RM' })
+      .includes('3000A - 9cm'),
+  );
+  assert.deepEqual(
+    editorOptionsForField(rating, {
+      'device.type': 'A3RM',
+      'channel.1.rating': '3000A - 9cm',
+    }),
+    ['3000A - 9cm', ...SENSOR_OPTIONS_BY_DEVICE.A3RM],
+  );
+});
+
 test('WW channel contract matches the API and iOS parity signature', () => {
   const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
   const channelContract = Array.from({ length: 6 }, (_, index) => {
@@ -173,13 +230,16 @@ test('WW channel contract matches the API and iOS parity signature', () => {
         ...(field.options ? { options: field.options } : {}),
         ...(field.showWhen ? { showWhen: field.showWhen } : {}),
         ...(field.optionsWhen ? { optionsWhen: field.optionsWhen } : {}),
+        ...(field.legacyOptionsWhen
+          ? { legacyOptionsWhen: field.legacyOptionsWhen }
+          : {}),
       })),
     };
   });
 
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '093d63b24d8195d2ccc7cb0f434d313e226de78410bb1bcf3a2cb8d1439d46c8',
+    '3b00b0da4b860d09c8fbe38771a186a4a314dc4b8775fe04d487f2f93a596713',
   );
 });
 
@@ -215,6 +275,45 @@ test('conditional changes clear hidden values and identify hidden evidence', () 
   assert.ok(
     result.hiddenPhotoSlots.includes('channel.4.nameplate_photos'),
   );
+});
+
+test('WW device custom name follows model defaults only while pristine', () => {
+  const definition = FORM_DEFINITION_BY_TYPE['ww-installation'];
+  const pristine = answersAfterChange(
+    definition,
+    { 'device.type': 'A3RM', 'device.name': 'A3RM Meter' },
+    'device.type',
+    'A6M',
+  );
+  assert.equal(pristine.answers['device.name'], 'A6M Meter');
+
+  const edited = answersAfterChange(
+    definition,
+    { 'device.type': 'A3RM', 'device.name': 'Main incomer meter' },
+    'device.type',
+    'A6M',
+  );
+  assert.equal(edited.answers['device.name'], 'Main incomer meter');
+});
+
+test('device-number fields are presented as optional site tags, not serial identities', () => {
+  const labels = FORM_DEFINITIONS.flatMap((definition) =>
+    definition.sections.flatMap((section) =>
+      section.fields
+        .filter((field) => [
+          'device.number',
+          'existing.device_number',
+          'works.new_device_number',
+        ].includes(field.key))
+        .map((field) => field.label),
+    ),
+  );
+  assert.equal(labels.length, 3);
+  for (const label of labels) {
+    assert.match(label, /site \/ asset tag/i);
+    assert.match(label, /optional/i);
+    assert.match(label, /not the Device ID \/ serial/i);
+  }
 });
 
 test('Comms replacement sensor visibility follows the selected replacement device type', () => {
@@ -305,13 +404,14 @@ test('Comms replacement mirrors iOS meter reshaping', () => {
   };
   const replacement = meterAfterCommsReplacement(meter, {
     'works.new_device_type': 'A3RM',
+    'works.new_device_number': 'NEW-NUMBER',
     'works.new_device_id': 'NEW-ID',
     'works.new_sensor_rating': '3000A - 20cm',
   });
 
   assert.equal(replacement.deviceType, 'A3RM');
   assert.equal(replacement.deviceId, 'NEW-ID');
-  assert.equal(replacement.deviceNumber, 'NEW-ID');
+  assert.equal(replacement.deviceNumber, 'NEW-NUMBER');
   assert.equal(replacement.wwChannels?.length, 3);
   assert.equal(
     replacement.wwChannels?.[0].rogowskiSize,
@@ -333,8 +433,11 @@ test('scanner modes match iOS ingestion fields', () => {
   );
 
   for (const key of [
+    'ww-installation:device.number',
     'ww-installation:device.id',
+    'comms-fault:existing.device_number',
     'comms-fault:existing.device_id',
+    'comms-fault:works.new_device_number',
     'comms-fault:works.new_device_id',
     'ace-switchboard:job.number',
     'ace-switchboard:install.ct_serial_a',
@@ -346,6 +449,10 @@ test('scanner modes match iOS ingestion fields', () => {
   ]) {
     assert.deepEqual(fields[key]?.scanModes, ['barcode'], key);
   }
+  assert.ok(
+    fields['ww-installation:auditor.address_map_locator'],
+    'production address/map locator remains available',
+  );
   assert.deepEqual(
     fields['ace-switchboard:job.qr_link']?.scanModes,
     ['qr'],

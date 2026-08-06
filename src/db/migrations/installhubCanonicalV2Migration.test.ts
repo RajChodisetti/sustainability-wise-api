@@ -23,6 +23,10 @@ const meterCommissioningDataMigrationUrl = new URL(
   './0020_installhub_meter_commissioning_data.sql',
   import.meta.url,
 );
+const namingRuleV2MigrationUrl = new URL(
+  './0021_installhub_naming_rule_v2.sql',
+  import.meta.url,
+);
 
 const expectedNewTables = [
   'ih_completion_idempotency',
@@ -132,4 +136,24 @@ test('meter commissioning metadata migration is nullable and expand-only', async
     /ALTER TABLE "ih_meter_devices" ADD COLUMN "commissioning_data" jsonb/,
   );
   assert.doesNotMatch(sql, /NOT NULL|DROP TABLE|DROP COLUMN|TRUNCATE|UPDATE/i);
+});
+
+test('naming-rule-v2 migration safely backfills zone identity and stays additive', async () => {
+  const sql = await readFile(namingRuleV2MigrationUrl, 'utf8');
+  assert.match(sql, /ih_display_code_claims" ADD COLUMN "zone_id" text/);
+  assert.match(sql, /ih_meter_devices" ADD COLUMN "custom_name" text/);
+  assert.match(
+    sql,
+    /WHEN "display_code_overridden" = true[\s\S]+THEN btrim\("display_code"\)[\s\S]+WHEN "device_model" = 'A3RM'/,
+  );
+  assert.match(sql, /WHEN "device_model" = 'A3RM' THEN 'A3RM Meter'/);
+  assert.match(sql, /ALTER COLUMN "custom_name" SET NOT NULL/);
+  assert.match(sql, /ih_zones" ADD COLUMN "zone_code" text/);
+  assert.match(sql, /row_number\(\) OVER[\s\S]+PARTITION BY "installation_id"/);
+  assert.match(sql, /ALTER COLUMN "zone_code" SET NOT NULL/);
+  assert.match(sql, /ih_zones_active_code_unique/);
+  assert.match(sql, /ih_display_code_claims_zone_sequence_unique/);
+  assert.match(sql, /"rule_version" = 2/);
+  assert.match(sql, /ih_display_code_claims_zone_fk[\s\S]+NOT VALID/);
+  assert.doesNotMatch(sql, /DROP TABLE|DROP COLUMN|TRUNCATE/i);
 });

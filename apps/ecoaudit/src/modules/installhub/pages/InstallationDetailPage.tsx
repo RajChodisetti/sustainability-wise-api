@@ -149,7 +149,7 @@ export function InstallHubInstallationDetailPage() {
             </Button>
             {canDelete ? (
               <Button variant="danger" onClick={() => void removeInstallation()}>
-                Delete from cloud
+                Delete installation
               </Button>
             ) : null}
           </>
@@ -173,7 +173,7 @@ export function InstallHubInstallationDetailPage() {
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <WorkspaceLink href={`/installhub/installations/${installationId}/zones`} icon="building" title="Zones & assets" description="Manage zones, switchboards, devices, and site assets." count={tree.zones.length} />
           <WorkspaceLink href={`/installhub/installations/${installationId}/forms`} icon="clipboard" title="Field forms" description="Complete installation and service workflows." count={tree.formSubmissions.length} />
-          <WorkspaceLink href="/installhub/devices" icon="search" title="Find devices" description="Search all accessible sites and replace a device." />
+          <WorkspaceLink href={`/installhub/installations/${installationId}/devices`} icon="search" title="Find devices" description="Search every zone in this installation and replace a device." />
           <WorkspaceLink href={`/installhub/installations/${installationId}/report`} icon="file-text" title="Report pack" description="Generate and download the installation report." />
         </div>
       </section>

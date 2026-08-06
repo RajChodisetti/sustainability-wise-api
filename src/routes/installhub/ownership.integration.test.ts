@@ -50,6 +50,7 @@ function fullTree(installationId: string, prefix: string): CanonicalInstallation
     zones: [{
       id: zoneId,
       installationId,
+      zoneCode: 'SOURCE-ZONE',
       zoneName: 'Source zone',
       zoneDescription: '',
       photos: [],
@@ -81,6 +82,7 @@ function fullTree(installationId: string, prefix: string): CanonicalInstallation
       id: meterId,
       installationId,
       installedOnBoardId: boardId,
+      customName: 'A3RM Meter',
       deviceFamily: 'WATTWATCHERS',
       deviceModel: 'A3RM',
       deviceNumber: `${prefix}-device`,
@@ -220,6 +222,11 @@ test('canonical child IDs cannot cross installation ownership, including a concu
 
     const before = await loadCanonicalInstallationTree(sourceInstallationId, db);
     assert.ok(before);
+    assert.equal(before.zones[0].zoneCode, 'SOURCE-ZONE');
+    assert.equal(before.meterDevices[0].customName, 'A3RM Meter');
+    assert.ok(before.electricalAssets.every((board) => board.displayCode.ruleVersion === 2));
+    assert.ok(before.siteAssets.every((asset) => asset.displayCode.ruleVersion === 2));
+    assert.ok(before.meterDevices.every((meter) => meter.displayName.ruleVersion === 2));
     const stolenTree = retargetTree(before, targetInstallationId, `${prefix}-target`);
     stolenTree.zones[0].zoneName = 'Stolen and mutated';
     await assert.rejects(
@@ -236,11 +243,19 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.ok(targetAfterRejectedWrite);
     assert.equal(targetAfterRejectedWrite.zones.length, 0);
 
-    const [displayClaim] = await db.select({ id: ihDisplayCodeClaims.id })
+    const [displayClaim] = await db.select({
+      id: ihDisplayCodeClaims.id,
+      zoneId: ihDisplayCodeClaims.zoneId,
+      sequence: ihDisplayCodeClaims.sequence,
+      ruleVersion: ihDisplayCodeClaims.ruleVersion,
+    })
       .from(ihDisplayCodeClaims)
       .where(eq(ihDisplayCodeClaims.installationId, sourceInstallationId))
       .limit(1);
     assert.ok(displayClaim);
+    assert.equal(displayClaim.zoneId, sourceTree.zones[0].id);
+    assert.ok((displayClaim.sequence ?? 0) >= 1);
+    assert.equal(displayClaim.ruleVersion, 2);
     const guardedRows = [
       ['ih_grid_supplies', `${prefix}-grid`],
       ['ih_zones', `${prefix}-zone`],
@@ -293,6 +308,7 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     concurrentTarget.zones = [{
       id: racingZoneId,
       installationId: targetInstallationId,
+      zoneCode: 'CONCURRENT-THIEF',
       zoneName: 'Concurrent thief',
       zoneDescription: '',
       photos: [],

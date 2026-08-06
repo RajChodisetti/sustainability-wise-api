@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { unassignedChannelMessage } from '@/modules/installhub/lib/meterPresentation';
+import {
+  nextMeterChannelId,
+  renamedMeterCapabilities,
+  showsWattwatchersCommissioningSections,
+  unassignedChannelMessage,
+} from '@/modules/installhub/lib/meterPresentation';
+
+test('only Wattwatchers device models show Wattwatchers commissioning sections', () => {
+  assert.equal(showsWattwatchersCommissioningSections('A3RM'), true);
+  assert.equal(showsWattwatchersCommissioningSections('A6M'), true);
+  assert.equal(showsWattwatchersCommissioningSections('Other'), false);
+});
 
 test('unassigned-channel guidance uses human channel ordinals, never raw IDs', () => {
   const firstId = '3de5f0c2-4766-4e9d-98bb-a41df1b820c8';
@@ -12,4 +23,33 @@ test('unassigned-channel guidance uses human channel ordinals, never raw IDs', (
 
   assert.match(message, /Channel 1 and Channel 2 are unresolved/);
   assert.doesNotMatch(message, /3de5f0c2|74dd4a3c/);
+});
+
+test('custom channel IDs remain unique after a middle channel is removed', () => {
+  assert.equal(nextMeterChannelId('meter-1', [
+    { id: 'meter-1:1' },
+    { id: 'meter-1:3' },
+  ]), 'meter-1:2');
+  assert.equal(nextMeterChannelId('meter-1', [
+    { id: 'meter-1:1' },
+    { id: 'meter-1:2' },
+    { id: 'meter-1:3' },
+  ]), 'meter-1:4');
+});
+
+test('capability renames preserve data and reject blank or duplicate names', () => {
+  const source = { current: '120A', protocol: 'Modbus' };
+  assert.deepEqual(
+    renamedMeterCapabilities(source, 'current', 'rated_current'),
+    { capabilities: { protocol: 'Modbus', rated_current: '120A' } },
+  );
+  assert.match(
+    renamedMeterCapabilities(source, 'current', ' ').error || '',
+    /cannot be blank/,
+  );
+  assert.match(
+    renamedMeterCapabilities(source, 'current', 'protocol').error || '',
+    /already exists/,
+  );
+  assert.deepEqual(source, { current: '120A', protocol: 'Modbus' });
 });

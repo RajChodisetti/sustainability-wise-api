@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.3';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.4';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
-export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-01';
-export const DISPLAY_CODE_RULE_VERSION = 1;
+export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
+export const DISPLAY_CODE_RULE_VERSION = 2;
 export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
 export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+export const INSTALLATION_ZONE_CODE_MAX_LENGTH = 16;
+export const INSTALLATION_ZONE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+export const DISPLAY_CODE_MAX_LENGTH = 64;
 export const VIRTUAL_METER_FORMULA_VERSION = 1;
 
 export const BOARD_TYPE_CODES = [
@@ -30,6 +33,8 @@ export const SITE_ASSET_TYPE_CODES = [
   'EXHAUST_FAN_SYSTEM',
   'POWER_OUTLET',
   'HEATER_GEYSER',
+  'REFRIGERATION',
+  'COMPRESSED_AIR',
   'OTHER',
 ] as const;
 
@@ -132,6 +137,7 @@ export type GridSupply = {
 export type CanonicalZone = {
   id: string;
   installationId: string;
+  zoneCode: string;
   zoneName: string;
   zoneDescription: string;
   photos: string[];
@@ -238,6 +244,7 @@ export type MeterDevice = {
   id: string;
   installationId: string;
   installedOnBoardId: string;
+  customName: string;
   deviceFamily: 'WATTWATCHERS' | 'OTHER';
   deviceModel: 'A3RM' | 'A6M' | 'OTHER';
   customManufacturerName?: string | null;
@@ -362,6 +369,7 @@ export type InstallationReadiness = {
 export type DisplayCodeClaim = {
   entityType: 'board' | 'site_asset' | 'meter';
   entityId: string;
+  zoneId: string | null;
   typeCode: string;
   sequence: number | null;
   displayCode: string;
@@ -641,6 +649,45 @@ export function isValidInstallationSiteCode(value: string): boolean {
     && INSTALLATION_SITE_CODE_PATTERN.test(value);
 }
 
+export function deriveZoneCode(zoneName: string): string {
+  const code = zoneName
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH)
+    .replace(/-+$/g, '');
+  return code || 'ZONE';
+}
+
+export function isValidInstallationZoneCode(value: string): boolean {
+  return value.length >= 1
+    && value.length <= INSTALLATION_ZONE_CODE_MAX_LENGTH
+    && INSTALLATION_ZONE_CODE_PATTERN.test(value);
+}
+
+function nextAvailableZoneCode(base: string, used: Set<string>): string {
+  if (!used.has(base)) return base;
+  for (let ordinal = 2; ; ordinal += 1) {
+    const suffix = `-${ordinal}`;
+    const candidate = `${base.slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH - suffix.length)
+      .replace(/-+$/g, '')}${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+}
+
+function defaultMeterCustomName(input: {
+  deviceModel: MeterDevice['deviceModel'];
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+}): string {
+  if (input.deviceModel === 'A3RM') return 'A3RM Meter';
+  if (input.deviceModel === 'A6M') return 'A6M Meter';
+  return input.customModelName?.trim()
+    || input.customManufacturerName?.trim()
+    || 'Meter';
+}
+
 /**
  * Historical site codes stay authoritative, but newly generated entity codes
  * need one bounded cross-client prefix. This projection never writes back to
@@ -828,12 +875,16 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
     };
   }), 'grid supply');
 
-  const zones = uniqueById(array(input.zones, 'zones').map((value, index) => {
+  const zoneInputs = uniqueById(array(input.zones, 'zones').map((value, index) => {
     const item = record(value, `zones[${index}]`);
     assertInstallationId(item.installationId, installationId, `zones[${index}]`);
+    const requestedZoneCode = item.zoneCode == null
+      ? null
+      : stringValue(item.zoneCode, `zones[${index}].zoneCode`);
     return {
       id: requiredText(item.id, `zones[${index}].id`),
       installationId,
+      requestedZoneCode: requestedZoneCode || null,
       zoneName: requiredText(item.zoneName, `zones[${index}].zoneName`),
       zoneDescription: stringValue(item.zoneDescription, `zones[${index}].zoneDescription`),
       photos: stringArray(item.photos, `zones[${index}].photos`),
@@ -842,6 +893,26 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       deletedAt: iso(item.deletedAt),
     };
   }), 'zone');
+  const explicitZoneCodes = new Set<string>();
+  for (const zone of zoneInputs) {
+    if (!zone.requestedZoneCode) continue;
+    if (!isValidInstallationZoneCode(zone.requestedZoneCode)) {
+      throw new CanonicalInputError(
+        `Zone ${zone.id} zoneCode must be 1-${INSTALLATION_ZONE_CODE_MAX_LENGTH} uppercase letters, numbers or hyphen-separated groups`,
+      );
+    }
+    if (explicitZoneCodes.has(zone.requestedZoneCode)) {
+      throw new CanonicalInputError(`Duplicate zoneCode ${zone.requestedZoneCode}`);
+    }
+    explicitZoneCodes.add(zone.requestedZoneCode);
+  }
+  const usedZoneCodes = new Set(explicitZoneCodes);
+  const zones: CanonicalZone[] = zoneInputs.map(({ requestedZoneCode, ...zone }) => {
+    if (requestedZoneCode) return { ...zone, zoneCode: requestedZoneCode };
+    const zoneCode = nextAvailableZoneCode(deriveZoneCode(zone.zoneName), usedZoneCodes);
+    usedZoneCodes.add(zoneCode);
+    return { ...zone, zoneCode };
+  });
 
   const electricalAssets = uniqueById(array(input.electricalAssets, 'electricalAssets').map((value, index) => {
     const item = record(value, `electricalAssets[${index}]`);
@@ -902,6 +973,22 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       ['A3RM', 'A6M', 'OTHER'] as const,
       `meterDevices[${index}].deviceModel`,
     );
+    const customManufacturerName = boundedOptionalText(
+      item.customManufacturerName,
+      `meterDevices[${index}].customManufacturerName`,
+    );
+    const customModelName = boundedOptionalText(
+      item.customModelName,
+      `meterDevices[${index}].customModelName`,
+    );
+    const customName = boundedOptionalText(
+      item.customName,
+      `meterDevices[${index}].customName`,
+    ) ?? defaultMeterCustomName({
+      deviceModel,
+      customManufacturerName,
+      customModelName,
+    });
     const channels = uniqueById(array(item.channels, `meterDevices[${index}].channels`).map((value, channelIndex) => {
       const channel = record(value, `meterDevices[${index}].channels[${channelIndex}]`);
       const ordinal = integer(channel.ordinal, 0, `meterDevices[${index}].channels[${channelIndex}].ordinal`);
@@ -940,16 +1027,11 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       id: requiredText(item.id, `meterDevices[${index}].id`),
       installationId,
       installedOnBoardId: requiredText(item.installedOnBoardId, `meterDevices[${index}].installedOnBoardId`),
+      customName,
       deviceFamily: enumValue(item.deviceFamily, ['WATTWATCHERS', 'OTHER'] as const, 'meter.deviceFamily'),
       deviceModel,
-      customManufacturerName: boundedOptionalText(
-        item.customManufacturerName,
-        `meterDevices[${index}].customManufacturerName`,
-      ),
-      customModelName: boundedOptionalText(
-        item.customModelName,
-        `meterDevices[${index}].customModelName`,
-      ),
+      customManufacturerName,
+      customModelName,
       deviceNumber: optionalText(item.deviceNumber),
       serialNumber: requiredText(item.serialNumber, `meterDevices[${index}].serialNumber`),
       displayName: parseDisplayCode(item.displayName, `meterDevices[${index}].displayName`),
@@ -1235,7 +1317,7 @@ function issueSortKey(issue: ReadinessIssue): string {
 function isValidDisplayLabel(value: string): boolean {
   const trimmed = value.trim();
   return trimmed.length >= 1
-    && trimmed.length <= 64
+    && trimmed.length <= DISPLAY_CODE_MAX_LENGTH
     && !/[\u0000-\u001f\u007f]/.test(trimmed);
 }
 
@@ -1270,7 +1352,7 @@ function displayCodeIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         entityType: entity.entityType,
         entityId: entity.id,
         field: 'displayCode.value',
-        message: 'Display name must be 1-64 visible characters.',
+        message: `Display name must be 1-${DISPLAY_CODE_MAX_LENGTH} visible characters.`,
       });
       continue;
     }
@@ -1540,9 +1622,31 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         });
       }
       const allowedRatings = meter.deviceModel === 'A3RM'
-        ? new Set(['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'])
+        ? new Set([
+            '10cm-200A',
+            '10cm-333mV',
+            '20cm-3000A',
+            '30cm-3000A',
+            '45cm-3000A',
+            'Not Used',
+            '3000A - 9cm',
+            '3000A - 20cm',
+            '3000A - 29cm',
+          ])
         : meter.deviceModel === 'A6M'
-          ? new Set(['60A', '120A', '200A', '400A', '600A'])
+          ? new Set([
+              'CT-60A',
+              'CT-120A',
+              'CT-250A',
+              'CT-400A',
+              'CT-600A',
+              'Not Used',
+              '60A',
+              '120A',
+              '200A',
+              '400A',
+              '600A',
+            ])
           : null;
       if (
         channel.purpose !== 'SPARE'
@@ -1864,7 +1968,7 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
         severity: 'ERROR',
         entityType: 'site_asset',
         entityId: asset.id,
-        field: 'meteringState',
+        field: 'meteringState.measurementAssignmentIds',
         message: 'Confirmed-unmetered assets cannot have measurement assignments.',
         candidateIds: boundedCandidateIds(direct.map((assignment) => assignment.id)),
       });
@@ -2293,43 +2397,62 @@ export function allocateDisplayCodes(input: {
       claim,
     ]),
   );
-  const nextByType = new Map<string, number>();
+  const nextByZone = new Map<string, number>();
   for (const claim of claims) {
-    if (claim.sequence == null) continue;
-    nextByType.set(claim.typeCode, Math.max(nextByType.get(claim.typeCode) ?? 0, claim.sequence));
+    if (!claim.zoneId || claim.sequence == null) continue;
+    nextByZone.set(
+      claim.zoneId,
+      Math.max(nextByZone.get(claim.zoneId) ?? 0, claim.sequence),
+    );
   }
 
+  const zoneById = new Map(input.tree.zones.map((zone) => [zone.id, zone]));
+  const boardZoneById = new Map(
+    input.tree.electricalAssets.map((board) => [board.id, board.zoneId]),
+  );
   const entities: Array<{
     entityType: DisplayCodeClaim['entityType'];
     entityId: string;
+    zoneId: string;
     typeCode: string;
+    customName: string;
     display: DisplayCode;
   }> = [
     ...input.tree.electricalAssets.map((entity) => ({
       entityType: 'board' as const,
       entityId: entity.id,
+      zoneId: entity.zoneId,
       typeCode: entity.typeCode,
+      customName: entity.assetName,
       display: entity.displayCode,
     })),
     ...input.tree.siteAssets.map((entity) => ({
       entityType: 'site_asset' as const,
       entityId: entity.id,
+      zoneId: entity.zoneId,
       typeCode: entity.typeCode,
+      customName: entity.assetName,
       display: entity.displayCode,
     })),
-    ...input.tree.meterDevices.map((entity) => ({
-      entityType: 'meter' as const,
-      entityId: entity.id,
-      typeCode: entity.deviceModel,
-      display: entity.displayName,
-    })),
+    ...input.tree.meterDevices.map((entity) => {
+      const zoneId = boardZoneById.get(entity.installedOnBoardId);
+      if (!zoneId) {
+        throw new CanonicalInputError(
+          `Meter ${entity.id} references an unknown installedOnBoardId`,
+        );
+      }
+      return {
+        entityType: 'meter' as const,
+        entityId: entity.id,
+        zoneId,
+        typeCode: entity.deviceModel,
+        customName: entity.customName,
+        display: entity.displayName,
+      };
+    }),
   ].sort((left, right) => `${left.entityType}:${left.entityId}`.localeCompare(`${right.entityType}:${right.entityId}`));
 
   for (const entity of entities) {
-    const sitePrefix = installationDisplayCodePrefix(input.tree.installation.siteCode);
-    const generatedPrefix = normalizeDisplayCode(
-      `${sitePrefix}-${entity.typeCode}-`,
-    );
     const priorClaimsForEntity = claims.filter((claim) => (
       claim.entityType === entity.entityType && claim.entityId === entity.entityId
     ));
@@ -2354,54 +2477,86 @@ export function allocateDisplayCodes(input: {
       continue;
     }
 
-    const generatedInputsChanged = !entity.display.isOverridden
-      && !normalizeDisplayCode(entity.display.value).startsWith(generatedPrefix);
-    if (generatedInputsChanged) entity.display.value = '';
-    const normalized = normalizeDisplayCode(entity.display.value);
-    const collision = normalized ? claimed.get(normalized) : undefined;
-    if (collision && (entity.display.isOverridden || !entity.display.provisional)) {
+    const zone = zoneById.get(entity.zoneId);
+    if (!zone) {
       throw new CanonicalInputError(
-        `Display name ${entity.display.value} is already used by ${collision.entityType} ${collision.entityId}`,
-        'display_code_conflict',
+        `${entity.entityType} ${entity.entityId} references an unknown zoneId`,
       );
     }
+    entity.display.ruleVersion = DISPLAY_CODE_RULE_VERSION;
 
-    let sequence: number | null = null;
-    let displayCode = entity.display.value;
-    let generated = !entity.display.isOverridden;
-    if (!displayCode || collision) {
-      do {
-        sequence = (nextByType.get(entity.typeCode) ?? 0) + 1;
-        nextByType.set(entity.typeCode, sequence);
-        displayCode = `${sitePrefix}-${entity.typeCode}-${String(sequence).padStart(3, '0')}`;
-      } while (claimed.has(normalizeDisplayCode(displayCode)));
-      entity.display.value = displayCode;
-      entity.display.generatedValue = displayCode;
-      entity.display.isOverridden = false;
-      entity.display.provisional = false;
-      generated = true;
-    }
-    if (sequence === null && generated) {
-      const escapedSite = sitePrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const escapedType = entity.typeCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const match = new RegExp(`^${escapedSite}-${escapedType}-(\\d+)$`, 'i').exec(displayCode);
-      if (match) {
-        sequence = Number(match[1]);
-        nextByType.set(entity.typeCode, Math.max(nextByType.get(entity.typeCode) ?? 0, sequence));
+    if (entity.display.isOverridden && entity.display.value.trim()) {
+      const displayCode = entity.display.value.trim();
+      const normalizedDisplayCode = normalizeDisplayCode(displayCode);
+      const collision = claimed.get(normalizedDisplayCode);
+      if (collision) {
+        throw new CanonicalInputError(
+          `Display name ${displayCode} is already used by ${collision.entityType} ${collision.entityId}`,
+          'display_code_conflict',
+        );
       }
+      entity.display.value = displayCode;
+      entity.display.provisional = false;
+      const claim: DisplayCodeClaim = {
+        entityType: entity.entityType,
+        entityId: entity.entityId,
+        zoneId: entity.zoneId,
+        typeCode: entity.typeCode,
+        sequence: null,
+        displayCode,
+        normalizedDisplayCode,
+        generated: false,
+        ruleVersion: DISPLAY_CODE_RULE_VERSION,
+      };
+      claims.push(claim);
+      claimed.set(normalizedDisplayCode, claim);
+      continue;
     }
+
+    const sitePrefix = installationDisplayCodePrefix(input.tree.installation.siteCode);
+    let sequence: number;
+    let displayCode: string;
+    let normalizedDisplayCode: string;
+    do {
+      sequence = (nextByZone.get(entity.zoneId) ?? 0) + 1;
+      nextByZone.set(entity.zoneId, sequence);
+      const sequenceText = String(sequence).padStart(2, '0');
+      const prefix = `${sitePrefix}-${zone.zoneCode}-${sequenceText}-`;
+      const fallbackName = entity.typeCode || entity.entityType;
+      const normalizedCustomName = (entity.customName || fallbackName)
+        .normalize('NFKD')
+        .toUpperCase()
+        .replace(/[^A-Z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        || fallbackName;
+      const availableNameLength = Math.max(1, DISPLAY_CODE_MAX_LENGTH - prefix.length);
+      const boundedCustomName = normalizedCustomName
+        .slice(0, availableNameLength)
+        .replace(/-+$/g, '')
+        || fallbackName.slice(0, availableNameLength).toUpperCase()
+        || 'X';
+      displayCode = `${prefix}${boundedCustomName}`;
+      normalizedDisplayCode = normalizeDisplayCode(displayCode);
+    } while (claimed.has(normalizedDisplayCode));
+
+    entity.display.value = displayCode;
+    entity.display.generatedValue = displayCode;
+    entity.display.isOverridden = false;
+    entity.display.overrideReason = undefined;
+    entity.display.provisional = false;
     const claim: DisplayCodeClaim = {
       entityType: entity.entityType,
       entityId: entity.entityId,
+      zoneId: entity.zoneId,
       typeCode: entity.typeCode,
       sequence,
       displayCode,
-      normalizedDisplayCode: normalizeDisplayCode(displayCode),
-      generated,
-      ruleVersion: entity.display.ruleVersion,
+      normalizedDisplayCode,
+      generated: true,
+      ruleVersion: DISPLAY_CODE_RULE_VERSION,
     };
     claims.push(claim);
-    claimed.set(claim.normalizedDisplayCode, claim);
+    claimed.set(normalizedDisplayCode, claim);
   }
   return claims.slice(input.existingClaims.length);
 }

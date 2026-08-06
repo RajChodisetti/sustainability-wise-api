@@ -1,5 +1,5 @@
-import { InstallHubMeterPage } from '@/modules/installhub/pages/MeterPage';
+import { InstallHubNewMeterPage } from '@/modules/installhub/pages/NewMeterPage';
 
 export default function NewInstallHubMeterPage() {
-  return <InstallHubMeterPage mode="new" />;
+  return <InstallHubNewMeterPage />;
 }

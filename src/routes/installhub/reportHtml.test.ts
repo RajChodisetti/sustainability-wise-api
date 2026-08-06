@@ -21,6 +21,7 @@ import {
   INSTALLHUB_REPORT_DEFINITIONS,
   INSTALLHUB_REPORT_DEFINITION_BY_TYPE,
   INSTALLHUB_REPORT_MANIFEST_VERSION,
+  isReportItemVisible,
 } from './reportManifest.js';
 
 const installation: InstallHubReportInstallation = {
@@ -122,15 +123,47 @@ test('dynamic installation report sections follow A3RM and A6M channel visibilit
   assert.ok(a6m.includes('Channel 6'));
 });
 
-test('WW report uses one device identity and preserves the antenna photo instruction', () => {
+test('legacy WW reports show commissioning for Base44 and persisted sensor vocabularies', () => {
+  const visibility = (formType: 'a3rm-installation' | 'a6m-installation') => {
+    const field = INSTALLHUB_REPORT_DEFINITION_BY_TYPE[formType].sections
+      .flatMap((section) => section.fields)
+      .find((candidate) => candidate.key === 'commissioning.channel_1_current');
+    assert.ok(field?.showWhen);
+    return field.showWhen;
+  };
+
+  const a3rm = visibility('a3rm-installation');
+  assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': '10cm-200A' }), true);
+  assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': '3000A - 9cm' }), true);
+  assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': 'Not Used' }), false);
+
+  const a6m = visibility('a6m-installation');
+  assert.equal(isReportItemVisible(a6m, { 'channel.1.rating': 'CT-60A' }), true);
+  assert.equal(isReportItemVisible(a6m, { 'channel.1.rating': '60A' }), true);
+  assert.equal(isReportItemVisible(a6m, { 'channel.1.rating': 'Not Used' }), false);
+});
+
+test('WW report preserves production device and map fields plus the antenna photo instruction', () => {
   const fields = INSTALLHUB_REPORT_DEFINITION_BY_TYPE['ww-installation'].sections
     .flatMap((section) => section.fields);
   assert.ok(fields.some((field) => field.key === 'device.id' && field.label === 'Device ID / serial'));
-  assert.equal(fields.some((field) => field.key === 'device.number'), false);
+  assert.ok(fields.some((field) => field.key === 'device.name' && field.label === 'Device name'));
+  assert.equal(fields.some((field) => field.key === 'device.number'), true);
+  assert.ok(fields.some((field) => (
+    field.key === 'auditor.address_map_locator'
+    && field.label === 'Address map locator (latitude / longitude)'
+  )));
   assert.ok(fields.some((field) => (
     field.key === 'commissioning.completed_photos'
     && field.label === 'Completed installation photos (include the antenna)'
   )));
+});
+
+test('communications report preserves existing and replacement device numbers', () => {
+  const fields = INSTALLHUB_REPORT_DEFINITION_BY_TYPE['comms-fault'].sections
+    .flatMap((section) => section.fields);
+  assert.ok(fields.some((field) => field.key === 'existing.device_number'));
+  assert.ok(fields.some((field) => field.key === 'works.new_device_number'));
 });
 
 test('photo evidence resolves only through the exact attachment registry field', () => {

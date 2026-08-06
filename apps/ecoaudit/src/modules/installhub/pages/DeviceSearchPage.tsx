@@ -2,17 +2,17 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
+import { FieldLabel, Input } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/contexts/ToastContext';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs } from '@/modules/installhub/components/InstallHubUi';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import {
-  useInstallationTrees,
+  useInstallationTree,
   useTreeWriter,
 } from '@/modules/installhub/hooks/useInstallationTree';
 import {
@@ -47,7 +47,7 @@ function DeviceResultGroup({
       await writer.mutate((next) => {
         formId = createReplacementForm(next, user, record).id;
       }, 'metadata');
-      toast.success('Replacement form created with this device selected.');
+      toast.success('Comms fault / replacement form created with this device selected.');
       router.push(`/installhub/installations/${record.installationId}/forms/${formId}`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
@@ -69,7 +69,9 @@ function DeviceResultGroup({
         </Link>
       </div>
       <div className="grid gap-3 xl:grid-cols-2">
-        {records.map((record) => (
+        {records.map((record) => {
+          const supportsCommsReplacement = record.supportsCommsReplacement;
+          return (
           <Card key={record.meterId} className="h-full">
             <div className="flex h-full flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
@@ -88,81 +90,74 @@ function DeviceResultGroup({
                 >
                   Open
                 </Button>
-                <Button
-                  onClick={() => void replace(record)}
-                  disabled={Boolean(replacingId)}
-                >
-                  <Icon name="refresh" size={16} />
-                  {replacingId === record.meterId ? 'Opening form…' : 'Replace'}
-                </Button>
+                {supportsCommsReplacement ? (
+                  <Button
+                    onClick={() => void replace(record)}
+                    disabled={Boolean(replacingId)}
+                  >
+                    <Icon name="refresh" size={16} />
+                    {replacingId === record.meterId ? 'Opening form…' : 'Replace / comms fault'}
+                  </Button>
+                ) : null}
               </div>
             </div>
+            {!supportsCommsReplacement ? (
+              <p className="text-xs font-semibold text-[var(--text-sub)]">
+                The comms-fault replacement form is available for A3RM and A6M devices.
+              </p>
+            ) : null}
           </Card>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
 }
 
 export function InstallHubDeviceSearchPage() {
-  const treesQuery = useInstallationTrees();
+  const { installationId } = useParams<{ installationId: string }>();
+  const treeQuery = useInstallationTree(installationId);
   const [query, setQuery] = useState('');
-  const [installationId, setInstallationId] = useState('');
   const records = useMemo(
-    () => deviceSearchRecords(treesQuery.data || []),
-    [treesQuery.data],
+    () => deviceSearchRecords(treeQuery.data ? [treeQuery.data] : []),
+    [treeQuery.data],
   );
   const filtered = useMemo(
     () => filterDeviceSearchRecords(records, query, installationId),
     [installationId, query, records],
   );
 
-  if (treesQuery.isLoading) return <Spinner />;
-  if (treesQuery.error) return <ErrorBanner message={installHubConnectionErrorMessage(treesQuery.error)} />;
-  const trees = treesQuery.data || [];
-  const recordsByInstallation = new Map<string, DeviceSearchRecord[]>();
-  for (const record of filtered) {
-    recordsByInstallation.set(record.installationId, [
-      ...(recordsByInstallation.get(record.installationId) || []),
-      record,
-    ]);
-  }
+  if (treeQuery.isLoading) return <Spinner />;
+  if (treeQuery.error) return <ErrorBanner message={installHubConnectionErrorMessage(treeQuery.error)} />;
+  const tree = treeQuery.data;
+  if (!tree) return <ErrorBanner message="Installation not found." />;
 
   return (
     <div>
-      <Breadcrumbs items={[{ label: 'Find devices' }]} />
+      <Breadcrumbs items={[
+        { label: 'Installations', href: '/installhub/installations' },
+        { label: tree.installation.siteName, href: `/installhub/installations/${installationId}` },
+        { label: 'Find devices' },
+      ]} />
       <PageHeader
         title="Find devices"
-        subtitle="Search every installation you can access, then open a device or start its replacement workflow."
+        subtitle="Search every zone in this installation, then open a device or start a comms fault / replacement workflow."
       />
 
       <Card className="mb-6">
-        <div className="grid gap-x-4 lg:grid-cols-[minmax(0,2fr)_minmax(240px,1fr)]">
-          <div>
-            <FieldLabel htmlFor="device-global-search" className="mt-0">Search devices</FieldLabel>
-            <div className="relative">
-              <Icon name="search" size={18} className="pointer-events-none absolute left-3.5 top-3.5 text-[var(--muted)]" />
-              <Input
-                id="device-global-search"
-                type="search"
-                className="pl-10"
-                value={query}
-                autoFocus
-                placeholder="Device ID, name, zone, switchboard, or type"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
+        <FieldLabel htmlFor="device-installation-search" className="mt-0">Search devices</FieldLabel>
+        <div className="relative">
+          <Icon name="search" size={18} className="pointer-events-none absolute left-3.5 top-3.5 text-[var(--muted)]" />
+          <Input
+            id="device-installation-search"
+            type="search"
+            className="pl-10"
+            value={query}
+            autoFocus
+            placeholder="Device ID, name, zone, switchboard, or type"
+            onChange={(event) => setQuery(event.target.value)}
+          />
           </div>
-          <div>
-            <FieldLabel htmlFor="device-site-filter" className="mt-0">Installation</FieldLabel>
-            <Select id="device-site-filter" value={installationId} onChange={(event) => setInstallationId(event.target.value)}>
-              <option value="">All accessible installations</option>
-              {trees.map((tree) => (
-                <option key={tree.installation.id} value={tree.installation.id}>{tree.installation.siteName}</option>
-              ))}
-            </Select>
-          </div>
-        </div>
         <p className="mt-3 text-sm font-semibold text-[var(--text-sub)]" role="status" aria-live="polite">
           {filtered.length} device{filtered.length === 1 ? '' : 's'} found
         </p>
@@ -175,12 +170,7 @@ export function InstallHubDeviceSearchPage() {
           description="Try a device ID, device name, zone, switchboard, or model such as A3RM."
         />
       ) : (
-        <div className="space-y-8">
-          {trees.flatMap((tree) => {
-            const matches = recordsByInstallation.get(tree.installation.id);
-            return matches?.length ? [<DeviceResultGroup key={tree.installation.id} tree={tree} records={matches} />] : [];
-          })}
-        </div>
+        <DeviceResultGroup tree={tree} records={filtered} />
       )}
     </div>
   );

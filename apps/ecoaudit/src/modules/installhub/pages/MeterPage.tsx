@@ -23,6 +23,12 @@ import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createMeter, nowIso } from '@/modules/installhub/lib/model';
+import {
+  defaultMeterCustomName,
+  ENTITY_NAME_MAX_LENGTH,
+  nameAfterTypeChange,
+  provisionalDisplayCodeV2,
+} from '@/modules/installhub/lib/naming';
 import type {
   Meter,
   MeasurementAssignment,
@@ -56,7 +62,12 @@ import {
 } from '@/modules/installhub/lib/electricalPresentation';
 import { useToast } from '@/contexts/ToastContext';
 import { createReplacementForm } from '@/modules/installhub/lib/deviceSearch';
-import { suggestedDeviceDisplayName, unassignedChannelMessage } from '@/modules/installhub/lib/meterPresentation';
+import {
+  nextMeterChannelId,
+  renamedMeterCapabilities,
+  showsWattwatchersCommissioningSections,
+  unassignedChannelMessage,
+} from '@/modules/installhub/lib/meterPresentation';
 
 const prestartQuestions: Array<[keyof WattwatcherPrestart, string]> = [
   ['siteInduction', 'Site induction required?'],
@@ -90,11 +101,41 @@ const LOAD_TYPES = [
   'Not Used',
 ] as const;
 const ROGOWSKI_SIZES = [
-  '3000A - 9cm',
-  '3000A - 20cm',
-  '3000A - 29cm',
+  '10cm-200A',
+  '10cm-333mV',
+  '20cm-3000A',
+  '30cm-3000A',
+  '45cm-3000A',
+  'Not Used',
 ] as const;
-const CT_RATINGS = ['60A', '120A', '200A', '400A', '600A'] as const;
+const CT_RATINGS = [
+  'CT-60A',
+  'CT-120A',
+  'CT-250A',
+  'CT-400A',
+  'CT-600A',
+  'Not Used',
+] as const;
+const SIGNAL_STRENGTHS = ['Low', 'Medium', 'High'] as const;
+const ANTENNA_TYPES = [
+  'Internal',
+  'External',
+  'CSM550 - External High Gain',
+  'Other',
+] as const;
+const METER_CLASSIFICATIONS = [
+  'Utility / Gate Meter',
+  'Sub-meter',
+  'Check Meter',
+  'Solar / Generation Meter',
+  'Other',
+] as const;
+const METER_COVERAGE_OPTIONS = [
+  'Entire Board Load',
+  'Specific Outgoing Circuit',
+  'Multiple Circuits',
+  'Unknown',
+] as const;
 
 function withLegacyOption(
   options: readonly string[],
@@ -104,7 +145,21 @@ function withLegacyOption(
   return [current, ...options];
 }
 
-export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
+function defaultMeterNameForDraft(meter: Meter): string {
+  return defaultMeterCustomName({
+    deviceModel: meter.deviceType,
+    customManufacturerName: meter.customManufacturerName,
+    customModelName: meter.customModelName,
+  });
+}
+
+export function InstallHubMeterPage({
+  mode,
+  initialDeviceType = 'A3RM',
+}: {
+  mode: 'new' | 'edit';
+  initialDeviceType?: Meter['deviceType'];
+}) {
   const { installationId, zoneId, boardId, meterId } = useParams<{
     installationId: string;
     zoneId: string;
@@ -133,17 +188,40 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
 
   const board = query.data?.electricalAssets.find((item) => item.id === boardId);
   const source = board?.meters.find((item) => item.id === meterId);
+  const canonicalSource = query.data?.meterDevices?.find((item) => item.id === meterId);
   useEffect(() => {
-    if (mode === 'new') setDraft((current) => current ?? createMeter());
+    if (mode === 'new') setDraft((current) => {
+      if (current) return current;
+      const created = createMeter();
+      if (initialDeviceType !== 'Other') return created;
+      return {
+        ...created,
+        deviceFamily: 'OTHER',
+        deviceType: 'Other',
+        customName: defaultMeterCustomName({ deviceModel: 'Other' }),
+        deviceName: defaultMeterCustomName({ deviceModel: 'Other' }),
+        customManufacturerName: '',
+        customModelName: '',
+        wwChannels: [{
+          id: meterChannelId(created.id, 0),
+          ordinal: 1,
+          purpose: 'SPARE',
+          capabilities: {},
+        }],
+      };
+    });
     else if (source) {
-      setDraft(structuredClone(source));
+      setDraft({
+        ...structuredClone(source),
+        customName: source.customName || canonicalSource?.customName,
+      });
       setAssignmentDrafts(
         measurementAssignments(query.data!).filter(
           (assignment) => assignment.meterId === source.id,
         ).map((assignment) => structuredClone(assignment)),
       );
     }
-  }, [mode, query.data, source]);
+  }, [canonicalSource?.customName, initialDeviceType, mode, query.data, source]);
 
   if (query.isLoading || !draft) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -153,6 +231,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
   const zone = tree.zones.find((item) => item.id === zoneId);
   const saved = mode === 'edit';
   const currentDraft = draft;
+  const fixedOtherWorkflow = initialDeviceType === 'Other'
+    || (mode === 'edit' && source?.deviceType === 'Other');
+  const showWattwatchersSections = showsWattwatchersCommissioningSections(
+    draft.deviceType,
+  );
   const latestBoard = tree.electricalAssets.find((item) => item.id === boardId)!;
   const latest = latestBoard.meters.find((item) => item.id === meterId) ?? draft;
   const commissionedForm = tree.formSubmissions.find(
@@ -166,15 +249,21 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       )),
   );
   const dependencyPreview = meterDependencyPreview(tree, draft.id);
-  const suggestedDeviceName = suggestedDeviceDisplayName({
-    siteName: tree.installation.siteName,
-    zoneName: zone?.zoneName || 'Unknown zone',
-    deviceModel: draft.deviceType === 'Other'
-      ? draft.customModelName?.trim() || 'Metering device'
-      : draft.deviceType,
-    serialNumber: draft.deviceId,
+  const defaultDeviceCustomName = defaultMeterCustomName({
+    deviceModel: draft.deviceType,
+    customManufacturerName: draft.customManufacturerName,
+    customModelName: draft.customModelName,
   });
-  const visibleDeviceName = draft.deviceNameOverridden ? draft.deviceName : suggestedDeviceName;
+  const visibleDeviceName = draft.customName?.trim()
+    || canonicalSource?.customName?.trim()
+    || defaultDeviceCustomName;
+  const previewDisplayName = provisionalDisplayCodeV2(tree, {
+    zoneId: board.zoneId,
+    customName: visibleDeviceName,
+    fallbackType: defaultDeviceCustomName,
+    excludeId: draft.id,
+    current: canonicalSource?.displayName,
+  });
   const sourceAssignments = source
     ? measurementAssignments(tree).filter((assignment) => assignment.meterId === source.id)
     : [];
@@ -234,10 +323,30 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     set('wwCommissioning', { ...currentDraft.wwCommissioning, [key]: value });
   }
 
+  function setMeterIdentityDetail(
+    key: 'customManufacturerName' | 'customModelName',
+    value: string,
+  ) {
+    setDraft((current) => {
+      if (!current) return current;
+      const previousDefault = defaultMeterNameForDraft(current);
+      const next = { ...current, [key]: value };
+      return {
+        ...next,
+        customName: nameAfterTypeChange(
+          current.customName || '',
+          previousDefault,
+          defaultMeterNameForDraft(next),
+        ),
+      };
+    });
+  }
+
   async function save(event?: FormEvent) {
     event?.preventDefault();
     const nextErrors: Array<{ id?: string; message: string }> = [];
     if (!visibleDeviceName.trim()) nextErrors.push({ id: 'meter-name', message: 'Enter the device name.' });
+    else if (visibleDeviceName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'meter-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the device name.` });
     if (!currentDraft.deviceId.trim()) nextErrors.push({ id: 'meter-serial', message: 'Enter or scan the device ID / serial.' });
     if (currentDraft.deviceType === 'Other' && !currentDraft.customModelName?.trim()) {
       nextErrors.push({ id: 'meter-custom-model', message: 'Enter the custom device model.' });
@@ -251,6 +360,12 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       nextErrors.push({ id: 'meter-channels', message: `${currentDraft.deviceType} requires exactly ${expectedChannelCount} channels.` });
     } else if (currentDraft.deviceType === 'Other' && channels.length < 1) {
       nextErrors.push({ id: 'meter-channels', message: 'Add at least one channel for the custom device.' });
+    } else if (
+      currentDraft.deviceType === 'Other'
+      && assetReturn
+      && !channels.some((channel) => channel.purpose && channel.purpose !== 'SPARE')
+    ) {
+      nextErrors.push({ id: 'meter-channels', message: 'Mark at least one custom channel as active before returning to the site asset.' });
     }
     channels.forEach((channel, index) => {
       if (channel.purpose !== 'SPARE' && channel.loadType === 'Other' && !channel.customLoadTypeName?.trim()) {
@@ -352,8 +467,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         if (!targetBoard) throw new Error('Switchboard not found.');
         const editableDraft = commissionedForm && source ? {
           ...structuredClone(source),
-          deviceName: currentDraft.deviceName,
-          deviceNameOverridden: currentDraft.deviceNameOverridden,
+          customName: currentDraft.customName,
           wwSwitchboard: { ...source.wwSwitchboard, notes: currentDraft.wwSwitchboard?.notes },
           wwVerification: { ...source.wwVerification, notes: currentDraft.wwVerification?.notes },
           wwCommissioning: { ...source.wwCommissioning, notes: currentDraft.wwCommissioning?.notes },
@@ -362,10 +476,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         const editableChannels = editableDraft.wwChannels || [];
         const value: Meter = {
           ...editableDraft,
+          customName: visibleDeviceName.trim(),
           deviceName: visibleDeviceName.trim(),
-          deviceNameOverridden: true,
+          deviceNameOverridden: editableDraft.deviceNameOverridden ?? false,
           deviceId: editableDraft.deviceId.trim(),
-          deviceNumber: editableDraft.deviceId.trim(),
+          deviceNumber: editableDraft.deviceNumber?.trim() || null,
           customManufacturerName: editableDraft.deviceFamily === 'OTHER' ? editableDraft.customManufacturerName?.trim() : null,
           customModelName: editableDraft.deviceType === 'Other' ? editableDraft.customModelName?.trim() : null,
           lifecycleState: 'ACTIVE',
@@ -405,11 +520,9 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       });
       setErrors([]);
       toast.success(saved ? 'Meter saved.' : 'Meter added.');
-      if (!saved) {
-        router.replace(assetReturn
-          ? assetMeterReturnHref(installationId, assetReturn, currentDraft.id)
-          : `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}/meters/${currentDraft.id}`);
-      }
+      router.replace(assetReturn
+        ? assetMeterReturnHref(installationId, assetReturn, currentDraft.id)
+        : `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -549,6 +662,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       if (!current) return current;
       if (value === 'WATTWATCHERS') {
         const deviceType = current.deviceType === 'A6M' ? 'A6M' : 'A3RM';
+        const customName = nameAfterTypeChange(
+          current.customName || '',
+          defaultMeterNameForDraft(current),
+          defaultMeterCustomName({ deviceModel: deviceType }),
+        );
         const count = deviceType === 'A6M' ? 6 : 3;
         const channels = Array.from({ length: count }, (_, index) => ({
           ...(current.wwChannels?.[index] || {}),
@@ -565,6 +683,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           ...current,
           deviceFamily: value,
           deviceType,
+          customName,
           customManufacturerName: null,
           customModelName: null,
           wwChannels: channels,
@@ -574,6 +693,15 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         ...current,
         deviceFamily: value,
         deviceType: 'Other',
+        customName: nameAfterTypeChange(
+          current.customName || '',
+          defaultMeterNameForDraft(current),
+          defaultMeterCustomName({
+            deviceModel: 'Other',
+            customManufacturerName: current.customManufacturerName,
+            customModelName: current.customModelName,
+          }),
+        ),
         wwChannels: current.wwChannels?.length ? current.wwChannels : [{ id: meterChannelId(current.id, 0), ordinal: 1, purpose: 'SPARE' }],
       };
     });
@@ -598,6 +726,15 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         ...current,
         deviceFamily: type === 'Other' ? 'OTHER' : current.deviceFamily,
         deviceType: type,
+        customName: nameAfterTypeChange(
+          current.customName || '',
+          defaultMeterNameForDraft(current),
+          defaultMeterCustomName({
+            deviceModel: type,
+            customManufacturerName: current.customManufacturerName,
+            customModelName: type === 'Other' ? current.customModelName : null,
+          }),
+        ),
         customModelName: type === 'Other' ? current.customModelName : null,
         wwChannels: channels,
       };
@@ -636,7 +773,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       return {
         ...current,
         wwChannels: [...(current.wwChannels || []), {
-          id: meterChannelId(current.id, index),
+          id: nextMeterChannelId(current.id, current.wwChannels || []),
           ordinal: index + 1,
           purpose: 'SPARE',
         }],
@@ -664,12 +801,15 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
     updateChannel(index, { capabilities });
   }
 
-  function renameCapability(index: number, priorKey: string, nextKey: string) {
+  function renameCapability(index: number, priorKey: string, nextKey: string): boolean {
     const capabilities = { ...(currentDraft.wwChannels?.[index]?.capabilities || {}) };
-    const value = capabilities[priorKey];
-    delete capabilities[priorKey];
-    if (nextKey) capabilities[nextKey] = value;
-    setChannelCapabilities(index, capabilities);
+    const result = renamedMeterCapabilities(capabilities, priorKey, nextKey);
+    if (result.error) {
+      toast.error(result.error);
+      return false;
+    }
+    setChannelCapabilities(index, result.capabilities);
+    return true;
   }
 
   function addCapability(index: number) {
@@ -787,8 +927,10 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
         { label: mode === 'new' ? 'New meter' : visibleDeviceName },
       ]} />
       <PageHeader
-        title={mode === 'new' ? 'New Wattwatcher meter' : visibleDeviceName}
-        subtitle="Device identity, safety, switchboard, channels, verification, commissioning, and evidence."
+        title={mode === 'new' ? (draft.deviceType === 'Other' ? 'New other meter' : 'New Wattwatcher meter') : visibleDeviceName}
+        subtitle={draft.deviceType === 'Other'
+          ? 'Device identity, classification, coverage, channels, assignments, and evidence.'
+          : 'Device identity, safety, switchboard, channels, verification, commissioning, and evidence.'}
         actions={saved ? (
           <>
             {commissionedForm ? (
@@ -796,10 +938,12 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 <Icon name="clipboard" size={17} />View record / amend
               </LinkButton>
             ) : null}
-            <Button disabled={replacementBusy} onClick={() => void startReplacement()}>
-              <Icon name="tool" size={17} />
-              {replacementBusy ? 'Opening replacement…' : 'Replace device / Comms'}
-            </Button>
+            {draft.deviceType === 'A3RM' || draft.deviceType === 'A6M' ? (
+              <Button disabled={replacementBusy} onClick={() => void startReplacement()}>
+                <Icon name="tool" size={17} />
+                {replacementBusy ? 'Opening replacement…' : 'Replace device / Comms'}
+              </Button>
+            ) : null}
             <Button variant="danger" onClick={() => setConfirmDelete(true)}>Remove</Button>
           </>
         ) : undefined}
@@ -852,12 +996,12 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
               description: 'Exact measurement targets',
               meta: assignmentDrafts.length,
             },
-            {
+            ...(showWattwatchersSections ? [{
               href: '#meter-verification',
-              icon: 'check',
+              icon: 'check' as const,
               label: 'Verification',
               description: 'Commissioning checks and evidence',
-            },
+            }] : []),
           ]}
         />
       ) : null}
@@ -884,7 +1028,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
               <FieldLabel htmlFor="meter-family">Device family *</FieldLabel>
-              <Select id="meter-family" value={draft.deviceFamily || 'WATTWATCHERS'} disabled={Boolean(commissionedForm)} onChange={(event) => chooseDeviceFamily(event.target.value as 'WATTWATCHERS' | 'OTHER')}>
+              <Select id="meter-family" value={draft.deviceFamily || 'WATTWATCHERS'} disabled={Boolean(commissionedForm) || fixedOtherWorkflow} onChange={(event) => chooseDeviceFamily(event.target.value as 'WATTWATCHERS' | 'OTHER')}>
                 <option value="WATTWATCHERS">Wattwatchers</option>
                 <option value="OTHER">Other manufacturer</option>
               </Select>
@@ -894,25 +1038,26 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
               <Select
                 id="meter-model"
                 value={draft.deviceType}
-                disabled={Boolean(commissionedForm)}
+                disabled={Boolean(commissionedForm) || fixedOtherWorkflow}
                 onChange={(event) => chooseDeviceType(event.target.value as Meter['deviceType'])}
               >
                 {draft.deviceFamily !== 'OTHER' ? <option>A3RM</option> : null}
                 {draft.deviceFamily !== 'OTHER' ? <option>A6M</option> : null}
                 <option>Other</option>
               </Select>
+              {fixedOtherWorkflow ? <FieldHint>Wattwatchers devices must be added through the full installation form.</FieldHint> : null}
             </div>
             {draft.deviceFamily === 'OTHER' ? (
               <div>
                 <FieldLabel htmlFor="meter-custom-manufacturer">Manufacturer *</FieldLabel>
-                <Input id="meter-custom-manufacturer" value={draft.customManufacturerName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-manufacturer')} onChange={(event) => set('customManufacturerName', event.target.value)} />
+                <Input id="meter-custom-manufacturer" value={draft.customManufacturerName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-manufacturer')} onChange={(event) => setMeterIdentityDetail('customManufacturerName', event.target.value)} />
                 <FieldError message={errors.find((item) => item.id === 'meter-custom-manufacturer')?.message} />
               </div>
             ) : null}
             {draft.deviceType === 'Other' ? (
               <div>
                 <FieldLabel htmlFor="meter-custom-model">Custom model *</FieldLabel>
-                <Input id="meter-custom-model" value={draft.customModelName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-model')} onChange={(event) => set('customModelName', event.target.value)} />
+                <Input id="meter-custom-model" value={draft.customModelName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-model')} onChange={(event) => setMeterIdentityDetail('customModelName', event.target.value)} />
                 <FieldError message={errors.find((item) => item.id === 'meter-custom-model')?.message} />
               </div>
             ) : null}
@@ -922,15 +1067,24 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 id="meter-name"
                 value={visibleDeviceName}
                 required
+                maxLength={ENTITY_NAME_MAX_LENGTH}
                 aria-invalid={errors.some((item) => item.id === 'meter-name')}
                 onChange={(event) => setDraft((current) => current ? {
                   ...current,
-                  deviceName: event.target.value,
-                  deviceNameOverridden: true,
+                  customName: event.target.value,
                 } : current)}
               />
-              <FieldHint>Suggested from the site, zone, device type, and ID. Change it if another name is clearer.</FieldHint>
+              <FieldHint>Defaults from the device model, remains editable, and accepts up to {ENTITY_NAME_MAX_LENGTH} characters.</FieldHint>
               <FieldError message={errors.find((item) => item.id === 'meter-name')?.message} />
+            </div>
+            <div>
+              <FieldLabel htmlFor="meter-display-code">Generated asset ID</FieldLabel>
+              <Input id="meter-display-code" readOnly value={previewDisplayName.value} />
+              <FieldHint>
+                {previewDisplayName.provisional !== true
+                  ? 'This confirmed identifier is fixed.'
+                  : 'Built from installation code, zone code, shared sequence, and device name. The server confirms it on save.'}
+              </FieldHint>
             </div>
             <div>
               <FieldLabel>Device ID / serial *</FieldLabel>
@@ -940,63 +1094,98 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
               <FieldError message={errors.find((item) => item.id === 'meter-serial')?.message} />
             </div>
             <div>
-              <FieldLabel>Classification</FieldLabel>
-              <Input value={draft.classification ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => set('classification', event.target.value)} />
+              <FieldLabel htmlFor="meter-device-number">Site / asset tag (optional)</FieldLabel>
+              <Input
+                id="meter-device-number"
+                value={draft.deviceNumber ?? ''}
+                disabled={Boolean(commissionedForm)}
+                placeholder="e.g. D001 or M-02"
+                onChange={(event) => set('deviceNumber', event.target.value)}
+              />
+              <FieldHint>This is a site-assigned operational tag, not the manufacturer Device ID / serial.</FieldHint>
             </div>
             <div>
-              <FieldLabel>Coverage</FieldLabel>
-              <Input value={draft.coverage ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => set('coverage', event.target.value)} />
+              <FieldLabel htmlFor="meter-classification">Classification</FieldLabel>
+              <Select id="meter-classification" value={draft.classification ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => set('classification', event.target.value)}>
+                <option value="">Select classification</option>
+                {withLegacyOption(METER_CLASSIFICATIONS, draft.classification ?? undefined).map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <FieldLabel htmlFor="meter-coverage">Coverage</FieldLabel>
+              <Select id="meter-coverage" value={draft.coverage ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => set('coverage', event.target.value)}>
+                <option value="">Select coverage</option>
+                {withLegacyOption(METER_COVERAGE_OPTIONS, draft.coverage ?? undefined).map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </Select>
             </div>
           </div>
           <FieldLabel htmlFor="meter-notes">Operational notes</FieldLabel>
           <Textarea id="meter-notes" value={draft.notes ?? ''} onChange={(event) => set('notes', event.target.value)} />
         </Card>
 
-        <Card>
-          <h2 className="font-extrabold text-[var(--text)]">Pre-start safety</h2>
-          <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
-            {prestartQuestions.map(([key, label]) => (
-              <Checkbox key={key} label={label} checked={Boolean(draft.wwPrestart?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setPrestart(key, checked)} />
-            ))}
-          </div>
-        </Card>
+        {showWattwatchersSections ? (
+          <>
+            <Card>
+              <h2 className="font-extrabold text-[var(--text)]">Pre-start safety</h2>
+              <div className="mt-3 grid gap-x-6 sm:grid-cols-2">
+                {prestartQuestions.map(([key, label]) => (
+                  <Checkbox key={key} label={label} checked={Boolean(draft.wwPrestart?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setPrestart(key, checked)} />
+                ))}
+              </div>
+            </Card>
 
-        <Card>
-          <h2 className="font-extrabold text-[var(--text)]">Switchboard details</h2>
-          <div className="grid gap-x-4 lg:grid-cols-2">
-            <div>
-              <FieldLabel>Switchboard name</FieldLabel>
-              <Input value={draft.wwSwitchboard?.name ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('name', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Location</FieldLabel>
-              <Input value={draft.wwSwitchboard?.location ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('location', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Auditor serial (optional)</FieldLabel>
-              <ScannerInput
-                value={draft.wwSwitchboard?.deviceSerial ?? ''}
-                onChange={(value) => setSwitchboard('deviceSerial', value)}
-                modes={['barcode', 'qr']}
-                disabled={Boolean(commissionedForm)}
-              />
-            </div>
-            <div>
-              <FieldLabel>Firmware</FieldLabel>
-              <Input value={draft.wwSwitchboard?.firmware ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('firmware', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Antenna</FieldLabel>
-              <Input value={draft.wwSwitchboard?.antennaType ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('antennaType', event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel>Signal</FieldLabel>
-              <Input value={draft.wwSwitchboard?.signalStrength ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('signalStrength', event.target.value)} />
-            </div>
-          </div>
-          <FieldLabel>Notes</FieldLabel>
-          <Textarea value={draft.wwSwitchboard?.notes ?? ''} onChange={(event) => setSwitchboard('notes', event.target.value)} />
-        </Card>
+            <Card>
+              <h2 className="font-extrabold text-[var(--text)]">Switchboard details</h2>
+              <div className="grid gap-x-4 lg:grid-cols-2">
+                <div>
+                  <FieldLabel>Switchboard name</FieldLabel>
+                  <Input value={draft.wwSwitchboard?.name ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('name', event.target.value)} />
+                </div>
+                <div>
+                  <FieldLabel>Location</FieldLabel>
+                  <Input value={draft.wwSwitchboard?.location ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('location', event.target.value)} />
+                </div>
+                <div>
+                  <FieldLabel>Auditor serial (optional)</FieldLabel>
+                  <ScannerInput
+                    value={draft.wwSwitchboard?.deviceSerial ?? ''}
+                    onChange={(value) => setSwitchboard('deviceSerial', value)}
+                    modes={['barcode', 'qr']}
+                    disabled={Boolean(commissionedForm)}
+                  />
+                </div>
+                <div>
+                  <FieldLabel>Firmware</FieldLabel>
+                  <Input value={draft.wwSwitchboard?.firmware ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('firmware', event.target.value)} />
+                </div>
+                <div>
+                  <FieldLabel>Antenna</FieldLabel>
+                  <Select value={draft.wwSwitchboard?.antennaType ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('antennaType', event.target.value)}>
+                    <option value="">Select an option</option>
+                    {withLegacyOption(ANTENNA_TYPES, draft.wwSwitchboard?.antennaType).map((option) => (
+                      <option key={option}>{option}</option>
+                    ))}
+                  </Select>
+                </div>
+                <div>
+                  <FieldLabel>Signal</FieldLabel>
+                  <Select value={draft.wwSwitchboard?.signalStrength ?? ''} disabled={Boolean(commissionedForm)} onChange={(event) => setSwitchboard('signalStrength', event.target.value)}>
+                    <option value="">Select an option</option>
+                    {withLegacyOption(SIGNAL_STRENGTHS, draft.wwSwitchboard?.signalStrength).map((option) => (
+                      <option key={option}>{option}</option>
+                    ))}
+                  </Select>
+                </div>
+              </div>
+              <FieldLabel>Notes</FieldLabel>
+              <Textarea value={draft.wwSwitchboard?.notes ?? ''} onChange={(event) => setSwitchboard('notes', event.target.value)} />
+            </Card>
+          </>
+        ) : null}
 
         <Card>
           <div id="meter-channels" tabIndex={-1} className="scroll-mt-4">
@@ -1171,9 +1360,19 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                         <div key={key} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                           <Input
                             aria-label={`Channel ${index + 1} capability name`}
-                            value={key}
+                            defaultValue={key}
                             disabled={Boolean(commissionedForm)}
-                            onChange={(event) => renameCapability(index, key, event.target.value)}
+                            onBlur={(event) => {
+                              if (!renameCapability(index, key, event.target.value)) {
+                                event.currentTarget.value = key;
+                              }
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                event.currentTarget.blur();
+                              }
+                            }}
                           />
                           <Input
                             aria-label={`Channel ${index + 1} capability value`}
@@ -1214,15 +1413,17 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           <div id="meter-assignments" tabIndex={-1} className="scroll-mt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="font-extrabold text-[var(--text)]">Channel assignments</h2>
-              <p className="mt-1 text-xs text-[var(--text-sub)]">Explicitly group same-purpose channels, phase mode, target, and direction. No phase or target is inferred.</p>
+              <h2 className="font-extrabold text-[var(--text)]">What these channels measure</h2>
+              <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-sub)]">
+                Group channels that measure the same circuit, choose the observed phase grouping, select the switchboard, site asset, or incoming connection being measured, and record whether energy is consumed, generated, or can flow both ways.
+              </p>
             </div>
             <Button
               variant="secondary"
               disabled={!(draft.wwChannels || []).some((channel) => channel.purpose && channel.purpose !== 'SPARE')}
               onClick={addAssignment}
             >
-              <Icon name="plus" size={16} />Assign channels
+              <Icon name="plus" size={16} />Map channels
             </Button>
           </div>
           <FieldError message={errors.find((item) => item.id === 'meter-assignments')?.message} />
@@ -1238,14 +1439,14 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="font-bold text-[var(--text)]">Assignment {assignmentIndex + 1}</h3>
+                  <h3 className="font-bold text-[var(--text)]">Measurement group {assignmentIndex + 1}</h3>
                   <Button variant="ghost" className="text-[var(--red)]" onClick={() => setAssignmentDrafts((current) => current.filter((_, index) => index !== assignmentIndex))}>
                     <Icon name="trash" size={16} />Remove
                   </Button>
                 </div>
                 <div className="grid gap-x-4 lg:grid-cols-3">
                   <div>
-                    <FieldLabel>Phase group</FieldLabel>
+                    <FieldLabel>Phase grouping</FieldLabel>
                     <Select
                       value={assignment.phaseMode}
                       onChange={(event) => updateAssignment(assignmentIndex, {
@@ -1253,25 +1454,25 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                         channelIds: [],
                       })}
                     >
-                      <option value="SINGLE_PHASE">Single phase — 1 channel</option>
-                      <option value="THREE_PHASE">Three phase — 3 channels</option>
-                      <option value="OTHER">Other grouping</option>
+                      <option value="SINGLE_PHASE">Single phase — select 1 channel</option>
+                      <option value="THREE_PHASE">Three phase — select 3 channels</option>
+                      <option value="OTHER">Other observed grouping</option>
                     </Select>
                   </div>
                   <div>
-                    <FieldLabel>Target</FieldLabel>
+                    <FieldLabel>Measured item</FieldLabel>
                     <Select
                       value={assignment.target.kind}
                       onChange={(event) => chooseAssignmentTarget(assignmentIndex, event.target.value as 'BOARD' | 'GRID_BOUNDARY' | 'SITE_ASSET' | 'TBC')}
                     >
                       <option value="TBC">To be confirmed</option>
                       <option value="BOARD">Switchboard</option>
-                      <option value="GRID_BOUNDARY" disabled={assignmentPurpose(assignment) === 'SUB_CIRCUIT'}>Grid boundary</option>
+                      <option value="GRID_BOUNDARY" disabled={assignmentPurpose(assignment) === 'SUB_CIRCUIT'}>Incoming grid connection</option>
                       <option value="SITE_ASSET" disabled={assignmentPurpose(assignment) === 'MAIN_SUPPLY'}>Site asset</option>
                     </Select>
                   </div>
                   <div>
-                    <FieldLabel>Direction</FieldLabel>
+                    <FieldLabel>Energy flow</FieldLabel>
                     <Select
                       value={assignment.direction}
                       onChange={(event) => updateAssignment(assignmentIndex, { direction: event.target.value as MeasurementAssignment['direction'] })}
@@ -1351,7 +1552,7 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
                 ) : null}
 
                 <fieldset className="mt-4">
-                  <legend className="text-sm font-bold text-[var(--text)]">Channels in this group *</legend>
+                  <legend className="text-sm font-bold text-[var(--text)]">Measured channels in this group *</legend>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {(draft.wwChannels || []).map((channel, channelIndex) => {
                       if (!channel.purpose || channel.purpose === 'SPARE') return null;
@@ -1383,27 +1584,29 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
           </div>
         </Card>
 
-        <Card id="meter-verification" tabIndex={-1} className="scroll-mt-4">
-          <h2 className="font-extrabold text-[var(--text)]">Verification & commissioning</h2>
-          <div className="mt-3 grid gap-6 lg:grid-cols-2">
-            <div>
-              <h3 className="text-sm font-bold text-[var(--text-sub)]">Verification</h3>
-              {verificationQuestions.map(([key, label]) => (
-                <Checkbox key={key} label={label} checked={Boolean(draft.wwVerification?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setVerification(key, checked)} />
-              ))}
-              <FieldLabel>Verification notes</FieldLabel>
-              <Textarea value={draft.wwVerification?.notes ?? ''} onChange={(event) => setVerification('notes', event.target.value)} />
+        {showWattwatchersSections ? (
+          <Card id="meter-verification" tabIndex={-1} className="scroll-mt-4">
+            <h2 className="font-extrabold text-[var(--text)]">Verification & commissioning</h2>
+            <div className="mt-3 grid gap-6 lg:grid-cols-2">
+              <div>
+                <h3 className="text-sm font-bold text-[var(--text-sub)]">Verification</h3>
+                {verificationQuestions.map(([key, label]) => (
+                  <Checkbox key={key} label={label} checked={Boolean(draft.wwVerification?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setVerification(key, checked)} />
+                ))}
+                <FieldLabel>Verification notes</FieldLabel>
+                <Textarea value={draft.wwVerification?.notes ?? ''} onChange={(event) => setVerification('notes', event.target.value)} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-[var(--text-sub)]">Commissioning</h3>
+                {commissioningQuestions.map(([key, label]) => (
+                  <Checkbox key={key} label={label} checked={Boolean(draft.wwCommissioning?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setCommissioning(key, checked)} />
+                ))}
+                <FieldLabel>Commissioning notes</FieldLabel>
+                <Textarea value={draft.wwCommissioning?.notes ?? ''} onChange={(event) => setCommissioning('notes', event.target.value)} />
+              </div>
             </div>
-            <div>
-              <h3 className="text-sm font-bold text-[var(--text-sub)]">Commissioning</h3>
-              {commissioningQuestions.map(([key, label]) => (
-                <Checkbox key={key} label={label} checked={Boolean(draft.wwCommissioning?.[key])} disabled={Boolean(commissionedForm)} onChange={(checked) => setCommissioning(key, checked)} />
-              ))}
-              <FieldLabel>Commissioning notes</FieldLabel>
-              <Textarea value={draft.wwCommissioning?.notes ?? ''} onChange={(event) => setCommissioning('notes', event.target.value)} />
-            </div>
-          </div>
-        </Card>
+          </Card>
+        ) : null}
 
         <div className="flex flex-wrap gap-2">
           <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save meter'}</Button>
@@ -1436,7 +1639,11 @@ export function InstallHubMeterPage({ mode }: { mode: 'new' | 'edit' }) {
       />
 
       {!saved ? (
-        <InlineNotice>Save the meter first, then capture evidence and create communications fault records.</InlineNotice>
+        <InlineNotice>
+          {showWattwatchersSections
+            ? 'Save the meter first, then capture evidence and create communications fault records.'
+            : 'Save the meter first, then capture evidence.'}
+        </InlineNotice>
       ) : (
         <Card id="meter-evidence" tabIndex={-1} className="mt-5 scroll-mt-4">
           <h2 className="font-extrabold text-[var(--text)]">Meter evidence</h2>

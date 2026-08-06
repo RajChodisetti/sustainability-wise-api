@@ -80,7 +80,82 @@ test('replace creates a preselected comms form with stable device context', () =
   assert.equal(form.meterId, 'meter-1');
   assert.equal(form.answers['works.replace_device'], 'yes');
   assert.equal(form.answers['existing.device_id'], 'SERIAL-42');
+  assert.equal(form.answers['existing.device_number'], 'COMPAT-42');
   assert.equal(tree.formSubmissions.at(-1)?.id, form.id);
+});
+
+test('replacement rejects device families unsupported by the comms-fault contract', () => {
+  const { tree, board, zone } = fixture();
+  board.meters[0] = {
+    ...board.meters[0],
+    deviceFamily: 'OTHER',
+    deviceType: 'Other',
+    customManufacturerName: 'Example',
+    customModelName: 'A3RM',
+  };
+  assert.equal(deviceSearchRecords([tree])[0].supportsCommsReplacement, false);
+
+  assert.throws(
+    () => createReplacementForm(tree, user, {
+      zoneId: zone.id,
+      boardId: board.id,
+      meterId: board.meters[0].id,
+    }),
+    /supports A3RM and A6M devices only/,
+  );
+  assert.equal(tree.formSubmissions.length, 0);
+});
+
+test('replacement rejects stale device-to-switchboard context', () => {
+  const { tree, board, zone } = fixture();
+  assert.throws(
+    () => createReplacementForm(tree, user, {
+      zoneId: zone.id,
+      boardId: 'different-board',
+      meterId: board.meters[0].id,
+    }),
+    /not installed on this switchboard/,
+  );
+  assert.throws(
+    () => createReplacementForm(tree, user, {
+      zoneId: 'different-zone',
+      boardId: board.id,
+      meterId: board.meters[0].id,
+    }),
+    /not installed on this switchboard/,
+  );
+  assert.equal(tree.formSubmissions.length, 0);
+});
+
+test('installation-scoped device search includes every zone but excludes other installations', () => {
+  const { tree, board } = fixture();
+  const secondZone = createZone(tree.installation.id, {
+    zoneName: 'Roof plant',
+    zoneDescription: '',
+  });
+  const secondBoard = createBoard(tree.installation.id, secondZone.id);
+  secondBoard.assetName = 'Roof distribution board';
+  secondBoard.meters.push({
+    ...structuredClone(board.meters[0]),
+    id: 'meter-2',
+    deviceId: 'SERIAL-ROOF',
+    deviceNumber: 'SERIAL-ROOF',
+  });
+  secondBoard.meterPresent = true;
+  tree.zones.push(secondZone);
+  tree.electricalAssets.push(secondBoard);
+
+  const other = fixture().tree;
+  other.installation.siteName = 'Other installation';
+  const records = deviceSearchRecords([tree, other]);
+  const scoped = filterDeviceSearchRecords(records, '', tree.installation.id);
+
+  assert.equal(scoped.length, 2);
+  assert.deepEqual(new Set(scoped.map((record) => record.zoneName)), new Set([
+    'Basement plant room',
+    'Roof plant',
+  ]));
+  assert.ok(scoped.every((record) => record.installationId === tree.installation.id));
 });
 
 test('device quick-add starts the detailed WW installation form on the selected board', () => {

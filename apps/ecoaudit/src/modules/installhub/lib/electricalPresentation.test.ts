@@ -12,6 +12,8 @@ import {
   ensureCanonicalTree,
 } from './workflow';
 import {
+  ASSET_METER_FILTER_HINT,
+  ASSET_METER_FILTER_LABEL,
   ASSET_METER_DRAFT_KEY_PREFIX,
   assetMeterReturnHref,
   assetMeterReturnRequest,
@@ -28,6 +30,7 @@ import {
   readinessEntityDetails,
   readinessResolutionCandidates,
   shouldClearAssetMeterDraft,
+  shouldShowMeterLocationOverride,
   zoneElectricalSummary,
   type AssetMeterDraftSnapshot,
 } from './electricalPresentation';
@@ -36,6 +39,12 @@ import type {
   InstallationTree,
   ReadinessIssue,
 } from '@/modules/installhub/types/domain';
+
+test('asset-meter filtering copy distinguishes filtering from selection', () => {
+  assert.match(ASSET_METER_FILTER_LABEL, /Filter eligible/i);
+  assert.match(ASSET_METER_FILTER_HINT, /only filters/i);
+  assert.match(ASSET_METER_FILTER_HINT, /select.*dropdown/i);
+});
 
 function fixtureTree(): InstallationTree {
   const tree = createInstallationTree({
@@ -502,4 +511,29 @@ test('asset-to-meter detour validates its stored draft and builds a scoped retur
   assert.equal(shouldClearAssetMeterDraft('ASSET_SAVE_FAILED'), false);
   assert.equal(shouldClearAssetMeterDraft('ASSET_SAVE_CONFIRMED'), true);
   assert.equal(shouldClearAssetMeterDraft('EXPLICIT_DISCARD'), true);
+});
+
+test('meter location stays collapsed for direct supply and opens for explicit or legacy overrides', () => {
+  assert.equal(shouldShowMeterLocationOverride({
+    overrideRequested: false,
+    directSupplyBoardId: 'board-1',
+    meterSwitchboardId: 'board-1',
+    meterSwitchboardTbc: false,
+  }), false);
+  assert.equal(shouldShowMeterLocationOverride({
+    overrideRequested: true,
+    directSupplyBoardId: 'board-1',
+    meterSwitchboardId: 'board-1',
+  }), true);
+  assert.equal(shouldShowMeterLocationOverride({
+    overrideRequested: false,
+    directSupplyBoardId: 'board-1',
+    meterSwitchboardId: 'upstream-board',
+  }), true);
+  assert.equal(shouldShowMeterLocationOverride({
+    overrideRequested: false,
+    directSupplyBoardId: 'board-1',
+    meterSwitchboardId: 'board-1',
+    meterSwitchboardTbc: true,
+  }), true);
 });

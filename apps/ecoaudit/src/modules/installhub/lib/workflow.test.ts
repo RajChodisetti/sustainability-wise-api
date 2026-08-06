@@ -57,12 +57,15 @@ import {
   applyAuthoritativeTreeRevision,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
+  assetElectricalSource,
+  boardElectricalSource,
   boardTypeCode,
   coverageState,
   displayCodeMetadata,
   ensureCanonicalTree,
   generatedDisplayCode,
   installationDisplayCodePrefix,
+  insertBoardUpstreamOfAssetSupply,
   localMappingExport,
   localReadiness,
   meterDependencyPreview,
@@ -174,6 +177,26 @@ function sixChannelMeter(): Meter {
   };
 }
 
+test('quick-added upstream meter board preserves the asset direct supply', () => {
+  const tree = fixtureTree();
+  const asset = tree.siteAssets[0];
+  const directBoard = tree.electricalAssets.find((board) => board.id === 'board-b')!;
+  const formerParent = tree.electricalAssets.find((board) => board.id === 'board-a')!;
+  const meterBoard = createBoard(tree.installation.id, asset.zoneId);
+  meterBoard.id = 'board-meter-location';
+
+  assert.equal(insertBoardUpstreamOfAssetSupply(tree, asset, meterBoard), directBoard);
+  tree.electricalAssets.push(meterBoard);
+
+  assert.deepEqual(assetElectricalSource(asset), { kind: 'BOARD', boardId: directBoard.id });
+  assert.deepEqual(boardElectricalSource(directBoard), { kind: 'BOARD', boardId: meterBoard.id });
+  assert.deepEqual(boardElectricalSource(meterBoard), { kind: 'BOARD', boardId: formerParent.id });
+  assert.deepEqual(
+    meterBoardsForAsset(tree, asset).map((board) => board.id).sort(),
+    ['board-a', 'board-b', 'board-meter-location'],
+  );
+});
+
 test('authoritative upload revisions advance every portal CAS field together', () => {
   const tree = fixtureTree();
   assert.equal(applyAuthoritativeTreeRevision(tree, 9), 9);
@@ -194,12 +217,38 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.equal(boardTypeCode(tree.electricalAssets[0]), 'MSB');
   assert.equal(boardTypeCode(tree.electricalAssets[1]), 'MSSB');
   assert.equal(siteAssetTypeCode(tree.siteAssets[0]), 'LIGHTING');
+  assert.equal(tree.zones[0].zoneCode, 'PLANT');
+  assert.equal(tree.zones[1].zoneCode, 'ROOF');
 
-  const custom = { ...tree.siteAssets[0], typeCode: undefined, assetType: 'Refrigeration' as typeof tree.siteAssets[0]['assetType'], customTypeName: null };
-  tree.siteAssets.push(custom);
+  const refrigeration = {
+    ...tree.siteAssets[0],
+    id: 'asset-refrigeration',
+    typeCode: undefined,
+    assetType: 'Refrigeration' as typeof tree.siteAssets[0]['assetType'],
+    customTypeName: null,
+  };
+  const compressedAir = {
+    ...tree.siteAssets[0],
+    id: 'asset-compressed-air',
+    typeCode: undefined,
+    assetType: 'Compressed Air' as typeof tree.siteAssets[0]['assetType'],
+    customTypeName: null,
+  };
+  const custom = {
+    ...tree.siteAssets[0],
+    id: 'asset-custom',
+    typeCode: undefined,
+    assetType: 'Blast Freezer' as typeof tree.siteAssets[0]['assetType'],
+    customTypeName: null,
+  };
+  tree.siteAssets.push(refrigeration, compressedAir, custom);
   ensureCanonicalTree(tree);
+  assert.equal(siteAssetTypeCode(refrigeration), 'REFRIGERATION');
+  assert.equal(siteAssetTypeLabel(refrigeration), 'Refrigeration');
+  assert.equal(siteAssetTypeCode(compressedAir), 'COMPRESSED_AIR');
+  assert.equal(siteAssetTypeLabel(compressedAir), 'Compressed Air');
   assert.equal(siteAssetTypeCode(custom), 'OTHER');
-  assert.equal(siteAssetTypeLabel(custom), 'Refrigeration');
+  assert.equal(siteAssetTypeLabel(custom), 'Blast Freezer');
 
   const wire = serializeInstallationTree(tree);
   assert.equal(wire.treeSchemaVersion, 2);
@@ -207,6 +256,10 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.ok(Array.isArray(wire.meterDevices));
   assert.ok(Array.isArray(wire.measurementAssignments));
   assert.equal(typeof (wire.electricalAssets as Array<Record<string, unknown>>)[0].displayCode, 'object');
+  assert.equal(
+    (wire.zones as Array<Record<string, unknown>>)[0].zoneCode,
+    'PLANT',
+  );
 });
 
 test('canonical asset assignments reconstruct the total legacy channel projection', () => {
@@ -296,6 +349,7 @@ test('portal meter commissioning fields serialize into canonical round-trip meta
   tree.electricalAssets[0].meters = [meter];
   tree.electricalAssets[0].meterPresent = true;
   const canonical = syncMeterDevice(tree, tree.electricalAssets[0].id, meter);
+  assert.equal(canonical.customName, 'A6M Meter');
 
   assert.deepEqual(canonical.commissioningData, {
     classification: 'Electricity meter',
@@ -309,6 +363,10 @@ test('portal meter commissioning fields serialize into canonical round-trip meta
   assert.deepEqual(
     (wire.meterDevices as Array<Record<string, unknown>>)[0].commissioningData,
     canonical.commissioningData,
+  );
+  assert.equal(
+    (wire.meterDevices as Array<Record<string, unknown>>)[0].customName,
+    'A6M Meter',
   );
 });
 
