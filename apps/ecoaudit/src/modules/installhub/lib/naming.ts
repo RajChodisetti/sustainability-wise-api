@@ -7,7 +7,7 @@ import type {
 export const ZONE_CODE_MAX_LENGTH = 16;
 export const ENTITY_NAME_MAX_LENGTH = 64;
 export const DISPLAY_CODE_MAX_LENGTH = 64;
-export const DISPLAY_CODE_RULE_VERSION = 3;
+export const DISPLAY_CODE_RULE_VERSION = 4;
 export const ZONE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 
 export type DisplayCodeEntityKind = 'board' | 'site_asset' | 'meter';
@@ -217,7 +217,7 @@ function generatedWithSequence(
     && customSegments.some((_, start) => typeSegments.every(
       (segment, offset) => customSegments[start + offset] === segment,
     ));
-  const identityName = input.entityKind === 'site_asset' || input.entityKind === 'meter'
+  const identityName = input.entityKind === 'board' || input.entityKind === 'site_asset' || input.entityKind === 'meter'
     ? customNameContainsType
       ? customName
       : `${typeCode}-${customName}`
@@ -260,9 +260,19 @@ export function provisionalDisplayCodeV3(
     excludeId?: string;
     current?: DisplayCodeMetadata;
     previousZoneCode?: string;
+    refreshConfirmedGenerated?: boolean;
   },
 ): DisplayCodeMetadata {
-  if (input.current && (
+  const refreshableConfirmedBoard = Boolean(
+    input.current
+    && input.entityKind === 'board'
+    && input.refreshConfirmedGenerated
+    && !input.current.isOverridden
+    && input.current.provisional !== true
+    && input.current.ruleVersion >= 3
+    && input.current.ruleVersion <= DISPLAY_CODE_RULE_VERSION,
+  );
+  if (input.current && !refreshableConfirmedBoard && (
     input.current.isOverridden
     || input.current.provisional !== true
     || input.current.ruleVersion > DISPLAY_CODE_RULE_VERSION
@@ -296,7 +306,7 @@ export function provisionalDisplayCodeV3(
 
 /**
  * Compatibility aliases for callers introduced with naming rule 2. New and
- * edited code should use the V3 exports and provide entityKind/entityTypeCode.
+ * edited code should use the current exports and provide entityKind/entityTypeCode.
  */
 export const generatedDisplayCodeV2 = generatedDisplayCodeV3;
 export const provisionalDisplayCodeV2 = provisionalDisplayCodeV3;

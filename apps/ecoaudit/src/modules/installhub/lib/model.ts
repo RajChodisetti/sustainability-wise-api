@@ -1,6 +1,8 @@
 import {
   FORM_DEFINITIONS,
   createInitialFormAnswers,
+  isFieldVisible,
+  isSectionVisible,
   meterAfterCommsReplacement,
   operationalMeterForCompletedForm,
 } from '@/modules/installhub/forms/catalog';
@@ -641,17 +643,60 @@ export function createFormSubmission(
 
 export function createAmendment(source: FormSubmission): FormSubmission {
   const timestamp = nowIso();
+  const definition = FORM_DEFINITIONS.find((item) => item.type === source.formType);
+  const supportedAnswerKeys = new Set(
+    definition?.sections.flatMap((section) => section.fields
+      .filter((field) => field.kind !== 'photo')
+      .map((field) => field.key)) || [],
+  );
+  const answers = definition
+    ? Object.fromEntries(
+        Object.entries(source.answers).filter(([key]) => supportedAnswerKeys.has(key)),
+      )
+    : structuredClone(source.answers);
+  if (definition) {
+    let removedHiddenAnswer = true;
+    while (removedHiddenAnswer) {
+      removedHiddenAnswer = false;
+      for (const section of definition.sections) {
+        const sectionVisible = isSectionVisible(section, answers);
+        for (const field of section.fields) {
+          if (
+            field.kind !== 'photo'
+            && field.key in answers
+            && (!sectionVisible || !isFieldVisible(field, answers))
+          ) {
+            delete answers[field.key];
+            removedHiddenAnswer = true;
+          }
+        }
+      }
+    }
+  }
+  const visiblePhotoSlots = new Set(
+    definition?.sections.flatMap((section) => (
+      isSectionVisible(section, answers)
+        ? section.fields
+          .filter((field) => field.kind === 'photo' && isFieldVisible(field, answers))
+          .map((field) => field.key)
+        : []
+    )) || [],
+  );
   return {
     ...structuredClone(source),
     id: createId('form'),
     status: 'Draft',
     completedAt: null,
     supersedesId: source.id,
+    answers,
     // Match the iOS amendment workflow: retain the original cloud evidence
-    // references so the installer only needs to replace evidence that changed.
-    attachments: source.attachments.map((attachment) => ({
-      ...attachment,
-    })),
+    // references that remain valid and visible under the selected form contract.
+    // Obsolete or hidden slots stay preserved on the immutable source record.
+    attachments: source.attachments
+      .filter((attachment) => !definition || visiblePhotoSlots.has(attachment.slot))
+      .map((attachment) => ({
+        ...attachment,
+      })),
     createdAt: timestamp,
     updatedAt: timestamp,
     deletedAt: null,

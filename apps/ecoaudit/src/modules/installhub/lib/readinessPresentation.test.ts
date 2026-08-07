@@ -19,6 +19,7 @@ test('readiness presentation groups duplicate technical checks under human label
   assert.equal(groups.length, 1);
   assert.equal(groups[0].title, 'Unassigned device channels');
   assert.equal(groups[0].count, 2);
+  assert.deepEqual(groups[0].issues.map((item) => item.entityId), ['channel-1', 'channel-2']);
   assert.equal(groups[0].details.length, 1);
   assert.equal(groups[0].details[0].count, 2);
   assert.doesNotMatch(groups[0].title, /CHANNEL_|_/);

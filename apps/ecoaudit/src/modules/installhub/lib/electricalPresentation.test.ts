@@ -12,15 +12,12 @@ import {
   ensureCanonicalTree,
 } from './workflow';
 import {
-  ASSET_METER_FILTER_HINT,
-  ASSET_METER_FILTER_LABEL,
   ASSET_METER_DRAFT_KEY_PREFIX,
   assetMeterReturnHref,
   assetMeterReturnRequest,
   applyReadinessCandidateResolution,
   electricalHierarchyRows,
   filterElectricalHierarchyRows,
-  filterReadinessResolutionCandidates,
   measurementTargetDetails,
   meteringInventorySummary,
   parseAssetMeterDraftSnapshot,
@@ -39,12 +36,6 @@ import type {
   InstallationTree,
   ReadinessIssue,
 } from '@/modules/installhub/types/domain';
-
-test('asset-meter filtering copy distinguishes filtering from selection', () => {
-  assert.match(ASSET_METER_FILTER_LABEL, /Filter eligible/i);
-  assert.match(ASSET_METER_FILTER_HINT, /only filters/i);
-  assert.match(ASSET_METER_FILTER_HINT, /select.*dropdown/i);
-});
 
 function fixtureTree(): InstallationTree {
   const tree = createInstallationTree({
@@ -289,6 +280,27 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     direction: 'CONSUMPTION',
     status: 'CONFIRMED',
   }];
+  tree.formSubmissions.push({
+    id: 'form-1',
+    installationId: tree.installation.id,
+    formType: 'ww-installation',
+    schemaVersion: 2,
+    status: 'Completed',
+    zoneId: 'zone-1',
+    boardId: 'board-1',
+    meterId: 'meter-1',
+    answers: {},
+    attachments: [{
+      id: 'attachment-1',
+      slot: 'commissioning.start_screenshot',
+      uri: 'https://example.test/evidence.jpg',
+      mimeType: 'image/jpeg',
+      capturedAt: '2026-08-02T00:00:00.000Z',
+    }],
+    completedAt: '2026-08-02T00:00:00.000Z',
+    createdAt: '2026-08-02T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z',
+  });
   const channelAction = readinessCorrectionAction(tree, {
     code: 'CHANNEL_UNASSIGNED',
     severity: 'ERROR',
@@ -316,6 +328,17 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
   });
   assert.match(completedFormAction.label, /amend/i);
   assert.match(completedFormAction.instruction, /Create amendment.*Complete form/);
+  const contractAction = readinessCorrectionAction(tree, {
+    code: 'FORM_CONTRACT_INVALID',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'answers.device.serial',
+    message: 'Correct the completed form contract.',
+  });
+  assert.match(contractAction.href, /forms\/form-1#form-field-/);
+  assert.match(contractAction.label, /invalid/i);
+  assert.match(contractAction.instruction, /Create amendment.*Complete form/);
   const evidenceAction = readinessCorrectionAction(tree, {
     code: 'EVIDENCE_NOT_CONFIRMED',
     severity: 'ERROR',
@@ -324,7 +347,7 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     field: 'wwPhotos.deviceInstalled',
     message: 'Confirm exact evidence.',
   });
-  assert.match(evidenceAction.href, /meter-1#meter-evidence$/);
+  assert.match(evidenceAction.href, /meter-1#meter-photo-deviceInstalled$/);
   assert.match(evidenceAction.instruction, /wwPhotos\.deviceInstalled.*upload confirmation.*Save meter/);
   const zoneEvidenceAction = readinessCorrectionAction(tree, {
     code: 'EVIDENCE_NOT_CONFIRMED',
@@ -334,8 +357,69 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     field: 'photos[0]',
     message: 'Confirm exact evidence.',
   });
-  assert.match(zoneEvidenceAction.href, /zones\/zone-1#zone-evidence$/);
+  assert.match(zoneEvidenceAction.href, /zones\/zone-1#zone-photos-1$/);
   assert.match(zoneEvidenceAction.instruction, /confirmed upload message/);
+  const boardEvidenceAction = readinessCorrectionAction(tree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'board',
+    entityId: 'board-1',
+    field: 'extraPhotos[2]',
+    message: 'Confirm exact evidence.',
+  });
+  assert.match(boardEvidenceAction.href, /boards\/board-1#board-extra-photos-3$/);
+  const assetEvidenceAction = readinessCorrectionAction(tree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'site_asset',
+    entityId: 'asset-metered',
+    field: 'locationPhoto',
+    message: 'Confirm exact evidence.',
+  });
+  assert.match(assetEvidenceAction.href, /assets\/asset-metered#asset-location-photo$/);
+  const formEvidenceAction = readinessCorrectionAction(tree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'attachments[0].uri',
+    message: 'Confirm exact evidence.',
+  });
+  assert.match(formEvidenceAction.href, /forms\/form-1#form-field-commissioning-start_screenshot$/);
+  const schemaOneTree = structuredClone(tree);
+  schemaOneTree.formSubmissions[0].schemaVersion = 1;
+  schemaOneTree.formSubmissions[0].formType = 'a3rm-installation';
+  const schemaOneEvidenceAction = readinessCorrectionAction(schemaOneTree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'attachments[0].uri',
+    message: 'Confirm exact evidence.',
+  });
+  assert.match(schemaOneEvidenceAction.href, /forms\/form-1#form-field-commissioning-start_screenshot$/);
+  const unknownSlotTree = structuredClone(tree);
+  unknownSlotTree.formSubmissions[0].attachments[0].slot = 'legacy.unknown-photo';
+  const unknownSlotEvidenceAction = readinessCorrectionAction(unknownSlotTree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'attachments[0].uri',
+    message: 'Confirm legacy evidence.',
+  });
+  assert.match(unknownSlotEvidenceAction.href, /forms\/form-1#form-completed-actions$/);
+  const legacyUnknownSlotTree = structuredClone(schemaOneTree);
+  legacyUnknownSlotTree.formSubmissions[0].attachments[0].slot = 'legacy.unknown-photo';
+  const legacyUnknownSlotEvidenceAction = readinessCorrectionAction(legacyUnknownSlotTree, {
+    code: 'EVIDENCE_NOT_CONFIRMED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'attachments[0].uri',
+    message: 'Confirm legacy evidence.',
+  });
+  assert.match(legacyUnknownSlotEvidenceAction.href, /forms\/form-1#form-completed-actions$/);
   const virtualMeterAction = readinessCorrectionAction(tree, {
     code: 'VIRTUAL_METER_SOURCE_INCOMPLETE',
     severity: 'ERROR',
@@ -345,12 +429,64 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     message: 'Resolve competing child assignments.',
     candidateIds: ['assignment-1'],
   });
-  assert.match(virtualMeterAction.href, /meter-1#meter-assignments$/);
+  assert.match(virtualMeterAction.href, /meter-1#meter-assignment-1-target$/);
   assert.match(virtualMeterAction.instruction, /exactly one.*Save meter/);
+  const requiredWwFormAction = readinessCorrectionAction(tree, {
+    code: 'METER_DEVICE_REQUIRED',
+    severity: 'ERROR',
+    entityType: 'meter',
+    entityId: 'meter-1',
+    field: 'formSubmission',
+    message: 'Complete the required WW form.',
+  });
+  assert.match(requiredWwFormAction.href, /forms\/new\?.*formType=ww-installation#new-form-ww-installation$/);
+  const channelLayoutAction = readinessCorrectionAction(tree, {
+    code: 'CHANNEL_NOT_FOUND',
+    severity: 'ERROR',
+    entityType: 'meter',
+    entityId: 'meter-1',
+    field: 'channels.ordinal',
+    message: 'Restore the standard channel layout.',
+  });
+  assert.match(channelLayoutAction.href, /meter-1#meter-channel-layout$/);
+  const ordinalLayoutAction = readinessCorrectionAction(tree, {
+    code: 'CHANNEL_DUPLICATE_ASSIGNMENT',
+    severity: 'ERROR',
+    entityType: 'channel',
+    entityId: 'channel-1',
+    field: 'ordinal',
+    message: 'Restore unique channel ordinals.',
+  });
+  assert.match(ordinalLayoutAction.href, /meter-1#meter-channel-layout$/);
+  const duplicateTree = structuredClone(tree);
+  duplicateTree.measurementAssignments!.push({
+    ...duplicateTree.measurementAssignments![0],
+    id: 'assignment-2',
+    target: { kind: 'TBC' },
+    status: 'TBC',
+  });
+  const duplicateChannelAction = readinessCorrectionAction(duplicateTree, {
+    code: 'CHANNEL_DUPLICATE_ASSIGNMENT',
+    severity: 'ERROR',
+    entityType: 'channel',
+    entityId: 'channel-1',
+    field: 'channelIds',
+    message: 'Choose only one assignment.',
+    candidateIds: ['assignment-1', 'assignment-2'],
+  });
+  assert.match(duplicateChannelAction.href, /meter-1#meter-assignment-2-channels$/);
   const routeCases: Array<[ReadinessIssue, RegExp]> = [
     [{ code: 'CUSTOM_TYPE_REQUIRED', severity: 'ERROR', entityType: 'board', entityId: 'board-1', field: 'customTypeName', message: 'Type.' }, /#board-custom-type$/],
     [{ code: 'METERING_STATE_INVALID', severity: 'ERROR', entityType: 'site_asset', entityId: 'asset-tbc', field: 'meteringState', message: 'Metering.' }, /#asset-metering$/],
-    [{ code: 'SENSOR_RATING_INVALID', severity: 'ERROR', entityType: 'channel', entityId: 'channel-1', field: 'sensorRating', message: 'Rating.' }, /#meter-channels$/],
+    [{ code: 'SENSOR_RATING_INVALID', severity: 'ERROR', entityType: 'channel', entityId: 'channel-1', field: 'sensorRating', message: 'Rating.' }, /#meter-channel-1-sensor$/],
+    [{ code: 'CHANNEL_UNASSIGNED', severity: 'ERROR', entityType: 'channel', entityId: 'channel-1', field: 'channelIds', message: 'Assign.' }, /#meter-assignments$/],
+    [{ code: 'DISPLAY_CODE_INVALID', severity: 'ERROR', entityType: 'meter', entityId: 'meter-1', field: 'displayName', message: 'Name.' }, /#meter-name$/],
+    [{ code: 'CUSTOM_TYPE_REQUIRED', severity: 'ERROR', entityType: 'meter', entityId: 'meter-1', field: 'customModelName', message: 'Model.' }, /#meter-custom-model$/],
+    [{ code: 'CUSTOM_TYPE_REQUIRED', severity: 'ERROR', entityType: 'meter', entityId: 'meter-1', field: 'customManufacturerName', message: 'Manufacturer.' }, /#meter-custom-manufacturer$/],
+    [{ code: 'SUPPLY_SOURCE_INVALID', severity: 'ERROR', entityType: 'board', entityId: 'board-1', field: 'electricalSource.boardId', message: 'Parent.' }, /#board-parent$/],
+    [{ code: 'GRID_SUPPLY_INVALID', severity: 'ERROR', entityType: 'board', entityId: 'board-1', field: 'electricalSource.gridSupplyId', message: 'Grid.' }, /#board-grid-supply$/],
+    [{ code: 'SUPPLY_SOURCE_INVALID', severity: 'ERROR', entityType: 'site_asset', entityId: 'asset-tbc', field: 'electricalSource.boardId', message: 'Board.' }, /#asset-source-board$/],
+    [{ code: 'GRID_SUPPLY_INVALID', severity: 'ERROR', entityType: 'site_asset', entityId: 'asset-tbc', field: 'electricalSource.gridSupplyId', message: 'Grid.' }, /#asset-grid-supply$/],
     [{ code: 'TIMEZONE_REQUIRED_FOR_EXPORT', severity: 'WARNING', entityType: 'installation', entityId: tree.installation.id, field: 'timezone', message: 'Timezone.' }, /\/edit#installation-timezone$/],
   ];
   for (const [issue, expectedHref] of routeCases) {
@@ -358,29 +494,74 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     assert.match(action.href, expectedHref);
     assert.match(action.instruction, /Save|persist|Complete/);
   }
-});
 
-test('resolution candidate search bounds rendered options and keeps the selected value reachable', () => {
-  const candidates = Array.from({ length: 150 }, (_, index) => ({
-    id: `board-${index + 1}`,
-    kind: 'BOARD' as const,
-    name: `Switchboard ${index + 1}`,
-    code: `MSB-${index + 1}`,
-    type: 'Switchboard',
-    zoneId: 'zone-1',
-    zoneName: index === 149 ? 'Remote plant' : 'Plant room',
-    href: `/boards/${index + 1}`,
-    action: 'SET_SUPPLY_BOARD' as const,
-  }));
-  assert.equal(filterReadinessResolutionCandidates(candidates, '').length, 100);
-  assert.deepEqual(
-    filterReadinessResolutionCandidates(candidates, 'remote plant').map((item) => item.id),
-    ['board-150'],
-  );
-  assert.equal(
-    filterReadinessResolutionCandidates(candidates, '', 'board-150')[0].id,
-    'board-150',
-  );
+  const tbcTree = structuredClone(tree);
+  tbcTree.measurementAssignments![0].target = { kind: 'TBC' };
+  const tbcAction = readinessCorrectionAction(tbcTree, {
+    code: 'MEASUREMENT_TARGET_TBC',
+    severity: 'ERROR',
+    entityType: 'measurement_assignment',
+    entityId: 'assignment-1',
+    field: 'target',
+    message: 'Choose a target.',
+  });
+  assert.match(tbcAction.href, /#meter-assignment-1-kind$/);
+
+  const nonWwDraftTree = structuredClone(tree);
+  nonWwDraftTree.formSubmissions[0].formType = 'ace-switchboard';
+  nonWwDraftTree.formSubmissions[0].status = 'Draft';
+  const nonWwContextAction = readinessCorrectionAction(nonWwDraftTree, {
+    code: 'FORM_CONTEXT_REQUIRED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'context',
+    message: 'Choose valid context.',
+  });
+  assert.match(nonWwContextAction.href, /forms\/form-1#form-actions$/);
+  assert.match(nonWwContextAction.instruction, /Delete the draft.*recreate/i);
+
+  const wwDraftTree = structuredClone(tree);
+  wwDraftTree.formSubmissions[0].status = 'Draft';
+  const wwDraftContextAction = readinessCorrectionAction(wwDraftTree, {
+    code: 'FORM_CONTEXT_REQUIRED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'context',
+    message: 'Choose valid context.',
+  });
+  assert.match(wwDraftContextAction.href, /forms\/form-1#form-actions$/);
+  const wwCompletedContextAction = readinessCorrectionAction(tree, {
+    code: 'FORM_CONTEXT_REQUIRED',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'context',
+    message: 'Repair historical context.',
+  });
+  assert.match(wwCompletedContextAction.href, /forms\/form-1#form-completed-actions$/);
+
+  const incompleteAction = readinessCorrectionAction(nonWwDraftTree, {
+    code: 'FORM_INCOMPLETE',
+    severity: 'ERROR',
+    entityType: 'form',
+    entityId: 'form-1',
+    field: 'status',
+    message: 'Complete the form.',
+  });
+  assert.match(incompleteAction.href, /forms\/form-1#form-field-/);
+
+  const externalKeyAction = readinessCorrectionAction(tree, {
+    code: 'EXTERNAL_KEY_REQUIRED',
+    severity: 'ERROR',
+    entityType: 'installation',
+    entityId: tree.installation.id,
+    field: 'externalKey',
+    message: 'External key is required.',
+  });
+  assert.match(externalKeyAction.href, /\/data$/);
+  assert.match(externalKeyAction.instruction, /server-owned.*administrator/i);
 });
 
 test('bounded search results pin a selected record outside the first visible window', () => {

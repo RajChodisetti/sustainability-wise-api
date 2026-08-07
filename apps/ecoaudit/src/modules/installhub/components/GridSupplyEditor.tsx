@@ -145,7 +145,7 @@ export function GridSupplyEditor({
     : null;
 
   return (
-    <Card className="mb-6">
+    <Card id="grid-supplies" className="mb-6 scroll-mt-4" tabIndex={-1}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="font-extrabold text-[var(--text)]">Incoming electricity connection</h2>

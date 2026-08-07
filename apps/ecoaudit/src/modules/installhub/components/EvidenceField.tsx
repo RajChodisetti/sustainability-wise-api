@@ -18,6 +18,7 @@ export function evidenceActionLabel(itemCount: number, busy = false): string {
 }
 
 export function EvidenceField({
+  id,
   label,
   items,
   required,
@@ -28,6 +29,7 @@ export function EvidenceField({
   onCaptionChange,
   onRemove,
 }: {
+  id?: string;
   label: string;
   items: EvidenceItem[];
   required?: boolean;
@@ -47,7 +49,7 @@ export function EvidenceField({
   }
 
   return (
-    <div className="mt-4">
+    <div id={id} tabIndex={id ? -1 : undefined} className="mt-4 scroll-mt-4">
       <FieldLabel htmlFor={inputId}>
         {label}{required ? <span className="text-[var(--red)]"> *</span> : null}
       </FieldLabel>
@@ -57,7 +59,12 @@ export function EvidenceField({
       {items.length ? (
         <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {items.map((item, index) => (
-            <div key={item.id} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface2)]">
+            <div
+              key={item.id}
+              id={id ? `${id}-${index + 1}` : undefined}
+              tabIndex={id ? -1 : undefined}
+              className="scroll-mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface2)]"
+            >
               <PhotoThumb
                 uri={item.uri}
                 label={`${label} ${index + 1}`}

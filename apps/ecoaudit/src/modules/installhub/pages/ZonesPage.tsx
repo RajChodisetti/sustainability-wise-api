@@ -244,7 +244,7 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
           <Textarea value={description} onChange={(event) => setDescription(event.target.value)} />
           <div className="mt-6 flex gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save zone'}</Button>
-            <Button variant="secondary" onClick={() => router.back()} disabled={busy}>Cancel</Button>
+            <Button variant="secondary" onClick={() => router.replace(`/installhub/installations/${installationId}/zones`)} disabled={busy}>Cancel</Button>
           </div>
         </Card>
       </form>
@@ -483,6 +483,7 @@ export function InstallHubZoneDetailPage() {
       <Card id="zone-evidence" tabIndex={-1} className="scroll-mt-4">
         <h2 className="font-extrabold text-[var(--text)]">Zone evidence</h2>
         <EvidenceField
+          id="zone-photos"
           label="Zone photos"
           items={zone.photos.map((uri, index) => ({ id: `${index}`, uri }))}
           busy={uploading}

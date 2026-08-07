@@ -431,7 +431,18 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
                     ? 'Retry installation'
                     : 'Save installation'}
             </Button>
-            <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                const href = acknowledgedCreateId
+                  ? `/installhub/installations/${acknowledgedCreateId}`
+                  : mode === 'edit' && installationId
+                    ? `/installhub/installations/${installationId}`
+                    : '/installhub/installations';
+                requestTreeNavigation(() => router.replace(href), 'the installations workspace');
+              }}
+              disabled={busy}
+            >Cancel</Button>
           </div>
         </Card>
       </form>

@@ -7,6 +7,12 @@ import type {
   SiteAsset,
 } from '@/modules/installhub/types/domain';
 import {
+  FORM_DEFINITION_BY_TYPE,
+  formValidationIssues,
+  isFieldVisible,
+  isSectionVisible,
+} from '@/modules/installhub/forms/catalog';
+import {
   assetElectricalSource,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
@@ -31,10 +37,6 @@ import {
 
 export type ElectricalNode = ElectricalTreeReadModel['nodes'][number];
 export type ElectricalEdge = ElectricalTreeReadModel['edges'][number];
-
-export const ASSET_METER_FILTER_LABEL = 'Filter eligible metering devices';
-export const ASSET_METER_FILTER_HINT =
-  'This field only filters the eligible-device list. Select the device from the Exact metering device dropdown below.';
 
 export type ElectricalHierarchyRow = {
   node: ElectricalNode;
@@ -376,31 +378,6 @@ export type ReadinessResolutionCandidate = ReconciliationEntityDetails & {
     | 'SET_METERING_UNMETERED';
 };
 
-export const READINESS_RESOLUTION_VISIBLE_LIMIT = 100;
-
-export function filterReadinessResolutionCandidates(
-  candidates: ReadinessResolutionCandidate[],
-  query: string,
-  selectedId = '',
-  limit = READINESS_RESOLUTION_VISIBLE_LIMIT,
-): ReadinessResolutionCandidate[] {
-  const normalized = query.trim().toLocaleLowerCase('en-AU');
-  const matches = candidates.filter((candidate) => (
-    !normalized
-    || `${candidate.code || ''} ${candidate.name} ${candidate.type} ${candidate.zoneName || ''} ${candidate.id}`
-      .toLocaleLowerCase('en-AU')
-      .includes(normalized)
-  ));
-  const visible = matches.slice(0, Math.max(1, limit));
-  const selected = selectedId
-    ? candidates.find((candidate) => candidate.id === selectedId)
-    : undefined;
-  if (selected && !visible.some((candidate) => candidate.id === selected.id)) {
-    return [selected, ...visible].slice(0, Math.max(1, limit));
-  }
-  return visible;
-}
-
 export function readinessResolutionCandidates(
   tree: InstallationTree,
   issue: ReadinessIssue,
@@ -567,41 +544,169 @@ export type ReadinessCorrectionAction = {
   instruction: string;
 };
 
+function indexedEvidenceHash(field: string | undefined, prefix: string): string {
+  const index = field?.match(/\[(\d+)\]/)?.[1];
+  return `#${prefix}${index === undefined ? '' : `-${Number(index) + 1}`}`;
+}
+
+function formFieldHash(fieldKey: string): string {
+  return `#form-field-${fieldKey.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}`;
+}
+
+function firstInvalidFormHash(tree: InstallationTree, formId: string): string {
+  const form = tree.formSubmissions.find((item) => item.id === formId);
+  const fieldKey = form ? formValidationIssues(form)[0]?.fieldKey : undefined;
+  return fieldKey ? formFieldHash(fieldKey) : '';
+}
+
+function exactEvidenceHash(tree: InstallationTree, issue: ReadinessIssue): string {
+  if (issue.entityType === 'board') {
+    return issue.field === 'photo'
+      ? '#board-photo'
+      : issue.field?.startsWith('extraPhotos[')
+        ? indexedEvidenceHash(issue.field, 'board-extra-photos')
+        : '#board-evidence';
+  }
+  if (issue.entityType === 'site_asset') {
+    return issue.field === 'locationPhoto'
+      ? '#asset-location-photo'
+      : issue.field?.startsWith('extraPhotos[')
+        ? indexedEvidenceHash(issue.field, 'asset-extra-photos')
+        : '#asset-evidence';
+  }
+  if (issue.entityType === 'zone') {
+    return issue.field?.startsWith('photos[')
+      ? indexedEvidenceHash(issue.field, 'zone-photos')
+      : '#zone-evidence';
+  }
+  if (issue.entityType === 'meter') {
+    if (issue.field === 'wwPhotos.deviceInstalled') return '#meter-photo-deviceInstalled';
+    if (issue.field === 'wwPhotos.switchboardOverview') return '#meter-photo-switchboardOverview';
+    if (issue.field === 'wwPhotos.labeling') return '#meter-photo-labeling';
+    return issue.field?.startsWith('wwPhotos.extra[')
+      ? indexedEvidenceHash(issue.field, 'meter-extra-photos')
+      : '#meter-evidence';
+  }
+  if (issue.entityType === 'form') {
+    const form = tree.formSubmissions.find((item) => item.id === issue.entityId);
+    const attachmentIndex = issue.field?.match(/^attachments\[(\d+)\]\.uri$/)?.[1];
+    const slot = attachmentIndex === undefined
+      ? undefined
+      : form?.attachments[Number(attachmentIndex)]?.slot;
+    const slotExists = slot && form
+      ? FORM_DEFINITION_BY_TYPE[form.formType].sections.some((section) =>
+          isSectionVisible(section, form.answers)
+          && section.fields.some((field) =>
+            field.key === slot && isFieldVisible(field, form.answers),
+          ),
+        )
+      : false;
+    if (slot && slotExists) return formFieldHash(slot);
+    if (
+      form?.schemaVersion === 1
+      && FORM_DEFINITION_BY_TYPE[form.formType].sections.length === 0
+      && form.attachments.length > 0
+    ) return '#form-legacy-evidence';
+    return form?.status === 'Completed' ? '#form-completed-actions' : '#form-actions';
+  }
+  return '';
+}
+
 function meterEditorHrefForIssue(
   tree: InstallationTree,
   issue: ReadinessIssue,
 ): string | null {
   const assignments = measurementAssignments(tree);
   const devices = meterDevices(tree);
+  const channelOwner = issue.entityType === 'channel'
+    ? devices.find((meter) => meter.channels.some((channel) => channel.id === issue.entityId))
+    : undefined;
+  const assignment = issue.entityType === 'measurement_assignment'
+    ? assignments.find((item) => item.id === issue.entityId)
+    : undefined;
   const meterId = issue.entityType === 'meter'
     ? issue.entityId
     : issue.entityType === 'channel'
-      ? devices.find((meter) => meter.channels.some((channel) => channel.id === issue.entityId))?.id
+      ? channelOwner?.id
       : issue.entityType === 'measurement_assignment'
-        ? assignments.find((assignment) => assignment.id === issue.entityId)?.meterId
+        ? assignment?.meterId
         : null;
   if (!meterId) return null;
   const meter = devices.find((item) => item.id === meterId);
   const board = tree.electricalAssets.find((item) => item.id === meter?.installedOnBoardId);
   if (!meter || !board) return null;
-  const assignmentEditorIssue = issue.entityType === 'measurement_assignment'
-    || issue.code === 'CHANNEL_UNASSIGNED'
-    || issue.code === 'METER_BOARD_MISMATCH';
+  const channelIndex = channelOwner?.channels.findIndex((channel) => channel.id === issue.entityId) ?? -1;
+  const channelOrdinal = channelIndex >= 0 ? channelIndex + 1 : null;
+  const meterAssignmentIndex = assignment
+    ? assignments.filter((item) => item.meterId === meterId).findIndex((item) => item.id === assignment.id)
+    : -1;
+  const assignmentOrdinal = meterAssignmentIndex >= 0 ? meterAssignmentIndex + 1 : null;
+  const duplicateAssignment = issue.entityType === 'channel'
+    && issue.code === 'CHANNEL_DUPLICATE_ASSIGNMENT'
+    && issue.field === 'channelIds'
+    ? assignments.filter((item) =>
+        item.meterId === meterId
+        && item.channelIds.includes(issue.entityId)
+        && (issue.candidateIds || []).includes(item.id),
+      ).at(-1)
+    : undefined;
+  const duplicateAssignmentIndex = duplicateAssignment
+    ? assignments.filter((item) => item.meterId === meterId)
+      .findIndex((item) => item.id === duplicateAssignment.id)
+    : -1;
+  const duplicateAssignmentOrdinal = duplicateAssignmentIndex >= 0
+    ? duplicateAssignmentIndex + 1
+    : null;
   const hash = issue.field === 'formSubmission'
     ? ''
     : issue.code === 'EVIDENCE_NOT_CONFIRMED'
-      ? '#meter-evidence'
+      ? exactEvidenceHash(tree, issue)
     : issue.code === 'DISPLAY_CODE_INVALID' || issue.code === 'DISPLAY_CODE_DUPLICATE'
       ? '#meter-name'
-      : issue.code === 'METER_DEVICE_REQUIRED' && issue.field !== 'formSubmission'
-        ? '#meter-serial'
-        : issue.code === 'CUSTOM_TYPE_REQUIRED'
+    : issue.code === 'METER_DEVICE_REQUIRED' && issue.field !== 'formSubmission'
+      ? '#meter-serial'
+      : issue.code === 'CUSTOM_TYPE_REQUIRED' && issue.field === 'customModelName'
+        ? '#meter-custom-model'
+        : issue.code === 'CUSTOM_TYPE_REQUIRED' && issue.field === 'customManufacturerName'
           ? '#meter-custom-manufacturer'
-          : assignmentEditorIssue
+          : duplicateAssignmentOrdinal
+            ? `#meter-assignment-${duplicateAssignmentOrdinal}-channels`
+          : issue.entityType === 'meter' && issue.code === 'CHANNEL_NOT_FOUND'
+            ? '#meter-channel-layout'
+          : issue.entityType === 'channel' && (
+              issue.code === 'CHANNEL_NOT_FOUND'
+              || (issue.code === 'CHANNEL_DUPLICATE_ASSIGNMENT' && issue.field === 'ordinal')
+            )
+            ? '#meter-channel-layout'
+          : issue.entityType === 'channel' && (issue.code === 'CHANNEL_UNASSIGNED' || issue.field === 'channelIds')
             ? '#meter-assignments'
-            : issue.code.includes('CHANNEL') || issue.code === 'SENSOR_RATING_INVALID' || issue.code === 'METER_CAPABILITY_REQUIRED'
-              ? '#meter-channels'
-              : '#meter-assignments';
+            : issue.entityType === 'channel' && channelOrdinal
+              ? issue.field === 'customLoadTypeName'
+                ? `#meter-channel-${channelOrdinal}-custom`
+                : issue.field === 'capabilities'
+                  ? `#meter-channel-${channelOrdinal}-capabilities`
+                  : issue.field === 'sensorRating'
+                    ? `#meter-channel-${channelOrdinal}-sensor`
+                    : issue.field === 'purpose'
+                      ? `#meter-channel-${channelOrdinal}-purpose`
+                      : `#meter-channel-${channelOrdinal}`
+              : issue.entityType === 'measurement_assignment' && assignmentOrdinal
+                ? issue.field === 'target' || issue.field === 'meterId'
+                  ? assignment?.target.kind === 'TBC'
+                    ? `#meter-assignment-${assignmentOrdinal}-kind`
+                    : `#meter-assignment-${assignmentOrdinal}-target`
+                  : issue.field === 'channelIds'
+                    ? `#meter-assignment-${assignmentOrdinal}-channels`
+                    : issue.field === 'phaseMode'
+                      ? `#meter-assignment-${assignmentOrdinal}-phase`
+                      : issue.field === 'direction'
+                        ? `#meter-assignment-${assignmentOrdinal}-direction`
+                        : `#meter-assignment-${assignmentOrdinal}`
+                : issue.code === 'METER_BOARD_MISMATCH'
+                  ? '#meter-assignments'
+                  : issue.code.includes('CHANNEL') || issue.code === 'SENSOR_RATING_INVALID' || issue.code === 'METER_CAPABILITY_REQUIRED'
+                    ? '#meter-channels'
+                    : '#meter-assignments';
   return `${installationHref(tree)}/zones/${encodeURIComponent(board.zoneId)}/boards/${encodeURIComponent(board.id)}/meters/${encodeURIComponent(meter.id)}${hash}`;
 }
 
@@ -614,21 +719,23 @@ export function readinessCorrectionAction(
   const meterHref = meterEditorHrefForIssue(tree, issue);
   if (issue.code === 'COMPLETED_FORM_IMMUTABLE' && issue.entityType === 'form') {
     return {
-      href: entity.href,
+      href: `${entity.href}#form-completed-actions`,
       label: 'Open completed form to amend',
       instruction: 'Completed forms are immutable. Choose Create amendment, make the correction in the new draft, then choose Complete form.',
+    };
+  }
+  if (issue.code === 'FORM_CONTRACT_INVALID' && issue.entityType === 'form') {
+    const invalidFieldHash = firstInvalidFormHash(tree, issue.entityId);
+    return {
+      href: `${entity.href}${invalidFieldHash || '#form-completed-actions'}`,
+      label: invalidFieldHash ? 'Open first invalid completed-form field' : 'Open completed form to amend',
+      instruction: 'This completed form no longer satisfies the current field contract. Review the linked field, choose Create amendment, correct it in the new draft, then choose Complete form.',
     };
   }
   if (issue.code === 'EVIDENCE_NOT_CONFIRMED') {
     const href = issue.entityType === 'meter'
       ? meterHref || entity.href
-      : issue.entityType === 'board'
-        ? `${entity.href}#board-evidence`
-        : issue.entityType === 'site_asset'
-          ? `${entity.href}#asset-evidence`
-          : issue.entityType === 'zone'
-            ? `${entity.href}#zone-evidence`
-            : entity.href;
+      : `${entity.href}${exactEvidenceHash(tree, issue)}`;
     const persistInstruction = issue.entityType === 'form'
       ? 'If the form is completed, choose Create amendment first. Replace the exact evidence, wait for upload confirmation, then choose Complete form.'
       : issue.entityType === 'zone'
@@ -663,15 +770,12 @@ export function readinessCorrectionAction(
     const meter = meterDevices(tree).find((item) => item.id === issue.entityId);
     const board = tree.electricalAssets.find((item) => item.id === meter?.installedOnBoardId);
     if (meter && board) return {
-      href: `${base}/forms/new?zoneId=${encodeURIComponent(board.zoneId)}&boardId=${encodeURIComponent(board.id)}&meterId=${encodeURIComponent(meter.id)}`,
+      href: `${base}/forms/new?zoneId=${encodeURIComponent(board.zoneId)}&boardId=${encodeURIComponent(board.id)}&meterId=${encodeURIComponent(meter.id)}&formType=ww-installation#new-form-ww-installation`,
       label: 'Start required WW form',
       instruction: 'Create the meter-linked Installation Form (WW), complete its required evidence, then choose Complete form.',
     };
   }
-  if (issue.entityType === 'channel' || issue.entityType === 'measurement_assignment' || (
-    issue.entityType === 'meter'
-    && !['DISPLAY_CODE_INVALID', 'DISPLAY_CODE_DUPLICATE', 'CUSTOM_TYPE_REQUIRED'].includes(issue.code)
-  )) {
+  if (issue.entityType === 'channel' || issue.entityType === 'measurement_assignment' || issue.entityType === 'meter') {
     return {
       href: meterHref || entity.href,
       label: issue.code === 'MEASUREMENT_TARGET_TBC' ? 'Open exact target mapper' : 'Open meter and channel mapper',
@@ -680,11 +784,15 @@ export function readinessCorrectionAction(
   }
   if (issue.entityType === 'site_asset') {
     const hash = issue.code.startsWith('DISPLAY_CODE')
-      ? '#asset-code'
+      ? '#asset-name'
       : issue.code === 'CUSTOM_TYPE_REQUIRED'
         ? '#asset-custom-type'
-        : issue.code.includes('SUPPLY') || issue.code === 'GRID_SUPPLY_INVALID'
-          ? '#asset-supply'
+        : issue.field?.endsWith('.boardId')
+          ? '#asset-source-board'
+          : issue.field?.endsWith('.gridSupplyId')
+            ? '#asset-grid-supply'
+            : issue.code.includes('SUPPLY') || issue.code === 'GRID_SUPPLY_INVALID'
+              ? '#asset-supply'
           : '#asset-metering';
     return {
       href: `${entity.href}${hash}`,
@@ -694,12 +802,16 @@ export function readinessCorrectionAction(
   }
   if (issue.entityType === 'board') {
     const hash = issue.code.startsWith('DISPLAY_CODE')
-      ? '#board-code'
+      ? '#board-name'
       : issue.code === 'CUSTOM_TYPE_REQUIRED'
         ? '#board-custom-type'
         : issue.code === 'METER_PRESENT_MISMATCH'
-          ? '#board-meter-presence'
-          : '#board-supply';
+          ? '#board-meters'
+          : issue.field?.endsWith('.boardId')
+            ? '#board-parent'
+            : issue.field?.endsWith('.gridSupplyId')
+              ? '#board-grid-supply'
+              : '#board-supply';
     return {
       href: `${entity.href}${hash}`,
       label: 'Open switchboard correction',
@@ -707,8 +819,26 @@ export function readinessCorrectionAction(
     };
   }
   if (issue.entityType === 'form') {
+    const form = tree.formSubmissions.find((item) => item.id === issue.entityId);
+    if (issue.code === 'FORM_CONTEXT_REQUIRED') {
+      const hash = form?.status === 'Completed'
+        ? '#form-completed-actions'
+        : '#form-actions';
+      return {
+        href: `${entity.href}${hash}`,
+        label: form?.status === 'Completed'
+          ? 'Open immutable form context details'
+          : 'Open form context correction',
+        instruction: form?.status === 'Completed'
+          ? 'The completed form context is immutable and an amendment would retain the same invalid relationship. Ask an administrator to repair this orphaned historical reference.'
+          : 'This form’s linked entity is no longer valid. Delete the draft and recreate it from the correct switchboard, meter, or site asset workflow.',
+      };
+    }
+    const incompleteFieldHash = issue.code === 'FORM_INCOMPLETE'
+      ? firstInvalidFormHash(tree, issue.entityId)
+      : '';
     return {
-      href: issue.code === 'FORM_CONTEXT_REQUIRED' ? `${base}/forms` : entity.href,
+      href: `${entity.href}${incompleteFieldHash || (issue.code === 'FORM_INCOMPLETE' ? '#form-actions' : '')}`,
       label: issue.code === 'FORM_INCOMPLETE' ? 'Open form to complete' : 'Open field-form correction',
       instruction: issue.code === 'FORM_INCOMPLETE'
         ? 'Complete every required field and evidence item, then choose Complete form; or delete the draft explicitly.'
@@ -716,6 +846,16 @@ export function readinessCorrectionAction(
     };
   }
   if (issue.entityType === 'installation') {
+    if (issue.code === 'EXTERNAL_KEY_REQUIRED') return {
+      href: `${base}/data`,
+      label: 'Open server identity details',
+      instruction: 'This server-owned installation identity is not editable in the field form. Retry reconciliation, then ask an administrator to repair the external key if the issue remains.',
+    };
+    if (issue.code === 'GRID_SUPPLY_INVALID') return {
+      href: `${base}#grid-supplies`,
+      label: 'Open incoming connection correction',
+      instruction: 'Add or choose the exact default incoming connection, then save it before retrying readiness.',
+    };
     return {
       href: `${base}/edit${issue.code === 'TIMEZONE_REQUIRED_FOR_EXPORT' ? '#installation-timezone' : ''}`,
       label: 'Open installation correction',

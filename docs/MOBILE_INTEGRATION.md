@@ -63,15 +63,16 @@ For backward compatibility, an absent stage is treated as complete.
 
 New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
 numbers, and hyphens; maximum 16 characters). Newly unclaimed records receive
-rule-3 identities. Boards use `INSTALLATION-ZONE-NN-SWITCHBOARD_NAME`; site
+rule-4 identities. Boards use `INSTALLATION-ZONE-NN-TYPE-SWITCHBOARD_NAME`; site
 assets and meters use `INSTALLATION-ZONE-NN-TYPE-HUMAN_NAME`, without repeating
 the type when the normalized human name already contains it. Identities are
 capped at 64 characters. `NN` is a single zone-wide sequence shared across all
 three entity kinds, and retained claims prevent reuse after deletion. Mobile may
 show a provisional offline value, but must accept and round-trip the server value
-after sync. Existing rule-1 and rule-2 claims remain frozen. Human board/asset
-names and meter `customName` remain separately editable and do not mutate an
-already claimed identity.
+after sync. An explicit portal edit may refresh a generated rule-3/4 switchboard
+claim to rule 4 while retaining its zone and sequence. Mobile clients must not
+initiate that refresh. Existing rule-1 and rule-2 claims, overrides, site assets,
+and meters remain frozen. Human names remain separately editable.
 
 ### User and installation-access endpoints
 

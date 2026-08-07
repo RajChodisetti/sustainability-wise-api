@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.5';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.6';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
-export const DISPLAY_CODE_RULE_VERSION = 3;
+export const DISPLAY_CODE_RULE_VERSION = 4;
 export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
 export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 export const INSTALLATION_ZONE_CODE_MAX_LENGTH = 16;
@@ -2414,7 +2414,7 @@ function generatedIdentityName(input: {
     input.entityType.toUpperCase(),
   );
   const customName = displayCodeIdentifierSegment(input.customName, typeCode);
-  if (input.entityType === 'board' || segmentSequencePresent(customName, typeCode)) {
+  if (segmentSequencePresent(customName, typeCode)) {
     return customName;
   }
   return `${typeCode}-${customName}`;
@@ -2423,6 +2423,7 @@ function generatedIdentityName(input: {
 export function allocateDisplayCodes(input: {
   tree: CanonicalInstallationTree;
   existingClaims: DisplayCodeClaim[];
+  updatedClaims?: DisplayCodeClaim[];
 }): DisplayCodeClaim[] {
   const claims = [...input.existingClaims];
   const claimed = new Map(
@@ -2500,9 +2501,72 @@ export function allocateDisplayCodes(input: {
       );
     }
     if (priorForEntity) {
+      const refreshGeneratedBoard = entity.entityType === 'board'
+        && priorForEntity.generated
+        && priorForEntity.sequence != null
+        && priorForEntity.zoneId === entity.zoneId
+        && priorForEntity.ruleVersion >= 3
+        && priorForEntity.ruleVersion <= DISPLAY_CODE_RULE_VERSION
+        && entity.display.provisional === true
+        && entity.display.ruleVersion === DISPLAY_CODE_RULE_VERSION
+        && !entity.display.isOverridden;
+      if (refreshGeneratedBoard) {
+        const zone = zoneById.get(entity.zoneId);
+        if (!zone) {
+          throw new CanonicalInputError(
+            `${entity.entityType} ${entity.entityId} references an unknown zoneId`,
+          );
+        }
+        const sitePrefix = installationDisplayCodePrefix(input.tree.installation.siteCode);
+        const sequenceText = String(priorForEntity.sequence).padStart(2, '0');
+        const prefix = `${sitePrefix}-${zone.zoneCode}-${sequenceText}-`;
+        const fallbackName = entity.typeCode || entity.entityType;
+        const identityName = generatedIdentityName(entity);
+        const availableNameLength = Math.max(1, DISPLAY_CODE_MAX_LENGTH - prefix.length);
+        const boundedIdentityName = identityName
+          .slice(0, availableNameLength)
+          .replace(/-+$/g, '')
+          || fallbackName.slice(0, availableNameLength).toUpperCase()
+          || 'X';
+        const displayCode = `${prefix}${boundedIdentityName}`;
+        const normalizedDisplayCode = normalizeDisplayCode(displayCode);
+        const collision = claimed.get(normalizedDisplayCode);
+        if (collision && !(
+          collision.entityType === entity.entityType
+          && collision.entityId === entity.entityId
+        )) {
+          throw new CanonicalInputError(
+            `Display name ${displayCode} is already used by ${collision.entityType} ${collision.entityId}`,
+            'display_code_conflict',
+          );
+        }
+        const updatedClaim: DisplayCodeClaim = {
+          ...priorForEntity,
+          zoneId: entity.zoneId,
+          typeCode: entity.typeCode,
+          displayCode,
+          normalizedDisplayCode,
+          generated: true,
+          ruleVersion: DISPLAY_CODE_RULE_VERSION,
+        };
+        claimed.delete(priorForEntity.normalizedDisplayCode);
+        claimed.set(normalizedDisplayCode, updatedClaim);
+        const claimIndex = claims.indexOf(priorForEntity);
+        if (claimIndex >= 0) claims[claimIndex] = updatedClaim;
+        input.updatedClaims?.push(updatedClaim);
+        entity.display.value = displayCode;
+        entity.display.generatedValue = displayCode;
+        entity.display.isOverridden = false;
+        entity.display.overrideReason = undefined;
+        entity.display.ruleVersion = DISPLAY_CODE_RULE_VERSION;
+        entity.display.provisional = false;
+        continue;
+      }
       // Claims are immutable identity history. Site/type/rule changes and
-      // client-side regeneration may never silently allocate a different code
-      // for an already claimed entity.
+      // unmarked client-side regeneration may never silently allocate a
+      // different code for an already claimed entity. Generated v3/v4 board
+      // claims refresh only when the portal sends the explicit v4 provisional
+      // marker after a name or type edit.
       entity.display.value = priorForEntity.displayCode;
       entity.display.generatedValue = priorForEntity.displayCode;
       entity.display.isOverridden = !priorForEntity.generated;

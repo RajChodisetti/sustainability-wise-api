@@ -1,11 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  assignmentApprovalSignature,
+  assignmentCollectionConcurrencySignature,
+  meterStructuralConcurrencySignature,
   nextMeterChannelId,
   renamedMeterCapabilities,
   showsWattwatchersCommissioningSections,
   unassignedChannelMessage,
 } from '@/modules/installhub/lib/meterPresentation';
+import type { MeasurementAssignment, Meter } from '@/modules/installhub/types/domain';
+import { createMeter } from '@/modules/installhub/lib/model';
+
+function assignment(
+  id: string,
+  channelIds: string[],
+  target: MeasurementAssignment['target'] = { kind: 'TBC' },
+): MeasurementAssignment {
+  return {
+    id,
+    installationId: 'installation-1',
+    meterId: 'meter-1',
+    channelIds,
+    phaseMode: 'OTHER',
+    target,
+    direction: 'CONSUMPTION',
+    status: target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
+  };
+}
 
 test('only Wattwatchers device models show Wattwatchers commissioning sections', () => {
   assert.equal(showsWattwatchersCommissioningSections('A3RM'), true);
@@ -52,4 +74,58 @@ test('capability renames preserve data and reject blank or duplicate names', () 
     /already exists/,
   );
   assert.deepEqual(source, { current: '120A', protocol: 'Modbus' });
+});
+
+test('meter concurrency ignores evidence-only changes but rejects structural channel changes', () => {
+  const source: Meter = {
+    ...createMeter(),
+    id: 'meter-1',
+    deviceId: 'serial-1',
+    deviceType: 'A3RM',
+    wwChannels: [
+      { id: 'channel-1', ordinal: 1, purpose: 'MAIN_SUPPLY' },
+      { id: 'channel-2', ordinal: 2, purpose: 'SUB_CIRCUIT' },
+    ],
+    wwPhotos: { deviceInstalled: 'https://example.test/old.jpg', extra: [] },
+  };
+  assert.equal(
+    meterStructuralConcurrencySignature(source),
+    meterStructuralConcurrencySignature({
+      ...source,
+      wwPhotos: { deviceInstalled: 'https://example.test/new.jpg', extra: [] },
+    }),
+  );
+  assert.notEqual(
+    meterStructuralConcurrencySignature(source),
+    meterStructuralConcurrencySignature({
+      ...source,
+      wwChannels: [...(source.wwChannels || [])].reverse(),
+    }),
+  );
+});
+
+test('assignment concurrency is order-insensitive but detects mapping changes', () => {
+  const first = assignment('assignment-1', ['channel-2', 'channel-1']);
+  const second = assignment('assignment-2', ['channel-3'], {
+    kind: 'SITE_ASSET',
+    siteAssetId: 'asset-1',
+  });
+  assert.equal(
+    assignmentCollectionConcurrencySignature([first, second]),
+    assignmentCollectionConcurrencySignature([
+      { ...second },
+      { ...first, channelIds: ['channel-1', 'channel-2'] },
+    ]),
+  );
+  assert.notEqual(
+    assignmentCollectionConcurrencySignature([first, second]),
+    assignmentCollectionConcurrencySignature([
+      first,
+      { ...second, target: { kind: 'SITE_ASSET', siteAssetId: 'asset-2' } },
+    ]),
+  );
+  assert.notEqual(
+    assignmentApprovalSignature(second),
+    assignmentApprovalSignature({ ...second, channelIds: ['channel-4'] }),
+  );
 });

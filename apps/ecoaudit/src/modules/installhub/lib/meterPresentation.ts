@@ -1,4 +1,37 @@
-import type { Meter, WattwatcherChannel } from '@/modules/installhub/types/domain';
+import type {
+  MeasurementAssignment,
+  Meter,
+  WattwatcherChannel,
+} from '@/modules/installhub/types/domain';
+
+export function assignmentApprovalSignature(assignment: MeasurementAssignment): string {
+  return JSON.stringify({
+    ...assignment,
+    channelIds: [...assignment.channelIds].sort(),
+  });
+}
+
+export function assignmentCollectionConcurrencySignature(
+  assignments: MeasurementAssignment[],
+): string {
+  return JSON.stringify(
+    [...assignments]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((assignment) => ({
+        ...assignment,
+        channelIds: [...assignment.channelIds].sort(),
+      })),
+  );
+}
+
+export function meterStructuralConcurrencySignature(
+  meter: Meter | null | undefined,
+): string {
+  if (!meter) return '';
+  const nonMedia = { ...meter };
+  delete nonMedia.wwPhotos;
+  return JSON.stringify(nonMedia);
+}
 
 export function showsWattwatchersCommissioningSections(
   deviceType: Meter['deviceType'],

@@ -10,6 +10,7 @@ import { Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
 import {
   useInstallationElectricalTree,
   useInstallationMapping,
@@ -31,7 +32,6 @@ import {
 } from '@/modules/installhub/lib/workflow';
 import {
   electricalHierarchyRows,
-  filterReadinessResolutionCandidates,
   filterElectricalHierarchyRows,
   measurementTargetDetails,
   meteringInventorySummary,
@@ -168,7 +168,6 @@ export function InstallHubCanonicalDataPage() {
   const [issueZoneId, setIssueZoneId] = useState('ALL');
   const [reviewedIssueKeys, setReviewedIssueKeys] = useState<Set<string>>(new Set());
   const [resolutionSelections, setResolutionSelections] = useState<Record<string, string>>({});
-  const [resolutionSearches, setResolutionSearches] = useState<Record<string, string>>({});
   const [resolvingIssueKey, setResolvingIssueKey] = useState<string | null>(null);
   const [reconciliationResumedFor, setReconciliationResumedFor] = useState('');
   const [reviewedTreeRevision, setReviewedTreeRevision] = useState<number | null>(null);
@@ -356,11 +355,6 @@ export function InstallHubCanonicalDataPage() {
         delete next[key];
         return next;
       });
-      setResolutionSearches((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
       setIssuePage(0);
       toast.success('Reconciliation resolution saved and readiness is being rechecked.');
     } catch (error) {
@@ -496,12 +490,11 @@ export function InstallHubCanonicalDataPage() {
             {visibleIssueRows.map(({ issue, key, entity, candidates, resolutions, correction }) => {
               const reviewedKey = `${issueCategory}:${key}`;
               const reviewed = reviewedIssueKeys.has(reviewedKey);
-              const resolutionSearch = resolutionSearches[key] || '';
-              const visibleResolutions = filterReadinessResolutionCandidates(
-                resolutions,
-                resolutionSearch,
-                resolutionSelections[key],
-              );
+              const resolutionOptions = resolutions.map((candidate) => ({
+                value: candidate.id,
+                label: `${candidate.code ? `${candidate.code} — ` : ''}${candidate.name} · ${candidate.type}${candidate.zoneName ? ` · ${candidate.zoneName}` : ''}`,
+                keywords: `${candidate.id} ${candidate.code || ''} ${candidate.zoneName || ''}`,
+              }));
               const resolutionKind = issue.code === 'MEASUREMENT_TARGET_TBC'
                 ? 'measurement target'
                 : issue.code === 'METERING_STATE_INVALID'
@@ -540,25 +533,21 @@ export function InstallHubCanonicalDataPage() {
                   {issue.field ? <p className="mt-3 text-xs text-[var(--text-sub)]">Field to resolve: <code className="font-mono font-bold text-[var(--text)]">{issue.field}</code></p> : null}
                   {resolutions.length ? (
                     <div className="mt-3 rounded-xl border border-[var(--primary)]/25 bg-[var(--surface)] p-3">
-                      <label className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]" htmlFor={`resolution-search-${key}`}>Find a valid {resolutionKind}</label>
-                      <Input
-                        id={`resolution-search-${key}`}
-                        className="mt-2"
-                        type="search"
-                        value={resolutionSearch}
-                        placeholder="Search name, code, zone, type, or stable ID"
-                        disabled={tree.installation.status === 'Completed' || resolvingIssueKey === key}
-                        onChange={(event) => setResolutionSearches((current) => ({ ...current, [key]: event.target.value }))}
-                      />
-                      <label className="mt-3 block text-xs font-bold uppercase tracking-wide text-[var(--muted)]" htmlFor={`resolution-${key}`}>Confirmed {resolutionKind}</label>
+                      <label className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]" htmlFor={`resolution-${key}`}>Confirmed {resolutionKind}</label>
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
-                        <Select id={`resolution-${key}`} value={resolutionSelections[key] || ''} disabled={tree.installation.status === 'Completed' || resolvingIssueKey === key} onChange={(event) => setResolutionSelections((current) => ({ ...current, [key]: event.target.value }))}>
-                          <option value="">Choose a confirmed {resolutionKind}</option>
-                          {visibleResolutions.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.code ? `${candidate.code} — ` : ''}{candidate.name} · {candidate.type}{candidate.zoneName ? ` · ${candidate.zoneName}` : ''}</option>)}
-                        </Select>
+                        <SearchableSelect
+                          id={`resolution-${key}`}
+                          className="min-w-0 flex-1"
+                          value={resolutionSelections[key] || ''}
+                          options={resolutionOptions}
+                          placeholder="Search name, code, zone, type, or stable ID"
+                          emptyMessage={`No valid ${resolutionKind} matches this search.`}
+                          disabled={tree.installation.status === 'Completed' || resolvingIssueKey === key}
+                          onChange={(value) => setResolutionSelections((current) => ({ ...current, [key]: value }))}
+                        />
                         <Button disabled={!resolutionSelections[key] || tree.installation.status === 'Completed' || resolvingIssueKey === key} onClick={() => void saveIssueResolution(issue, key)}>{resolvingIssueKey === key ? 'Saving…' : 'Apply and save'}</Button>
                       </div>
-                      <p className="mt-2 text-xs text-[var(--text-sub)]">Showing {visibleResolutions.length} of {resolutions.length} valid choices. Refine the search to reach any result while keeping the picker fast. Nothing is selected automatically.</p>
+                      <p className="mt-2 text-xs text-[var(--text-sub)]">Search and choose in one field. Up to 100 of {resolutions.length} valid choices are shown at once; nothing is selected automatically.</p>
                       {tree.installation.status === 'Completed' ? <p className="mt-2 text-xs font-semibold text-[var(--amber)]">Reopen this installation before applying a resolution.</p> : null}
                     </div>
                   ) : (
@@ -875,12 +864,12 @@ export function InstallHubCanonicalMeteringPage() {
                 <div className="mt-3 overflow-x-auto">
                   <table className="w-full min-w-[860px] text-left text-sm">
                     <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]"><th className="px-2 py-2">Channel</th><th className="px-2 py-2">Purpose</th><th className="px-2 py-2">Load / sensor</th><th className="px-2 py-2">Exact assignment target</th></tr></thead>
-                    <tbody>{meter.channels.map((channel) => {
+                    <tbody>{meter.channels.map((channel, channelIndex) => {
                       const assignment = meterAssignments.find((item) => item.channelIds.includes(channel.id));
                       const target = assignment ? measurementTargetDetails(tree, assignment.target) : null;
                       return (
                         <tr key={channel.id} className="border-b border-[var(--border)]">
-                          <td className="px-2 py-2 font-bold">{meterHref ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channel.ordinal}`}>Channel {channel.ordinal}</Link> : `Channel ${channel.ordinal}`} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span><span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span></td>
+                          <td className="px-2 py-2 font-bold">{meterHref ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channelIndex + 1}`}>Channel {channel.ordinal}</Link> : `Channel ${channel.ordinal}`} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span><span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span></td>
                           <td className="px-2 py-2">{channel.purpose.replaceAll('_', ' ').toLowerCase()}</td>
                           <td className="px-2 py-2">{channel.customLoadTypeName || channel.loadTypeCode || '—'} · {channel.sensorRating || '—'}</td>
                           <td className="px-2 py-2">{assignment && target ? (

@@ -224,9 +224,9 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.ok(before);
     assert.equal(before.zones[0].zoneCode, 'SOURCE-ZONE');
     assert.equal(before.meterDevices[0].customName, 'A3RM Meter');
-    assert.ok(before.electricalAssets.every((board) => board.displayCode.ruleVersion === 3));
-    assert.ok(before.siteAssets.every((asset) => asset.displayCode.ruleVersion === 3));
-    assert.ok(before.meterDevices.every((meter) => meter.displayName.ruleVersion === 3));
+    assert.ok(before.electricalAssets.every((board) => board.displayCode.ruleVersion === 4));
+    assert.ok(before.siteAssets.every((asset) => asset.displayCode.ruleVersion === 4));
+    assert.ok(before.meterDevices.every((meter) => meter.displayName.ruleVersion === 4));
     const stolenTree = retargetTree(before, targetInstallationId, `${prefix}-target`);
     stolenTree.zones[0].zoneName = 'Stolen and mutated';
     await assert.rejects(
@@ -255,7 +255,7 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.ok(displayClaim);
     assert.equal(displayClaim.zoneId, sourceTree.zones[0].id);
     assert.ok((displayClaim.sequence ?? 0) >= 1);
-    assert.equal(displayClaim.ruleVersion, 3);
+    assert.equal(displayClaim.ruleVersion, 4);
     const guardedRows = [
       ['ih_grid_supplies', `${prefix}-grid`],
       ['ih_zones', `${prefix}-zone`],
@@ -333,6 +333,44 @@ test('canonical child IDs cannot cross installation ownership, including a concu
       installationId: sourceInstallationId,
       zoneName: 'Concurrent owner',
     });
+
+    const confirmedBeforeRename = await loadCanonicalInstallationTree(sourceInstallationId, db);
+    assert.ok(confirmedBeforeRename);
+    const boardId = sourceTree.electricalAssets[0].id;
+    const beforeRenameClaims = await db.select().from(ihDisplayCodeClaims)
+      .where(eq(ihDisplayCodeClaims.installationId, sourceInstallationId));
+    const beforeRenameClaim = beforeRenameClaims.find((claim) => (
+      claim.entityType === 'board' && claim.entityId === boardId
+    ));
+    assert.ok(beforeRenameClaim);
+
+    const renamed = structuredClone(confirmedBeforeRename);
+    renamed.electricalAssets[0].assetName = 'Renamed source board';
+    renamed.electricalAssets[0].displayCode = {
+      ...renamed.electricalAssets[0].displayCode,
+      provisional: true,
+      ruleVersion: 4,
+    };
+    await db.transaction(async (tx) => {
+      await replaceCanonicalInstallationChildren({ executor: tx, tree: renamed });
+    });
+
+    const afterRenameClaims = await db.select().from(ihDisplayCodeClaims)
+      .where(eq(ihDisplayCodeClaims.installationId, sourceInstallationId));
+    const boardClaimsAfter = afterRenameClaims.filter((claim) => (
+      claim.entityType === 'board' && claim.entityId === boardId
+    ));
+    const confirmedAfterRename = await loadCanonicalInstallationTree(sourceInstallationId, db);
+    assert.equal(boardClaimsAfter.length, 1);
+    assert.equal(boardClaimsAfter[0].id, beforeRenameClaim.id);
+    assert.equal(boardClaimsAfter[0].sequence, beforeRenameClaim.sequence);
+    assert.equal(boardClaimsAfter[0].zoneId, beforeRenameClaim.zoneId);
+    assert.equal(boardClaimsAfter[0].typeCode, 'MSB');
+    assert.equal(boardClaimsAfter[0].ruleVersion, 4);
+    assert.match(boardClaimsAfter[0].displayCode, /-MSB-RENAMED-SOURCE-BOARD$/);
+    assert.equal(confirmedAfterRename?.electricalAssets[0].assetName, 'Renamed source board');
+    assert.equal(confirmedAfterRename?.electricalAssets[0].displayCode.value, boardClaimsAfter[0].displayCode);
+    assert.equal(confirmedAfterRename?.electricalAssets[0].displayCode.provisional, false);
   } finally {
     await purgeInstallHubInstallationTree(targetInstallationId).catch(() => {});
     await purgeInstallHubInstallationTree(sourceInstallationId).catch(() => {});

@@ -750,7 +750,7 @@ test('strict v2 form lineage and historical meter state are structurally enforce
   );
 });
 
-test('display allocation v3 is deterministic, zone-scoped across entity kinds, and never reuses claims', () => {
+test('display allocation v4 is deterministic, zone-scoped across entity kinds, and refreshes only marked generated boards', () => {
   const initial = baseTree();
   initial.electricalAssets[0].displayCode = display('');
   initial.siteAssets[0].displayCode = display('');
@@ -759,11 +759,11 @@ test('display allocation v3 is deterministic, zone-scoped across entity kinds, a
   meter.displayName = display('');
   initial.meterDevices = [meter];
   const claims = allocateDisplayCodes({ tree: initial, existingClaims: [] });
-  assert.equal(initial.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
+  assert.equal(initial.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MSB-MAIN-BOARD');
   assert.equal(initial.meterDevices[0].displayName.value, 'ACME-PLANT-ROOM-02-A3RM-MAIN-INCOMER');
   assert.equal(initial.siteAssets[0].displayCode.value, 'ACME-PLANT-ROOM-03-HVAC-AIR-CONDITIONER');
   assert.deepEqual(claims.map((claim) => claim.sequence), [1, 2, 3]);
-  assert.ok(claims.every((claim) => claim.zoneId === 'zone-1' && claim.ruleVersion === 3));
+  assert.ok(claims.every((claim) => claim.zoneId === 'zone-1' && claim.ruleVersion === 4));
 
   const replacement = baseTree();
   replacement.electricalAssets = [{
@@ -776,7 +776,7 @@ test('display allocation v3 is deterministic, zone-scoped across entity kinds, a
   allocateDisplayCodes({ tree: replacement, existingClaims: claims });
   assert.equal(
     replacement.electricalAssets[0].displayCode.value,
-    'ACME-PLANT-ROOM-04-REPLACEMENT-MAIN-BOARD',
+    'ACME-PLANT-ROOM-04-MSB-REPLACEMENT-MAIN-BOARD',
   );
   assert.ok(claims.some((claim) => claim.entityId === 'board-1'));
 
@@ -798,12 +798,12 @@ test('display allocation v3 is deterministic, zone-scoped across entity kinds, a
   allocateDisplayCodes({ tree: otherZone, existingClaims: claims });
   assert.equal(
     otherZone.electricalAssets[0].displayCode.value,
-    'ACME-WAREHOUSE-01-DISTRIBUTION-BOARD',
+    'ACME-WAREHOUSE-01-MSB-DISTRIBUTION-BOARD',
   );
 
   const collision = baseTree();
   collision.siteAssets[0].id = 'asset-new';
-  collision.siteAssets[0].displayCode = display('ACME-PLANT-ROOM-01-MAIN-BOARD', true);
+  collision.siteAssets[0].displayCode = display('ACME-PLANT-ROOM-01-MSB-MAIN-BOARD', true);
   assert.throws(
     () => allocateDisplayCodes({ tree: collision, existingClaims: claims }),
     (error: unknown) => error instanceof CanonicalInputError
@@ -861,14 +861,14 @@ test('display allocation v3 is deterministic, zone-scoped across entity kinds, a
   frozen.electricalAssets[0].typeCode = 'DB';
   frozen.electricalAssets[0].displayCode.ruleVersion = 99;
   const frozenNewClaims = allocateDisplayCodes({ tree: frozen, existingClaims: claims });
-  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
-  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 3);
+  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MSB-MAIN-BOARD');
+  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 4);
   assert.equal(frozenNewClaims.length, 0);
 
   frozen.electricalAssets[0].displayCode = display('CUSTOM-MAIN', true);
   const overrideClaims = allocateDisplayCodes({ tree: frozen, existingClaims: claims });
   assert.equal(overrideClaims.length, 0);
-  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
+  assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MSB-MAIN-BOARD');
   assert.equal(frozen.electricalAssets[0].displayCode.isOverridden, false);
 
   const newRuleEntity = baseTree();
@@ -881,11 +881,76 @@ test('display allocation v3 is deterministic, zone-scoped across entity kinds, a
   };
   const newRuleClaims = allocateDisplayCodes({ tree: newRuleEntity, existingClaims: [] });
   assert.equal(newRuleClaims[0].entityId, 'board-new-rule');
-  assert.equal(newRuleClaims[0].ruleVersion, 3);
+  assert.equal(newRuleClaims[0].ruleVersion, 4);
   assert.equal(
     newRuleEntity.electricalAssets[0].displayCode.value,
-    'ACME-PLANT-ROOM-01-MAIN-BOARD',
+    'ACME-PLANT-ROOM-01-MSB-MAIN-BOARD',
   );
+
+  const renamedRuleThree = baseTree();
+  renamedRuleThree.electricalAssets[0].assetName = 'Workshop incomer';
+  renamedRuleThree.electricalAssets[0].typeCode = 'DB';
+  renamedRuleThree.electricalAssets[0].displayCode = {
+    value: 'CLIENT-PREVIEW',
+    generatedValue: 'CLIENT-PREVIEW',
+    isOverridden: false,
+    ruleVersion: 4,
+    provisional: true,
+  };
+  renamedRuleThree.siteAssets = [];
+  const updatedClaims: typeof claims = [];
+  const newClaimsAfterRename = allocateDisplayCodes({
+    tree: renamedRuleThree,
+    existingClaims: [{
+      entityType: 'board',
+      entityId: renamedRuleThree.electricalAssets[0].id,
+      zoneId: 'zone-1',
+      typeCode: 'MSB',
+      sequence: 1,
+      displayCode: 'ACME-PLANT-ROOM-01-MAIN-BOARD',
+      normalizedDisplayCode: 'ACME-PLANT-ROOM-01-MAIN-BOARD',
+      generated: true,
+      ruleVersion: 3,
+    }],
+    updatedClaims,
+  });
+  assert.equal(newClaimsAfterRename.length, 0);
+  assert.equal(updatedClaims.length, 1);
+  assert.equal(updatedClaims[0].sequence, 1);
+  assert.equal(updatedClaims[0].ruleVersion, 4);
+  assert.equal(updatedClaims[0].displayCode, 'ACME-PLANT-ROOM-01-DB-WORKSHOP-INCOMER');
+  assert.equal(renamedRuleThree.electricalAssets[0].displayCode.value, updatedClaims[0].displayCode);
+
+  const renamedRuleFour = structuredClone(renamedRuleThree);
+  renamedRuleFour.electricalAssets[0].assetName = 'Final incomer';
+  renamedRuleFour.electricalAssets[0].displayCode.provisional = true;
+  const ruleFourUpdates: typeof claims = [];
+  allocateDisplayCodes({
+    tree: renamedRuleFour,
+    existingClaims: updatedClaims,
+    updatedClaims: ruleFourUpdates,
+  });
+  assert.equal(ruleFourUpdates.length, 1);
+  assert.equal(ruleFourUpdates[0].sequence, 1);
+  assert.equal(ruleFourUpdates[0].displayCode, 'ACME-PLANT-ROOM-01-DB-FINAL-INCOMER');
+
+  const crossZone = structuredClone(renamedRuleThree);
+  crossZone.zones.push({
+    ...crossZone.zones[0],
+    id: 'zone-2',
+    zoneCode: 'WAREHOUSE',
+    zoneName: 'Warehouse',
+  });
+  crossZone.electricalAssets[0].zoneId = 'zone-2';
+  crossZone.electricalAssets[0].displayCode.provisional = true;
+  const crossZoneUpdates: typeof claims = [];
+  allocateDisplayCodes({
+    tree: crossZone,
+    existingClaims: updatedClaims,
+    updatedClaims: crossZoneUpdates,
+  });
+  assert.equal(crossZoneUpdates.length, 0);
+  assert.equal(crossZone.electricalAssets[0].displayCode.value, updatedClaims[0].displayCode);
 
   const longName = baseTree();
   longName.electricalAssets[0].id = 'long-name-board';
@@ -906,7 +971,7 @@ test('historical site code stays unchanged while new display codes use the bound
   assert.equal(tree.installation.siteCode, 'Legacy Site Code / 2024');
   assert.equal(
     tree.electricalAssets[0].displayCode.value,
-    'LEGACY-SITE-CODE-PLANT-ROOM-01-MAIN-BOARD',
+    'LEGACY-SITE-CODE-PLANT-ROOM-01-MSB-MAIN-BOARD',
   );
 });
 
@@ -1899,7 +1964,7 @@ test('historical snapshot pins rendered labels, versions, readiness, and artifac
   tree.installation.timezone = 'Invalid/Timezone';
 
   assert.equal(snapshot.controlledLabelCatalog.boards.MSSB, 'Main Sub-Switchboard');
-  assert.equal(snapshot.displayCodeRuleVersion, 3);
+  assert.equal(snapshot.displayCodeRuleVersion, 4);
   assert.equal(snapshot.virtualMeterFormulaVersion, 1);
   assert.equal(snapshot.viewArtifacts.mapping.installation.recordVersionNumber, 9);
   assert.equal(
@@ -1984,5 +2049,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.5');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.6');
 });

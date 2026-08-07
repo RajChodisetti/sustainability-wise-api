@@ -544,7 +544,7 @@ export function InstallHubFormEditorPage() {
 
       {source.formType === 'ww-installation' ? (
         canonicalBoard ? (
-          <Card id="form-canonical-context" className="mb-5">
+          <Card id="form-canonical-context" tabIndex={-1} className="mb-5 scroll-mt-4">
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
               <div>
                 <h2 className="font-extrabold text-[var(--text)]">Switchboard details</h2>
@@ -565,7 +565,7 @@ export function InstallHubFormEditorPage() {
             ]} />
           </Card>
         ) : (
-          <div id="form-canonical-context" className="mb-5"><InlineNotice tone="warning">This WW field record has no valid canonical switchboard context. Link it from the switchboard workflow before completion.</InlineNotice></div>
+          <div id="form-canonical-context" tabIndex={-1} className="mb-5 scroll-mt-4"><InlineNotice tone="warning">This WW field record has no valid canonical switchboard context. Link it from the switchboard workflow before completion.</InlineNotice></div>
         )
       ) : null}
 
@@ -710,7 +710,7 @@ export function InstallHubFormEditorPage() {
           onAmend={amend}
         />
       ) : (
-        <Card className="mt-6">
+        <Card id="form-actions" tabIndex={-1} className="mt-6 scroll-mt-4">
           <InlineNotice tone="warning">
             Completing the form makes this record read-only and updates the
             operational meter registry where applicable.
@@ -921,6 +921,7 @@ function LegacyFormRecord({ form }: { form: FormSubmission }) {
       {form.attachments.length ? (
         <div className="mt-6">
           <EvidenceField
+            id="form-legacy-evidence"
             label="Legacy evidence"
             items={form.attachments}
             readOnly
@@ -980,7 +981,7 @@ function CompletedFormActions({
   });
 
   return (
-    <Card className="mt-6">
+    <Card id="form-completed-actions" tabIndex={-1} className="mt-6 scroll-mt-4">
       <h2 className="font-extrabold text-[var(--text)]">
         Completed record
       </h2>

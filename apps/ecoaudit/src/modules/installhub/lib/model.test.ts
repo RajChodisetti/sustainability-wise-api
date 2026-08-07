@@ -469,7 +469,7 @@ test('amendments preserve evidence references without sharing mutable arrays', (
   original.attachments = [
     {
       id: 'attachment-1',
-      slot: 'captis.photo_installed',
+      slot: 'logger.cumulocity_screenshot',
       uri: '/v1/photos/attachment-1',
       mimeType: 'image/jpeg',
       caption: 'Installed logger',
@@ -486,6 +486,59 @@ test('amendments preserve evidence references without sharing mutable arrays', (
   assert.deepEqual(amendment.attachments, original.attachments);
   assert.notEqual(amendment.attachments, original.attachments);
   assert.notEqual(amendment.attachments[0], original.attachments[0]);
+});
+
+test('amendments remove unsupported contract values without mutating the completed source', () => {
+  const tree = fixtureTree();
+  const original = createFormSubmission(tree, 'captis-logger', user);
+  original.status = 'Completed';
+  original.answers = {
+    ...original.answers,
+    'captis.physical_location': 'Plant room',
+    'obsolete.answer': 'legacy-only',
+  };
+  original.attachments = [
+    {
+      id: 'attachment-visible',
+      slot: 'logger.cumulocity_screenshot',
+      uri: '/v1/photos/visible',
+      mimeType: 'image/jpeg',
+      capturedAt: '2026-08-06T00:00:00.000Z',
+    },
+    {
+      id: 'attachment-obsolete',
+      slot: 'obsolete.photo',
+      uri: '/v1/photos/obsolete',
+      mimeType: 'image/jpeg',
+      capturedAt: '2026-08-06T00:00:00.000Z',
+    },
+  ];
+
+  const amendment = createAmendment(original);
+
+  assert.equal(amendment.answers['obsolete.answer'], undefined);
+  assert.deepEqual(amendment.attachments.map((item) => item.id), ['attachment-visible']);
+  assert.equal(original.answers['obsolete.answer'], 'legacy-only');
+  assert.deepEqual(original.attachments.map((item) => item.id), [
+    'attachment-visible',
+    'attachment-obsolete',
+  ]);
+});
+
+test('amendments clear supported answers that are hidden by the retained controlling answer', () => {
+  const tree = fixtureTree();
+  const original = createFormSubmission(tree, 'a3rm-installation', user);
+  original.status = 'Completed';
+  original.answers = {
+    ...original.answers,
+    'channel.1.rating': 'Not Used',
+    'commissioning.channel_1_current': '12.5',
+  };
+
+  const amendment = createAmendment(original);
+
+  assert.equal(amendment.answers['commissioning.channel_1_current'], undefined);
+  assert.equal(original.answers['commissioning.channel_1_current'], '12.5');
 });
 
 test('navigation flush saves the latest draft answers and captions as detached snapshots', () => {

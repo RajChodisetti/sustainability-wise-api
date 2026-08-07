@@ -101,7 +101,7 @@ test('v3 display codes share a two-digit zone sequence across entity kinds', () 
     fallbackType: 'Distribution board',
     entityKind: 'board',
     entityTypeCode: 'DB',
-  }), 'GOLD-L1-03-DISTRIBUTION-BOARD');
+  }), 'GOLD-L1-03-DB-DISTRIBUTION-BOARD');
 });
 
 test('v3 identities end boards with their name and include type plus name for assets and devices', () => {
@@ -120,7 +120,7 @@ test('v3 identities end boards with their name and include type plus name for as
     fallbackType: 'Main switchboard',
     entityKind: 'board',
     entityTypeCode: 'MSB',
-  }), 'GOLD-L1-01-WORKSHOP-INCOMER');
+  }), 'GOLD-L1-01-MSB-WORKSHOP-INCOMER');
   assert.equal(generatedDisplayCodeV3(tree, {
     zoneId: zone.id,
     customName: 'Air handler 1',
@@ -187,11 +187,11 @@ test('full and quick add use the same provisional v3 naming rule', () => {
     entityTypeCode: 'DB',
   });
   assert.deepEqual(quick, full);
-  assert.equal(full.ruleVersion, 3);
+  assert.equal(full.ruleVersion, 4);
   assert.equal(full.provisional, true);
 });
 
-test('provisional name edits retain sequence while confirmed identities stay frozen', () => {
+test('provisional name edits retain sequence and explicit board edits refresh generated v3/v4 identities', () => {
   const tree = emptyTree();
   tree.installation.siteCode = 'GOLD';
   const zone = createZone(tree.installation.id, {
@@ -215,7 +215,7 @@ test('provisional name edits retain sequence while confirmed identities stay fro
     entityTypeCode: 'DB',
     current: provisional,
   });
-  assert.equal(renamed.value, 'GOLD-L1-01-WORKSHOP-INCOMER');
+  assert.equal(renamed.value, 'GOLD-L1-01-DB-WORKSHOP-INCOMER');
 
   for (const frozen of [
     { ...renamed, provisional: false },
@@ -233,6 +233,49 @@ test('provisional name edits retain sequence while confirmed identities stay fro
     }), frozen);
   }
 
+  const historicalRuleThree = {
+    value: 'GOLD-L1-01-WORKSHOP-INCOMER',
+    generatedValue: 'GOLD-L1-01-WORKSHOP-INCOMER',
+    isOverridden: false,
+    ruleVersion: 3,
+    provisional: false,
+  };
+  const refreshed = provisionalDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Changed again',
+    fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
+    current: historicalRuleThree,
+    refreshConfirmedGenerated: true,
+  });
+  assert.equal(refreshed.value, 'GOLD-L1-01-DB-CHANGED-AGAIN');
+  assert.equal(refreshed.ruleVersion, 4);
+  assert.equal(refreshed.provisional, true);
+
+  const refreshedAgain = provisionalDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Main board',
+    fallbackType: 'MSB',
+    entityKind: 'board',
+    entityTypeCode: 'MSB',
+    current: { ...refreshed, provisional: false },
+    refreshConfirmedGenerated: true,
+  });
+  assert.equal(refreshedAgain.value, 'GOLD-L1-01-MSB-MAIN-BOARD');
+  assert.equal(refreshedAgain.ruleVersion, 4);
+
+  const legacy = { ...renamed, provisional: false, ruleVersion: 2 };
+  assert.equal(provisionalDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Legacy stays fixed',
+    fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
+    current: legacy,
+    refreshConfirmedGenerated: true,
+  }), legacy);
+
   const upgraded = provisionalDisplayCodeV3(tree, {
     zoneId: zone.id,
     customName: 'Air handler 1',
@@ -242,5 +285,5 @@ test('provisional name edits retain sequence while confirmed identities stay fro
     current: { ...renamed, ruleVersion: 2, provisional: true },
   });
   assert.equal(upgraded.value, 'GOLD-L1-01-HVAC-AIR-HANDLER-1');
-  assert.equal(upgraded.ruleVersion, 3);
+  assert.equal(upgraded.ruleVersion, 4);
 });

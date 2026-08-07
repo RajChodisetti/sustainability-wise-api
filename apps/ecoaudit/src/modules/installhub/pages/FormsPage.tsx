@@ -14,7 +14,7 @@ import {
   Spinner,
 } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
-import { FieldHint, FieldLabel, Input, Select } from '@/components/ui/FormFields';
+import { FieldHint, FieldLabel } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { useExportJob } from '@/hooks/useExportJob';
 import { slugify } from '@/lib/download';
@@ -30,6 +30,7 @@ import {
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs } from '@/modules/installhub/components/InstallHubUi';
+import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
 import { ConfirmDialog } from '@/modules/installhub/components/WorkflowUi';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
@@ -345,7 +346,6 @@ export function InstallHubFormTypePickerPage() {
   const toast = useToast();
   const [busyType, setBusyType] = useState<FormType | null>(null);
   const [selectedBoardId, setSelectedBoardId] = useState(search.get('boardId') || '');
-  const [boardSearch, setBoardSearch] = useState('');
   const context: FormContext = {
     zoneId: search.get('zoneId'),
     boardId: search.get('boardId'),
@@ -363,11 +363,14 @@ export function InstallHubFormTypePickerPage() {
   if (!tree || !user) return <ErrorBanner message="Installation not found." />;
   const currentUser = user;
   const definitions = allowedFormDefinitions(context);
-  const normalizedBoardSearch = boardSearch.trim().toLowerCase();
-  const boardCandidates = tree.electricalAssets.filter((board) => {
+  const boardOptions = tree.electricalAssets.map((board) => {
     const zone = tree.zones.find((item) => item.id === board.zoneId);
-    return !normalizedBoardSearch || `${board.displayCode} ${board.assetName} ${zone?.zoneName || ''}`.toLowerCase().includes(normalizedBoardSearch);
-  }).slice(0, 100);
+    return {
+      value: board.id,
+      label: `${board.assetName} · ${board.assetType} · ${zone?.zoneName || 'Unknown zone'}`,
+      keywords: `${board.displayCodeMeta?.value || board.displayCode} ${board.typeCode || ''} ${board.id}`,
+    };
+  });
 
   async function start(type: FormType) {
     if (type === 'ww-installation' && !selectedBoardId) {
@@ -423,22 +426,17 @@ export function InstallHubFormTypePickerPage() {
         <Card className="mb-5">
           <h2 className="font-extrabold text-[var(--text)]">Installation Form (WW) switchboard</h2>
           <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Canonical board details are snapshotted from this exact record; free-text board identity is not accepted.</p>
-          <div className="mt-2 grid gap-x-4 lg:grid-cols-2">
-            <div>
-              <FieldLabel htmlFor="new-form-board-search">Find a switchboard</FieldLabel>
-              <Input id="new-form-board-search" type="search" value={boardSearch} placeholder="Search name, type, or physical zone" onChange={(event) => setBoardSearch(event.target.value)} />
-            </div>
-            <div>
-              <FieldLabel htmlFor="new-form-board">Switchboard *</FieldLabel>
-              <Select id="new-form-board" value={selectedBoardId} onChange={(event) => setSelectedBoardId(event.target.value)}>
-                <option value="">Choose a switchboard</option>
-                {boardCandidates.map((board) => {
-                  const zone = tree.zones.find((item) => item.id === board.zoneId);
-                  return <option key={board.id} value={board.id}>{board.assetName} · {board.assetType} · {zone?.zoneName || 'Unknown zone'}</option>;
-                })}
-              </Select>
-              <FieldHint>Showing at most 100 matching records. Refine the search for large installations.</FieldHint>
-            </div>
+          <div className="mt-2 max-w-2xl">
+            <FieldLabel htmlFor="new-form-board">Switchboard *</FieldLabel>
+            <SearchableSelect
+              id="new-form-board"
+              value={selectedBoardId}
+              options={boardOptions}
+              placeholder="Search name, type, physical zone, or ID"
+              emptyMessage="No switchboards match this search."
+              onChange={setSelectedBoardId}
+            />
+            <FieldHint>Search and choose in one field. Up to 100 matching switchboards are shown at once.</FieldHint>
           </div>
           {tree.electricalAssets.length === 0 ? (
             <div className="mt-3"><LinkButton href={`/installhub/installations/${installationId}/zones`} variant="secondary"><Icon name="plus" size={16} />Create a switchboard first</LinkButton></div>
@@ -447,7 +445,12 @@ export function InstallHubFormTypePickerPage() {
       ) : null}
       <div className="grid gap-4 lg:grid-cols-2">
         {definitions.map((definition) => (
-          <Card key={definition.type} className="flex h-full flex-col">
+          <Card
+            key={definition.type}
+            id={`new-form-${definition.type}`}
+            tabIndex={-1}
+            className="flex h-full scroll-mt-4 flex-col"
+          >
             <div className="flex-1">
               <div className="flex items-start justify-between gap-3">
                 <h2 className="text-lg font-extrabold text-[var(--text)]">

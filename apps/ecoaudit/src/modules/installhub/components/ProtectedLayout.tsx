@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Spinner } from '@/components/ui/Card';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
+import { WorkflowHashFocus } from '@/modules/installhub/components/WorkflowUi';
 
 export function InstallHubProtectedLayout({ children }: { children: ReactNode }) {
   const { isAuthenticated, isLoading } = useInstallHubAuth();
@@ -17,5 +18,5 @@ export function InstallHubProtectedLayout({ children }: { children: ReactNode })
   }, [isAuthenticated, isLoading, pathname, router]);
 
   if (isLoading || !isAuthenticated) return <Spinner />;
-  return <>{children}</>;
+  return <><WorkflowHashFocus />{children}</>;
 }

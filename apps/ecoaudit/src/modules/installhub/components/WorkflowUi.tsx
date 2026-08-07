@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import type { TreeWriteState } from '@/modules/installhub/hooks/useInstallationTree';
@@ -162,7 +163,10 @@ export function guardedTreeAnchorHref(
   ) return null;
   const current = new URL(currentHref);
   const next = new URL(intent.href, current);
-  if (next.origin !== current.origin || next.href === current.href) return null;
+  if (
+    next.origin !== current.origin
+    || (next.pathname === current.pathname && next.search === current.search)
+  ) return null;
   return next.href;
 }
 
@@ -171,6 +175,24 @@ export function deferTreeNavigationPrompt(
   showPrompt: () => void,
 ): void {
   schedule(showPrompt);
+}
+
+export async function confirmDiscardedTreeNavigation(callbacks: {
+  discard: () => void | Promise<void>;
+  beginBypass: () => void;
+  close: () => void;
+  navigate: () => void;
+  restoreBypass: () => void;
+}): Promise<void> {
+  callbacks.beginBypass();
+  try {
+    await callbacks.discard();
+    callbacks.close();
+    callbacks.navigate();
+  } catch (error) {
+    callbacks.restoreBypass();
+    throw error;
+  }
 }
 
 export function TreeDraftNavigationGuard({
@@ -182,6 +204,7 @@ export function TreeDraftNavigationGuard({
 }) {
   const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null);
   const [busy, setBusy] = useState(false);
+  const [discardError, setDiscardError] = useState('');
   const bypassRef = useRef(false);
   const activeRef = useRef(active);
   useLayoutEffect(() => {
@@ -199,6 +222,7 @@ export function TreeDraftNavigationGuard({
       if (!activeRef.current || bypassRef.current) return;
       const request = event as CustomEvent<{ navigate: () => void; label: string }>;
       event.preventDefault();
+      setDiscardError('');
       setPendingNavigation({
         label: request.detail.label,
         navigate: request.detail.navigate,
@@ -230,6 +254,7 @@ export function TreeDraftNavigationGuard({
       if (!guardedHref) return;
       event.preventDefault();
       event.stopPropagation();
+      setDiscardError('');
       setPendingNavigation({
         label: new URL(guardedHref).pathname,
         navigate: () => element.click(),
@@ -261,6 +286,7 @@ export function TreeDraftNavigationGuard({
             deferTreeNavigationPrompt(
               (showPrompt) => { window.setTimeout(showPrompt, 0); },
               () => {
+                setDiscardError('');
                 setPendingNavigation({
                   label: navigationEvent.destination?.url || 'the requested page',
                   navigate: resolve,
@@ -296,9 +322,16 @@ export function TreeDraftNavigationGuard({
         restoringMarker = false;
         return;
       }
+      setDiscardError('');
       setPendingNavigation({
         label: 'the previous page',
-        navigate: () => window.history.go(-2),
+        navigate: () => {
+          if (window.history.length <= 2) {
+            window.location.assign('/installhub/installations');
+          } else {
+            window.history.go(-2);
+          }
+        },
       });
       restoringMarker = true;
       window.history.forward();
@@ -313,12 +346,26 @@ export function TreeDraftNavigationGuard({
   }, [active]);
 
   async function discardAndLeave() {
-    if (!pendingNavigation) return;
+    const pending = pendingNavigation;
+    if (!pending) return;
     setBusy(true);
+    setDiscardError('');
     try {
-      bypassRef.current = true;
-      await onDiscard();
-      pendingNavigation.navigate();
+      await confirmDiscardedTreeNavigation({
+        discard: onDiscard,
+        beginBypass: () => {
+          bypassRef.current = true;
+        },
+        close: () => {
+          setPendingNavigation(null);
+        },
+        navigate: pending.navigate,
+        restoreBypass: () => {
+          bypassRef.current = false;
+        },
+      });
+    } catch {
+      setDiscardError('The recovery copy could not be discarded. Stay on this page and retry.');
     } finally {
       setBusy(false);
     }
@@ -326,6 +373,7 @@ export function TreeDraftNavigationGuard({
 
   function stay() {
     pendingNavigation?.stay?.();
+    setDiscardError('');
     setPendingNavigation(null);
   }
 
@@ -340,7 +388,9 @@ export function TreeDraftNavigationGuard({
       busy={busy}
       onConfirm={() => void discardAndLeave()}
       onCancel={stay}
-    />
+    >
+      {discardError ? <p role="alert" className="text-sm font-bold text-[var(--red)]">{discardError}</p> : null}
+    </ConfirmDialog>
   );
 }
 
@@ -410,6 +460,49 @@ export function focusWorkflowErrorTarget(
   target.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
   target.focus({ preventScroll: true });
   return true;
+}
+
+export function WorkflowHashFocus() {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    let observer: MutationObserver | null = null;
+    let timeout = 0;
+    const focusCurrentHash = () => {
+      const encodedTarget = window.location.hash.slice(1);
+      if (!encodedTarget) return true;
+      let targetId = encodedTarget;
+      try {
+        targetId = decodeURIComponent(encodedTarget);
+      } catch {
+        // Keep the browser-provided fragment when it is not valid URI encoding.
+      }
+      return focusWorkflowErrorTarget(targetId);
+    };
+    const waitForTarget = () => {
+      observer?.disconnect();
+      window.clearTimeout(timeout);
+      if (focusCurrentHash()) return;
+      observer = new MutationObserver(() => {
+        if (focusCurrentHash()) {
+          observer?.disconnect();
+          window.clearTimeout(timeout);
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+      timeout = window.setTimeout(() => observer?.disconnect(), 30_000);
+    };
+    const onHashChange = () => waitForTarget();
+    waitForTarget();
+    window.addEventListener('hashchange', onHashChange);
+    return () => {
+      observer?.disconnect();
+      window.clearTimeout(timeout);
+      window.removeEventListener('hashchange', onHashChange);
+    };
+  }, [pathname]);
+
+  return null;
 }
 
 export function ConfirmDialog({

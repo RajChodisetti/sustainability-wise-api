@@ -10,6 +10,7 @@ import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } 
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
+import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
 import {
   ChoiceGroup,
   ConfirmDialog,
@@ -23,8 +24,6 @@ import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
 import {
-  ASSET_METER_FILTER_HINT,
-  ASSET_METER_FILTER_LABEL,
   assetMeterDraftKey,
   measurementTargetDetails,
   parseAssetMeterDraftSnapshot,
@@ -135,7 +134,6 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const [draft, setDraft] = useState<SiteAsset | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [meterSearch, setMeterSearch] = useState('');
   const [meterLocationOverrideOpen, setMeterLocationOverrideOpen] = useState(false);
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -237,14 +235,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const eligibleMeters = meterDevices(tree).filter(
     (meter) => meter.lifecycleState !== 'INACTIVE' && (!draft.meterSwitchboardId || meter.installedOnBoardId === draft.meterSwitchboardId),
   ).sort((left, right) => left.id.localeCompare(right.id));
-  const normalizedMeterSearch = meterSearch.trim().toLocaleLowerCase('en-AU');
-  const matchingMeters = eligibleMeters.filter((meter) => (
-    !normalizedMeterSearch
-    || `${meterDeviceName(meter)} ${meter.deviceModel} ${meter.serialNumber} ${meter.id}`
-      .toLocaleLowerCase('en-AU')
-      .includes(normalizedMeterSearch)
-  ));
-  const availableMeters = pinSelectedResult(matchingMeters, eligibleMeters, draft.meterId, (item) => item.id);
+  const meterOptions = eligibleMeters.map((meter) => ({
+    value: meter.id,
+    label: `${meter.serialNumber || 'No device ID'} · ${humanDeviceName(meter)}`,
+    keywords: `${meterDeviceName(meter)} ${meter.deviceModel} ${meter.displayName.value} ${meter.id}`,
+  }));
   const selectedMeter = meterDevices(tree).find((meter) => meter.id === draft.meterId);
   const selectedSupplyBoard = draftSource.kind === 'BOARD'
     ? tree.electricalAssets.find((board) => board.id === draftSource.boardId)
@@ -867,7 +862,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               description: siteAssetMeteringState(draft).kind.replaceAll('_', ' '),
             }]),
             ...selectedChannels.map((channel) => ({
-              href: `/installhub/installations/${installationId}/zones/${selectedMeterBoard!.zoneId}/boards/${selectedMeterBoard!.id}/meters/${selectedMeter!.id}#meter-channel-${channel.ordinal}`,
+              href: `/installhub/installations/${installationId}/zones/${selectedMeterBoard!.zoneId}/boards/${selectedMeterBoard!.id}/meters/${selectedMeter!.id}#meter-channel-${selectedMeter!.channels.findIndex((candidate) => candidate.id === channel.id) + 1}`,
               icon: 'plug' as const,
               label: `Channel ${channel.ordinal}`,
               description: channel.description || channel.loadTypeCode || channel.purpose.replaceAll('_', ' ').toLowerCase(),
@@ -1098,30 +1093,21 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   </div>
                 )}
 
-                <FieldLabel htmlFor="asset-meter-search">{ASSET_METER_FILTER_LABEL}</FieldLabel>
-                <Input
-                  id="asset-meter-search"
-                  type="search"
-                  value={meterSearch}
-                  disabled={!draft.meterSwitchboardId}
-                  placeholder="Filter by name, model, serial, or stable ID"
-                  onChange={(event) => setMeterSearch(event.target.value)}
-                />
-                <FieldHint>{ASSET_METER_FILTER_HINT}</FieldHint>
                 <FieldLabel htmlFor="asset-meter">Exact metering device *</FieldLabel>
-                <Select
+                <SearchableSelect
                   id="asset-meter"
                   value={draft.meterId ?? ''}
+                  options={meterOptions}
                   disabled={!draft.meterSwitchboardId}
-                  aria-invalid={errors.some((item) => item.id === 'asset-meter')}
-                  onChange={(event) => chooseMeter(event.target.value)}
-                >
-                  <option value="">Choose a device</option>
-                  {availableMeters.map((meter) => <option key={meter.id} value={meter.id}>{meter.serialNumber || 'No device ID'} · {humanDeviceName(meter)}</option>)}
-                </Select>
-                <FieldError message={errors.find((item) => item.id === 'asset-meter')?.message} />
-                <FieldHint>Showing {availableMeters.length} of {eligibleMeters.length} eligible devices. Refine the search to reach any device; the current selection remains visible.</FieldHint>
-                {draft.meterSwitchboardId && availableMeters.length === 0 ? (
+                  invalid={errors.some((item) => item.id === 'asset-meter')}
+                  describedBy={errors.some((item) => item.id === 'asset-meter') ? 'asset-meter-error' : 'asset-meter-hint'}
+                  placeholder="Search name, model, serial, or stable ID"
+                  emptyMessage="No active metering devices match this search."
+                  onChange={chooseMeter}
+                />
+                <FieldError id="asset-meter-error" message={errors.find((item) => item.id === 'asset-meter')?.message} />
+                <FieldHint id="asset-meter-hint">Search and choose the exact device in one field. Up to 100 of {eligibleMeters.length} eligible devices are shown at once.</FieldHint>
+                {draft.meterSwitchboardId && eligibleMeters.length === 0 ? (
                   <FieldHint>No active metering devices are installed on this switchboard.</FieldHint>
                 ) : null}
                 {draft.meterSwitchboardId ? (
@@ -1240,7 +1226,14 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
           <Textarea id="asset-comments" value={draft.comments ?? ''} onChange={(event) => set('comments', event.target.value)} />
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save site asset'}</Button>
-            <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
+            <Button
+              variant="secondary"
+              onClick={() => requestTreeNavigation(
+                () => router.replace(`/installhub/installations/${installationId}/zones/${zoneId}`),
+                'the site asset list',
+              )}
+              disabled={busy}
+            >Cancel</Button>
           </div>
         </Card>
       </form>
@@ -1388,6 +1381,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         <Card id="asset-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Site asset evidence</h2>
             <EvidenceField
+              id="asset-location-photo"
               label="Location photo"
               items={latest.locationPhoto ? [{ id: 'location', uri: latest.locationPhoto }] : []}
               busy={uploading}
@@ -1395,6 +1389,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
               onRemove={latest.locationPhoto ? () => removePhoto('location') : undefined}
             />
             <EvidenceField
+              id="asset-extra-photos"
               label="Extra photos"
               items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
               busy={uploading}

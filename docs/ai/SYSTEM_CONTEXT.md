@@ -41,10 +41,12 @@ reports, cloud files and versions, access controls, user
 administration, and diagnostics. It does not emulate the iOS local database,
 offline upload queue, or import-preview cache.
 
-Field App Complete naming is server-pinned. New entities use the installation
-short code, persisted zone short code, one zone-wide retained sequence, and the
-initial editable custom name. Legacy names and all existing display-code claims
-remain stable across portal/mobile edits, sync, deletion, and import.
+Field App Complete naming is server-pinned. New rule-4 entities use the
+installation short code, persisted zone short code, one zone-wide retained
+sequence, type, and editable custom name. A generated rule-3/4 switchboard claim
+may refresh in place only after an explicit portal name/type edit; its zone and
+sequence stay fixed. Rule-1/2 claims, overrides, site-asset claims, and meter
+claims remain stable across portal/mobile edits, sync, deletion, and import.
 
 Completed forms and installation packs can be rendered locally or queued on the
 API. Server jobs use the same six current form families, conditional values,

@@ -51,6 +51,7 @@ export type ReadinessIssueGroup = {
   key: string;
   title: string;
   count: number;
+  issues: ReadinessIssue[];
   details: Array<{ message: string; count: number }>;
 };
 
@@ -69,6 +70,7 @@ export function groupReadinessIssues(issues: ReadinessIssue[]): ReadinessIssueGr
         key: code,
         title: humanIssueTitle(code),
         count: matching.length,
+        issues: matching,
         details: [...messages.entries()].map(([message, count]) => ({ message, count })),
       };
     })

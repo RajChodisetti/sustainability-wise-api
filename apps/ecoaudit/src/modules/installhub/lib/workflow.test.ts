@@ -14,6 +14,7 @@ import {
   startInstallationPdfJob,
 } from '@/modules/installhub/api/installhub';
 import {
+  confirmDiscardedTreeNavigation,
   deferTreeNavigationPrompt,
   focusWorkflowErrorTarget,
   guardedTreeAnchorHref,
@@ -1786,6 +1787,41 @@ test('controlled operational notes make the existing meter dirty before a breadc
     ),
     null,
   );
+  assert.equal(
+    guardedTreeAnchorHref(
+      true,
+      { href: 'https://portal.example/installhub/installations/installation-golden/zones/zone-a/boards/board-a/meters/meter-a#meter-channel-1' },
+      'https://portal.example/installhub/installations/installation-golden/zones/zone-a/boards/board-a/meters/meter-a#meter-channels',
+    ),
+    null,
+  );
+});
+
+test('discard confirmation bypasses before discard and stays bypassed after successful navigation', async () => {
+  const calls: string[] = [];
+  await confirmDiscardedTreeNavigation({
+    discard: async () => { calls.push('discard'); },
+    beginBypass: () => { calls.push('begin-bypass'); },
+    close: () => { calls.push('close'); },
+    navigate: () => { calls.push('navigate'); },
+    restoreBypass: () => { calls.push('restore-bypass'); },
+  });
+  assert.deepEqual(calls, ['begin-bypass', 'discard', 'close', 'navigate']);
+});
+
+test('discard confirmation restores the guard when discard fails', async () => {
+  const calls: string[] = [];
+  await assert.rejects(confirmDiscardedTreeNavigation({
+    discard: async () => {
+      calls.push('discard');
+      throw new Error('discard failed');
+    },
+    beginBypass: () => { calls.push('begin-bypass'); },
+    close: () => { calls.push('close'); },
+    navigate: () => { calls.push('navigate'); },
+    restoreBypass: () => { calls.push('restore-bypass'); },
+  }), /discard failed/);
+  assert.deepEqual(calls, ['begin-bypass', 'discard', 'restore-bypass']);
 });
 
 test('Navigation API interception defers the React prompt update beyond the interception phase', () => {

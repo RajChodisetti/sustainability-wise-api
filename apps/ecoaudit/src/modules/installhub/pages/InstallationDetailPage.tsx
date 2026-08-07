@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
@@ -31,7 +32,12 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
-import { meteringInventorySummary } from '@/modules/installhub/lib/electricalPresentation';
+import {
+  meteringInventorySummary,
+  readinessCorrectionAction,
+  readinessEntityDetails,
+  readinessIssueKey,
+} from '@/modules/installhub/lib/electricalPresentation';
 import { groupReadinessIssues } from '@/modules/installhub/lib/readinessPresentation';
 import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
@@ -39,7 +45,7 @@ import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 export function InstallHubInstallationDetailPage() {
   const { installationId } = useParams<{ installationId: string }>();
   const query = useInstallationTree(installationId);
-  const readinessQuery = useInstallationReadiness(installationId);
+  const readinessQuery = useInstallationReadiness(installationId, { limit: 250 });
   const writer = useTreeWriter(installationId);
   const router = useRouter();
   const toast = useToast();
@@ -68,6 +74,9 @@ export function InstallHubInstallationDetailPage() {
   const readiness = readinessQuery.data;
   const readinessAdvisory = readiness?.authority === 'LOCAL_ADVISORY';
   const readinessGroups = groupReadinessIssues(readiness?.issues || []);
+  const readinessIssueCount = readiness?.issues.length ?? 0;
+  const readinessIssueTotal = readiness?.issuePage?.total ?? readinessIssueCount;
+  const readinessIssuesTruncated = readinessIssueTotal > readinessIssueCount;
   async function completeCurrentInstallation() {
     if (!readiness?.readyToComplete) return;
     setLifecycleBusy(true);
@@ -211,7 +220,7 @@ export function InstallHubInstallationDetailPage() {
                 ? 'Local advisory only'
                 : readiness?.readyToComplete
                   ? 'Ready to complete'
-                  : `${readiness?.issues.length || 0} issue${readiness?.issues.length === 1 ? '' : 's'}`}
+                  : `${readinessIssueTotal} issue${readinessIssueTotal === 1 ? '' : 's'}`}
           </span>
         </div>
         {readinessQuery.error ? <p className="mt-3 text-sm text-[var(--red)]">{installHubConnectionErrorMessage(readinessQuery.error)}</p> : null}
@@ -227,6 +236,7 @@ export function InstallHubInstallationDetailPage() {
           <details className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
             <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">
               Review {readinessGroups.length} issue categor{readinessGroups.length === 1 ? 'y' : 'ies'}
+              {readinessIssuesTruncated ? ` · first ${readinessIssueCount} of ${readinessIssueTotal} issues shown` : ''}
             </summary>
             <div className="mt-3 space-y-2">
               {readinessGroups.map((group) => (
@@ -235,14 +245,38 @@ export function InstallHubInstallationDetailPage() {
                     {group.title} · {group.count}
                   </summary>
                   <ul className="mt-2 space-y-2 text-sm text-[var(--text-sub)]">
-                    {group.details.map((detail) => (
-                      <li key={detail.message}>{detail.message}{detail.count > 1 ? ` (${detail.count})` : ''}</li>
-                    ))}
+                    {group.issues.map((issue, issueIndex) => {
+                      const entity = readinessEntityDetails(tree, issue);
+                      const correction = readinessCorrectionAction(tree, issue);
+                      return (
+                        <li key={`${readinessIssueKey(issue)}-${issueIndex}`}>
+                          <Link
+                            href={correction.href}
+                            className="group block rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-3 py-2.5 transition-colors hover:border-[var(--primary)] focus:outline-none focus:ring-2 focus:ring-[var(--primary)]/30"
+                          >
+                            <span className="block text-xs font-extrabold text-[var(--text)]">
+                              {entity.code ? `${entity.code} — ` : ''}{entity.name}
+                            </span>
+                            <span className="mt-1 block leading-5">{issue.message}</span>
+                            <span className="mt-1 block text-xs font-bold text-[var(--primary)]">
+                              {correction.label}{issue.field ? ` · ${issue.field}` : ''} <Icon name="chevron-right" size={14} className="inline" />
+                            </span>
+                          </Link>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </details>
               ))}
             </div>
           </details>
+        ) : null}
+        {readinessIssuesTruncated ? (
+          <div className="mt-3">
+            <InlineNotice>
+              This expanded view shows the first {readinessIssueCount} of {readinessIssueTotal} issues. <Link className="font-semibold underline" href={`/installhub/installations/${installationId}/data`}>Open reconciliation</Link> to search and page through every issue.
+            </InlineNotice>
+          </div>
         ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
           <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
@@ -254,8 +288,8 @@ export function InstallHubInstallationDetailPage() {
         open={completeOpen}
         title="Complete this installation?"
         description="Completion is server-authoritative and pins an immutable record version from the exact current tree revision."
-        consequences={readiness?.issues.length
-          ? readiness.issues.slice(0, 8).map((issue) => issue.message)
+        consequences={readinessIssueCount
+          ? (readiness?.issues || []).slice(0, 8).map((issue) => issue.message)
           : ['Authoritative reports and canonical mapping exports become eligible.', 'Further operational changes require an explicit reopen reason.']}
         confirmLabel="Complete and pin version"
         danger={false}
@@ -263,7 +297,7 @@ export function InstallHubInstallationDetailPage() {
         blockedMessage={readinessAdvisory
           ? 'Server-authoritative readiness is unavailable. Reconnect and recheck before completion.'
           : !readiness?.readyToComplete
-          ? `Resolve all ${readiness?.issues.length || 0} readiness issue${readiness?.issues.length === 1 ? '' : 's'} before completion.`
+          ? `Resolve all ${readinessIssueTotal} readiness issue${readinessIssueTotal === 1 ? '' : 's'} before completion.`
           : undefined}
         onConfirm={() => void completeCurrentInstallation()}
         onCancel={() => setCompleteOpen(false)}

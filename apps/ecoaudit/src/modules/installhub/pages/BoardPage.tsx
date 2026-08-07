@@ -10,6 +10,7 @@ import { FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/co
 import { Icon } from '@/components/ui/Icon';
 import { EvidenceField } from '@/modules/installhub/components/EvidenceField';
 import { Breadcrumbs, InlineNotice, RecordNavigation } from '@/modules/installhub/components/InstallHubUi';
+import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
 import {
   ChoiceGroup,
   ConfirmDialog,
@@ -22,10 +23,10 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
-import { pinSelectedResult } from '@/modules/installhub/lib/electricalPresentation';
 import type { ElectricalAsset, ElectricalSourceKind, InstallationTree } from '@/modules/installhub/types/domain';
 import {
   defaultCustomNameForType,
+  DISPLAY_CODE_RULE_VERSION,
   ENTITY_NAME_MAX_LENGTH,
   nameAfterTypeChange,
   provisionalDisplayCodeV3,
@@ -61,6 +62,7 @@ function boardDisplayMetadata(
   board: ElectricalAsset,
   customName = board.assetName,
   typeCode = boardTypeCode(board),
+  refreshConfirmedGenerated = false,
 ) {
   return provisionalDisplayCodeV3(tree, {
     zoneId: board.zoneId,
@@ -70,6 +72,7 @@ function boardDisplayMetadata(
     entityTypeCode: typeCode,
     excludeId: board.id,
     current: board.displayCodeMeta,
+    refreshConfirmedGenerated,
   });
 }
 
@@ -86,7 +89,6 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const [draft, setDraft] = useState<ElectricalAsset | null>(null);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [parentSearch, setParentSearch] = useState('');
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -115,19 +117,15 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   const saved = mode === 'edit';
   const currentDraft = draft;
   const allAvailableParents = validBoardParents(tree, draft.id);
-  const normalizedSearch = parentSearch.trim().toLowerCase();
-  const matchingParents = allAvailableParents.filter((item) => {
-    if (!normalizedSearch) return true;
-    const itemZone = tree.zones.find((candidate) => candidate.id === item.zoneId);
-    return `${item.assetName} ${boardTypeLabel(item)} ${itemZone?.zoneName || ''}`
-      .toLowerCase()
-      .includes(normalizedSearch);
+  const parentOptions = allAvailableParents.map((board) => {
+    const parentZone = tree.zones.find((item) => item.id === board.zoneId);
+    const label = `${board.assetName} · ${boardTypeLabel(board)} · ${parentZone?.zoneName || 'Unknown zone'}`;
+    return {
+      value: board.id,
+      label,
+      keywords: `${board.displayCodeMeta?.value || board.displayCode} ${board.id}`,
+    };
   });
-  const sourceForParentSelection = boardElectricalSource(draft);
-  const selectedParentId = sourceForParentSelection.kind === 'BOARD'
-    ? sourceForParentSelection.boardId
-    : null;
-  const availableParents = pinSelectedResult(matchingParents, allAvailableParents, selectedParentId, (item) => item.id);
   const draftSource = boardElectricalSource(draft);
   const sourceKind = draftSource.kind;
   const parentBoard = draftSource.kind === 'BOARD'
@@ -152,7 +150,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   function setBoardName(value: string) {
     setDraft((current) => {
       if (!current) return current;
-      const display = boardDisplayMetadata(tree, current, value);
+      const display = boardDisplayMetadata(tree, current, value, boardTypeCode(current), true);
       return {
         ...current,
         assetName: value,
@@ -172,7 +170,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         defaultBoardName('OTHER', value),
       );
       const next = { ...current, customTypeName: value, assetName: nextName };
-      const display = boardDisplayMetadata(tree, next, nextName, 'OTHER');
+      const display = boardDisplayMetadata(tree, next, nextName, 'OTHER', true);
       return { ...next, displayCode: display.value, displayCodeMeta: display };
     });
   }
@@ -373,7 +371,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         assetType: legacyBoardType(value),
         customTypeName: value === 'OTHER' ? current.customTypeName : null,
       };
-      const display = boardDisplayMetadata(tree, next, nextName, value);
+      const display = boardDisplayMetadata(tree, next, nextName, value, true);
       return { ...next, displayCode: display.value, displayCodeMeta: display };
     });
   }
@@ -514,9 +512,14 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                 value={draft.displayCodeMeta?.value || draft.displayCode}
               />
               <FieldHint>
-                {draft.displayCodeMeta?.provisional !== true
-                  ? 'This confirmed identifier is fixed.'
-                  : 'Built from installation code, zone code, shared sequence, and switchboard name. The server confirms it on save.'}
+                {draft.displayCodeMeta?.provisional === true
+                  ? 'Built from installation code, zone code, shared sequence, switchboard type, and name. The server confirms it on save.'
+                  : draft.displayCodeMeta
+                    && !draft.displayCodeMeta.isOverridden
+                    && draft.displayCodeMeta.ruleVersion >= 3
+                    && draft.displayCodeMeta.ruleVersion <= DISPLAY_CODE_RULE_VERSION
+                    ? 'This generated identifier keeps its sequence and updates when you change the switchboard name or type.'
+                    : 'This legacy or overridden identifier is fixed.'}
               </FieldHint>
             </div>
             <div>
@@ -568,40 +571,24 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             ) : null}
             {sourceKind === 'BOARD' ? (
               <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
-                <FieldLabel htmlFor="board-parent-search" className="mt-0">Find a parent switchboard</FieldLabel>
-                <Input
-                  id="board-parent-search"
-                  type="search"
-                  value={parentSearch}
-                  placeholder="Search name, type, or zone"
-                  onChange={(event) => setParentSearch(event.target.value)}
-                />
-                <FieldLabel htmlFor="board-parent">Confirmed parent *</FieldLabel>
-                <Select
+                <FieldLabel htmlFor="board-parent" className="mt-0">Confirmed parent *</FieldLabel>
+                <SearchableSelect
                   id="board-parent"
                   value={draftSource.kind === 'BOARD' ? draftSource.boardId : ''}
-                  aria-invalid={errors.some((item) => item.id === 'board-parent')}
-                  aria-describedby={errors.some((item) => item.id === 'board-parent') ? 'board-parent-error' : undefined}
-                  onChange={(event) => setDraft((current) => {
+                  options={parentOptions}
+                  placeholder="Search name, type, zone, or ID"
+                  emptyMessage="No eligible switchboards match this search."
+                  invalid={errors.some((item) => item.id === 'board-parent')}
+                  describedBy={errors.some((item) => item.id === 'board-parent') ? 'board-parent-error' : 'board-parent-hint'}
+                  onChange={(value) => setDraft((current) => {
                     if (!current) return current;
                     const next = structuredClone(current);
-                    applyBoardElectricalSource(next, { kind: 'BOARD', boardId: event.target.value });
+                    applyBoardElectricalSource(next, { kind: 'BOARD', boardId: value });
                     return next;
                   })}
-                >
-                  <option value="">Choose a switchboard</option>
-                  {availableParents.map((board) => {
-                    const parentZone = tree.zones.find((item) => item.id === board.zoneId);
-                    return (
-                      <option key={board.id} value={board.id}>
-                        {board.assetName} · {boardTypeLabel(board)} · {parentZone?.zoneName || 'Unknown zone'}
-                      </option>
-                    );
-                  })}
-                </Select>
+                />
                 <FieldError id="board-parent-error" message={errors.find((item) => item.id === 'board-parent')?.message} />
-                <FieldHint>Showing at most 100 eligible matches. Refine the search for large installations.</FieldHint>
-                {availableParents.length === 0 ? <FieldHint>No eligible switchboards match this search.</FieldHint> : null}
+                <FieldHint id="board-parent-hint">Search and choose in one field. Up to 100 eligible matches are shown at once.</FieldHint>
               </div>
             ) : null}
             {sourceKind === 'TBC' ? (
@@ -615,7 +602,14 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
           <Textarea id="board-comments" value={draft.comments ?? ''} onChange={(event) => set('comments', event.target.value)} />
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">
             <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save switchboard'}</Button>
-            <Button variant="secondary" onClick={() => requestTreeNavigation(() => router.back(), 'the previous page')} disabled={busy}>Cancel</Button>
+            <Button
+              variant="secondary"
+              onClick={() => requestTreeNavigation(
+                () => router.replace(`/installhub/installations/${installationId}/zones/${zoneId}`),
+                'the switchboard list',
+              )}
+              disabled={busy}
+            >Cancel</Button>
           </div>
         </Card>
       </form>
@@ -707,6 +701,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
           <Card id="board-evidence" tabIndex={-1} className="scroll-mt-4">
             <h2 className="font-extrabold text-[var(--text)]">Switchboard evidence</h2>
             <EvidenceField
+              id="board-photo"
               label="Main switchboard photo"
               items={latest.photo ? [{ id: 'main', uri: latest.photo }] : []}
               busy={uploading}
@@ -714,6 +709,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               onRemove={latest.photo ? () => removePhoto('main') : undefined}
             />
             <EvidenceField
+              id="board-extra-photos"
               label="Extra photos"
               items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
               busy={uploading}

@@ -978,7 +978,23 @@ async function replaceCanonicalInstallationChildrenUnchecked(
   }
 
   const priorClaims = await existingDisplayCodeClaims(installationId, executor);
-  const newClaims = allocateDisplayCodes({ tree, existingClaims: priorClaims });
+  const updatedClaims: DisplayCodeClaim[] = [];
+  const newClaims = allocateDisplayCodes({ tree, existingClaims: priorClaims, updatedClaims });
+  for (const claim of updatedClaims) {
+    await executor.update(ihDisplayCodeClaims).set({
+      zoneId: claim.zoneId,
+      typeCode: claim.typeCode,
+      sequence: claim.sequence,
+      displayCode: claim.displayCode,
+      normalizedDisplayCode: claim.normalizedDisplayCode,
+      generated: claim.generated,
+      ruleVersion: claim.ruleVersion,
+    }).where(and(
+      eq(ihDisplayCodeClaims.installationId, installationId),
+      eq(ihDisplayCodeClaims.entityType, claim.entityType),
+      eq(ihDisplayCodeClaims.entityId, claim.entityId),
+    ));
+  }
   if (newClaims.length) {
     await executor.insert(ihDisplayCodeClaims).values(newClaims.map((claim) => ({
       id: randomUUID(),
