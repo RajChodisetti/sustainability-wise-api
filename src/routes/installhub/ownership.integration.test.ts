@@ -224,9 +224,9 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.ok(before);
     assert.equal(before.zones[0].zoneCode, 'SOURCE-ZONE');
     assert.equal(before.meterDevices[0].customName, 'A3RM Meter');
-    assert.ok(before.electricalAssets.every((board) => board.displayCode.ruleVersion === 2));
-    assert.ok(before.siteAssets.every((asset) => asset.displayCode.ruleVersion === 2));
-    assert.ok(before.meterDevices.every((meter) => meter.displayName.ruleVersion === 2));
+    assert.ok(before.electricalAssets.every((board) => board.displayCode.ruleVersion === 3));
+    assert.ok(before.siteAssets.every((asset) => asset.displayCode.ruleVersion === 3));
+    assert.ok(before.meterDevices.every((meter) => meter.displayName.ruleVersion === 3));
     const stolenTree = retargetTree(before, targetInstallationId, `${prefix}-target`);
     stolenTree.zones[0].zoneName = 'Stolen and mutated';
     await assert.rejects(
@@ -255,7 +255,7 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.ok(displayClaim);
     assert.equal(displayClaim.zoneId, sourceTree.zones[0].id);
     assert.ok((displayClaim.sequence ?? 0) >= 1);
-    assert.equal(displayClaim.ruleVersion, 2);
+    assert.equal(displayClaim.ruleVersion, 3);
     const guardedRows = [
       ['ih_grid_supplies', `${prefix}-grid`],
       ['ih_zones', `${prefix}-zone`],

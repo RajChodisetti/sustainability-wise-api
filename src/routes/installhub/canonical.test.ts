@@ -750,19 +750,20 @@ test('strict v2 form lineage and historical meter state are structurally enforce
   );
 });
 
-test('display allocation v2 is deterministic, zone-scoped across entity kinds, and never reuses claims', () => {
+test('display allocation v3 is deterministic, zone-scoped across entity kinds, and never reuses claims', () => {
   const initial = baseTree();
   initial.electricalAssets[0].displayCode = display('');
   initial.siteAssets[0].displayCode = display('');
   const meter = a3Meter();
+  meter.customName = 'Main incomer';
   meter.displayName = display('');
   initial.meterDevices = [meter];
   const claims = allocateDisplayCodes({ tree: initial, existingClaims: [] });
   assert.equal(initial.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
-  assert.equal(initial.meterDevices[0].displayName.value, 'ACME-PLANT-ROOM-02-A3RM-METER');
-  assert.equal(initial.siteAssets[0].displayCode.value, 'ACME-PLANT-ROOM-03-AIR-CONDITIONER');
+  assert.equal(initial.meterDevices[0].displayName.value, 'ACME-PLANT-ROOM-02-A3RM-MAIN-INCOMER');
+  assert.equal(initial.siteAssets[0].displayCode.value, 'ACME-PLANT-ROOM-03-HVAC-AIR-CONDITIONER');
   assert.deepEqual(claims.map((claim) => claim.sequence), [1, 2, 3]);
-  assert.ok(claims.every((claim) => claim.zoneId === 'zone-1' && claim.ruleVersion === 2));
+  assert.ok(claims.every((claim) => claim.zoneId === 'zone-1' && claim.ruleVersion === 3));
 
   const replacement = baseTree();
   replacement.electricalAssets = [{
@@ -830,6 +831,30 @@ test('display allocation v2 is deterministic, zone-scoped across entity kinds, a
   assert.equal(defensive.electricalAssets[0].displayCode.value, 'ACME-MSB-001');
   assert.equal(defensive.electricalAssets[0].displayCode.ruleVersion, 1);
 
+  const priorRuleTwo = baseTree();
+  priorRuleTwo.siteAssets[0].id = 'legacy-rule-two-asset';
+  priorRuleTwo.siteAssets[0].assetName = 'Renamed after claim';
+  priorRuleTwo.siteAssets[0].displayCode = display('FORGED-PROVISIONAL');
+  allocateDisplayCodes({
+    tree: priorRuleTwo,
+    existingClaims: [{
+      entityType: 'site_asset',
+      entityId: 'legacy-rule-two-asset',
+      zoneId: 'zone-1',
+      typeCode: 'HVAC',
+      sequence: 7,
+      displayCode: 'ACME-PLANT-ROOM-07-ORIGINAL-NAME',
+      normalizedDisplayCode: 'ACME-PLANT-ROOM-07-ORIGINAL-NAME',
+      generated: true,
+      ruleVersion: 2,
+    }],
+  });
+  assert.equal(
+    priorRuleTwo.siteAssets[0].displayCode.value,
+    'ACME-PLANT-ROOM-07-ORIGINAL-NAME',
+  );
+  assert.equal(priorRuleTwo.siteAssets[0].displayCode.ruleVersion, 2);
+
   const frozen = structuredClone(initial);
   frozen.installation.siteCode = 'RENAMED';
   frozen.zones[0].zoneCode = 'RENAMED-ZONE';
@@ -837,7 +862,7 @@ test('display allocation v2 is deterministic, zone-scoped across entity kinds, a
   frozen.electricalAssets[0].displayCode.ruleVersion = 99;
   const frozenNewClaims = allocateDisplayCodes({ tree: frozen, existingClaims: claims });
   assert.equal(frozen.electricalAssets[0].displayCode.value, 'ACME-PLANT-ROOM-01-MAIN-BOARD');
-  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 2);
+  assert.equal(frozen.electricalAssets[0].displayCode.ruleVersion, 3);
   assert.equal(frozenNewClaims.length, 0);
 
   frozen.electricalAssets[0].displayCode = display('CUSTOM-MAIN', true);
@@ -856,7 +881,7 @@ test('display allocation v2 is deterministic, zone-scoped across entity kinds, a
   };
   const newRuleClaims = allocateDisplayCodes({ tree: newRuleEntity, existingClaims: [] });
   assert.equal(newRuleClaims[0].entityId, 'board-new-rule');
-  assert.equal(newRuleClaims[0].ruleVersion, 2);
+  assert.equal(newRuleClaims[0].ruleVersion, 3);
   assert.equal(
     newRuleEntity.electricalAssets[0].displayCode.value,
     'ACME-PLANT-ROOM-01-MAIN-BOARD',
@@ -1874,7 +1899,7 @@ test('historical snapshot pins rendered labels, versions, readiness, and artifac
   tree.installation.timezone = 'Invalid/Timezone';
 
   assert.equal(snapshot.controlledLabelCatalog.boards.MSSB, 'Main Sub-Switchboard');
-  assert.equal(snapshot.displayCodeRuleVersion, 2);
+  assert.equal(snapshot.displayCodeRuleVersion, 3);
   assert.equal(snapshot.virtualMeterFormulaVersion, 1);
   assert.equal(snapshot.viewArtifacts.mapping.installation.recordVersionNumber, 9);
   assert.equal(
@@ -1959,5 +1984,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.4');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.5');
 });

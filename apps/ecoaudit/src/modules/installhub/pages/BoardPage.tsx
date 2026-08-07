@@ -28,7 +28,7 @@ import {
   defaultCustomNameForType,
   ENTITY_NAME_MAX_LENGTH,
   nameAfterTypeChange,
-  provisionalDisplayCodeV2,
+  provisionalDisplayCodeV3,
 } from '@/modules/installhub/lib/naming';
 import {
   BOARD_TYPE_OPTIONS,
@@ -62,10 +62,12 @@ function boardDisplayMetadata(
   customName = board.assetName,
   typeCode = boardTypeCode(board),
 ) {
-  return provisionalDisplayCodeV2(tree, {
+  return provisionalDisplayCodeV3(tree, {
     zoneId: board.zoneId,
     customName,
     fallbackType: defaultBoardName(typeCode, board.customTypeName),
+    entityKind: 'board',
+    entityTypeCode: typeCode,
     excludeId: board.id,
     current: board.displayCodeMeta,
   });

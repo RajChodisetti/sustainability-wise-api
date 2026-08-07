@@ -7,7 +7,10 @@ import type {
 export const ZONE_CODE_MAX_LENGTH = 16;
 export const ENTITY_NAME_MAX_LENGTH = 64;
 export const DISPLAY_CODE_MAX_LENGTH = 64;
+export const DISPLAY_CODE_RULE_VERSION = 3;
 export const ZONE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+
+export type DisplayCodeEntityKind = 'board' | 'site_asset' | 'meter';
 
 function identifierSegment(value: string, maxLength: number): string {
   return value
@@ -195,6 +198,8 @@ function generatedWithSequence(
     zoneId: string;
     customName: string;
     fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
   },
   sequence: number,
 ): string {
@@ -202,9 +207,22 @@ function generatedWithSequence(
   const prefix = `${sitePrefix(tree)}-${zoneCode}`;
   const ordinal = String(sequence).padStart(2, '0');
   const fixedPrefix = `${prefix}-${ordinal}-`;
-  const fallback = normalizedCustomName(input.fallbackType, 'ASSET');
   const available = Math.max(1, DISPLAY_CODE_MAX_LENGTH - fixedPrefix.length);
-  const suffix = normalizedCustomName(input.customName, fallback)
+  const fallback = normalizedCustomName(input.fallbackType, 'ASSET');
+  const customName = normalizedCustomName(input.customName, fallback);
+  const typeCode = normalizedCustomName(input.entityTypeCode || input.fallbackType, fallback);
+  const customSegments = customName.split('-');
+  const typeSegments = typeCode.split('-');
+  const customNameContainsType = typeSegments.length <= customSegments.length
+    && customSegments.some((_, start) => typeSegments.every(
+      (segment, offset) => customSegments[start + offset] === segment,
+    ));
+  const identityName = input.entityKind === 'site_asset' || input.entityKind === 'meter'
+    ? customNameContainsType
+      ? customName
+      : `${typeCode}-${customName}`
+    : customName;
+  const suffix = identityName
     .slice(0, available)
     .replace(/-+$/g, '')
     || fallback.slice(0, available);
@@ -213,12 +231,14 @@ function generatedWithSequence(
     .replace(/-+$/g, '');
 }
 
-export function generatedDisplayCodeV2(
+export function generatedDisplayCodeV3(
   tree: InstallationTree,
   input: {
     zoneId: string;
     customName: string;
     fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
     excludeId?: string;
   },
 ): string {
@@ -229,12 +249,14 @@ export function generatedDisplayCodeV2(
   );
 }
 
-export function provisionalDisplayCodeV2(
+export function provisionalDisplayCodeV3(
   tree: InstallationTree,
   input: {
     zoneId: string;
     customName: string;
     fallbackType: string;
+    entityKind?: DisplayCodeEntityKind;
+    entityTypeCode?: string;
     excludeId?: string;
     current?: DisplayCodeMetadata;
     previousZoneCode?: string;
@@ -243,7 +265,7 @@ export function provisionalDisplayCodeV2(
   if (input.current && (
     input.current.isOverridden
     || input.current.provisional !== true
-    || input.current.ruleVersion < 2
+    || input.current.ruleVersion > DISPLAY_CODE_RULE_VERSION
   )) {
     return input.current;
   }
@@ -267,22 +289,31 @@ export function provisionalDisplayCodeV2(
     value: generatedValue,
     generatedValue,
     isOverridden: false,
-    ruleVersion: 2,
+    ruleVersion: DISPLAY_CODE_RULE_VERSION,
     provisional: true,
   };
 }
 
-/** Re-project only unconfirmed v2 identities after a zone-code edit. */
+/**
+ * Compatibility aliases for callers introduced with naming rule 2. New and
+ * edited code should use the V3 exports and provide entityKind/entityTypeCode.
+ */
+export const generatedDisplayCodeV2 = generatedDisplayCodeV3;
+export const provisionalDisplayCodeV2 = provisionalDisplayCodeV3;
+
+/** Re-project only unconfirmed identities after a zone-code edit. */
 export function refreshProvisionalCodesForZone(
   tree: InstallationTree,
   zoneId: string,
   previousZoneCode?: string,
 ): void {
   for (const board of tree.electricalAssets.filter((item) => item.zoneId === zoneId)) {
-    const display = provisionalDisplayCodeV2(tree, {
+    const display = provisionalDisplayCodeV3(tree, {
       zoneId,
       customName: board.assetName,
       fallbackType: board.typeCode || board.assetType,
+      entityKind: 'board',
+      entityTypeCode: board.typeCode || board.assetType,
       excludeId: board.id,
       current: board.displayCodeMeta,
       previousZoneCode,
@@ -291,10 +322,12 @@ export function refreshProvisionalCodesForZone(
     board.displayCode = display.value;
   }
   for (const asset of tree.siteAssets.filter((item) => item.zoneId === zoneId)) {
-    const display = provisionalDisplayCodeV2(tree, {
+    const display = provisionalDisplayCodeV3(tree, {
       zoneId,
       customName: asset.assetName,
       fallbackType: asset.typeCode || asset.assetType,
+      entityKind: 'site_asset',
+      entityTypeCode: asset.typeCode || asset.assetType,
       excludeId: asset.id,
       current: asset.displayCodeMeta,
       previousZoneCode,
@@ -313,10 +346,12 @@ export function refreshProvisionalCodesForZone(
     const fallback = defaultMeterCustomName(meter);
     const customName = meter.customName?.trim() || fallback;
     meter.customName = customName;
-    meter.displayName = provisionalDisplayCodeV2(tree, {
+    meter.displayName = provisionalDisplayCodeV3(tree, {
       zoneId,
       customName,
       fallbackType: fallback,
+      entityKind: 'meter',
+      entityTypeCode: meter.deviceModel,
       excludeId: meter.id,
       current: meter.displayName,
       previousZoneCode,

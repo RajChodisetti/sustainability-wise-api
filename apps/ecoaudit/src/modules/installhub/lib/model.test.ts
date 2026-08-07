@@ -551,6 +551,10 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   form.answers['device.type'] = 'A3RM';
   form.answers['device.id'] = 'A3RM-001';
   form.answers['device.number'] = '7';
+  form.answers['auditor.switchboard_name'] = 'Main distribution board';
+  form.answers['auditor.switchboard_location'] = 'Electrical room';
+  form.answers['commissioning.signal_strength'] = 'High';
+  form.answers['commissioning.antenna_type'] = 'Internal';
   form.answers['channel.1.load'] = 'Mains Supply';
   form.answers['channel.1.purpose'] = 'Main board supply';
   form.answers['channel.1.description'] = 'Incoming mains';
@@ -572,6 +576,13 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   assert.equal(board.meters[0].customName, 'A3RM Meter');
   assert.equal(board.meters[0].deviceName, 'A3RM Meter');
   assert.equal(board.meters[0].deviceNameOverridden, false);
+  assert.deepEqual(board.meters[0].wwSwitchboard, {
+    name: 'Main distribution board',
+    location: 'Electrical room',
+    deviceSerial: 'A3RM-001',
+    signalStrength: 'High',
+    antennaType: 'Internal',
+  });
   assert.equal(board.meters[0].wwChannels?.length, 3);
   assert.equal(board.meters[0].wwChannels?.[0].description, 'Incoming mains');
   assert.equal(board.meters[0].wwChannels?.[0].purpose, 'MAIN_SUPPLY');

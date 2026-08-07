@@ -199,7 +199,7 @@ export function InstallHubCanonicalDataPage() {
   const [assetSearch, setAssetSearch] = useState('');
   const [electricalPage, setElectricalPage] = useState(0);
   const [assetPage, setAssetPage] = useState(0);
-  const [electricalOpen, setElectricalOpen] = useState(false);
+  const [electricalOpen, setElectricalOpen] = useState(true);
   const [electricalView, setElectricalView] = useState<'HIERARCHY' | 'TABLE'>('HIERARCHY');
   const [collapsedElectricalNodeIds, setCollapsedElectricalNodeIds] = useState<Set<string>>(new Set());
   const [electricalAnnouncement, setElectricalAnnouncement] = useState('');

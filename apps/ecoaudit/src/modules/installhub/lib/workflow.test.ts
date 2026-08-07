@@ -730,6 +730,174 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
   }), /spare, unavailable, or belongs/);
 });
 
+test('site asset metering can claim explicit TBC channels without treating them as occupied', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  tree.electricalAssets[1].meterPresent = true;
+  syncMeterDevice(tree, 'board-b', meter);
+  tree.measurementAssignments = [{
+    id: 'assignment-unresolved-group',
+    installationId: tree.installation.id,
+    meterId: meter.id,
+    channelIds: ['meter-a:4', 'meter-a:5', 'meter-a:6'],
+    phaseMode: 'THREE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+
+  assert.doesNotThrow(() => setAssetMetering(tree, tree.siteAssets[0], {
+    kind: 'METERED',
+    meterId: meter.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    direction: 'CONSUMPTION',
+  }));
+
+  const unresolvedRemainder = tree.measurementAssignments?.find(
+    (assignment) => assignment.id === 'assignment-unresolved-group',
+  );
+  assert.deepEqual(unresolvedRemainder, {
+    id: 'assignment-unresolved-group',
+    installationId: tree.installation.id,
+    meterId: meter.id,
+    channelIds: ['meter-a:5', 'meter-a:6'],
+    phaseMode: 'OTHER',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  });
+  assert.equal(
+    tree.measurementAssignments?.filter((assignment) => assignment.channelIds.includes('meter-a:4')).length,
+    1,
+  );
+  assert.equal(
+    tree.measurementAssignments?.find((assignment) => assignment.channelIds.includes('meter-a:4'))?.target.kind,
+    'SITE_ASSET',
+  );
+});
+
+test('site asset channel takeover requires exact approval and leaves the displaced full group explicitly unresolved', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  tree.electricalAssets[1].meterPresent = true;
+  syncMeterDevice(tree, 'board-b', meter);
+  const displaced = tree.siteAssets[0];
+  const replacement = createSiteAsset(tree.installation.id, 'zone-b');
+  replacement.id = 'asset-b';
+  replacement.assetName = 'Office lights';
+  applyAssetElectricalSource(replacement, { kind: 'BOARD', boardId: 'board-b' });
+  replacement.meteringState = { kind: 'TBC' };
+  tree.siteAssets.push(replacement);
+  setAssetMetering(tree, displaced, {
+    kind: 'METERED',
+    meterId: meter.id,
+    channelIds: ['meter-a:4', 'meter-a:5', 'meter-a:6'],
+    phaseMode: 'THREE_PHASE',
+    direction: 'CONSUMPTION',
+  });
+  const occupiedAssignment = tree.measurementAssignments?.find(
+    (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === displaced.id,
+  );
+  assert.ok(occupiedAssignment);
+  const before = structuredClone({
+    assignments: tree.measurementAssignments,
+    displaced,
+    replacement,
+  });
+  const requested = {
+    kind: 'METERED' as const,
+    meterId: meter.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE' as const,
+    direction: 'CONSUMPTION' as const,
+  };
+
+  assert.throws(
+    () => setAssetMetering(tree, replacement, requested),
+    /Approve the exact site-asset assignment takeover/,
+  );
+  assert.deepEqual({ assignments: tree.measurementAssignments, displaced, replacement }, before);
+  assert.throws(
+    () => setAssetMetering(tree, replacement, requested, {
+      takeoverApproval: { assignmentIds: ['stale-assignment'] },
+    }),
+    /takeover is stale/,
+  );
+  assert.deepEqual({ assignments: tree.measurementAssignments, displaced, replacement }, before);
+
+  setAssetMetering(tree, replacement, requested, {
+    takeoverApproval: { assignmentIds: [occupiedAssignment.id] },
+  });
+
+  assert.deepEqual(displaced.meteringState, { kind: 'TBC' });
+  assert.equal(displaced.meterPresent, false);
+  assert.equal(displaced.meterId, null);
+  assert.deepEqual(displaced.meterChannelIds, []);
+  assert.deepEqual(replacement.meteringState, {
+    kind: 'METERED',
+    measurementAssignmentIds: ['assignment_asset-b'],
+  });
+  assert.deepEqual(
+    tree.measurementAssignments?.find((assignment) => assignment.id === occupiedAssignment.id),
+    {
+      ...occupiedAssignment,
+      channelIds: ['meter-a:5', 'meter-a:6'],
+      phaseMode: 'OTHER',
+      target: { kind: 'TBC' },
+      status: 'TBC',
+    },
+  );
+  assert.equal(
+    tree.measurementAssignments?.filter((assignment) => assignment.channelIds.includes('meter-a:4')).length,
+    1,
+  );
+  assert.deepEqual(
+    tree.measurementAssignments?.find((assignment) => assignment.channelIds.includes('meter-a:4'))?.target,
+    { kind: 'SITE_ASSET', siteAssetId: replacement.id },
+  );
+});
+
+test('site asset channel takeover never steals a switchboard or Grid-boundary measurement', () => {
+  for (const target of [
+    { kind: 'BOARD' as const, boardId: 'board-b' },
+    { kind: 'GRID_BOUNDARY' as const, gridSupplyId: 'grid-a' },
+  ]) {
+    const tree = fixtureTree();
+    const meter = sixChannelMeter();
+    tree.electricalAssets[0].meters = [meter];
+    tree.electricalAssets[0].meterPresent = true;
+    syncMeterDevice(tree, 'board-a', meter);
+    tree.measurementAssignments = [{
+      id: `assignment-${target.kind.toLowerCase()}`,
+      installationId: tree.installation.id,
+      meterId: meter.id,
+      channelIds: ['meter-a:4'],
+      phaseMode: 'SINGLE_PHASE',
+      target,
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    }];
+    const before = structuredClone({
+      assignments: tree.measurementAssignments,
+      asset: tree.siteAssets[0],
+    });
+
+    assert.throws(() => setAssetMetering(tree, tree.siteAssets[0], {
+      kind: 'METERED',
+      meterId: meter.id,
+      channelIds: ['meter-a:4'],
+      phaseMode: 'SINGLE_PHASE',
+      direction: 'CONSUMPTION',
+    }, {
+      takeoverApproval: { assignmentIds: [tree.measurementAssignments![0].id] },
+    }), /switchboard or Grid boundary cannot be taken over/);
+    assert.deepEqual({ assignments: tree.measurementAssignments, asset: tree.siteAssets[0] }, before);
+  }
+});
+
 test('meter assignment replacement rejects a silent cross-meter asset remap atomically', () => {
   const tree = fixtureTree();
   const meterA = sixChannelMeter();
@@ -776,6 +944,53 @@ test('meter assignment replacement rejects a silent cross-meter asset remap atom
     assignments: tree.measurementAssignments,
     asset: tree.siteAssets[0],
   }, before);
+
+  assert.throws(() => replaceMeterAssignments(tree, meterB.id, [{
+    id: 'assignment-takeover',
+    installationId: tree.installation.id,
+    meterId: meterB.id,
+    channelIds: ['meter-b:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }], {
+    crossMeterAssetRemapApproval: { assignmentIds: ['stale-assignment'] },
+  }), /takeover is stale/);
+  assert.deepEqual({
+    assignments: tree.measurementAssignments,
+    asset: tree.siteAssets[0],
+  }, before);
+
+  replaceMeterAssignments(tree, meterB.id, [{
+    id: 'assignment-takeover',
+    installationId: tree.installation.id,
+    meterId: meterB.id,
+    channelIds: ['meter-b:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }], {
+    crossMeterAssetRemapApproval: { assignmentIds: ['assignment-owner'] },
+  });
+  assert.deepEqual(
+    tree.measurementAssignments?.find((assignment) => assignment.id === 'assignment-owner'),
+    {
+      ...before.assignments?.find((assignment) => assignment.id === 'assignment-owner'),
+      target: { kind: 'TBC' },
+      status: 'TBC',
+    },
+  );
+  assert.deepEqual(
+    tree.measurementAssignments?.find((assignment) => assignment.id === 'assignment-takeover')?.target,
+    { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+  );
+  assert.deepEqual(tree.siteAssets[0].meteringState, {
+    kind: 'METERED',
+    measurementAssignmentIds: ['assignment-takeover'],
+  });
+  assert.equal(tree.siteAssets[0].meterId, meterB.id);
 });
 
 test('local readiness zone filtering includes both meter and measured-target zones', () => {

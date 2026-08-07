@@ -10,11 +10,11 @@ import {
   availableZoneCode,
   defaultCustomNameForType,
   defaultMeterCustomName,
-  generatedDisplayCodeV2,
+  generatedDisplayCodeV3,
   isZoneCodeAvailable,
   nameAfterTypeChange,
   normalizedCustomName,
-  provisionalDisplayCodeV2,
+  provisionalDisplayCodeV3,
   resolvedZoneCodes,
 } from '@/modules/installhub/lib/naming';
 import type { InstallHubUser } from '@/modules/installhub/types/domain';
@@ -78,7 +78,7 @@ test('type defaults advance only while the editable custom name is pristine', ()
   );
 });
 
-test('v2 display codes share a two-digit zone sequence across entity kinds', () => {
+test('v3 display codes share a two-digit zone sequence across entity kinds', () => {
   const tree = emptyTree();
   tree.installation.siteCode = 'GOLD';
   const zone = createZone(tree.installation.id, { zoneName: 'Level 1', zoneDescription: '' });
@@ -95,9 +95,53 @@ test('v2 display codes share a two-digit zone sequence across entity kinds', () 
   asset.assetName = 'Air handler';
   asset.displayCode = 'GOLD-L1-02-AIR-HANDLER';
   tree.siteAssets.push(asset);
-  assert.equal(generatedDisplayCodeV2(tree, {
-    zoneId: 'zone-1', customName: 'Distribution Board', fallbackType: 'DB',
+  assert.equal(generatedDisplayCodeV3(tree, {
+    zoneId: 'zone-1',
+    customName: 'Distribution Board',
+    fallbackType: 'Distribution board',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
   }), 'GOLD-L1-03-DISTRIBUTION-BOARD');
+});
+
+test('v3 identities end boards with their name and include type plus name for assets and devices', () => {
+  const tree = emptyTree();
+  tree.installation.siteCode = 'GOLD';
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Level 1',
+    zoneDescription: '',
+    zoneCode: 'L1',
+  });
+  tree.zones.push(zone);
+
+  assert.equal(generatedDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Workshop incomer',
+    fallbackType: 'Main switchboard',
+    entityKind: 'board',
+    entityTypeCode: 'MSB',
+  }), 'GOLD-L1-01-WORKSHOP-INCOMER');
+  assert.equal(generatedDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Air handler 1',
+    fallbackType: 'AC / HVAC',
+    entityKind: 'site_asset',
+    entityTypeCode: 'HVAC',
+  }), 'GOLD-L1-01-HVAC-AIR-HANDLER-1');
+  assert.equal(generatedDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Main incomer',
+    fallbackType: 'A3RM Meter',
+    entityKind: 'meter',
+    entityTypeCode: 'A3RM',
+  }), 'GOLD-L1-01-A3RM-MAIN-INCOMER');
+  assert.equal(generatedDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'A3RM Meter',
+    fallbackType: 'A3RM Meter',
+    entityKind: 'meter',
+    entityTypeCode: 'A3RM',
+  }), 'GOLD-L1-01-A3RM-METER');
 });
 
 test('custom names are normalized and full generated codes are capped at 64 characters', () => {
@@ -107,15 +151,19 @@ test('custom names are normalized and full generated codes are capped at 64 char
   zone.id = 'zone';
   zone.zoneCode = 'VERY-LONG-ZONE';
   tree.zones = [zone];
-  const generated = generatedDisplayCodeV2(tree, {
-    zoneId: 'zone', customName: 'Café air handling unit with a very long installer supplied description', fallbackType: 'HVAC',
+  const generated = generatedDisplayCodeV3(tree, {
+    zoneId: 'zone',
+    customName: 'Café air handling unit with a very long installer supplied description',
+    fallbackType: 'AC / HVAC',
+    entityKind: 'site_asset',
+    entityTypeCode: 'HVAC',
   });
   assert.equal(normalizedCustomName('Café AHU', 'HVAC'), 'CAFE-AHU');
   assert.ok(generated.length <= 64);
-  assert.match(generated, /^INSTALLATION-COD-VERY-LONG-ZONE-01-CAFE-AIR-HANDLING/);
+  assert.match(generated, /^INSTALLATION-COD-VERY-LONG-ZONE-01-HVAC-CAFE-AIR-HANDLING/);
 });
 
-test('full and quick add use the same provisional v2 naming rule', () => {
+test('full and quick add use the same provisional v3 naming rule', () => {
   const tree = emptyTree();
   tree.installation.siteCode = 'GOLD';
   const zone = createZone(tree.installation.id, {
@@ -124,22 +172,26 @@ test('full and quick add use the same provisional v2 naming rule', () => {
     zoneCode: 'L1',
   });
   tree.zones.push(zone);
-  const full = provisionalDisplayCodeV2(tree, {
+  const full = provisionalDisplayCodeV3(tree, {
     zoneId: zone.id,
     customName: 'Distribution board',
     fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
   });
-  const quick = provisionalDisplayCodeV2(structuredClone(tree), {
+  const quick = provisionalDisplayCodeV3(structuredClone(tree), {
     zoneId: zone.id,
     customName: 'Distribution board',
     fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
   });
   assert.deepEqual(quick, full);
-  assert.equal(full.ruleVersion, 2);
+  assert.equal(full.ruleVersion, 3);
   assert.equal(full.provisional, true);
 });
 
-test('provisional name edits retain sequence while confirmed and rule-one codes stay frozen', () => {
+test('provisional name edits retain sequence while confirmed identities stay frozen', () => {
   const tree = emptyTree();
   tree.installation.siteCode = 'GOLD';
   const zone = createZone(tree.installation.id, {
@@ -148,15 +200,19 @@ test('provisional name edits retain sequence while confirmed and rule-one codes 
     zoneCode: 'L1',
   });
   tree.zones.push(zone);
-  const provisional = provisionalDisplayCodeV2(tree, {
+  const provisional = provisionalDisplayCodeV3(tree, {
     zoneId: zone.id,
     customName: 'Distribution board',
     fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
   });
-  const renamed = provisionalDisplayCodeV2(tree, {
+  const renamed = provisionalDisplayCodeV3(tree, {
     zoneId: zone.id,
     customName: 'Workshop incomer',
     fallbackType: 'DB',
+    entityKind: 'board',
+    entityTypeCode: 'DB',
     current: provisional,
   });
   assert.equal(renamed.value, 'GOLD-L1-01-WORKSHOP-INCOMER');
@@ -164,13 +220,27 @@ test('provisional name edits retain sequence while confirmed and rule-one codes 
   for (const frozen of [
     { ...renamed, provisional: false },
     { ...renamed, provisional: undefined },
-    { ...renamed, ruleVersion: 1 },
+    { ...renamed, provisional: false, ruleVersion: 1 },
+    { ...renamed, provisional: false, ruleVersion: 2 },
   ]) {
-    assert.equal(provisionalDisplayCodeV2(tree, {
+    assert.equal(provisionalDisplayCodeV3(tree, {
       zoneId: zone.id,
       customName: 'Changed again',
       fallbackType: 'DB',
+      entityKind: 'board',
+      entityTypeCode: 'DB',
       current: frozen,
     }), frozen);
   }
+
+  const upgraded = provisionalDisplayCodeV3(tree, {
+    zoneId: zone.id,
+    customName: 'Air handler 1',
+    fallbackType: 'AC / HVAC',
+    entityKind: 'site_asset',
+    entityTypeCode: 'HVAC',
+    current: { ...renamed, ruleVersion: 2, provisional: true },
+  });
+  assert.equal(upgraded.value, 'GOLD-L1-01-HVAC-AIR-HANDLER-1');
+  assert.equal(upgraded.ruleVersion, 3);
 });

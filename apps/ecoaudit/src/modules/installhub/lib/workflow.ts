@@ -2,7 +2,7 @@ import { validateForm } from '@/modules/installhub/forms/catalog';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
 import {
   defaultMeterCustomName,
-  provisionalDisplayCodeV2,
+  provisionalDisplayCodeV3,
   resolvedZoneCodes,
 } from '@/modules/installhub/lib/naming';
 import type {
@@ -371,10 +371,12 @@ export function canonicalMeterDevice(
     || defaultCustomName;
   const installedBoard = tree.electricalAssets.find((board) => board.id === boardId);
   const displayName = (prior?.displayName || meter.customName?.trim())
-    ? provisionalDisplayCodeV2(tree, {
+    ? provisionalDisplayCodeV3(tree, {
         zoneId: installedBoard?.zoneId || 'ZONE',
         customName,
         fallbackType: defaultCustomName,
+        entityKind: 'meter',
+        entityTypeCode: typeCode,
         excludeId: meter.id,
         current: prior?.displayName,
       })
@@ -499,10 +501,83 @@ export function syncMeterDevice(
   return device;
 }
 
+export type AssignmentTakeoverApproval = {
+  assignmentIds: string[];
+};
+
+export type ReplaceMeterAssignmentsOptions = {
+  crossMeterAssetRemapApproval?: AssignmentTakeoverApproval;
+};
+
+export type SetAssetMeteringOptions = {
+  takeoverApproval?: AssignmentTakeoverApproval;
+};
+
+function assertExactAssignmentApproval(
+  requiredAssignments: MeasurementAssignment[],
+  approval: AssignmentTakeoverApproval | undefined,
+  missingApprovalMessage: string,
+): void {
+  const requiredIds = [...new Set(requiredAssignments.map((assignment) => assignment.id))].sort();
+  const suppliedIds = approval?.assignmentIds ?? [];
+  const approvedIds = [...new Set(suppliedIds)].sort();
+  if (!requiredIds.length && !suppliedIds.length) return;
+  if (!approval) throw new Error(missingApprovalMessage);
+  if (
+    approvedIds.length !== suppliedIds.length
+    || approvedIds.length !== requiredIds.length
+    || approvedIds.some((id, index) => id !== requiredIds[index])
+  ) {
+    throw new Error('The approved assignment takeover is stale. Review the current channel attachments and confirm again.');
+  }
+}
+
+function releasedAssignmentRemainder(
+  assignment: MeasurementAssignment,
+  claimedChannelIds: Set<string>,
+): MeasurementAssignment | null {
+  const channelIds = assignment.channelIds.filter((channelId) => !claimedChannelIds.has(channelId));
+  if (!channelIds.length) return null;
+  const phaseMode = (
+    (assignment.phaseMode === 'SINGLE_PHASE' && channelIds.length === 1)
+    || (assignment.phaseMode === 'THREE_PHASE' && channelIds.length === 3)
+    || assignment.phaseMode === 'OTHER'
+  )
+    ? assignment.phaseMode
+    : channelIds.length === 1
+      ? 'SINGLE_PHASE'
+      : channelIds.length === 3
+        ? 'THREE_PHASE'
+        : 'OTHER';
+  return {
+    ...assignment,
+    channelIds,
+    phaseMode,
+    target: { kind: 'TBC' },
+    status: 'TBC',
+  };
+}
+
+function setAssetMeteringProjection(
+  asset: SiteAsset,
+  state: Extract<SiteAssetMeteringState, { kind: 'UNMETERED' | 'TBC' }>,
+): void {
+  asset.meteringState = state;
+  asset.meterPresent = false;
+  asset.meterId = null;
+  asset.meterChannelIds = [];
+  asset.meterChannels = [];
+  asset.phaseMode = null;
+  asset.measurementDirection = null;
+  asset.meterSwitchboardId = null;
+  asset.meterSwitchboardTbc = state.kind === 'TBC';
+}
+
 export function replaceMeterAssignments(
   tree: InstallationTree,
   meterId: string,
   desired: MeasurementAssignment[],
+  options: ReplaceMeterAssignmentsOptions = {},
 ): void {
   const device = meterDevices(tree).find((item) => item.id === meterId);
   if (!device) throw new Error('The metering device is unavailable.');
@@ -510,19 +585,32 @@ export function replaceMeterAssignments(
   const channelById = new Map(device.channels.map((channel) => [channel.id, channel]));
   const seenChannels = new Set<string>();
   const seenSiteAssetTargets = new Set<string>();
+  const seenAssignmentIds = new Set<string>();
+  const retainedAssignmentIds = new Set(
+    prior.filter((assignment) => assignment.meterId !== meterId).map((assignment) => assignment.id),
+  );
+  const crossMeterAssetAssignments = new Map<string, MeasurementAssignment>();
   for (const assignment of desired) {
+    if (!assignment.id.trim() || seenAssignmentIds.has(assignment.id) || retainedAssignmentIds.has(assignment.id)) {
+      throw new Error('Every measurement assignment requires a unique stable ID.');
+    }
+    seenAssignmentIds.add(assignment.id);
     if (assignment.target.kind === 'SITE_ASSET') {
       if (seenSiteAssetTargets.has(assignment.target.siteAssetId)) {
         throw new Error('A site asset may have only one active measurement assignment.');
       }
       const targetSiteAssetId = assignment.target.siteAssetId;
-      if (prior.some((existing) => (
+      const targetAsset = tree.siteAssets.find((candidate) => candidate.id === targetSiteAssetId);
+      if (!targetAsset) throw new Error('The selected site asset is unavailable.');
+      if (!meterBoardsForAsset(tree, targetAsset).some((board) => board.id === device.installedOnBoardId)) {
+        throw new Error('The meter installation board must lie on the target asset electrical path.');
+      }
+      const existingAssignments = prior.filter((existing) => (
         existing.meterId !== meterId
         && existing.target.kind === 'SITE_ASSET'
         && existing.target.siteAssetId === targetSiteAssetId
-      ))) {
-        throw new Error('This site asset is already measured by another meter. Remove or reassign that measurement explicitly first.');
-      }
+      ));
+      existingAssignments.forEach((existing) => crossMeterAssetAssignments.set(existing.id, existing));
       seenSiteAssetTargets.add(assignment.target.siteAssetId);
     }
     const expected = assignment.phaseMode === 'SINGLE_PHASE'
@@ -571,6 +659,12 @@ export function replaceMeterAssignments(
     }
   }
 
+  assertExactAssignmentApproval(
+    [...crossMeterAssetAssignments.values()],
+    options.crossMeterAssetRemapApproval,
+    'This site asset is already measured by another meter. Remove or reassign that measurement explicitly first.',
+  );
+
   const replaced = prior.filter((assignment) => assignment.meterId === meterId);
   const desiredSiteIds = new Set(
     desired.flatMap((assignment) => assignment.target.kind === 'SITE_ASSET' ? [assignment.target.siteAssetId] : []),
@@ -581,7 +675,13 @@ export function replaceMeterAssignments(
       return targetSiteAssetId && !desiredSiteIds.has(targetSiteAssetId) ? [targetSiteAssetId] : [];
     }),
   );
-  tree.measurementAssignments = prior.filter((assignment) => assignment.meterId !== meterId);
+  tree.measurementAssignments = prior
+    .filter((assignment) => assignment.meterId !== meterId)
+    .flatMap((assignment) => {
+      if (!crossMeterAssetAssignments.has(assignment.id)) return [assignment];
+      const released = releasedAssignmentRemainder(assignment, new Set());
+      return released ? [released] : [];
+    });
   for (const asset of tree.siteAssets.filter((item) => removedSiteIds.has(item.id))) {
     setAssetMetering(tree, asset, { kind: 'TBC' });
   }
@@ -635,26 +735,20 @@ export function setAssetMetering(
         phaseMode: PhaseMode;
         direction: MeasurementDirection;
       },
+  options: SetAssetMeteringOptions = {},
 ): void {
-  const current = assignmentForAsset(tree, asset.id);
-  tree.measurementAssignments = measurementAssignments(tree).filter(
-    (assignment) => assignment.id !== current?.id && !(
-      input.kind === 'METERED' &&
-      assignment.meterId === input.meterId &&
-      assignment.target.kind === 'TBC' &&
-      assignment.channelIds.some((channelId) => input.channelIds.includes(channelId))
-    ),
+  const assignments = measurementAssignments(tree);
+  const owned = assignments.filter(
+    (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === asset.id,
   );
   if (input.kind !== 'METERED') {
-    asset.meteringState = { kind: input.kind };
-    asset.meterPresent = false;
-    asset.meterId = null;
-    asset.meterChannelIds = [];
-    asset.meterChannels = [];
-    asset.phaseMode = null;
-    asset.measurementDirection = null;
-    asset.meterSwitchboardId = null;
-    asset.meterSwitchboardTbc = input.kind === 'TBC';
+    const ownedIds = new Set(owned.map((assignment) => assignment.id));
+    tree.measurementAssignments = assignments.flatMap((assignment) => {
+      if (!ownedIds.has(assignment.id)) return [assignment];
+      const released = releasedAssignmentRemainder(assignment, new Set());
+      return released ? [released] : [];
+    });
+    setAssetMeteringProjection(asset, { kind: input.kind });
     return;
   }
   const meter = meterDevices(tree).find((item) => item.id === input.meterId);
@@ -668,8 +762,53 @@ export function setAssetMetering(
   if (unique.some((id) => !availableIds.has(id))) {
     throw new Error('A selected channel is spare, unavailable, or belongs to another meter.');
   }
+  const selectedChannelIds = new Set(unique);
+  const ownedIds = new Set(owned.map((assignment) => assignment.id));
+  const overlapping = assignments.filter((assignment) =>
+    !ownedIds.has(assignment.id)
+    && assignment.channelIds.some((channelId) => selectedChannelIds.has(channelId)));
+  const forbidden = overlapping.find((assignment) =>
+    assignment.target.kind === 'BOARD' || assignment.target.kind === 'GRID_BOUNDARY');
+  if (forbidden) {
+    throw new Error('A channel attached to a switchboard or Grid boundary cannot be taken over from a site asset. Reconcile that measurement at the meter instead.');
+  }
+  const concreteAssetConflicts = overlapping.filter(
+    (assignment) => assignment.target.kind === 'SITE_ASSET',
+  );
+  for (const conflict of concreteAssetConflicts) {
+    const displacedAssetId = conflict.target.kind === 'SITE_ASSET'
+      ? conflict.target.siteAssetId
+      : '';
+    if (!tree.siteAssets.some((candidate) => candidate.id === displacedAssetId)) {
+      throw new Error('The site asset currently attached to this channel is unavailable. Reconcile the existing measurement first.');
+    }
+  }
+  assertExactAssignmentApproval(
+    concreteAssetConflicts,
+    options.takeoverApproval,
+    'A selected channel is already assigned elsewhere. Approve the exact site-asset assignment takeover first.',
+  );
+  const releasedIds = new Set([
+    ...ownedIds,
+    ...overlapping.map((assignment) => assignment.id),
+  ]);
+  const nextAssignments = assignments.flatMap((assignment) => {
+    if (!releasedIds.has(assignment.id)) return [assignment];
+    const released = releasedAssignmentRemainder(assignment, selectedChannelIds);
+    return released ? [released] : [];
+  });
+  if (nextAssignments.some((assignment) =>
+    assignment.channelIds.some((channelId) => selectedChannelIds.has(channelId)))) {
+    throw new Error('A selected channel is already assigned elsewhere.');
+  }
+  const explicitAssignmentId = input.assignmentId?.trim();
+  let assignmentId = explicitAssignmentId || owned[0]?.id || `assignment_${asset.id}`;
+  if (nextAssignments.some((assignment) => assignment.id === assignmentId)) {
+    if (explicitAssignmentId) throw new Error('The selected measurement assignment ID is already in use.');
+    assignmentId = createInstallHubId('assignment');
+  }
   const assignment: MeasurementAssignment = {
-    id: input.assignmentId || current?.id || `assignment_${asset.id}`,
+    id: assignmentId,
     installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: unique,
@@ -678,7 +817,12 @@ export function setAssetMetering(
     direction: input.direction,
     status: 'CONFIRMED',
   };
-  tree.measurementAssignments.push(assignment);
+  tree.measurementAssignments = [...nextAssignments, assignment];
+  const displacedAssetIds = new Set(concreteAssetConflicts.flatMap((conflict) =>
+    conflict.target.kind === 'SITE_ASSET' ? [conflict.target.siteAssetId] : []));
+  for (const displaced of tree.siteAssets.filter((candidate) => displacedAssetIds.has(candidate.id))) {
+    setAssetMeteringProjection(displaced, { kind: 'TBC' });
+  }
   asset.meteringState = { kind: 'METERED', measurementAssignmentIds: [assignment.id] };
   asset.meterPresent = true;
   asset.meterId = meter.id;

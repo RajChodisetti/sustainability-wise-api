@@ -2,6 +2,7 @@
 /* eslint-disable react-hooks/set-state-in-effect -- initializes the keyed asset editor from its server query record */
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
@@ -25,6 +26,7 @@ import {
   ASSET_METER_FILTER_HINT,
   ASSET_METER_FILTER_LABEL,
   assetMeterDraftKey,
+  measurementTargetDetails,
   parseAssetMeterDraftSnapshot,
   pinSelectedResult,
   shouldShowMeterLocationOverride,
@@ -38,15 +40,16 @@ import type {
   InstallationTree,
   MeasurementDirection,
   MeteringStateKind,
+  MeasurementAssignment,
   PhaseMode,
   SiteAsset,
 } from '@/modules/installhub/types/domain';
 import {
   defaultCustomNameForType,
   ENTITY_NAME_MAX_LENGTH,
-  generatedDisplayCodeV2,
+  generatedDisplayCodeV3,
   nameAfterTypeChange,
-  provisionalDisplayCodeV2,
+  provisionalDisplayCodeV3,
 } from '@/modules/installhub/lib/naming';
 import {
   BOARD_TYPE_OPTIONS,
@@ -91,10 +94,12 @@ function boardDisplayMetadata(
   board: ElectricalAsset,
 ) {
   const typeCode = board.typeCode || board.assetType;
-  return provisionalDisplayCodeV2(tree, {
+  return provisionalDisplayCodeV3(tree, {
     zoneId: board.zoneId,
     customName: board.assetName,
     fallbackType: defaultBoardName(typeCode, board.customTypeName),
+    entityKind: 'board',
+    entityTypeCode: typeCode,
     excludeId: board.id,
     current: board.displayCodeMeta,
   });
@@ -106,10 +111,12 @@ function siteAssetDisplayMetadata(
   customName = asset.assetName,
   typeCode = siteAssetTypeCode(asset),
 ) {
-  return provisionalDisplayCodeV2(tree, {
+  return provisionalDisplayCodeV3(tree, {
     zoneId: asset.zoneId,
     customName,
     fallbackType: defaultSiteAssetName(typeCode, asset.customTypeName),
+    entityKind: 'site_asset',
+    entityTypeCode: typeCode,
     excludeId: asset.id,
     current: asset.displayCodeMeta,
   });
@@ -133,6 +140,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingMeteringKind, setPendingMeteringKind] = useState<'UNMETERED' | null>(null);
+  const [pendingChannelTakeover, setPendingChannelTakeover] = useState<{
+    assignment: MeasurementAssignment;
+    channelId: string;
+  } | null>(null);
+  const [approvedTakeoverAssignmentIds, setApprovedTakeoverAssignmentIds] = useState<Set<string>>(new Set());
   const [quickBoardOpen, setQuickBoardOpen] = useState(false);
   const [quickBoardPurpose, setQuickBoardPurpose] = useState<'SUPPLY' | 'METER_LOCATION'>('SUPPLY');
   const [quickBoardName, setQuickBoardName] = useState(defaultBoardName('DB'));
@@ -253,15 +265,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   const existingAssignment = measurementAssignments(tree).find(
     (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === draft.id,
   );
-  const usedChannelOwners = new Map<string, string>();
+  const usedChannelAssignments = new Map<string, MeasurementAssignment>();
   for (const assignment of measurementAssignments(tree)) {
     if (assignment.id === existingAssignment?.id) continue;
     for (const channelId of assignment.channelIds) {
-      const targetAssetId = assignment.target.kind === 'SITE_ASSET' ? assignment.target.siteAssetId : null;
-      const owner = targetAssetId
-        ? tree.siteAssets.find((item) => item.id === targetAssetId)?.assetName || 'another asset'
-        : 'another measurement target';
-      usedChannelOwners.set(channelId, owner);
+      usedChannelAssignments.set(channelId, assignment);
     }
   }
   const selectedChannelCount = draft.meterChannelIds?.length || 0;
@@ -336,8 +344,16 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       } else if (currentDraft.phaseMode === 'OTHER' && channelCount < 1) {
         nextErrors.push({ id: 'asset-channels', message: 'Select at least one channel for the custom phase grouping.' });
       }
-      if ((currentDraft.meterChannelIds || []).some((id) => usedChannelOwners.has(id))) {
-        nextErrors.push({ id: 'asset-channels', message: 'One or more channels are already assigned to another target.' });
+      const selectedConflicts = [...new Set((currentDraft.meterChannelIds || [])
+        .map((id) => usedChannelAssignments.get(id))
+        .filter((assignment): assignment is MeasurementAssignment => Boolean(assignment)))];
+      const blockedConflict = selectedConflicts.find((assignment) => (
+        assignment.target.kind !== 'TBC'
+        && !(assignment.target.kind === 'SITE_ASSET' && approvedTakeoverAssignmentIds.has(assignment.id))
+      ));
+      if (blockedConflict) {
+        const details = measurementTargetDetails(tree, blockedConflict.target);
+        nextErrors.push({ id: 'asset-channels', message: `A selected channel is still assigned to ${details.label}. Approve the reassignment first.` });
       }
       if (currentDraft.meterSwitchboardId && !eligibleMeterBoards.some((board) => board.id === currentDraft.meterSwitchboardId)) {
         nextErrors.push({ id: 'asset-meter-board', message: 'Choose a meter on this asset’s confirmed electrical supply path.' });
@@ -369,13 +385,22 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         };
         applyAssetElectricalSource(value, electricalSource);
         if (state.kind === 'METERED') {
+          const takeoverAssignmentIds = [...new Set((currentDraft.meterChannelIds || [])
+            .map((channelId) => usedChannelAssignments.get(channelId))
+            .filter((assignment): assignment is MeasurementAssignment => (
+              assignment?.target.kind === 'SITE_ASSET'
+              && approvedTakeoverAssignmentIds.has(assignment.id)
+            ))
+            .map((assignment) => assignment.id))];
           setAssetMetering(next, value, {
             kind: 'METERED',
             meterId: currentDraft.meterId!,
             channelIds: currentDraft.meterChannelIds || [],
             phaseMode: currentDraft.phaseMode || 'OTHER',
             direction: currentDraft.measurementDirection || 'CONSUMPTION',
-          });
+          }, takeoverAssignmentIds.length ? {
+            takeoverApproval: { assignmentIds: takeoverAssignmentIds },
+          } : undefined);
         } else {
           setAssetMetering(next, value, { kind: state.kind });
         }
@@ -677,6 +702,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       meterChannelIds: [],
       meterChannels: [],
     } : current);
+    setApprovedTakeoverAssignmentIds(new Set());
   }
 
   function chooseMeter(meterId: string) {
@@ -686,6 +712,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       meterChannelIds: [],
       meterChannels: [],
     } : current);
+    setApprovedTakeoverAssignmentIds(new Set());
   }
 
   async function addDeviceToMeterBoard() {
@@ -742,6 +769,40 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       return { ...current, meterChannelIds: [...ids] };
     });
   }
+
+  function assignmentDeviceDetails(assignment: MeasurementAssignment) {
+    const device = meterDevices(tree).find((item) => item.id === assignment.meterId);
+    const meterBoard = device
+      ? tree.electricalAssets.find((item) => item.id === device.installedOnBoardId)
+      : undefined;
+    const channelOrdinals = device
+      ? assignment.channelIds
+        .map((channelId) => device.channels.find((channel) => channel.id === channelId)?.ordinal)
+        .filter((ordinal): ordinal is number => typeof ordinal === 'number')
+      : [];
+    return {
+      device,
+      meterBoard,
+      channelOrdinals,
+      href: device && meterBoard
+        ? `/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(meterBoard.zoneId)}/boards/${encodeURIComponent(meterBoard.id)}/meters/${encodeURIComponent(device.id)}#meter-assignments`
+        : null,
+    };
+  }
+
+  function approveChannelTakeover() {
+    if (!pendingChannelTakeover) return;
+    setApprovedTakeoverAssignmentIds((current) => new Set(current).add(pendingChannelTakeover.assignment.id));
+    toggleChannel(pendingChannelTakeover.channelId, true);
+    setPendingChannelTakeover(null);
+  }
+
+  const pendingTakeoverTarget = pendingChannelTakeover
+    ? measurementTargetDetails(tree, pendingChannelTakeover.assignment.target)
+    : null;
+  const pendingTakeoverDevice = pendingChannelTakeover
+    ? assignmentDeviceDetails(pendingChannelTakeover.assignment)
+    : null;
 
   const latest = query.data!.siteAssets.find((item) => item.id === assetId) ?? draft;
 
@@ -1100,16 +1161,30 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
 
                 <fieldset id="asset-channels" className="mt-5" tabIndex={-1} aria-describedby="asset-channel-group-status">
                   <legend className="text-sm font-bold text-[var(--text)]">Measured channels *</legend>
-                  <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Select the physical channel or channels wired to this asset. The count must match the phase choice above; spare or already-used channels cannot be selected.</p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Select the physical channel or channels wired to this asset. The count must match the phase choice above. Occupied channels show their exact attachment and can be reassigned when the existing target is another site asset.</p>
                   <p id="asset-channel-group-status" className="mt-1 text-xs font-semibold text-[var(--text-sub)]" role="status" aria-live="polite" aria-atomic="true">{channelGroupAnnouncement}</p>
                   {!selectedMeter ? <p className="mt-3 text-sm text-[var(--text-sub)]">Choose a device to see its channels.</p> : (
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
                       {selectedMeter.channels.map((channel) => {
-                        const owner = usedChannelOwners.get(channel.id);
-                        const unavailable = channel.purpose === 'SPARE' || Boolean(owner);
-                        const unavailableReasonId = unavailable ? `asset-channel-${channel.id.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}-reason` : undefined;
+                        const ownerAssignment = usedChannelAssignments.get(channel.id);
+                        const ownerTarget = ownerAssignment
+                          ? measurementTargetDetails(tree, ownerAssignment.target)
+                          : null;
+                        const ownerDevice = ownerAssignment
+                          ? assignmentDeviceDetails(ownerAssignment)
+                          : null;
+                        const takeoverApproved = Boolean(ownerAssignment && approvedTakeoverAssignmentIds.has(ownerAssignment.id));
+                        const claimableTbc = ownerAssignment?.target.kind === 'TBC';
+                        const protectedTarget = ownerAssignment
+                          && ownerAssignment.target.kind !== 'SITE_ASSET'
+                          && ownerAssignment.target.kind !== 'TBC';
+                        const unavailable = channel.purpose === 'SPARE'
+                          || Boolean(ownerAssignment && !claimableTbc && !takeoverApproved);
+                        const unavailableReasonId = channel.purpose === 'SPARE' || ownerAssignment
+                          ? `asset-channel-${channel.id.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}-reason`
+                          : undefined;
                         return (
-                          <div key={channel.id} className={`rounded-xl border px-3 py-2 ${unavailable ? 'border-[var(--border)] bg-[var(--surface)] opacity-65' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>
+                          <div key={channel.id} className={`rounded-xl border px-3 py-2 ${unavailable ? 'border-[var(--amber)] bg-[var(--surface)]' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>
                             <Checkbox
                               label={`Channel ${channel.ordinal} — ${channel.description || channel.loadTypeCode || channel.purpose.replaceAll('_', ' ').toLowerCase()}`}
                               checked={(draft.meterChannelIds || []).includes(channel.id)}
@@ -1117,7 +1192,38 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                               ariaDescribedBy={unavailableReasonId}
                               onChange={(checked) => toggleChannel(channel.id, checked)}
                             />
-                            {unavailable ? <p id={unavailableReasonId} className="pl-8 text-xs font-semibold text-[var(--amber)]">Unavailable: {channel.purpose === 'SPARE' ? 'marked spare on the device' : `already assigned to ${owner}`}.</p> : null}
+                            {channel.purpose === 'SPARE' ? (
+                              <p id={unavailableReasonId} className="pl-8 text-xs font-semibold text-[var(--amber)]">Unavailable: marked spare on the device.</p>
+                            ) : ownerAssignment && ownerTarget && ownerDevice ? (
+                              <div id={unavailableReasonId} className="space-y-1 pb-1 pl-8 text-xs leading-5">
+                                <p className="font-semibold text-[var(--amber)]">
+                                  {claimableTbc
+                                    ? 'Available to claim from a TBC measurement group.'
+                                    : takeoverApproved
+                                      ? `Reassignment approved from ${ownerTarget.label}.`
+                                      : `Occupied by ${ownerTarget.label}.`}
+                                </p>
+                                <p className="text-[var(--text-sub)]">
+                                  Attached through {ownerDevice.device ? humanDeviceName(ownerDevice.device) : `device ${ownerAssignment.meterId}`}
+                                  {ownerDevice.meterBoard ? ` on ${ownerDevice.meterBoard.assetName}` : ''}; existing group channel{ownerDevice.channelOrdinals.length === 1 ? '' : 's'} {ownerDevice.channelOrdinals.join(', ') || ownerAssignment.channelIds.join(', ')}.
+                                </p>
+                                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                                  {ownerTarget.href ? <Link className="font-semibold text-[var(--blue)] underline" href={ownerTarget.href}>Open attached target</Link> : null}
+                                  {ownerDevice.href ? <Link className="font-semibold text-[var(--blue)] underline" href={ownerDevice.href}>Open device mapping</Link> : null}
+                                </div>
+                                {ownerAssignment.target.kind === 'SITE_ASSET' && !takeoverApproved ? (
+                                  <Button
+                                    variant="secondary"
+                                    className="mt-1"
+                                    onClick={() => setPendingChannelTakeover({ assignment: ownerAssignment, channelId: channel.id })}
+                                  >
+                                    Reassign to this asset
+                                  </Button>
+                                ) : null}
+                                {claimableTbc ? <p className="text-[var(--text-sub)]">Selecting this channel replaces the existing TBC group; no confirmed asset will be displaced.</p> : null}
+                                {protectedTarget ? <p className="font-semibold text-[var(--text-sub)]">Switchboard and Grid totals are protected. Change this from the device mapping.</p> : null}
+                              </div>
+                            ) : null}
                           </div>
                         );
                       })}
@@ -1138,6 +1244,25 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
           </div>
         </Card>
       </form>
+
+      <ConfirmDialog
+        open={Boolean(pendingChannelTakeover)}
+        title={`Reassign this channel to ${draft.assetName || 'this site asset'}?`}
+        description={pendingTakeoverTarget
+          ? `This is a deliberate transfer from ${pendingTakeoverTarget.label}. The transfer is applied atomically when you save this site asset.`
+          : 'This is a deliberate channel transfer. The transfer is applied atomically when you save this site asset.'}
+        consequences={[
+          pendingTakeoverTarget ? `${pendingTakeoverTarget.label} will be delinked and changed to To be confirmed` : 'The previous site asset will be delinked and changed to To be confirmed',
+          pendingTakeoverDevice?.channelOrdinals.length
+            ? `Its full existing measurement group (channel${pendingTakeoverDevice.channelOrdinals.length === 1 ? '' : 's'} ${pendingTakeoverDevice.channelOrdinals.join(', ')}) will be released`
+            : 'Its full existing measurement group will be released',
+          'This channel will be selected here; choose any other required phase channels before saving',
+        ]}
+        confirmLabel="Approve reassignment"
+        blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before reassigning channels.' : undefined}
+        onConfirm={approveChannelTakeover}
+        onCancel={() => setPendingChannelTakeover(null)}
+      />
 
       <ConfirmDialog
         open={quickBoardOpen}
@@ -1212,10 +1337,12 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             <Input
               id="quick-board-display-code"
               readOnly
-              value={generatedDisplayCodeV2(tree, {
+              value={generatedDisplayCodeV3(tree, {
                 zoneId,
                 customName: quickBoardName,
                 fallbackType: defaultBoardName(quickBoardType, quickBoardCustomType),
+                entityKind: 'board',
+                entityTypeCode: quickBoardType,
               })}
             />
             <FieldHint>The same installation/zone sequence is used as the full switchboard form.</FieldHint>

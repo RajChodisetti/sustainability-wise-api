@@ -378,6 +378,13 @@ export function InstallHubZoneDetailPage() {
             description: tree.installation.siteName,
           },
           {
+            href: `/installhub/installations/${installationId}/data#canonical-electrical-map`,
+            icon: 'zap',
+            label: 'Electrical map',
+            description: 'Supply hierarchy and metering links',
+            meta: tree.electricalAssets.length + tree.siteAssets.length,
+          },
+          {
             href: '#zone-switchboards',
             icon: 'zap',
             label: 'Switchboards',

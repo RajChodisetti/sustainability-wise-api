@@ -1478,6 +1478,14 @@ export function operationalMeterForCompletedForm(
     deviceFamily: 'WATTWATCHERS',
     deviceNameOverridden: existing?.deviceNameOverridden ?? false,
     ...(Object.keys(wwPrestart).length ? { wwPrestart } : {}),
+    wwSwitchboard: {
+      ...existing?.wwSwitchboard,
+      name: form.answers['auditor.switchboard_name'] || existing?.wwSwitchboard?.name || '',
+      location: form.answers['auditor.switchboard_location'] || existing?.wwSwitchboard?.location || '',
+      deviceSerial: form.answers['device.id'] || existing?.wwSwitchboard?.deviceSerial || '',
+      signalStrength: form.answers['commissioning.signal_strength'] || existing?.wwSwitchboard?.signalStrength || '',
+      antennaType: form.answers['commissioning.antenna_type'] || existing?.wwSwitchboard?.antennaType || '',
+    },
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
       const prefix = `channel.${index + 1}`;
       const loadType = form.answers[`${prefix}.load`] || '';

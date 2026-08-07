@@ -27,7 +27,7 @@ import {
   defaultMeterCustomName,
   ENTITY_NAME_MAX_LENGTH,
   nameAfterTypeChange,
-  provisionalDisplayCodeV2,
+  provisionalDisplayCodeV3,
 } from '@/modules/installhub/lib/naming';
 import type {
   Meter,
@@ -57,11 +57,12 @@ import { createInstallHubId } from '@/modules/installhub/lib/id';
 import {
   assetMeterReturnHref,
   assetMeterReturnRequest,
+  measurementTargetDetails,
   pinSelectedResult,
   type AssetMeterReturnRequest,
 } from '@/modules/installhub/lib/electricalPresentation';
 import { useToast } from '@/contexts/ToastContext';
-import { createReplacementForm } from '@/modules/installhub/lib/deviceSearch';
+import { createReplacementForm, humanDeviceName } from '@/modules/installhub/lib/deviceSearch';
 import {
   nextMeterChannelId,
   renamedMeterCapabilities,
@@ -178,6 +179,17 @@ export function InstallHubMeterPage({
   const [errors, setErrors] = useState<Array<{ id?: string; message: string }>>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [assignmentDrafts, setAssignmentDrafts] = useState<MeasurementAssignment[]>([]);
+  const [pendingAssetRemap, setPendingAssetRemap] = useState<{
+    assignmentId: string;
+    siteAssetId: string;
+    existingAssignment: MeasurementAssignment;
+  } | null>(null);
+  const [approvedCrossMeterAssignmentIds, setApprovedCrossMeterAssignmentIds] = useState<Set<string>>(new Set());
+  const [pendingDraftChannelMove, setPendingDraftChannelMove] = useState<{
+    fromAssignmentId: string;
+    toAssignmentId: string;
+    channelId: string;
+  } | null>(null);
   const [targetSearches, setTargetSearches] = useState<Record<string, string>>({});
   const [assetReturn, setAssetReturn] = useState<AssetMeterReturnRequest | null>(null);
 
@@ -190,10 +202,18 @@ export function InstallHubMeterPage({
   const source = board?.meters.find((item) => item.id === meterId);
   const canonicalSource = query.data?.meterDevices?.find((item) => item.id === meterId);
   useEffect(() => {
-    if (mode === 'new') setDraft((current) => {
+    if (mode === 'new') {
+      if (!board) return;
+      setDraft((current) => {
       if (current) return current;
       const created = createMeter();
-      if (initialDeviceType !== 'Other') return created;
+      const boardContext = {
+        name: board.assetName,
+        location: board.locationDescription?.trim()
+          || query.data?.zones.find((item) => item.id === board.zoneId)?.zoneName
+          || '',
+      };
+      if (initialDeviceType !== 'Other') return { ...created, wwSwitchboard: boardContext };
       return {
         ...created,
         deviceFamily: 'OTHER',
@@ -202,6 +222,7 @@ export function InstallHubMeterPage({
         deviceName: defaultMeterCustomName({ deviceModel: 'Other' }),
         customManufacturerName: '',
         customModelName: '',
+        wwSwitchboard: boardContext,
         wwChannels: [{
           id: meterChannelId(created.id, 0),
           ordinal: 1,
@@ -209,8 +230,8 @@ export function InstallHubMeterPage({
           capabilities: {},
         }],
       };
-    });
-    else if (source) {
+      });
+    } else if (source) {
       setDraft({
         ...structuredClone(source),
         customName: source.customName || canonicalSource?.customName,
@@ -221,7 +242,7 @@ export function InstallHubMeterPage({
         ).map((assignment) => structuredClone(assignment)),
       );
     }
-  }, [canonicalSource?.customName, initialDeviceType, mode, query.data, source]);
+  }, [board, canonicalSource?.customName, initialDeviceType, mode, query.data, source]);
 
   if (query.isLoading || !draft) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -257,10 +278,12 @@ export function InstallHubMeterPage({
   const visibleDeviceName = draft.customName?.trim()
     || canonicalSource?.customName?.trim()
     || defaultDeviceCustomName;
-  const previewDisplayName = provisionalDisplayCodeV2(tree, {
+  const previewDisplayName = provisionalDisplayCodeV3(tree, {
     zoneId: board.zoneId,
     customName: visibleDeviceName,
     fallbackType: defaultDeviceCustomName,
+    entityKind: 'meter',
+    entityTypeCode: draft.deviceType,
     excludeId: draft.id,
     current: canonicalSource?.displayName,
   });
@@ -396,8 +419,12 @@ export function InstallHubMeterPage({
         if (usedSiteAssetTargets.has(assignment.target.siteAssetId)) {
           nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'A site asset may have only one active measurement assignment.' });
         }
-        if (existingAssignment && existingAssignment.meterId !== currentDraft.id) {
-          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'This site asset is already measured by another meter. Remove or reassign that measurement explicitly first.' });
+        if (
+          existingAssignment
+          && existingAssignment.meterId !== currentDraft.id
+          && !approvedCrossMeterAssignmentIds.has(existingAssignment.id)
+        ) {
+          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'This site asset is already measured by another meter. Approve the explicit reassignment first.' });
         }
         usedSiteAssetTargets.add(assignment.target.siteAssetId);
       }
@@ -516,7 +543,18 @@ export function InstallHubMeterPage({
         targetBoard.meterPresent = true;
         targetBoard.updatedAt = nowIso();
         syncMeterDevice(next, boardId, value);
-        replaceMeterAssignments(next, value.id, assignmentDrafts);
+        const approvedConflictIds = [...new Set(assignmentDrafts.flatMap((assignment) => {
+          if (assignment.target.kind !== 'SITE_ASSET') return [];
+          const conflict = assignmentForAsset(tree, assignment.target.siteAssetId);
+          return conflict
+            && conflict.meterId !== currentDraft.id
+            && approvedCrossMeterAssignmentIds.has(conflict.id)
+            ? [conflict.id]
+            : [];
+        }))];
+        replaceMeterAssignments(next, value.id, assignmentDrafts, approvedConflictIds.length ? {
+          crossMeterAssetRemapApproval: { assignmentIds: approvedConflictIds },
+        } : undefined);
       });
       setErrors([]);
       toast.success(saved ? 'Meter saved.' : 'Meter added.');
@@ -860,8 +898,6 @@ export function InstallHubMeterPage({
     const selectedId = assignment.target.kind === 'SITE_ASSET' ? assignment.target.siteAssetId : '';
     const allCandidates = tree.siteAssets
       .filter((item) => {
-        const existingAssignment = assignmentForAsset(tree, item.id);
-        if (existingAssignment && existingAssignment.meterId !== currentDraft.id) return false;
         if (item.id === selectedId) return true;
         if (assetElectricalSource(item).kind !== 'BOARD') return false;
         return meterBoardsForAsset(tree, item).some((candidate) => candidate.id === boardId);
@@ -890,6 +926,68 @@ export function InstallHubMeterPage({
     }));
   }
 
+  function assignmentDeviceDetails(assignment: MeasurementAssignment) {
+    const device = tree.meterDevices?.find((item) => item.id === assignment.meterId);
+    const installedBoard = device
+      ? tree.electricalAssets.find((item) => item.id === device.installedOnBoardId)
+      : undefined;
+    const channelOrdinals = device
+      ? assignment.channelIds
+        .map((id) => device.channels.find((channel) => channel.id === id)?.ordinal)
+        .filter((ordinal): ordinal is number => typeof ordinal === 'number')
+      : [];
+    return {
+      device,
+      installedBoard,
+      channelOrdinals,
+      href: device && installedBoard
+        ? `/installhub/installations/${encodeURIComponent(installationId)}/zones/${encodeURIComponent(installedBoard.zoneId)}/boards/${encodeURIComponent(installedBoard.id)}/meters/${encodeURIComponent(device.id)}#meter-assignments`
+        : null,
+    };
+  }
+
+  function chooseSiteAssetTarget(assignmentIndex: number, siteAssetId: string) {
+    if (!siteAssetId) {
+      updateAssignment(assignmentIndex, { target: { kind: 'SITE_ASSET', siteAssetId: '' }, status: 'CONFIRMED' });
+      return;
+    }
+    const existingAssignment = assignmentForAsset(tree, siteAssetId);
+    if (
+      existingAssignment
+      && existingAssignment.meterId !== currentDraft.id
+      && !approvedCrossMeterAssignmentIds.has(existingAssignment.id)
+    ) {
+      setPendingAssetRemap({
+        assignmentId: assignmentDrafts[assignmentIndex].id,
+        siteAssetId,
+        existingAssignment,
+      });
+      return;
+    }
+    updateAssignment(assignmentIndex, { target: { kind: 'SITE_ASSET', siteAssetId }, status: 'CONFIRMED' });
+  }
+
+  function approveAssetRemap() {
+    if (!pendingAssetRemap) return;
+    setApprovedCrossMeterAssignmentIds((current) => new Set(current).add(pendingAssetRemap.existingAssignment.id));
+    setAssignmentDrafts((current) => current.map((assignment) => (
+      assignment.id === pendingAssetRemap.assignmentId
+        ? { ...assignment, target: { kind: 'SITE_ASSET', siteAssetId: pendingAssetRemap.siteAssetId }, status: 'CONFIRMED' }
+        : assignment
+    )));
+    setPendingAssetRemap(null);
+  }
+
+  function approveDraftChannelMove() {
+    if (!pendingDraftChannelMove) return;
+    setAssignmentDrafts((current) => current
+      .filter((assignment) => assignment.id !== pendingDraftChannelMove.fromAssignmentId)
+      .map((assignment) => assignment.id === pendingDraftChannelMove.toAssignmentId
+        ? { ...assignment, channelIds: [...new Set([...assignment.channelIds, pendingDraftChannelMove.channelId])] }
+        : assignment));
+    setPendingDraftChannelMove(null);
+  }
+
   function chooseAssignmentTarget(index: number, kind: MeasurementAssignment['target']['kind']) {
     const target: MeasurementAssignment['target'] = kind === 'BOARD'
       ? { kind: 'BOARD', boardId: assignmentPurpose(assignmentDrafts[index]) === 'MAIN_SUPPLY' ? boardId : '' }
@@ -907,6 +1005,25 @@ export function InstallHubMeterPage({
     )?.purpose;
     return purpose === 'MAIN_SUPPLY' || purpose === 'SUB_CIRCUIT' ? purpose : undefined;
   }
+
+  const pendingRemapTarget = pendingAssetRemap
+    ? measurementTargetDetails(tree, { kind: 'SITE_ASSET', siteAssetId: pendingAssetRemap.siteAssetId })
+    : null;
+  const pendingRemapDevice = pendingAssetRemap
+    ? assignmentDeviceDetails(pendingAssetRemap.existingAssignment)
+    : null;
+  const pendingMoveFrom = pendingDraftChannelMove
+    ? assignmentDrafts.find((assignment) => assignment.id === pendingDraftChannelMove.fromAssignmentId)
+    : null;
+  const pendingMoveTo = pendingDraftChannelMove
+    ? assignmentDrafts.find((assignment) => assignment.id === pendingDraftChannelMove.toAssignmentId)
+    : null;
+  const pendingMoveFromTarget = pendingMoveFrom
+    ? measurementTargetDetails(tree, pendingMoveFrom.target)
+    : null;
+  const pendingMoveToTarget = pendingMoveTo
+    ? measurementTargetDetails(tree, pendingMoveTo.target)
+    : null;
 
   const photoFields: Array<{
     slot: 'deviceInstalled' | 'switchboardOverview' | 'labeling';
@@ -1522,14 +1639,33 @@ export function InstallHubMeterPage({
                     <Select
                       id={`meter-assignment-${assignmentIndex + 1}-target`}
                       value={assignment.target.siteAssetId}
-                      onChange={(event) => updateAssignment(assignmentIndex, { target: { kind: 'SITE_ASSET', siteAssetId: event.target.value }, status: 'CONFIRMED' })}
+                      onChange={(event) => chooseSiteAssetTarget(assignmentIndex, event.target.value)}
                     >
                       <option value="">Choose a site asset</option>
-                      {assignmentAssetCandidates(assignment).map((item) => (
-                        <option key={item.id} value={item.id}>{item.assetName} · {siteAssetTypeLabel(item)}</option>
-                      ))}
+                      {assignmentAssetCandidates(assignment).map((item) => {
+                        const occupied = assignmentForAsset(tree, item.id);
+                        const occupiedDevice = occupied ? assignmentDeviceDetails(occupied) : null;
+                        const occupiedLabel = occupied && occupied.meterId !== currentDraft.id
+                          ? ` · currently ${occupiedDevice?.device ? humanDeviceName(occupiedDevice.device) : occupied.meterId}, channel${occupiedDevice?.channelOrdinals.length === 1 ? '' : 's'} ${occupiedDevice?.channelOrdinals.join(', ') || occupied.channelIds.join(', ')}`
+                          : '';
+                        return <option key={item.id} value={item.id}>{item.assetName} · {siteAssetTypeLabel(item)}{occupiedLabel}</option>;
+                      })}
                     </Select>
-                    <FieldHint>Only assets on this meter board’s confirmed supply path and not already measured by another meter are eligible. Showing up to 100 matches.</FieldHint>
+                    <FieldHint>Assets on this switchboard’s confirmed supply path remain visible even when measured elsewhere. Choosing an occupied asset shows the exact device and asks you to approve the reassignment. Showing up to 100 matches.</FieldHint>
+                    {(() => {
+                      if (!assignment.target.siteAssetId) return null;
+                      const occupied = assignmentForAsset(tree, assignment.target.siteAssetId);
+                      if (!occupied || occupied.meterId === currentDraft.id) return null;
+                      const occupiedDevice = assignmentDeviceDetails(occupied);
+                      const targetDetails = measurementTargetDetails(tree, occupied.target);
+                      return (
+                        <InlineNotice>
+                          <span className="font-semibold">Reassignment approved:</span> {targetDetails.label} is currently attached through {occupiedDevice.device ? humanDeviceName(occupiedDevice.device) : occupied.meterId}
+                          {occupiedDevice.installedBoard ? ` on ${occupiedDevice.installedBoard.assetName}` : ''}, channel{occupiedDevice.channelOrdinals.length === 1 ? '' : 's'} {occupiedDevice.channelOrdinals.join(', ') || occupied.channelIds.join(', ')}. Saving moves the asset here and releases the old device’s full group.
+                          {occupiedDevice.href ? <> <Link className="font-semibold underline" href={occupiedDevice.href}>Open current device mapping</Link>.</> : null}
+                        </InlineNotice>
+                      );
+                    })()}
                   </div>
                 ) : null}
                 {assignment.target.kind === 'GRID_BOUNDARY' ? (
@@ -1557,9 +1693,12 @@ export function InstallHubMeterPage({
                     {(draft.wwChannels || []).map((channel, channelIndex) => {
                       if (!channel.purpose || channel.purpose === 'SPARE') return null;
                       const channelId = channel.id || meterChannelId(draft.id, channelIndex);
-                      const usedByAnother = assignmentDrafts.some(
+                      const usedByAnotherIndex = assignmentDrafts.findIndex(
                         (candidate, index) => index !== assignmentIndex && candidate.channelIds.includes(channelId),
                       );
+                      const usedByAnother = usedByAnotherIndex >= 0;
+                      const owningAssignment = usedByAnother ? assignmentDrafts[usedByAnotherIndex] : null;
+                      const owningTarget = owningAssignment ? measurementTargetDetails(tree, owningAssignment.target) : null;
                       const mixedPurpose = Boolean(assignmentPurpose(assignment) && assignmentPurpose(assignment) !== channel.purpose);
                       return (
                         <div key={channelId} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1">
@@ -1569,7 +1708,21 @@ export function InstallHubMeterPage({
                             disabled={usedByAnother || mixedPurpose}
                             onChange={(checked) => toggleAssignmentChannel(assignmentIndex, channelId, checked)}
                           />
-                          {usedByAnother ? <p className="pb-2 pl-8 text-xs text-[var(--amber)]">Used by another group.</p> : null}
+                          {usedByAnother && owningAssignment && owningTarget ? (
+                            <div className="space-y-1 pb-2 pl-8 text-xs leading-5 text-[var(--amber)]">
+                              <p>Used by measurement group {usedByAnotherIndex + 1}: {owningTarget.label} ({owningAssignment.phaseMode.replaceAll('_', ' ').toLowerCase()}).</p>
+                              <Button
+                                variant="secondary"
+                                onClick={() => setPendingDraftChannelMove({
+                                  fromAssignmentId: owningAssignment.id,
+                                  toAssignmentId: assignment.id,
+                                  channelId,
+                                })}
+                              >
+                                Move to this group
+                              </Button>
+                            </div>
+                          ) : null}
                           {mixedPurpose ? <p className="pb-2 pl-8 text-xs text-[var(--amber)]">Choose channels with the same purpose.</p> : null}
                         </div>
                       );
@@ -1624,6 +1777,44 @@ export function InstallHubMeterPage({
           </Button>
         </div>
       </form>
+
+      <ConfirmDialog
+        open={Boolean(pendingAssetRemap)}
+        title={`Move ${pendingRemapTarget?.name || 'this site asset'} to this device?`}
+        description={pendingRemapTarget && pendingRemapDevice
+          ? `${pendingRemapTarget.label} is currently measured by ${pendingRemapDevice.device ? humanDeviceName(pendingRemapDevice.device) : pendingAssetRemap?.existingAssignment.meterId}${pendingRemapDevice.installedBoard ? ` on ${pendingRemapDevice.installedBoard.assetName}` : ''}. This explicit reassignment is applied atomically when you save.`
+          : 'This explicit site-asset reassignment is applied atomically when you save.'}
+        consequences={[
+          pendingRemapDevice?.channelOrdinals.length
+            ? `The old device group using channel${pendingRemapDevice.channelOrdinals.length === 1 ? '' : 's'} ${pendingRemapDevice.channelOrdinals.join(', ')} will be released`
+            : 'The old device measurement group will be released',
+          'The site asset will remain metered and move to the channel group you complete on this device',
+          'No second active assignment will be created',
+        ]}
+        confirmLabel="Approve reassignment"
+        blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before reassigning a site asset.' : undefined}
+        onConfirm={approveAssetRemap}
+        onCancel={() => setPendingAssetRemap(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingDraftChannelMove)}
+        title="Move this channel to the selected measurement group?"
+        description={pendingMoveFromTarget && pendingMoveToTarget
+          ? `The channel is currently part of ${pendingMoveFromTarget.label}. It will move to ${pendingMoveToTarget.label} in this draft.`
+          : 'The channel will move from its current measurement group to this group in the draft.'}
+        consequences={[
+          pendingMoveFromTarget ? `The full ${pendingMoveFromTarget.label} group will be released` : 'The full previous measurement group will be released',
+          pendingMoveFrom?.target.kind === 'SITE_ASSET'
+            ? `${pendingMoveFromTarget?.name || 'The displaced site asset'} will be changed to To be confirmed when saved`
+            : 'The previous target will no longer have this device assignment when saved',
+          'This channel will be selected here; complete the required phase grouping before saving',
+        ]}
+        confirmLabel="Move channel"
+        blockedMessage={tree.installation.status === 'Completed' ? 'Reopen this completed installation before changing channel groups.' : undefined}
+        onConfirm={approveDraftChannelMove}
+        onCancel={() => setPendingDraftChannelMove(null)}
+      />
 
       <ConfirmDialog
         open={confirmDelete}

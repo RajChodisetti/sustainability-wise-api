@@ -62,14 +62,16 @@ post-upload push `syncStage: "complete"`. Metadata pushes return
 For backward compatibility, an absent stage is treated as complete.
 
 New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
-numbers, and hyphens; maximum 16 characters). New unclaimed boards, site assets,
-and meter devices receive rule-2 identities in the form
-`INSTALLATION-ZONE-NN-CUSTOMNAME`, capped at 64 characters. `NN` is a single
-zone-wide sequence shared across all three entity kinds, and retained claims
-prevent reuse after deletion. Mobile may show a provisional offline value, but
-must accept and round-trip the server value after sync. Existing rule-1 claims
-remain frozen. Human board/asset names and meter `customName` remain separately
-editable and do not mutate an already claimed identity.
+numbers, and hyphens; maximum 16 characters). Newly unclaimed records receive
+rule-3 identities. Boards use `INSTALLATION-ZONE-NN-SWITCHBOARD_NAME`; site
+assets and meters use `INSTALLATION-ZONE-NN-TYPE-HUMAN_NAME`, without repeating
+the type when the normalized human name already contains it. Identities are
+capped at 64 characters. `NN` is a single zone-wide sequence shared across all
+three entity kinds, and retained claims prevent reuse after deletion. Mobile may
+show a provisional offline value, but must accept and round-trip the server value
+after sync. Existing rule-1 and rule-2 claims remain frozen. Human board/asset
+names and meter `customName` remain separately editable and do not mutate an
+already claimed identity.
 
 ### User and installation-access endpoints
 

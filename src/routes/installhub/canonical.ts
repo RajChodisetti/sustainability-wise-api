@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.4';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.5';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
-export const DISPLAY_CODE_RULE_VERSION = 2;
+export const DISPLAY_CODE_RULE_VERSION = 3;
 export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
 export const INSTALLATION_SITE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 export const INSTALLATION_ZONE_CODE_MAX_LENGTH = 16;
@@ -2386,6 +2386,40 @@ export function deriveVirtualMeterDefinitions(
   return definitions;
 }
 
+function displayCodeIdentifierSegment(value: string, fallback: string): string {
+  return value
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || fallback;
+}
+
+function segmentSequencePresent(value: string, sequence: string): boolean {
+  const valueSegments = value.split('-');
+  const sequenceSegments = sequence.split('-');
+  return sequenceSegments.length <= valueSegments.length
+    && valueSegments.some((_, start) => sequenceSegments.every(
+      (segment, offset) => valueSegments[start + offset] === segment,
+    ));
+}
+
+function generatedIdentityName(input: {
+  entityType: DisplayCodeClaim['entityType'];
+  typeCode: string;
+  customName: string;
+}): string {
+  const typeCode = displayCodeIdentifierSegment(
+    input.typeCode,
+    input.entityType.toUpperCase(),
+  );
+  const customName = displayCodeIdentifierSegment(input.customName, typeCode);
+  if (input.entityType === 'board' || segmentSequencePresent(customName, typeCode)) {
+    return customName;
+  }
+  return `${typeCode}-${customName}`;
+}
+
 export function allocateDisplayCodes(input: {
   tree: CanonicalInstallationTree;
   existingClaims: DisplayCodeClaim[];
@@ -2523,14 +2557,9 @@ export function allocateDisplayCodes(input: {
       const sequenceText = String(sequence).padStart(2, '0');
       const prefix = `${sitePrefix}-${zone.zoneCode}-${sequenceText}-`;
       const fallbackName = entity.typeCode || entity.entityType;
-      const normalizedCustomName = (entity.customName || fallbackName)
-        .normalize('NFKD')
-        .toUpperCase()
-        .replace(/[^A-Z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        || fallbackName;
+      const identityName = generatedIdentityName(entity);
       const availableNameLength = Math.max(1, DISPLAY_CODE_MAX_LENGTH - prefix.length);
-      const boundedCustomName = normalizedCustomName
+      const boundedCustomName = identityName
         .slice(0, availableNameLength)
         .replace(/-+$/g, '')
         || fallbackName.slice(0, availableNameLength).toUpperCase()

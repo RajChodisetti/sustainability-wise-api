@@ -186,16 +186,20 @@ durable media queue to the current exact installation references so removed or
 replaced failed uploads cannot block the final snapshot. A `file://` or
 `content://` URI must never be persisted by the API.
 
-Canonical naming rule 2 applies only to newly unclaimed boards, site assets,
+Canonical naming rule 3 applies only to newly unclaimed boards, site assets,
 and meter devices. Each zone has a persisted, installation-unique `zoneCode`
-(1–16 uppercase letters/numbers in hyphen-separated groups). Generated entity
-identity is `INSTALLATION-ZONE-NN-CUSTOMNAME`, capped at 64 characters, with one
-retained sequence shared by every entity kind in that zone. Sequence claims are
-never reused after soft deletion. Board/site-asset `assetName` and meter
-`customName` are editable human labels; they seed the suffix before the first
-server claim but do not rewrite a claimed identity later. Offline client values
-remain provisional until sync. Existing rule-1 and explicit override claims are
-immutable compatibility identities and must round-trip unchanged.
+(1–16 uppercase letters/numbers in hyphen-separated groups). A generated board
+identity is `INSTALLATION-ZONE-NN-SWITCHBOARD_NAME`, so it ends with the editable
+switchboard name. Generated site-asset and meter identities are
+`INSTALLATION-ZONE-NN-TYPE-HUMAN_NAME`; when the normalized human name already
+contains the complete type segment, the type is not duplicated. Identities are
+capped at 64 characters, with one retained sequence shared by every entity kind
+in that zone. Sequence claims are never reused after soft deletion.
+Board/site-asset `assetName` and meter `customName` remain separately editable;
+they seed the suffix before the first server claim but do not rewrite a claimed
+identity later. Offline client values remain provisional until sync. Existing
+rule-1, rule-2, and explicit override claims are immutable compatibility
+identities and must round-trip unchanged.
 
 Field App Complete deduplication is exact and scoped by app, installation, entity type,
 entity ID, field name, and SHA-256 checksum. Upload-session creation and
