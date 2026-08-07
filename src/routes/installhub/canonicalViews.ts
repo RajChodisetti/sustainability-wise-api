@@ -8,7 +8,6 @@ import {
   type CanonicalInstallationTree,
   type CanonicalSiteAsset,
   type MeasurementAssignment,
-  type ReadinessIssue,
   type VirtualMeterDefinition,
 } from './canonical.js';
 
@@ -156,6 +155,110 @@ function sourceNodeId(
   return null;
 }
 
+function measurementTargetNodeId(assignment: MeasurementAssignment): string | null {
+  return assignment.target.kind === 'BOARD'
+    ? assignment.target.boardId
+    : assignment.target.kind === 'SITE_ASSET'
+      ? assignment.target.siteAssetId
+      : assignment.target.kind === 'GRID_BOUNDARY'
+        ? assignment.target.gridSupplyId
+        : null;
+}
+
+function boardHasUpstreamBoard(
+  tree: CanonicalInstallationTree,
+  boardId: string,
+  upstreamBoardId: string,
+): boolean {
+  const boardById = new Map(tree.electricalAssets.map((board) => [board.id, board]));
+  let current = boardById.get(boardId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.electricalSource.kind !== 'BOARD') return false;
+    if (current.electricalSource.boardId === upstreamBoardId) return true;
+    current = boardById.get(current.electricalSource.boardId);
+  }
+  return false;
+}
+
+function boardReachesGridSupply(
+  tree: CanonicalInstallationTree,
+  boardId: string,
+  gridSupplyId: string,
+): boolean {
+  const boardById = new Map(tree.electricalAssets.map((board) => [board.id, board]));
+  let current = boardById.get(boardId);
+  const seen = new Set<string>();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    if (current.electricalSource.kind === 'GRID') {
+      return current.electricalSource.gridSupplyId === gridSupplyId;
+    }
+    if (current.electricalSource.kind !== 'BOARD') return false;
+    current = boardById.get(current.electricalSource.boardId);
+  }
+  return false;
+}
+
+/**
+ * A confirmed graph edge is stricter than completion readiness. Readiness is
+ * intentionally TBC-only, while this predicate protects the resolved map from
+ * structurally contradictory measurement relationships.
+ */
+function isSemanticallyConfirmedAssignment(
+  tree: CanonicalInstallationTree,
+  assignment: MeasurementAssignment,
+): boolean {
+  if (assignment.status !== 'CONFIRMED' || assignment.target.kind === 'TBC') return false;
+  const meter = tree.meterDevices.find((candidate) => candidate.id === assignment.meterId);
+  if (!meter || !tree.electricalAssets.some((board) => board.id === meter.installedOnBoardId)) {
+    return false;
+  }
+  const uniqueChannelIds = new Set(assignment.channelIds);
+  const expectedCount = assignment.phaseMode === 'SINGLE_PHASE'
+    ? 1
+    : assignment.phaseMode === 'THREE_PHASE'
+      ? 3
+      : null;
+  if (
+    uniqueChannelIds.size === 0
+    || uniqueChannelIds.size !== assignment.channelIds.length
+    || (expectedCount !== null && uniqueChannelIds.size !== expectedCount)
+  ) return false;
+  const channels = [...uniqueChannelIds].map((channelId) => (
+    meter.channels.find((channel) => channel.id === channelId)
+  ));
+  if (channels.some((channel) => !channel || channel.purpose === 'SPARE')) return false;
+  const purposes = new Set(channels.map((channel) => channel?.purpose));
+  if (purposes.size !== 1) return false;
+  if ([...uniqueChannelIds].some((channelId) => tree.measurementAssignments.some(
+    (candidate) => candidate.id !== assignment.id && candidate.channelIds.includes(channelId),
+  ))) return false;
+
+  const purpose = channels[0]?.purpose;
+  if (assignment.target.kind === 'SITE_ASSET') {
+    const targetSiteAssetId = assignment.target.siteAssetId;
+    const target = tree.siteAssets.find((asset) => asset.id === targetSiteAssetId);
+    return purpose === 'SUB_CIRCUIT'
+      && target?.electricalSource.kind === 'BOARD'
+      && target.electricalSource.boardId === meter.installedOnBoardId;
+  }
+  if (assignment.target.kind === 'BOARD') {
+    const targetBoardId = assignment.target.boardId;
+    const target = tree.electricalAssets.find((board) => board.id === targetBoardId);
+    if (!target) return false;
+    if (purpose === 'MAIN_SUPPLY') return target.id === meter.installedOnBoardId;
+    return purpose === 'SUB_CIRCUIT'
+      && target.id !== meter.installedOnBoardId
+      && boardHasUpstreamBoard(tree, target.id, meter.installedOnBoardId);
+  }
+  const targetGridSupplyId = assignment.target.gridSupplyId;
+  return purpose === 'MAIN_SUPPLY'
+    && tree.gridSupplies.some((supply) => supply.id === targetGridSupplyId)
+    && boardReachesGridSupply(tree, meter.installedOnBoardId, targetGridSupplyId);
+}
+
 function electricalGraph(tree: CanonicalInstallationTree): {
   nodes: ElectricalTreeNode[];
   edges: ElectricalTreeEdge[];
@@ -164,7 +267,6 @@ function electricalGraph(tree: CanonicalInstallationTree): {
   const boardIds = new Set(tree.electricalAssets.map((board) => board.id));
   const supplyIds = new Set(tree.gridSupplies.map((supply) => supply.id));
   const assignmentsByAsset = targetAssignmentsByAsset(tree);
-  const readinessIssues = installationReadiness(tree).issues;
   const nodes: ElectricalTreeNode[] = [
     ...tree.gridSupplies.map((supply): ElectricalTreeNode => ({
       kind: 'GRID',
@@ -199,7 +301,6 @@ function electricalGraph(tree: CanonicalInstallationTree): {
         tree,
         asset,
         assignmentsByAsset.get(asset.id) ?? [],
-        readinessIssues,
       ).kind,
     })),
     ...tree.serverDerived.virtualMeterDefinitions.map((virtual): ElectricalTreeNode => ({
@@ -239,29 +340,55 @@ function electricalGraph(tree: CanonicalInstallationTree): {
   const meterById = new Map(tree.meterDevices.map((meter) => [meter.id, meter]));
   for (const assignment of tree.measurementAssignments) {
     const meter = meterById.get(assignment.meterId);
-    const targetNodeId = assignment.target.kind === 'BOARD'
-      ? assignment.target.boardId
+    const targetNodeId = measurementTargetNodeId(assignment);
+    const targetSiteAssetId = assignment.target.kind === 'SITE_ASSET'
+      ? assignment.target.siteAssetId
+      : null;
+    const targetAsset = targetSiteAssetId
+      ? tree.siteAssets.find((asset) => asset.id === targetSiteAssetId)
+      : undefined;
+    const targetExists = assignment.target.kind === 'BOARD'
+      ? boardIds.has(assignment.target.boardId)
       : assignment.target.kind === 'SITE_ASSET'
-        ? assignment.target.siteAssetId
+        ? Boolean(targetAsset)
         : assignment.target.kind === 'GRID_BOUNDARY'
-          ? assignment.target.gridSupplyId
-          : null;
-    if (meter && targetNodeId) {
+          ? supplyIds.has(assignment.target.gridSupplyId)
+          : false;
+    const sourceExists = Boolean(meter && boardIds.has(meter.installedOnBoardId));
+    const targetCoverageConfirmed = assignment.target.kind !== 'SITE_ASSET'
+      || Boolean(targetAsset && assetCoverageFor(
+        tree,
+        targetAsset,
+        assignmentsByAsset.get(targetAsset.id) ?? [],
+      ).kind === 'DIRECT');
+    if (
+      targetNodeId
+      && targetExists
+      && sourceExists
+      && isSemanticallyConfirmedAssignment(tree, assignment)
+      && targetCoverageConfirmed
+    ) {
       edges.push({
         id: `measures:${assignment.id}`,
-        sourceNodeId: meter.installedOnBoardId,
+        sourceNodeId: meter!.installedOnBoardId,
         targetNodeId,
         relationship: 'MEASURES',
       });
     } else {
+      const isTbc = assignment.status !== 'CONFIRMED' || assignment.target.kind === 'TBC';
+      const missingSource = !isTbc && !sourceExists && targetExists;
       unresolved.push({
         id: `unresolved:measurement:${assignment.id}`,
         subjectType: 'MEASUREMENT_ASSIGNMENT',
         subjectId: assignment.id,
         relation: 'MEASUREMENT',
-        missingEnd: targetNodeId ? 'SOURCE' : 'TARGET',
-        ...(targetNodeId ? { knownNodeId: targetNodeId } : {}),
-        reason: assignment.target.kind === 'TBC' ? 'TBC' : 'ORPHAN',
+        missingEnd: missingSource ? 'SOURCE' : 'TARGET',
+        ...(missingSource && targetNodeId ? { knownNodeId: targetNodeId } : {}),
+        reason: isTbc
+          ? 'TBC'
+          : (!sourceExists || !targetExists)
+            ? 'ORPHAN'
+            : 'INVALID',
       });
     }
   }
@@ -348,37 +475,13 @@ function assetCoverageFor(
   tree: CanonicalInstallationTree,
   asset: CanonicalSiteAsset,
   assignments: MeasurementAssignment[],
-  readinessIssues: ReadinessIssue[],
 ): AssetCoverage {
   const hasDirectAssignments = assignments.length > 0;
-  const legacyMeterPresenceMatches = asset.meterPresent === hasDirectAssignments;
-  const assignmentIds = new Set(assignments.map((assignment) => assignment.id));
-  const meterIds = new Set(assignments.map((assignment) => assignment.meterId));
-  const channelIds = new Set(assignments.flatMap((assignment) => assignment.channelIds));
-  const relationshipInvalid = readinessIssues.some((issue) => {
-    if (issue.severity !== 'ERROR') return false;
-    if (
-      issue.entityType === 'site_asset'
-      && issue.entityId === asset.id
-      && asset.meteringState.kind !== 'TBC'
-      && (issue.code === 'METERING_STATE_INVALID' || issue.code === 'METER_PRESENT_MISMATCH')
-    ) return true;
-    if (issue.entityType === 'measurement_assignment' && assignmentIds.has(issue.entityId)) return true;
-    if (
-      issue.entityType === 'channel'
-      && channelIds.has(issue.entityId)
-      && [
-        'CHANNEL_NOT_FOUND',
-        'CHANNEL_DUPLICATE_ASSIGNMENT',
-        'CHANNEL_PURPOSE_CONFLICT',
-        'METER_CAPABILITY_REQUIRED',
-        'SENSOR_RATING_INVALID',
-      ].includes(issue.code)
-    ) return true;
-    return issue.entityType === 'meter'
-      && meterIds.has(issue.entityId)
-      && ['METER_BOARD_MISMATCH', 'CHANNEL_NOT_FOUND', 'METER_CAPABILITY_REQUIRED'].includes(issue.code);
-  });
+  const relationshipInvalid = assignments.some((assignment) => (
+    assignment.target.kind !== 'SITE_ASSET'
+    || assignment.target.siteAssetId !== asset.id
+    || !isSemanticallyConfirmedAssignment(tree, assignment)
+  ));
   if (asset.meteringState.kind === 'METERED') {
     const declaredIds = new Set(asset.meteringState.measurementAssignmentIds);
     const actualIds = new Set(assignments.map((assignment) => assignment.id));
@@ -386,7 +489,7 @@ function assetCoverageFor(
       && actualIds.size === 1
       && [...declaredIds].every((id) => actualIds.has(id))
       && assignments[0]?.status === 'CONFIRMED';
-    return exactSingleAssignment && legacyMeterPresenceMatches && !relationshipInvalid
+    return exactSingleAssignment && !relationshipInvalid
       ? { kind: 'DIRECT', measurementAssignmentIds: [...actualIds].sort() }
       : {
           kind: 'INVALID',
@@ -395,7 +498,7 @@ function assetCoverageFor(
             : 'METERING_STATE_MISMATCH',
         };
   }
-  if (hasDirectAssignments || !legacyMeterPresenceMatches || relationshipInvalid) {
+  if (hasDirectAssignments || relationshipInvalid) {
     return {
       kind: 'INVALID',
       reason: relationshipInvalid
@@ -420,12 +523,11 @@ export function buildAllAssetsView(
   recordVersionNumber: number,
 ) {
   const assignmentsByAsset = targetAssignmentsByAsset(tree);
-  const readinessIssues = installationReadiness(tree).issues;
   const zoneNames = new Map(tree.zones.map((zone) => [zone.id, zone.zoneName]));
   const boardNames = new Map(tree.electricalAssets.map((board) => [board.id, board.assetName]));
   const assets = tree.siteAssets.map((asset) => {
     const assignments = assignmentsByAsset.get(asset.id) ?? [];
-    const coverage = assetCoverageFor(tree, asset, assignments, readinessIssues);
+    const coverage = assetCoverageFor(tree, asset, assignments);
     return {
       id: asset.id,
       name: asset.assetName,
@@ -655,7 +757,7 @@ export function buildInstallationMappingExport(
       .sort((left, right) => left.id.localeCompare(right.id)),
     assetCoverage: tree.siteAssets.map((asset) => {
       const assignments = assignmentsByAsset.get(asset.id) ?? [];
-      const coverage = assetCoverageFor(tree, asset, assignments, readiness.issues);
+      const coverage = assetCoverageFor(tree, asset, assignments);
       if (coverage.kind === 'DIRECT') {
         return {
           assetId: asset.id,

@@ -53,7 +53,6 @@ import {
   meterChannelId,
   meterDependencyPreview,
   meterEditorHasChanges,
-  meterBoardsForAsset,
   legacySiteAssetType,
   reachableGridSuppliesForBoard,
   replaceMeterAssignments,
@@ -76,7 +75,7 @@ import {
   nextMeterChannelId,
   renamedMeterCapabilities,
   showsWattwatchersCommissioningSections,
-  unassignedChannelMessage,
+  structurallySavableMeterAssignments,
 } from '@/modules/installhub/lib/meterPresentation';
 
 const prestartQuestions: Array<[keyof WattwatcherPrestart, string]> = [
@@ -521,57 +520,82 @@ export function InstallHubMeterPage({
   async function save(event?: FormEvent) {
     event?.preventDefault();
     const nextErrors: Array<{ id?: string; message: string }> = [];
-    if (!visibleDeviceName.trim()) nextErrors.push({ id: 'meter-name', message: 'Enter the device name.' });
-    else if (visibleDeviceName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'meter-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the device name.` });
-    if (!currentDraft.deviceId.trim()) nextErrors.push({ id: 'meter-serial', message: 'Enter or scan the device ID / serial.' });
-    if (currentDraft.deviceType === 'Other' && !currentDraft.customModelName?.trim()) {
-      nextErrors.push({ id: 'meter-custom-model', message: 'Enter the custom device model.' });
-    }
-    if (currentDraft.deviceFamily === 'OTHER' && !currentDraft.customManufacturerName?.trim()) {
-      nextErrors.push({ id: 'meter-custom-manufacturer', message: 'Enter the custom manufacturer.' });
-    }
+    if (visibleDeviceName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'meter-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the device name.` });
     const channels = currentDraft.wwChannels || [];
-    const expectedChannelCount = currentDraft.deviceType === 'A3RM' ? 3 : currentDraft.deviceType === 'A6M' ? 6 : null;
-    if (expectedChannelCount !== null && channels.length !== expectedChannelCount) {
-      nextErrors.push({ id: 'meter-channels', message: `${currentDraft.deviceType} requires exactly ${expectedChannelCount} channels.` });
-    } else if (currentDraft.deviceType === 'Other' && channels.length < 1) {
-      nextErrors.push({ id: 'meter-channels', message: 'Add at least one channel for the custom device.' });
-    } else if (
-      currentDraft.deviceType === 'Other'
-      && assetReturn
-      && !channels.some((channel) => channel.purpose && channel.purpose !== 'SPARE')
-    ) {
-      nextErrors.push({ id: 'meter-channels', message: 'Mark at least one custom channel as active before returning to the site asset.' });
-    }
-    channels.forEach((channel, index) => {
-      if (channel.purpose !== 'SPARE' && channel.loadType === 'Other' && !channel.customLoadTypeName?.trim()) {
-        nextErrors.push({ id: `meter-channel-${index + 1}-custom`, message: `Enter the custom load type for channel ${index + 1}.` });
-      }
-      if (currentDraft.deviceType === 'Other') {
-        const capabilityEntries = Object.entries(channel.capabilities || {});
-        if (
-          capabilityEntries.length === 0
-          || capabilityEntries.some(([key, value]) => !key.trim() || (typeof value === 'string' && !value.trim()) || value === null || value === undefined)
-        ) {
-          nextErrors.push({
-            id: `meter-channel-${index + 1}-capabilities`,
-            message: `Add at least one named, non-empty capability for custom channel ${index + 1}.`,
-          });
-        }
-      }
-    });
     const purposeByChannelId = new Map(channels.map((channel, index) => [
       channel.id || meterChannelId(currentDraft.id, index),
       channel.purpose || 'SPARE',
     ]));
-    const usedIds = new Set<string>();
     const usedSiteAssetTargets = new Set<string>();
-    assignmentDrafts.forEach((assignment, index) => {
-      if (assignment.target.kind === 'SITE_ASSET') {
-        const existingAssignment = assignmentForAsset(tree, assignment.target.siteAssetId);
-        if (usedSiteAssetTargets.has(assignment.target.siteAssetId)) {
-          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'A site asset may have only one active measurement assignment.' });
+    const availableBoardTargetIds = new Set(tree.electricalAssets.map((candidate) => candidate.id));
+    const allSiteAssetTargets = [...tree.siteAssets, ...stagedAssets];
+    const availableSiteAssetTargetIds = new Set(allSiteAssetTargets
+      .filter((candidate) => {
+        const source = assetElectricalSource(candidate);
+        return source.kind === 'BOARD' && source.boardId === boardId;
+      })
+      .map((candidate) => candidate.id));
+    const availableGridTargetIds = new Set((tree.gridSupplies || []).map((candidate) => candidate.id));
+    const assignmentsToSave = structurallySavableMeterAssignments(
+      structuredClone(assignmentDrafts),
+      channels,
+    ).map((assignment, index) => {
+      let normalizeToTbc = assignment.target.kind === 'TBC';
+      const channelIds = assignment.channelIds;
+      const purposes = new Set(channelIds.map((channelId) => purposeByChannelId.get(channelId)));
+      if (purposes.size !== 1 || purposes.has('SPARE') || purposes.has(undefined)) normalizeToTbc = true;
+      const purpose = purposes.size === 1 ? [...purposes][0] : undefined;
+      if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) {
+        normalizeToTbc = true;
+      }
+      if (purpose === 'MAIN_SUPPLY' && assignment.target.kind === 'BOARD' && assignment.target.boardId !== boardId) {
+        normalizeToTbc = true;
+      }
+      if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'GRID_BOUNDARY') {
+        normalizeToTbc = true;
+      }
+      if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'BOARD' && (
+        assignment.target.boardId === boardId
+        || !boardSupplyPath(tree, assignment.target.boardId).includes(boardId)
+      )) {
+        normalizeToTbc = true;
+      }
+      if (assignment.target.kind === 'BOARD' && (
+        !assignment.target.boardId
+        || !availableBoardTargetIds.has(assignment.target.boardId)
+      )) {
+        normalizeToTbc = true;
+      }
+      if (assignment.target.kind === 'SITE_ASSET' && (
+        !assignment.target.siteAssetId
+        || usedSiteAssetTargets.has(assignment.target.siteAssetId)
+      )) {
+        normalizeToTbc = true;
+      }
+      if (assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId) {
+        const baselineAssignment = editorBaseline?.assignments.find((candidate) => (
+          candidate.id === assignment.id
+        ));
+        const unchangedHistoricalTarget = !availableSiteAssetTargetIds.has(assignment.target.siteAssetId)
+          && baselineAssignment !== undefined
+          && assignmentApprovalSignature(baselineAssignment) === assignmentApprovalSignature(assignment);
+        if (!availableSiteAssetTargetIds.has(assignment.target.siteAssetId) && !unchangedHistoricalTarget) {
+          normalizeToTbc = true;
         }
+      }
+      if (assignment.target.kind === 'GRID_BOUNDARY' && (
+        !assignment.target.gridSupplyId
+        || !availableGridTargetIds.has(assignment.target.gridSupplyId)
+      )) {
+        normalizeToTbc = true;
+      } else if (assignment.target.kind === 'GRID_BOUNDARY') {
+        const gridSupplyId = assignment.target.gridSupplyId;
+        if (!reachableGridSupplies.some((supply) => supply.id === gridSupplyId)) {
+          normalizeToTbc = true;
+        }
+      }
+      if (!normalizeToTbc && assignment.target.kind === 'SITE_ASSET') {
+        const existingAssignment = assignmentForAsset(tree, assignment.target.siteAssetId);
         if (
           existingAssignment
           && existingAssignment.meterId !== currentDraft.id
@@ -581,66 +605,20 @@ export function InstallHubMeterPage({
         }
         usedSiteAssetTargets.add(assignment.target.siteAssetId);
       }
-      const expected = assignment.phaseMode === 'SINGLE_PHASE' ? 1 : assignment.phaseMode === 'THREE_PHASE' ? 3 : assignment.channelIds.length;
-      if (!expected || assignment.channelIds.length !== expected || new Set(assignment.channelIds).size !== expected) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}`, message: `Choose ${assignment.phaseMode === 'THREE_PHASE' ? 'three' : assignment.phaseMode === 'SINGLE_PHASE' ? 'one' : 'one or more'} distinct channel${assignment.phaseMode === 'SINGLE_PHASE' ? '' : 's'} for assignment ${index + 1}.` });
-      }
-      if (assignment.channelIds.some((channelId) => usedIds.has(channelId))) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}`, message: `Assignment ${index + 1} reuses a channel from another active assignment.` });
-      }
-      assignment.channelIds.forEach((channelId) => usedIds.add(channelId));
-      const purposes = new Set(assignment.channelIds.map((channelId) => purposeByChannelId.get(channelId)));
-      if (purposes.size > 1 || purposes.has('SPARE') || purposes.has(undefined)) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}`, message: `Assignment ${index + 1} must use channels with one shared non-spare purpose.` });
-      }
-      const purpose = purposes.size === 1 ? [...purposes][0] : undefined;
-      if (purpose === 'MAIN_SUPPLY' && !['BOARD', 'GRID_BOUNDARY', 'TBC'].includes(assignment.target.kind)) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Main-supply channels require this installed switchboard, a Grid boundary, or an explicit TBC target.' });
-      }
-      if (purpose === 'MAIN_SUPPLY' && assignment.target.kind === 'BOARD' && assignment.target.boardId !== boardId) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'A main-supply board total must target the switchboard where this device is installed.' });
-      }
-      if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'GRID_BOUNDARY') {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Sub-circuit channels cannot target a Grid boundary.' });
-      }
-      if (purpose === 'SUB_CIRCUIT' && assignment.target.kind === 'BOARD' && (
-        assignment.target.boardId === boardId
-        || !boardSupplyPath(tree, assignment.target.boardId).includes(boardId)
-      )) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Sub-circuit channels must target a downstream switchboard or site asset.' });
-      }
-      if (assignment.target.kind === 'BOARD' && !assignment.target.boardId) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: `Choose the target switchboard for assignment ${index + 1}.` });
-      }
-      if (assignment.target.kind === 'SITE_ASSET' && !assignment.target.siteAssetId) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: `Choose the target site asset for assignment ${index + 1}.` });
-      }
-      if (assignment.target.kind === 'GRID_BOUNDARY' && !assignment.target.gridSupplyId) {
-        nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: `Choose the Grid boundary for assignment ${index + 1}.` });
-      }
-      if (assignment.target.kind === 'GRID_BOUNDARY') {
-        const gridSupplyId = assignment.target.gridSupplyId;
-        if (!reachableGridSupplies.some((supply) => supply.id === gridSupplyId)) {
-          nextErrors.push({ id: `meter-assignment-${index + 1}-target`, message: 'Choose a Grid boundary reachable upstream from this device’s installed switchboard.' });
-        }
-      }
+      return {
+        ...assignment,
+        channelIds,
+        ...(normalizeToTbc
+          ? { target: { kind: 'TBC' as const }, status: 'TBC' as const }
+          : { status: 'CONFIRMED' as const }),
+      };
     });
-    const unassigned = [...purposeByChannelId].filter(
-      ([channelId, purpose]) => purpose !== 'SPARE' && !usedIds.has(channelId),
-    );
-    if (unassigned.length && !assetReturn) {
-      nextErrors.push({
-        id: 'meter-assignments',
-        message: unassignedChannelMessage(channels, unassigned.map(([channelId]) => channelId)),
-      });
-    }
     setErrors(nextErrors);
     if (nextErrors.length) {
       document.getElementById(nextErrors[0].id || '')?.focus();
       toast.error('Check the highlighted metering fields.');
       return;
     }
-    const assignmentsToSave = structuredClone(assignmentDrafts);
     const stagedAssetsToSave = structuredClone(stagedAssets);
     const approvedCrossMeterAssignmentsToSave = new Map(approvedCrossMeterAssignments);
     setBusy(true);
@@ -1097,7 +1075,7 @@ export function InstallHubMeterPage({
     if (busy) return;
     const defaultType = 'HVAC';
     setAssetQuickAdd(request);
-    setQuickAssetZoneId('');
+    setQuickAssetZoneId(board!.zoneId);
     setQuickAssetTypeCode(defaultType);
     setQuickAssetName(defaultCustomNameForType(SITE_ASSET_TYPE_OPTIONS, defaultType));
     setQuickAssetCustomType('');
@@ -1137,13 +1115,8 @@ export function InstallHubMeterPage({
     if (!tree.zones.some((candidate) => candidate.id === quickAssetZoneId)) {
       nextErrors.push({ id: 'quick-asset-zone', message: 'Choose the physical zone where the asset is located.' });
     }
-    if (!quickAssetName.trim()) {
-      nextErrors.push({ id: 'quick-asset-name', message: 'Enter the site asset name.' });
-    } else if (quickAssetName.trim().length > ENTITY_NAME_MAX_LENGTH) {
+    if (quickAssetName.trim().length > ENTITY_NAME_MAX_LENGTH) {
       nextErrors.push({ id: 'quick-asset-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the site asset name.` });
-    }
-    if (quickAssetTypeCode === 'OTHER' && !quickAssetCustomType.trim()) {
-      nextErrors.push({ id: 'quick-asset-custom-type', message: 'Enter the custom site asset type.' });
     }
     setQuickAssetErrors(nextErrors);
     if (nextErrors.length) {
@@ -1154,7 +1127,11 @@ export function InstallHubMeterPage({
     const namingTree = structuredClone(tree);
     namingTree.siteAssets.push(...structuredClone(stagedAssets));
     const created = createSiteAsset(installationId, quickAssetZoneId);
-    created.assetName = quickAssetName.trim();
+    created.assetName = quickAssetName.trim() || defaultCustomNameForType(
+      SITE_ASSET_TYPE_OPTIONS,
+      quickAssetTypeCode,
+      quickAssetCustomType,
+    );
     created.typeCode = quickAssetTypeCode;
     created.assetType = legacySiteAssetType(quickAssetTypeCode);
     created.customTypeName = quickAssetTypeCode === 'OTHER' ? quickAssetCustomType.trim() : null;
@@ -1216,10 +1193,24 @@ export function InstallHubMeterPage({
     return [...tree.siteAssets, ...stagedAssets]
       .filter((item) => {
         if (item.id === selectedId) return true;
-        if (assetElectricalSource(item).kind !== 'BOARD') return false;
-        return meterBoardsForAsset(tree, item).some((candidate) => candidate.id === boardId);
+        const source = assetElectricalSource(item);
+        return source.kind === 'BOARD' && source.boardId === boardId;
       })
       .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  function isHistoricalOffBoardAssignment(assignment: MeasurementAssignment): boolean {
+    if (assignment.target.kind !== 'SITE_ASSET') return false;
+    const siteAssetId = assignment.target.siteAssetId;
+    const target = tree.siteAssets.find((item) => item.id === siteAssetId);
+    if (!target) return false;
+    const source = assetElectricalSource(target);
+    if (source.kind === 'BOARD' && source.boardId === boardId) return false;
+    const baselineAssignment = editorBaseline?.assignments.find((candidate) => (
+      candidate.id === assignment.id
+    ));
+    return baselineAssignment !== undefined
+      && assignmentApprovalSignature(baselineAssignment) === assignmentApprovalSignature(assignment);
   }
 
   function draftMeasurementTargetDetails(target: MeasurementAssignment['target']) {
@@ -1493,14 +1484,14 @@ export function InstallHubMeterPage({
           <h2 className="font-extrabold text-[var(--text)]">Device identity</h2>
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
-              <FieldLabel htmlFor="meter-family">Device family *</FieldLabel>
+              <FieldLabel htmlFor="meter-family">Device family</FieldLabel>
               <Select id="meter-family" value={draft.deviceFamily || 'WATTWATCHERS'} disabled={Boolean(commissionedForm) || fixedOtherWorkflow} onChange={(event) => chooseDeviceFamily(event.target.value as 'WATTWATCHERS' | 'OTHER')}>
                 <option value="WATTWATCHERS">Wattwatchers</option>
                 <option value="OTHER">Other manufacturer</option>
               </Select>
             </div>
             <div>
-              <FieldLabel htmlFor="meter-model">Device model *</FieldLabel>
+              <FieldLabel htmlFor="meter-model">Device model</FieldLabel>
               <Select
                 id="meter-model"
                 value={draft.deviceType}
@@ -1515,24 +1506,23 @@ export function InstallHubMeterPage({
             </div>
             {draft.deviceFamily === 'OTHER' ? (
               <div>
-                <FieldLabel htmlFor="meter-custom-manufacturer">Manufacturer *</FieldLabel>
+                <FieldLabel htmlFor="meter-custom-manufacturer">Manufacturer</FieldLabel>
                 <Input id="meter-custom-manufacturer" value={draft.customManufacturerName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-manufacturer')} onChange={(event) => setMeterIdentityDetail('customManufacturerName', event.target.value)} />
                 <FieldError message={errors.find((item) => item.id === 'meter-custom-manufacturer')?.message} />
               </div>
             ) : null}
             {draft.deviceType === 'Other' ? (
               <div>
-                <FieldLabel htmlFor="meter-custom-model">Custom model *</FieldLabel>
+                <FieldLabel htmlFor="meter-custom-model">Custom model</FieldLabel>
                 <Input id="meter-custom-model" value={draft.customModelName ?? ''} disabled={Boolean(commissionedForm)} aria-invalid={errors.some((item) => item.id === 'meter-custom-model')} onChange={(event) => setMeterIdentityDetail('customModelName', event.target.value)} />
                 <FieldError message={errors.find((item) => item.id === 'meter-custom-model')?.message} />
               </div>
             ) : null}
             <div>
-              <FieldLabel htmlFor="meter-name">Device name *</FieldLabel>
+              <FieldLabel htmlFor="meter-name">Device name</FieldLabel>
               <Input
                 id="meter-name"
                 value={visibleDeviceName}
-                required
                 maxLength={ENTITY_NAME_MAX_LENGTH}
                 aria-invalid={errors.some((item) => item.id === 'meter-name')}
                 onChange={(event) => setDraft((current) => current ? {
@@ -1553,7 +1543,7 @@ export function InstallHubMeterPage({
               </FieldHint>
             </div>
             <div>
-              <FieldLabel>Device ID / serial *</FieldLabel>
+              <FieldLabel>Device ID / serial</FieldLabel>
               <div id="meter-serial" tabIndex={-1}>
                 <ScannerInput value={draft.deviceId} onChange={(value) => set('deviceId', value)} modes={['barcode', 'qr']} disabled={Boolean(commissionedForm)} />
               </div>
@@ -1672,7 +1662,7 @@ export function InstallHubMeterPage({
                     <span>
                       {expectedChannelCount === null
                         ? 'Channel ordinals must be unique positive numbers in display order.'
-                        : `${currentDraft.deviceType} requires exactly ${expectedChannelCount} channels numbered 1 through ${expectedChannelCount}.`}
+                        : `${currentDraft.deviceType} normally uses ${expectedChannelCount} channels numbered 1 through ${expectedChannelCount}.`}
                     </span>
                     {commissionedForm ? (
                       <LinkButton
@@ -1760,7 +1750,7 @@ export function InstallHubMeterPage({
                       </div>
                       {channel.loadType === 'Other' ? (
                         <div>
-                          <FieldLabel htmlFor={`meter-channel-${index + 1}-custom`}>Custom load type *</FieldLabel>
+                          <FieldLabel htmlFor={`meter-channel-${index + 1}-custom`}>Custom load type</FieldLabel>
                           <Input
                             id={`meter-channel-${index + 1}-custom`}
                             value={channel.customLoadTypeName ?? ''}
@@ -1941,7 +1931,9 @@ export function InstallHubMeterPage({
             <p className="mt-3 text-sm text-[var(--text-sub)]">Mark a channel as “Main board supply” or “Sub-circuit / asset” to create an assignment.</p>
           ) : null}
           <div className="mt-4 space-y-4">
-            {assignmentDrafts.map((assignment, assignmentIndex) => (
+            {assignmentDrafts.map((assignment, assignmentIndex) => {
+              const historicalOffBoard = isHistoricalOffBoardAssignment(assignment);
+              return (
               <div
                 key={assignment.id}
                 id={`meter-assignment-${assignmentIndex + 1}`}
@@ -1950,16 +1942,34 @@ export function InstallHubMeterPage({
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <h3 className="font-bold text-[var(--text)]">Measurement group {assignmentIndex + 1}</h3>
-                  <Button variant="ghost" className="text-[var(--red)]" onClick={() => setAssignmentDrafts((current) => current.filter((_, index) => index !== assignmentIndex))}>
-                    <Icon name="trash" size={16} />Remove
-                  </Button>
+                  {historicalOffBoard ? (
+                    <Button
+                      variant="secondary"
+                      onClick={() => updateAssignment(assignmentIndex, {
+                        target: { kind: 'TBC' },
+                        status: 'TBC',
+                      })}
+                    >
+                      Convert target to TBC
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" className="text-[var(--red)]" onClick={() => setAssignmentDrafts((current) => current.filter((_, index) => index !== assignmentIndex))}>
+                      <Icon name="trash" size={16} />Remove
+                    </Button>
+                  )}
                 </div>
+                {historicalOffBoard ? (
+                  <InlineNotice tone="warning">
+                    This historical asset is not directly supplied by this meter’s installed switchboard. The mapping is preserved read-only; convert its target to TBC before choosing a replacement.
+                  </InlineNotice>
+                ) : null}
                 <div className="grid gap-x-4 lg:grid-cols-3">
                   <div>
                     <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-phase`}>Phase grouping</FieldLabel>
                     <Select
                       id={`meter-assignment-${assignmentIndex + 1}-phase`}
                       value={assignment.phaseMode}
+                      disabled={historicalOffBoard}
                       onChange={(event) => updateAssignment(assignmentIndex, {
                         phaseMode: event.target.value as MeasurementAssignment['phaseMode'],
                         channelIds: [],
@@ -1975,6 +1985,7 @@ export function InstallHubMeterPage({
                     <Select
                       id={`meter-assignment-${assignmentIndex + 1}-kind`}
                       value={assignment.target.kind}
+                      disabled={historicalOffBoard}
                       onChange={(event) => chooseAssignmentTarget(assignmentIndex, event.target.value as 'BOARD' | 'GRID_BOUNDARY' | 'SITE_ASSET' | 'TBC')}
                     >
                       <option value="TBC">To be confirmed</option>
@@ -1993,6 +2004,7 @@ export function InstallHubMeterPage({
                     <Select
                       id={`meter-assignment-${assignmentIndex + 1}-direction`}
                       value={assignment.direction}
+                      disabled={historicalOffBoard}
                       onChange={(event) => updateAssignment(assignmentIndex, { direction: event.target.value as MeasurementAssignment['direction'] })}
                     >
                       <option value="CONSUMPTION">Consumption</option>
@@ -2004,10 +2016,11 @@ export function InstallHubMeterPage({
 
                 {assignment.target.kind === 'BOARD' ? (
                   <div>
-                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured switchboard *</FieldLabel>
+                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured switchboard</FieldLabel>
                     <SearchableSelect
                       id={`meter-assignment-${assignmentIndex + 1}-target`}
                       value={assignment.target.boardId}
+                      disabled={historicalOffBoard}
                       options={assignmentBoardCandidates(assignment).map((item) => {
                         const itemZone = tree.zones.find((candidate) => candidate.id === item.zoneId);
                         return {
@@ -2025,10 +2038,11 @@ export function InstallHubMeterPage({
                 ) : null}
                 {assignment.target.kind === 'SITE_ASSET' ? (
                   <div>
-                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured site asset *</FieldLabel>
+                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured site asset</FieldLabel>
                     <SearchableSelect
                       id={`meter-assignment-${assignmentIndex + 1}-target`}
                       value={assignment.target.siteAssetId}
+                      disabled={historicalOffBoard}
                       options={assignmentAssetCandidates(assignment).map((item) => {
                         const occupied = assignmentForAsset(tree, item.id);
                         const occupiedDevice = occupied ? assignmentDeviceDetails(occupied) : null;
@@ -2046,7 +2060,7 @@ export function InstallHubMeterPage({
                       emptyMessage="No eligible site assets match this search."
                       onChange={(value) => chooseSiteAssetTarget(assignmentIndex, value)}
                     />
-                    <FieldHint>Assets on this switchboard’s confirmed supply path remain visible even when measured elsewhere. Choosing an occupied asset shows the exact device and asks you to approve the reassignment. Search and choose in one field; up to 100 matches are shown.</FieldHint>
+                    <FieldHint>Only assets directly supplied by this meter’s installed switchboard are eligible. Choosing an occupied asset shows the exact device and asks you to approve the reassignment. Search and choose in one field; up to 100 matches are shown.</FieldHint>
                     {(() => {
                       if (!assignment.target.siteAssetId) return null;
                       const occupied = assignmentForAsset(tree, assignment.target.siteAssetId);
@@ -2078,10 +2092,11 @@ export function InstallHubMeterPage({
                 ) : null}
                 {assignment.target.kind === 'GRID_BOUNDARY' ? (
                   <div>
-                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured Grid boundary *</FieldLabel>
+                    <FieldLabel htmlFor={`meter-assignment-${assignmentIndex + 1}-target`}>Measured Grid boundary</FieldLabel>
                     <Select
                       id={`meter-assignment-${assignmentIndex + 1}-target`}
                       value={assignment.target.gridSupplyId}
+                      disabled={historicalOffBoard}
                       onChange={(event) => updateAssignment(assignmentIndex, { target: { kind: 'GRID_BOUNDARY', gridSupplyId: event.target.value }, status: 'CONFIRMED' })}
                     >
                       {reachableGridSupplies.map((supply) => (
@@ -2096,7 +2111,7 @@ export function InstallHubMeterPage({
                 ) : null}
 
                 <fieldset id={`meter-assignment-${assignmentIndex + 1}-channels`} className="mt-4" tabIndex={-1}>
-                  <legend className="text-sm font-bold text-[var(--text)]">Measured channels in this group *</legend>
+                  <legend className="text-sm font-bold text-[var(--text)]">Measured channels in this group</legend>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
                     {(draft.wwChannels || []).map((channel, channelIndex) => {
                       if (!channel.purpose || channel.purpose === 'SPARE') return null;
@@ -2113,7 +2128,7 @@ export function InstallHubMeterPage({
                           <Checkbox
                             label={`Channel ${channelIndex + 1} — ${channel.description || channel.loadType || 'Sub-circuit'}`}
                             checked={assignment.channelIds.includes(channelId)}
-                            disabled={usedByAnother || mixedPurpose}
+                            disabled={historicalOffBoard || usedByAnother || mixedPurpose}
                             onChange={(checked) => toggleAssignmentChannel(assignmentIndex, channelId, checked)}
                           />
                           {usedByAnother && owningAssignment && owningTarget ? (
@@ -2140,7 +2155,8 @@ export function InstallHubMeterPage({
                 <FieldError message={errors.find((item) => item.id === `meter-assignment-${assignmentIndex + 1}`)?.message} />
                 <FieldError message={errors.find((item) => item.id === `meter-assignment-${assignmentIndex + 1}-target`)?.message} />
               </div>
-            ))}
+              );
+            })}
           </div>
           </div>
         </Card>
@@ -2197,7 +2213,7 @@ export function InstallHubMeterPage({
             : 'Create the physical asset now, then choose the channel or channels measured by its new group.'}
         consequences={[
           `Its confirmed electrical supply will be ${board.assetName}`,
-          'Its physical zone is recorded separately and must be chosen below',
+          'Its physical zone defaults to this meter’s zone and can be changed below',
           'The asset and its measurement assignment are saved atomically when you save the meter',
         ]}
         confirmLabel="Create and select asset"
@@ -2214,7 +2230,7 @@ export function InstallHubMeterPage({
       >
         <div className="space-y-3">
           <div>
-            <FieldLabel htmlFor="quick-asset-zone">Physical zone *</FieldLabel>
+            <FieldLabel htmlFor="quick-asset-zone">Physical zone</FieldLabel>
             <SearchableSelect
               id="quick-asset-zone"
               value={quickAssetZoneId}
@@ -2225,7 +2241,6 @@ export function InstallHubMeterPage({
               }))}
               placeholder="Search and choose the asset’s physical zone"
               emptyMessage="No physical zones match this search."
-              required
               disabled={busy}
               invalid={quickAssetErrors.some((item) => item.id === 'quick-asset-zone')}
               describedBy="quick-asset-zone-hint quick-asset-zone-error"
@@ -2235,18 +2250,17 @@ export function InstallHubMeterPage({
             <FieldError id="quick-asset-zone-error" message={quickAssetErrors.find((item) => item.id === 'quick-asset-zone')?.message} />
           </div>
           <div>
-            <FieldLabel htmlFor="quick-asset-type">Asset type *</FieldLabel>
+            <FieldLabel htmlFor="quick-asset-type">Asset type</FieldLabel>
             <Select id="quick-asset-type" value={quickAssetTypeCode} disabled={busy} onChange={(event) => changeQuickAssetType(event.target.value)}>
               {SITE_ASSET_TYPE_OPTIONS.map((option) => <option key={option.code} value={option.code}>{option.label}</option>)}
             </Select>
           </div>
           {quickAssetTypeCode === 'OTHER' ? (
             <div>
-              <FieldLabel htmlFor="quick-asset-custom-type">Custom asset type *</FieldLabel>
+              <FieldLabel htmlFor="quick-asset-custom-type">Custom asset type</FieldLabel>
               <Input
                 id="quick-asset-custom-type"
                 value={quickAssetCustomType}
-                required
                 disabled={busy}
                 aria-invalid={quickAssetErrors.some((item) => item.id === 'quick-asset-custom-type')}
                 onChange={(event) => changeQuickAssetCustomType(event.target.value)}
@@ -2255,11 +2269,10 @@ export function InstallHubMeterPage({
             </div>
           ) : null}
           <div>
-            <FieldLabel htmlFor="quick-asset-name">Site asset name *</FieldLabel>
+            <FieldLabel htmlFor="quick-asset-name">Site asset name</FieldLabel>
             <Input
               id="quick-asset-name"
               value={quickAssetName}
-              required
               disabled={busy}
               maxLength={ENTITY_NAME_MAX_LENGTH}
               aria-invalid={quickAssetErrors.some((item) => item.id === 'quick-asset-name')}
@@ -2308,7 +2321,7 @@ export function InstallHubMeterPage({
           pendingMoveFrom?.target.kind === 'SITE_ASSET'
             ? `${pendingMoveFromTarget?.name || 'The displaced site asset'} will be changed to To be confirmed when saved`
             : 'The previous target will no longer have this device assignment when saved',
-          'This channel will be selected here; complete the required phase grouping before saving',
+          'This channel will be selected here; add any other observed phase channels if applicable',
         ]}
         confirmLabel="Move channel"
         busy={busy}

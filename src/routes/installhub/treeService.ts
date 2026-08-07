@@ -15,7 +15,7 @@ import {
   ihZones,
 } from '../../db/schema/installhub.js';
 import { recordVersions } from '../../db/schema/shared.js';
-import { AppError, conflict } from '../../utils/errors.js';
+import { conflict } from '../../utils/errors.js';
 import {
   installHubElectricalPhotoFieldReferences,
   installHubFormPhotoFieldReferences,
@@ -40,6 +40,7 @@ import {
   deriveVirtualMeterDefinitions,
   installationReadiness,
   normalizeInstallationTreeV2,
+  projectCanonicalOptionalDefaults,
   stableStringify,
   type CanonicalBoard,
   type CanonicalFormSubmission,
@@ -58,7 +59,6 @@ import {
   buildInstallationMappingExport,
   buildMeteringView,
 } from './canonicalViews.js';
-import { validateInstallHubFormContract } from './formContract.js';
 import { classifyLegacyMeterLoadType } from './legacyBackfill.js';
 
 // Drizzle transactions expose the same query builder surface used here. This
@@ -345,8 +345,9 @@ export async function loadCanonicalInstallationTree(
     })).sort((left, right) => left.id.localeCompare(right.id)),
     serverDerived: { virtualMeterDefinitions: [] },
   };
-  tree.serverDerived.virtualMeterDefinitions = deriveVirtualMeterDefinitions(tree);
-  return tree;
+  const projected = projectCanonicalOptionalDefaults(tree);
+  projected.serverDerived.virtualMeterDefinitions = deriveVirtualMeterDefinitions(projected);
+  return projected;
 }
 
 function boardTypeLabel(code: string, custom: string | null | undefined): string {
@@ -1569,70 +1570,26 @@ export async function canonicalEvidenceResolution(
   return resolveCanonicalEvidence({ tree, photos });
 }
 
-export function canonicalCompletionFormIssues(
-  tree: CanonicalInstallationTree,
-): ReadinessIssue[] {
-  return tree.formSubmissions.flatMap((form): ReadinessIssue[] => {
-    if (form.status !== 'Completed') return [];
-    try {
-      validateInstallHubFormContract({
-        formType: form.formType,
-        schemaVersion: form.schemaVersion,
-        status: form.status,
-        answers: form.answers,
-        attachments: form.attachments,
-        syncStage: 'complete',
-        // Readiness operates on forms loaded from persistence. Completed rows
-        // are immutable, so older load-only WW answers may be projected on a
-        // temporary validation copy without weakening new completion writes.
-        allowLegacyCompletedWwLoadOnly: true,
-      });
-      return [];
-    } catch (error) {
-      const detail = error instanceof AppError
-        ? error.detail ?? error.message
-        : 'Completed form does not satisfy its pinned contract.';
-      return [{
-        code: 'FORM_CONTRACT_INVALID',
-        severity: 'ERROR',
-        entityType: 'form',
-        entityId: form.id,
-        field: 'answers',
-        message: detail,
-      }];
-    }
-  });
-}
-
 export async function canonicalCompletionReadiness(input: {
   tree: CanonicalInstallationTree;
   executor: InstallHubExecutor;
 }): Promise<ReturnType<typeof installationReadiness>> {
-  const readiness = installationReadiness(input.tree);
-  const evidence = await canonicalEvidenceResolution(input.tree, input.executor);
-  const additional = [...canonicalCompletionFormIssues(input.tree), ...evidence.issues];
-  if (!additional.length) return readiness;
-  const issues = [...readiness.issues, ...additional].sort((left, right) => (
-    `${left.code}:${left.entityType}:${left.entityId}:${left.field ?? ''}`
-      .localeCompare(`${right.code}:${right.entityType}:${right.entityId}:${right.field ?? ''}`)
-  ));
-  return {
-    ...readiness,
-    readyToComplete: false,
-    eligibility: {
-      ...readiness.eligibility,
-      authoritativeReport: false,
-      mappingExport: false,
-    },
-    issues,
-  };
+  // Completion is blocked only by explicit TBC relationships. Form answers
+  // and evidence are optional capture data. Unresolved evidence is omitted
+  // from the pin, while evidence that is included still resolves through the
+  // exact confirmed registry manifest.
+  void input.executor;
+  return installationReadiness(input.tree);
 }
 
 export function buildCanonicalSnapshotPayload(input: {
   tree: CanonicalInstallationTree;
   mediaManifest: CanonicalRecordVersionSnapshot['mediaManifest'];
 }): CanonicalRecordVersionSnapshot {
-  let canonicalTree = normalizeInstallationTreeV2(input.tree);
+  // Evidence paths include opaque nested records (meter photos and form
+  // attachments). Clone the normalized tree before rewriting those paths so
+  // snapshot creation never mutates the live/persisted input tree.
+  let canonicalTree = structuredClone(normalizeInstallationTreeV2(input.tree));
   const sourceMediaManifest = [...input.mediaManifest].sort((left, right) => (
     `${left.entityType}:${left.entityId}:${left.fieldName}:${left.id}`
       .localeCompare(`${right.entityType}:${right.entityId}:${right.fieldName}:${right.id}`)
@@ -1679,11 +1636,62 @@ export function buildCanonicalSnapshotPayload(input: {
   for (const reference of canonicalEvidenceReferences(canonicalTree)) {
     const candidates = manifestsByReference.get(evidenceReferenceKey(reference)) ?? [];
     const manifest = candidates.length === 1 ? candidates[0] : undefined;
-    if (!manifest) {
-      throw new Error(`CANONICAL_EVIDENCE_UNRESOLVED:${reference.entityType}:${reference.entityId}:${reference.fieldName}`);
-    }
     const entity = entityRecord(reference);
-    if (entity) setPath(entity, reference.fieldName, `urn:installhub:photo:${manifest.id}`);
+    if (entity) {
+      // Evidence capture is optional. Only an exact confirmed upload belongs in
+      // an immutable record version; an unconfirmed/local reference is omitted
+      // from the snapshot instead of blocking installation completion.
+      setPath(
+        entity,
+        reference.fieldName,
+        manifest ? `urn:installhub:photo:${manifest.id}` : '',
+      );
+    }
+  }
+  // Removing array entries after all reference paths have been rewritten
+  // avoids index shifts while resolving the original field names. Confirmed
+  // entries retain their URN and are re-indexed with the canonical order below.
+  for (const zone of canonicalTree.zones) {
+    zone.photos = zone.photos.filter((uri) => uri.trim());
+  }
+  for (const board of canonicalTree.electricalAssets) {
+    board.photo = typeof board.photo === 'string' && board.photo.trim()
+      ? board.photo
+      : null;
+    board.extraPhotos = board.extraPhotos.filter((uri) => uri.trim());
+  }
+  for (const asset of canonicalTree.siteAssets) {
+    asset.locationPhoto = typeof asset.locationPhoto === 'string' && asset.locationPhoto.trim()
+      ? asset.locationPhoto
+      : null;
+    asset.extraPhotos = asset.extraPhotos.filter((uri) => uri.trim());
+  }
+  for (const meter of canonicalTree.meterDevices) {
+    if (!meter.wwPhotos || typeof meter.wwPhotos !== 'object') continue;
+    // The canonical snapshot uses camel-case evidence keys. Remove historical
+    // aliases after projecting their confirmed value so a device-local URI can
+    // never survive alongside the canonical URN.
+    delete meter.wwPhotos.device_installed;
+    delete meter.wwPhotos.switchboard_overview;
+    for (const key of ['deviceInstalled', 'switchboardOverview', 'labeling'] as const) {
+      if (typeof meter.wwPhotos[key] !== 'string' || !meter.wwPhotos[key].trim()) {
+        delete meter.wwPhotos[key];
+      }
+    }
+    if (Array.isArray(meter.wwPhotos.extra)) {
+      meter.wwPhotos.extra = meter.wwPhotos.extra.filter((uri) => (
+        typeof uri === 'string' && uri.trim()
+      ));
+    }
+  }
+  for (const form of canonicalTree.formSubmissions) {
+    form.attachments = form.attachments.filter((attachment) => (
+      Boolean(attachment)
+      && typeof attachment === 'object'
+      && !Array.isArray(attachment)
+      && typeof (attachment as Record<string, unknown>).uri === 'string'
+      && Boolean((attachment as Record<string, unknown>).uri)
+    ));
   }
   canonicalTree = canonicalOrderInstallationTree(canonicalTree);
   const manifestPool = new Map<string, typeof sourceMediaManifest>();
@@ -1786,10 +1794,6 @@ export async function makeCanonicalSnapshot(input: {
 }): Promise<CanonicalRecordVersionSnapshot> {
   const canonicalTree = normalizeInstallationTreeV2(input.tree);
   const evidence = await canonicalEvidenceResolution(canonicalTree, input.executor);
-  if (evidence.issues.length) {
-    const issue = evidence.issues[0];
-    throw new Error(`CANONICAL_EVIDENCE_UNRESOLVED:${issue.entityType}:${issue.entityId}:${issue.field ?? ''}`);
-  }
   return buildCanonicalSnapshotPayload({
     tree: canonicalTree,
     mediaManifest: evidence.mediaManifest,

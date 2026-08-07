@@ -57,7 +57,6 @@ import {
   formValidationIssues,
   isFieldVisible,
   isSectionVisible,
-  requiredProgress,
   type FormFieldDefinition,
 } from '@/modules/installhub/forms/catalog';
 import {
@@ -73,9 +72,9 @@ import {
   createAmendment,
   deleteDraftForm,
   newFormAttachment,
+  normalizeOptionalFormContext,
   nowIso,
   syncOperationalMeter,
-  wwFormCompletionContextError,
 } from '@/modules/installhub/lib/model';
 import {
   boardTypeLabel,
@@ -257,7 +256,6 @@ export function InstallHubFormEditorPage() {
   const tree = query.data!;
   const currentForm = source;
   const definition = FORM_DEFINITION_BY_TYPE[source.formType];
-  const progress = requiredProgress(definition, answers, attachments);
   const supportsLocation = definition.sections.some((section) =>
     section.fields.some(
       (field) =>
@@ -392,13 +390,6 @@ export function InstallHubFormEditorPage() {
       fieldKey: issue.fieldKey,
       message: issue.message,
     }));
-    const contextError = wwFormCompletionContextError(tree, candidate);
-    if (contextError) {
-      errors.unshift({
-        id: 'form-canonical-context',
-        message: contextError,
-      });
-    }
     setCompletionErrors(errors);
     if (errors.length) {
       window.setTimeout(() => {
@@ -418,6 +409,7 @@ export function InstallHubFormEditorPage() {
         }
         target.answers = structuredClone(normalizedAnswers);
         target.attachments = structuredClone(attachments);
+        normalizeOptionalFormContext(next, target);
         target.status = 'Completed';
         target.completedAt = nowIso();
         target.updatedAt = target.completedAt;
@@ -522,7 +514,7 @@ export function InstallHubFormEditorPage() {
                   ? new Date(source.completedAt).toLocaleString()
                   : ''
               }`
-            : `${progress.done} of ${progress.total} required items · ${
+            : `All fields optional · ${
                 saving ? 'Saving…' : dirty ? 'Changes pending' : 'Saved automatically'
               }`
         }
@@ -565,12 +557,12 @@ export function InstallHubFormEditorPage() {
             ]} />
           </Card>
         ) : (
-          <div id="form-canonical-context" tabIndex={-1} className="mb-5 scroll-mt-4"><InlineNotice tone="warning">This WW field record has no valid canonical switchboard context. Link it from the switchboard workflow before completion.</InlineNotice></div>
+          <div id="form-canonical-context" tabIndex={-1} className="mb-5 scroll-mt-4"><InlineNotice>This WW field record has no linked switchboard. That context is optional; you can complete the form now or start a later record from a switchboard when the link is useful.</InlineNotice></div>
         )
       ) : null}
 
       <ErrorSummary
-        title="Complete these items before finishing the form"
+        title="Review the form context"
         errors={completionErrors}
       />
 
@@ -588,33 +580,6 @@ export function InstallHubFormEditorPage() {
           await writer.discard();
         }}
       />
-
-      <div className="mb-6">
-        <div className="mb-2 flex justify-between text-xs font-bold text-[var(--text-sub)]">
-          <span>Required-field progress</span>
-          <span>
-            {progress.done}/{progress.total}
-          </span>
-        </div>
-        <div
-          className="h-2 overflow-hidden rounded-full bg-[var(--surface2)]"
-          role="progressbar"
-          aria-valuemin={0}
-          aria-valuemax={progress.total}
-          aria-valuenow={progress.done}
-        >
-          <div
-            className="h-full rounded-full bg-[var(--primary)]"
-            style={{
-              width: `${
-                progress.total
-                  ? (progress.done / progress.total) * 100
-                  : 0
-              }%`,
-            }}
-          />
-        </div>
-      </div>
 
       {definition.schemaVersion === 1 ? (
         <div className="mb-5">

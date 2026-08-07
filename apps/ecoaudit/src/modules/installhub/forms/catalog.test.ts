@@ -107,15 +107,30 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
       ),
     0,
   );
+  const parityDefinitions = FORM_DEFINITIONS.map((definition) => ({
+    ...definition,
+    sections: definition.sections.map((section) => ({
+      ...section,
+      fields: section.fields.map((field) => Object.fromEntries(
+        Object.entries(field).filter(([key]) => key !== 'required'),
+      )),
+    })),
+  }));
   const fingerprint = createHash('sha256')
-    .update(canonicalJson(FORM_DEFINITIONS))
+    .update(canonicalJson(parityDefinitions))
     .digest('hex');
 
   assert.equal(sectionCount, 56);
   assert.equal(fieldCount, 392);
   assert.equal(
     fingerprint,
-    '3158844d3c6de08a24b1a067062419584a5208696ce1d3fec2bca5e3a3db5bde',
+    '7c88a7acf4bd3bb6422baf7472b08fec2d20e47fee669fb8ec909fb0d852f17f',
+  );
+  assert.equal(
+    FORM_DEFINITIONS.every((definition) => definition.sections.every((section) => (
+      section.fields.every((field) => field.required === false)
+    ))),
+    true,
   );
 });
 
@@ -226,7 +241,6 @@ test('WW channel contract matches the API and iOS parity signature', () => {
       fields: section.fields.map((field) => ({
         key: field.key,
         kind: field.kind,
-        required: field.required ?? false,
         ...(field.options ? { options: field.options } : {}),
         ...(field.showWhen ? { showWhen: field.showWhen } : {}),
         ...(field.optionsWhen ? { optionsWhen: field.optionsWhen } : {}),
@@ -239,7 +253,13 @@ test('WW channel contract matches the API and iOS parity signature', () => {
 
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '3b00b0da4b860d09c8fbe38771a186a4a314dc4b8775fe04d487f2f93a596713',
+    '9d84b8a32742ac5c48be1538ccf967db37def7c1f767b821e04b0663ca6772e1',
+  );
+  assert.equal(
+    definition.sections
+      .filter((section) => section.title.startsWith('Channel '))
+      .every((section) => section.fields.every((field) => field.required === false)),
+    true,
   );
 });
 
@@ -337,56 +357,31 @@ test('Comms replacement sensor visibility follows the selected replacement devic
   );
 });
 
-test('required yes/no, numeric, and select values reject invalid input', () => {
-  assert.ok(
-    validateForm(
-      submission('ww-installation', {
-        'prestart.safe_access': 'not_applicable',
-      }),
-    ).some((error) =>
-      error.includes('Do you have safe access? has an invalid selection'),
-    ),
-  );
-  assert.ok(
-    validateForm(
-      submission('honeywell-q400', {
-        'site.latitude': 'not-a-coordinate',
-      }),
-    ).some((error) => error.includes('Latitude must be a number')),
-  );
-  assert.ok(
-    validateForm(
-      submission('comms-fault', {
-        'existing.signal': 'Invented signal',
-      }),
-    ).some((error) =>
-      error.includes(
-        'Existing signal strength has an invalid selection',
-      ),
-    ),
-  );
+test('captured yes/no, numeric, and select values remain optional observations', () => {
+  assert.deepEqual(validateForm(submission('ww-installation', {
+    'prestart.safe_access': 'not_applicable',
+  })), []);
+  assert.deepEqual(validateForm(submission('honeywell-q400', {
+    'site.latitude': 'not-a-coordinate',
+  })), []);
+  assert.deepEqual(validateForm(submission('comms-fault', {
+    'existing.signal': 'Invented signal',
+  })), []);
 });
 
-test('form validation retains stable field keys for summaries, inline errors, and focus', () => {
+test('form completion produces no mandatory-field issues', () => {
   const issues = formValidationIssues(
     submission('ww-installation', {
       'prestart.safe_access': 'not_applicable',
     }),
   );
-  assert.ok(issues.some((issue) => (
-    issue.fieldKey === 'prestart.safe_access'
-    && issue.message.includes('has an invalid selection')
-  )));
+  assert.deepEqual(issues, []);
 });
 
-test('legacy draft records retain the same required-field validation as iOS', () => {
-  assert.ok(
-    validateForm(
-      submission('a3rm-installation', {
-        'device.type': 'A3RM',
-      }),
-    ).some((error) => error.includes('Date and time')),
-  );
+test('legacy draft records also have no mandatory-field completion gate', () => {
+  assert.deepEqual(validateForm(submission('a3rm-installation', {
+    'device.type': 'A3RM',
+  })), []);
 });
 
 test('Comms replacement mirrors iOS meter reshaping', () => {

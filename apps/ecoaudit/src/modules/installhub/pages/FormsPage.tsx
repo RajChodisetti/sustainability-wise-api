@@ -373,11 +373,6 @@ export function InstallHubFormTypePickerPage() {
   });
 
   async function start(type: FormType) {
-    if (type === 'ww-installation' && !selectedBoardId) {
-      toast.error('Choose a switchboard before starting the Installation Form (WW).');
-      document.getElementById('new-form-board')?.focus();
-      return;
-    }
     setBusyType(type);
     try {
       let formId = '';
@@ -385,7 +380,7 @@ export function InstallHubFormTypePickerPage() {
         const effectiveContext = type === 'ww-installation'
           ? {
               ...context,
-              boardId: selectedBoardId,
+              boardId: selectedBoardId || null,
               zoneId: next.electricalAssets.find((board) => board.id === selectedBoardId)?.zoneId || context.zoneId,
             }
           : context;
@@ -425,9 +420,9 @@ export function InstallHubFormTypePickerPage() {
       {definitions.some((definition) => definition.type === 'ww-installation') ? (
         <Card className="mb-5">
           <h2 className="font-extrabold text-[var(--text)]">Installation Form (WW) switchboard</h2>
-          <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Canonical board details are snapshotted from this exact record; free-text board identity is not accepted.</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Optional. Choose a switchboard to prefill canonical context; leave it blank when no board is available.</p>
           <div className="mt-2 max-w-2xl">
-            <FieldLabel htmlFor="new-form-board">Switchboard *</FieldLabel>
+            <FieldLabel htmlFor="new-form-board">Switchboard</FieldLabel>
             <SearchableSelect
               id="new-form-board"
               value={selectedBoardId}
@@ -436,10 +431,10 @@ export function InstallHubFormTypePickerPage() {
               emptyMessage="No switchboards match this search."
               onChange={setSelectedBoardId}
             />
-            <FieldHint>Search and choose in one field. Up to 100 matching switchboards are shown at once.</FieldHint>
+            <FieldHint>Search and choose in one field, or leave blank. Up to 100 matching switchboards are shown at once.</FieldHint>
           </div>
           {tree.electricalAssets.length === 0 ? (
-            <div className="mt-3"><LinkButton href={`/installhub/installations/${installationId}/zones`} variant="secondary"><Icon name="plus" size={16} />Create a switchboard first</LinkButton></div>
+            <div className="mt-3"><LinkButton href={`/installhub/installations/${installationId}/zones`} variant="secondary"><Icon name="plus" size={16} />Add a switchboard</LinkButton></div>
           ) : null}
         </Card>
       ) : null}

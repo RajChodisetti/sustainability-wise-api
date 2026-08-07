@@ -138,6 +138,17 @@ function isProvisionalExternalKey(value: unknown): boolean {
   return typeof value === 'string' && value.trim().toLowerCase().startsWith('local:');
 }
 
+function canonicalOptionalString(
+  source: JsonRecord,
+  key: string,
+  fallback: string,
+): string {
+  const value = source[key];
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== 'string') throw badRequest(`${key} must be a string`);
+  return value.trim() || fallback;
+}
+
 function canonicalServerInteger(value: unknown, authoritativeValue: number): unknown {
   if (value == null) return authoritativeValue;
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
@@ -163,7 +174,11 @@ export function prepareCanonicalInstallHubWrite(
 ): PushBody {
   if (!body.installation) throw badRequest('installation is required');
   const installation = body.installation;
-  const siteName = requiredString(installation, 'siteName');
+  const siteName = canonicalOptionalString(
+    installation,
+    'siteName',
+    'Untitled installation',
+  );
   const siteCode = authority?.siteCode?.trim()
     ? authority.siteCode
     : deriveInstallHubSiteCode(siteName);
@@ -226,6 +241,7 @@ export function prepareCanonicalInstallHubWrite(
     ...(preparedMeterDevices ? { meterDevices: preparedMeterDevices } : {}),
     installation: {
       ...installation,
+      siteName,
       treeSchemaVersion: installation.treeSchemaVersion ?? 2,
       externalKey: preparedExternalKey,
       siteCode: installation.siteCode === undefined || installation.siteCode === null

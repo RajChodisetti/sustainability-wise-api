@@ -483,6 +483,34 @@ test('HTML renders escaped attachment captions and falls back to the evidence la
   assert.match(html, /Completed water-meter installation/);
 });
 
+test('canonical form with optional evidence omitted renders safely without leaking a local URI', () => {
+  const omittedLocalUri = 'file:///private/field-app/pending-water-meter-photo.jpg';
+  const reportForm = form({ attachments: [] });
+  const reportPhotos = resolveInstallHubFormPhotos(reportForm, []);
+
+  assert.deepEqual(reportPhotos, []);
+  const html = buildInstallHubReportHtml({
+    mode: 'form',
+    installation,
+    forms: [reportForm],
+    slices: [{
+      formId: reportForm.id,
+      sectionIndexes: visibleInstallHubReportSectionIndexes(reportForm),
+      continuation: false,
+      photoCount: 0,
+    }],
+    resolvedByForm: new Map([[reportForm.id, reportPhotos]]),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: false,
+    includeEnd: false,
+    generatedLabel: 'Generated 07/08/2026',
+  });
+
+  assert.match(html, /No photo provided/);
+  assert.equal(html.includes(omittedLocalUri), false);
+  assert.doesNotMatch(html, /file:\/\//);
+});
+
 test('conditional sections retain contiguous visible numbering', () => {
   const reportForm = form({
     formType: 'ww-installation',

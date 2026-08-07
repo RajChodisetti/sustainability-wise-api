@@ -7,6 +7,7 @@ import {
   nextMeterChannelId,
   renamedMeterCapabilities,
   showsWattwatchersCommissioningSections,
+  structurallySavableMeterAssignments,
   unassignedChannelMessage,
 } from '@/modules/installhub/lib/meterPresentation';
 import type { MeasurementAssignment, Meter } from '@/modules/installhub/types/domain';
@@ -128,4 +129,43 @@ test('assignment concurrency is order-insensitive but detects mapping changes', 
     assignmentApprovalSignature(second),
     assignmentApprovalSignature({ ...second, channelIds: ['channel-4'] }),
   );
+});
+
+test('optional assignment rows normalize to structurally savable TBC groups', () => {
+  const normalized = structurallySavableMeterAssignments([
+    assignment('empty', []),
+    {
+      ...assignment('mixed', ['sub-1', 'sub-1', 'main-1', 'spare', 'missing']),
+      phaseMode: 'THREE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
+      status: 'CONFIRMED',
+    },
+    {
+      ...assignment('three', ['sub-2', 'sub-3', 'sub-4']),
+      phaseMode: 'OTHER',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-2' },
+      status: 'CONFIRMED',
+    },
+  ], [
+    { id: 'sub-1', ordinal: 1, purpose: 'SUB_CIRCUIT' },
+    { id: 'sub-2', ordinal: 2, purpose: 'SUB_CIRCUIT' },
+    { id: 'sub-3', ordinal: 3, purpose: 'SUB_CIRCUIT' },
+    { id: 'sub-4', ordinal: 4, purpose: 'SUB_CIRCUIT' },
+    { id: 'main-1', ordinal: 5, purpose: 'MAIN_SUPPLY' },
+    { id: 'spare', ordinal: 6, purpose: 'SPARE' },
+  ]);
+
+  assert.equal(normalized.some((item) => item.id === 'empty'), false);
+  assert.deepEqual(normalized.find((item) => item.id === 'mixed'), {
+    ...assignment('mixed', ['sub-1']),
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    status: 'TBC',
+  });
+  assert.deepEqual(normalized.find((item) => item.id === 'three'), {
+    ...assignment('three', ['sub-2', 'sub-3', 'sub-4']),
+    phaseMode: 'THREE_PHASE',
+    target: { kind: 'TBC' },
+    status: 'TBC',
+  });
 });

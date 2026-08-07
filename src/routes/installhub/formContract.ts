@@ -575,55 +575,31 @@ function loggerDefinition(
   };
 }
 
+function optionalDefinition(
+  definition: InstallHubContractDefinition,
+): InstallHubContractDefinition {
+  return {
+    ...definition,
+    sections: definition.sections.map((section) => ({
+      ...section,
+      fields: section.fields.map((field) => ({ ...field, required: false })),
+    })),
+  };
+}
+
 export const INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS: Readonly<
   Record<CurrentInstallHubFormType, InstallHubContractDefinition>
 > = {
-  'ww-installation': wwInstallation,
-  'comms-fault': commsFault,
-  'ace-switchboard': aceSwitchboard,
-  'honeywell-q400': honeywellQ400,
-  'captis-logger': loggerDefinition('captis-logger'),
-  'sums-logger': loggerDefinition('sums-logger'),
+  'ww-installation': optionalDefinition(wwInstallation),
+  'comms-fault': optionalDefinition(commsFault),
+  'ace-switchboard': optionalDefinition(aceSwitchboard),
+  'honeywell-q400': optionalDefinition(honeywellQ400),
+  'captis-logger': optionalDefinition(loggerDefinition('captis-logger')),
+  'sums-logger': optionalDefinition(loggerDefinition('sums-logger')),
 };
 
 function answer(answers: Record<string, string>, key: string): string {
   return answers[key]?.trim() ?? '';
-}
-
-function conditionsMatch(
-  conditions: Visibility | readonly Visibility[] | undefined,
-  answers: Record<string, string>,
-): boolean {
-  if (!conditions) return true;
-  const list = Array.isArray(conditions) ? conditions : [conditions];
-  return list.every((condition) => {
-    const expected = Array.isArray(condition.equals)
-      ? condition.equals
-      : [condition.equals];
-    return expected.includes(answer(answers, condition.key));
-  });
-}
-
-function optionsForField(
-  field: InstallHubContractField,
-  answers: Record<string, string>,
-): readonly string[] {
-  if (field.optionsWhen) {
-    return field.optionsWhen.values[answer(answers, field.optionsWhen.key)] ?? [];
-  }
-  return field.options ?? [];
-}
-
-function acceptedOptionsForField(
-  field: InstallHubContractField,
-  answers: Record<string, string>,
-): readonly string[] {
-  const legacyOptions = field.legacyOptionsWhen
-    ? field.legacyOptionsWhen.values[
-        answer(answers, field.legacyOptionsWhen.key)
-      ] ?? []
-    : field.legacyOptions ?? [];
-  return [...new Set([...optionsForField(field, answers), ...legacyOptions])];
 }
 
 /**
@@ -743,30 +719,10 @@ function validateAttachments(value: unknown): InstallHubFormAttachment[] {
 function validateFieldAnswer(
   field: InstallHubContractField,
   answers: Record<string, string>,
-  completed: boolean,
 ): void {
   const value = answer(answers, field.key);
   if (field.kind === 'photo') {
     if (value) throw badRequest(`answers.${field.key} must not contain photo data`);
-    return;
-  }
-  if (!value) {
-    if (completed && field.required) {
-      throw badRequest(`Completed form requires answers.${field.key}`);
-    }
-    return;
-  }
-  if (field.kind === 'yesno' && !['yes', 'no'].includes(value)) {
-    throw badRequest(`answers.${field.key} must be yes or no`);
-  }
-  if (field.kind === 'number' && !Number.isFinite(Number(value))) {
-    throw badRequest(`answers.${field.key} must be a number`);
-  }
-  if (
-    field.kind === 'select'
-    && !acceptedOptionsForField(field, answers).includes(value)
-  ) {
-    throw badRequest(`answers.${field.key} is not a valid selection`);
   }
 }
 
@@ -777,8 +733,6 @@ function validateSchemaV2Definition(input: {
   attachments: InstallHubFormAttachment[];
   syncStage?: InstallHubSyncStage;
 }): void {
-  const completed = input.status === 'Completed';
-  const requireCompletedEvidence = completed && input.syncStage !== 'metadata';
   const attachmentsBySlot = new Map<string, InstallHubFormAttachment[]>();
   for (const attachment of input.attachments) {
     const list = attachmentsBySlot.get(attachment.slot) ?? [];
@@ -788,34 +742,12 @@ function validateSchemaV2Definition(input: {
 
   const knownAnswerKeys = new Set<string>();
   const knownPhotoSlots = new Set<string>();
-  const visiblePhotoSlots = new Set<string>();
 
   for (const section of input.definition.sections) {
-    const sectionVisible = conditionsMatch(section.showWhen, input.answers);
     for (const field of section.fields) {
       if (field.kind === 'photo') knownPhotoSlots.add(field.key);
       else knownAnswerKeys.add(field.key);
-      const visible = sectionVisible && conditionsMatch(field.showWhen, input.answers);
-      if (!visible) {
-        if (answer(input.answers, field.key)) {
-          throw badRequest(`answers.${field.key} must be empty while the field is hidden`);
-        }
-        if ((attachmentsBySlot.get(field.key)?.length ?? 0) > 0) {
-          throw badRequest(`attachments slot ${field.key} must be empty while the field is hidden`);
-        }
-        continue;
-      }
-      if (field.kind === 'photo') {
-        visiblePhotoSlots.add(field.key);
-        if (
-          requireCompletedEvidence
-          && field.required
-          && (attachmentsBySlot.get(field.key)?.length ?? 0) === 0
-        ) {
-          throw badRequest(`Completed form requires attachments slot ${field.key}`);
-        }
-      }
-      validateFieldAnswer(field, input.answers, completed);
+      validateFieldAnswer(field, input.answers);
     }
   }
 
@@ -830,9 +762,6 @@ function validateSchemaV2Definition(input: {
   for (const slot of attachmentsBySlot.keys()) {
     if (!knownPhotoSlots.has(slot)) {
       throw badRequest(`attachments slot ${slot} is not supported for ${input.definition.type}`);
-    }
-    if (!visiblePhotoSlots.has(slot)) {
-      throw badRequest(`attachments slot ${slot} must be empty while the field is hidden`);
     }
   }
 }

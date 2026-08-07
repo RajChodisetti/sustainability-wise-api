@@ -26,8 +26,11 @@ import {
   readinessCorrectionAction,
   readinessEntityDetails,
   readinessResolutionCandidates,
+  removeUnresolvedElectricalRelationship,
+  resolvedElectricalTopology,
   shouldClearAssetMeterDraft,
-  shouldShowMeterLocationOverride,
+  unresolvedRelationshipRemovalPlan,
+  unresolvedElectricalRecords,
   zoneElectricalSummary,
   type AssetMeterDraftSnapshot,
 } from './electricalPresentation';
@@ -113,6 +116,217 @@ test('electrical hierarchy uses FED_FROM for nesting and MEASURES only as an ove
   assert.equal(asset?.parent?.id, 'board-1');
   assert.deepEqual(asset?.measuredBy.map((node) => node.id), ['board-1']);
   assert.deepEqual(filterElectricalHierarchyRows(rows, 'Chiller').map((row) => row.node.id), ['grid-1', 'board-1', 'asset-1']);
+});
+
+test('resolved electrical topology excludes TBC subjects and dependent islands from the map', () => {
+  const model: ElectricalTreeReadModel = {
+    installationId: 'installation-1',
+    treeRevision: 2,
+    nodes: [
+      { id: 'grid-1', kind: 'GRID', name: 'Main Grid' },
+      { id: 'board-resolved', kind: 'BOARD', name: 'Resolved board' },
+      { id: 'asset-resolved', kind: 'SITE_ASSET', name: 'Resolved asset' },
+      { id: 'board-tbc', kind: 'BOARD', name: 'TBC board' },
+      { id: 'board-invalid', kind: 'BOARD', name: 'Invalid board' },
+      { id: 'asset-dependent', kind: 'SITE_ASSET', name: 'Depends on TBC board' },
+      { id: 'asset-metering-tbc', kind: 'SITE_ASSET', name: 'Metering TBC', coverageState: 'TBC' },
+      { id: 'virtual-resolved', kind: 'VIRTUAL_RESIDUAL', name: 'Resolved residual', parentNodeId: 'board-resolved' },
+      { id: 'virtual-unresolved', kind: 'VIRTUAL_RESIDUAL', name: 'Unresolved residual', parentNodeId: 'board-tbc' },
+    ],
+    edges: [
+      { id: 'supply-1', sourceNodeId: 'grid-1', targetNodeId: 'board-resolved', relationship: 'FED_FROM' },
+      { id: 'supply-2', sourceNodeId: 'board-resolved', targetNodeId: 'asset-resolved', relationship: 'FED_FROM' },
+      { id: 'stale-supply', sourceNodeId: 'grid-1', targetNodeId: 'board-tbc', relationship: 'FED_FROM' },
+      { id: 'invalid-supply', sourceNodeId: 'grid-1', targetNodeId: 'board-invalid', relationship: 'FED_FROM' },
+      { id: 'dependent-supply', sourceNodeId: 'board-tbc', targetNodeId: 'asset-dependent', relationship: 'FED_FROM' },
+      { id: 'metering-tbc-supply', sourceNodeId: 'board-resolved', targetNodeId: 'asset-metering-tbc', relationship: 'FED_FROM' },
+      { id: 'measure-resolved', sourceNodeId: 'board-resolved', targetNodeId: 'asset-resolved', relationship: 'MEASURES' },
+      { id: 'measure-unresolved-island', sourceNodeId: 'board-tbc', targetNodeId: 'asset-dependent', relationship: 'MEASURES' },
+    ],
+    unresolved: [
+      {
+        id: 'unresolved:supply:board-tbc',
+        subjectType: 'BOARD',
+        subjectId: 'board-tbc',
+        relation: 'SUPPLY',
+        missingEnd: 'SOURCE',
+        reason: 'TBC',
+      },
+      {
+        id: 'unresolved:supply:board-invalid',
+        subjectType: 'BOARD',
+        subjectId: 'board-invalid',
+        relation: 'SUPPLY',
+        missingEnd: 'SOURCE',
+        reason: 'INVALID',
+      },
+    ],
+  };
+
+  const resolved = resolvedElectricalTopology(model);
+  assert.deepEqual(resolved?.nodes.map((node) => node.id), [
+    'grid-1',
+    'board-resolved',
+    'asset-resolved',
+    'virtual-resolved',
+  ]);
+  assert.deepEqual(resolved?.edges.map((edge) => edge.id), [
+    'supply-1',
+    'supply-2',
+    'measure-resolved',
+  ]);
+  assert.deepEqual(resolved?.unresolved, []);
+  assert.equal(model.unresolved.length, 2, 'the source model remains unchanged');
+  assert.deepEqual(unresolvedElectricalRecords(model).map((item) => item.id), [
+    'unresolved:coverage:asset-metering-tbc',
+    'unresolved:supply:board-tbc',
+  ], 'the side tray shows only explicit TBC records');
+});
+
+test('TBC tray removal deletes only the selected assignment and returns its asset to TBC', () => {
+  const tree = fixtureTree();
+  const meteredAsset = tree.siteAssets.find((asset) => asset.id === 'asset-metered')!;
+  meteredAsset.meterPresent = true;
+  meteredAsset.meterId = 'missing-meter';
+  meteredAsset.meterChannelIds = ['missing-channel'];
+  meteredAsset.meteringState = { kind: 'METERED', measurementAssignmentIds: ['assignment-tbc'] };
+  tree.measurementAssignments = [{
+    id: 'assignment-tbc',
+    installationId: tree.installation.id,
+    meterId: 'missing-meter',
+    channelIds: ['missing-channel'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: meteredAsset.id },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+  const item: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:measurement:assignment-tbc',
+    subjectType: 'MEASUREMENT_ASSIGNMENT',
+    subjectId: 'assignment-tbc',
+    relation: 'MEASUREMENT',
+    missingEnd: 'SOURCE',
+    knownNodeId: meteredAsset.id,
+    reason: 'TBC',
+  };
+
+  assert.equal(unresolvedRelationshipRemovalPlan(tree, item).canRemove, true);
+  removeUnresolvedElectricalRelationship(tree, item);
+
+  assert.deepEqual(tree.measurementAssignments, []);
+  assert.equal(tree.siteAssets.some((asset) => asset.id === meteredAsset.id), true);
+  assert.deepEqual(meteredAsset.meteringState, { kind: 'TBC' });
+  assert.equal(meteredAsset.meterId, null);
+  assert.deepEqual(tree.electricalAssets.map((board) => board.id), ['board-1']);
+});
+
+test('TBC tray removal rechecks the current relationship and rejects stale resolved entries', () => {
+  const assignmentTree = fixtureTree();
+  assignmentTree.measurementAssignments = [{
+    id: 'assignment-stale',
+    installationId: assignmentTree.installation.id,
+    meterId: 'missing-meter',
+    channelIds: [],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  }];
+  const assignmentItem: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:measurement:assignment-stale',
+    subjectType: 'MEASUREMENT_ASSIGNMENT',
+    subjectId: 'assignment-stale',
+    relation: 'MEASUREMENT',
+    missingEnd: 'TARGET',
+    reason: 'TBC',
+  };
+  assignmentTree.measurementAssignments[0]!.target = { kind: 'SITE_ASSET', siteAssetId: 'asset-metered' };
+  assignmentTree.measurementAssignments[0]!.status = 'CONFIRMED';
+  assert.equal(unresolvedRelationshipRemovalPlan(assignmentTree, assignmentItem).canRemove, false);
+  assert.throws(
+    () => removeUnresolvedElectricalRelationship(assignmentTree, assignmentItem),
+    /no longer To be confirmed/i,
+  );
+  assert.equal(assignmentTree.measurementAssignments.some((assignment) => assignment.id === 'assignment-stale'), true);
+
+  const assetTree = fixtureTree();
+  const assetItem: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:supply:asset-tbc',
+    subjectType: 'SITE_ASSET',
+    subjectId: 'asset-tbc',
+    relation: 'SUPPLY',
+    missingEnd: 'SOURCE',
+    reason: 'TBC',
+  };
+  applyAssetElectricalSource(assetTree.siteAssets.find((asset) => asset.id === 'asset-tbc')!, { kind: 'BOARD', boardId: 'board-1' });
+  assert.equal(unresolvedRelationshipRemovalPlan(assetTree, assetItem).canRemove, false);
+  assert.throws(
+    () => removeUnresolvedElectricalRelationship(assetTree, assetItem),
+    /no longer To be confirmed/i,
+  );
+  assert.equal(assetTree.siteAssets.some((asset) => asset.id === 'asset-tbc'), true);
+
+  const boardTree = fixtureTree();
+  const board = createBoard(boardTree.installation.id, 'zone-1');
+  board.id = 'board-stale';
+  applyBoardElectricalSource(board, { kind: 'GRID', gridSupplyId: 'grid-1' });
+  boardTree.electricalAssets.push(board);
+  const boardItem: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:supply:board-stale',
+    subjectType: 'BOARD',
+    subjectId: board.id,
+    relation: 'SUPPLY',
+    missingEnd: 'SOURCE',
+    reason: 'TBC',
+  };
+  assert.equal(unresolvedRelationshipRemovalPlan(boardTree, boardItem).canRemove, false);
+  assert.throws(
+    () => removeUnresolvedElectricalRelationship(boardTree, boardItem),
+    /no longer To be confirmed/i,
+  );
+  assert.equal(boardTree.electricalAssets.some((candidate) => candidate.id === board.id), true);
+});
+
+test('unresolved tray removal preserves confirmed dependencies and permits isolated TBC records', () => {
+  const tree = fixtureTree();
+  const tbcAssetItem: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:supply:asset-tbc',
+    subjectType: 'SITE_ASSET',
+    subjectId: 'asset-tbc',
+    relation: 'SUPPLY',
+    missingEnd: 'SOURCE',
+    reason: 'TBC',
+  };
+  removeUnresolvedElectricalRelationship(tree, tbcAssetItem);
+  assert.deepEqual(tree.siteAssets.map((asset) => asset.id), ['asset-metered']);
+  assert.deepEqual(tree.electricalAssets.map((board) => board.id), ['board-1']);
+
+  const tbcBoard = createBoard(tree.installation.id, 'zone-1');
+  tbcBoard.id = 'board-tbc';
+  tbcBoard.assetName = 'TBC board';
+  applyBoardElectricalSource(tbcBoard, { kind: 'TBC' });
+  const child = createBoard(tree.installation.id, 'zone-1');
+  child.id = 'board-child';
+  child.assetName = 'Resolved child';
+  applyBoardElectricalSource(child, { kind: 'BOARD', boardId: tbcBoard.id });
+  tree.electricalAssets.push(tbcBoard, child);
+  const tbcBoardItem: ElectricalTreeReadModel['unresolved'][number] = {
+    id: 'unresolved:supply:board-tbc',
+    subjectType: 'BOARD',
+    subjectId: tbcBoard.id,
+    relation: 'SUPPLY',
+    missingEnd: 'SOURCE',
+    reason: 'TBC',
+  };
+  const plan = unresolvedRelationshipRemovalPlan(tree, tbcBoardItem);
+  assert.equal(plan.canRemove, false);
+  assert.match(plan.blockedMessage || '', /resolved topology is preserved/i);
+  assert.throws(
+    () => removeUnresolvedElectricalRelationship(tree, tbcBoardItem),
+    /resolved topology is preserved/i,
+  );
+  assert.equal(tree.electricalAssets.some((board) => board.id === tbcBoard.id), true);
+  assert.equal(tree.electricalAssets.some((board) => board.id === child.id), true);
 });
 
 test('measurement targets and reconciliation records expose exact identity and valid candidates', () => {
@@ -217,12 +431,20 @@ test('reconciliation resolves exact measurement targets and safe unmetered state
     direction: 'CONSUMPTION',
     status: 'CONFIRMED',
   }];
+  const freeDirectAsset = createSiteAsset(subTree.installation.id, 'zone-1');
+  freeDirectAsset.id = 'asset-free';
+  freeDirectAsset.assetName = 'Free direct load';
+  freeDirectAsset.displayCode = 'MAP-OTHER-002';
+  applyAssetElectricalSource(freeDirectAsset, { kind: 'BOARD', boardId: 'board-1' });
+  freeDirectAsset.meteringState = { kind: 'TBC' };
+  subTree.siteAssets.push(freeDirectAsset);
   const subIssue = { ...targetIssue, entityId: 'assignment-sub' };
   const subCandidateIds = readinessResolutionCandidates(subTree, subIssue).map((item) => item.id);
   assert.equal(subCandidateIds.includes('asset-metered'), false);
-  assert.equal(subCandidateIds.includes('asset-tbc'), true);
-  assert.equal(applyReadinessCandidateResolution(subTree, subIssue, 'asset-tbc'), true);
-  assert.deepEqual(subTree.measurementAssignments?.find((item) => item.id === 'assignment-sub')?.target, { kind: 'SITE_ASSET', siteAssetId: 'asset-tbc' });
+  assert.equal(subCandidateIds.includes('asset-tbc'), false);
+  assert.equal(subCandidateIds.includes('asset-free'), true);
+  assert.equal(applyReadinessCandidateResolution(subTree, subIssue, 'asset-free'), true);
+  assert.deepEqual(subTree.measurementAssignments?.find((item) => item.id === 'assignment-sub')?.target, { kind: 'SITE_ASSET', siteAssetId: 'asset-free' });
 
   const meteringTree = fixtureTree();
   const meteringIssue: ReadinessIssue = {
@@ -258,7 +480,7 @@ test('reconciliation resolves exact measurement targets and safe unmetered state
   assert.deepEqual(gridTree.gridSupplies?.filter((item) => item.isDefault).map((item) => item.id), ['grid-2']);
 });
 
-test('every non-inline readiness issue gets an issue-specific persisted correction route', () => {
+test('TBC and retained legacy issue helpers get persisted correction routes', () => {
   const tree = fixtureTree();
   tree.meterDevices = [{
     id: 'meter-1',
@@ -336,8 +558,8 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     field: 'answers.device.serial',
     message: 'Correct the completed form contract.',
   });
-  assert.match(contractAction.href, /forms\/form-1#form-field-/);
-  assert.match(contractAction.label, /invalid/i);
+  assert.match(contractAction.href, /forms\/form-1#form-completed-actions$/);
+  assert.match(contractAction.label, /amend/i);
   assert.match(contractAction.instruction, /Create amendment.*Complete form/);
   const evidenceAction = readinessCorrectionAction(tree, {
     code: 'EVIDENCE_NOT_CONFIRMED',
@@ -437,7 +659,7 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     entityType: 'meter',
     entityId: 'meter-1',
     field: 'formSubmission',
-    message: 'Complete the required WW form.',
+    message: 'Open the WW form.',
   });
   assert.match(requiredWwFormAction.href, /forms\/new\?.*formType=ww-installation#new-form-ww-installation$/);
   const channelLayoutAction = readinessCorrectionAction(tree, {
@@ -550,7 +772,7 @@ test('every non-inline readiness issue gets an issue-specific persisted correcti
     field: 'status',
     message: 'Complete the form.',
   });
-  assert.match(incompleteAction.href, /forms\/form-1#form-field-/);
+  assert.match(incompleteAction.href, /forms\/form-1#form-actions$/);
 
   const externalKeyAction = readinessCorrectionAction(tree, {
     code: 'EXTERNAL_KEY_REQUIRED',
@@ -692,29 +914,4 @@ test('asset-to-meter detour validates its stored draft and builds a scoped retur
   assert.equal(shouldClearAssetMeterDraft('ASSET_SAVE_FAILED'), false);
   assert.equal(shouldClearAssetMeterDraft('ASSET_SAVE_CONFIRMED'), true);
   assert.equal(shouldClearAssetMeterDraft('EXPLICIT_DISCARD'), true);
-});
-
-test('meter location stays collapsed for direct supply and opens for explicit or legacy overrides', () => {
-  assert.equal(shouldShowMeterLocationOverride({
-    overrideRequested: false,
-    directSupplyBoardId: 'board-1',
-    meterSwitchboardId: 'board-1',
-    meterSwitchboardTbc: false,
-  }), false);
-  assert.equal(shouldShowMeterLocationOverride({
-    overrideRequested: true,
-    directSupplyBoardId: 'board-1',
-    meterSwitchboardId: 'board-1',
-  }), true);
-  assert.equal(shouldShowMeterLocationOverride({
-    overrideRequested: false,
-    directSupplyBoardId: 'board-1',
-    meterSwitchboardId: 'upstream-board',
-  }), true);
-  assert.equal(shouldShowMeterLocationOverride({
-    overrideRequested: false,
-    directSupplyBoardId: 'board-1',
-    meterSwitchboardId: 'board-1',
-    meterSwitchboardTbc: true,
-  }), true);
 });

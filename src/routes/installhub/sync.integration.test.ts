@@ -39,6 +39,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
   const derivedSiteCodeInstallationId = randomUUID();
   const invalidSiteCodeInstallationId = randomUUID();
   const importedCopyId = randomUUID();
+  const historicalOptionalDefaultsId = randomUUID();
   try {
     await db.insert(ihInstallations).values({
       id: installationId,
@@ -296,6 +297,42 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     const importedExternalKey = importedPull.json().installations[0].installation.externalKey;
     assert.match(String(importedExternalKey), /^ih_/);
     assert.notEqual(importedExternalKey, firstInstallation.externalKey);
+
+    const historicalOptionalCreate = await push(freshPayload(historicalOptionalDefaultsId));
+    assert.equal(historicalOptionalCreate.statusCode, 200, historicalOptionalCreate.body);
+    await db.update(ihInstallations).set({
+      siteName: '',
+      timezone: 'Invalid/Timezone',
+    }).where(eq(ihInstallations.id, historicalOptionalDefaultsId));
+    const historicalOptionalPull = await pull(historicalOptionalDefaultsId);
+    assert.equal(historicalOptionalPull.statusCode, 200, historicalOptionalPull.body);
+    const projectedHistoricalTree = historicalOptionalPull.json().installations[0];
+    assert.equal(projectedHistoricalTree.installation.siteName, 'Untitled installation');
+    assert.equal(projectedHistoricalTree.installation.timezone, 'Australia/Sydney');
+    const historicalOptionalComplete = await app.inject({
+      method: 'POST',
+      url: `/v1/installhub/installations/${historicalOptionalDefaultsId}/complete`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        baseTreeRevision: 1,
+        idempotencyKey: `complete-${historicalOptionalDefaultsId}`,
+      },
+    });
+    assert.equal(historicalOptionalComplete.statusCode, 200, historicalOptionalComplete.body);
+    assert.equal(historicalOptionalComplete.json().treeRevision, 2);
+    assert.equal(historicalOptionalComplete.json().recordVersionNumber, 1);
+    const completedHistoricalPull = await pull(historicalOptionalDefaultsId);
+    const completedHistoricalTree = structuredClone(
+      completedHistoricalPull.json().installations[0],
+    );
+    assert.equal(completedHistoricalTree.installation.siteName, 'Untitled installation');
+    assert.equal(completedHistoricalTree.installation.timezone, 'Australia/Sydney');
+    completedHistoricalTree.syncStage = 'complete';
+    completedHistoricalTree.baseTreeRevision = 2;
+    const completedHistoricalReplay = await push(completedHistoricalTree);
+    assert.equal(completedHistoricalReplay.statusCode, 200, completedHistoricalReplay.body);
+    assert.equal(completedHistoricalReplay.json().treeRevision, 2);
+    assert.equal(completedHistoricalReplay.json().recordVersionNumber, 1);
 
     const changedWithoutBase = structuredClone(importedPayload);
     (changedWithoutBase.installation as Record<string, unknown>).siteAddress = 'Changed without base';
@@ -613,6 +650,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     await purgeInstallHubInstallationTree(derivedSiteCodeInstallationId).catch(() => {});
     await purgeInstallHubInstallationTree(invalidSiteCodeInstallationId).catch(() => {});
     await purgeInstallHubInstallationTree(importedCopyId).catch(() => {});
+    await purgeInstallHubInstallationTree(historicalOptionalDefaultsId).catch(() => {});
     await app.close();
     await closeDb();
   }

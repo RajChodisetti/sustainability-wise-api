@@ -13,6 +13,7 @@ import {
   isValidInstallationSiteCode,
   isValidInstallationZoneCode,
   normalizeInstallationTreeV2,
+  projectCanonicalOptionalDefaults,
   type CanonicalFormSubmission,
   type CanonicalInstallationTree,
   type DisplayCode,
@@ -69,6 +70,114 @@ test('canonicalizer backfills an editable meter custom name for legacy wire payl
     normalizeInstallationTreeV2(editable).meterDevices[0].customName,
     'Main incomer meter',
   );
+});
+
+test('optional default projection is pure, idempotent, and fingerprint-equivalent', () => {
+  const historical = baseTree();
+  historical.installation.timezone = 'Invalid/Timezone';
+  historical.installation.clientName = '  Acme  ';
+  historical.installation.siteName = '   ';
+  historical.installation.siteAddress = '  1 Test Street  ';
+  historical.installation.inspectorName = '  Inspector  ';
+  historical.installation.auditDate = '  2026-08-01  ';
+  historical.gridSupplies[0].name = '';
+  historical.zones[0].zoneName = '';
+  historical.zones[0].zoneDescription = '  North plant room  ';
+  historical.electricalAssets[0].assetName = '';
+  historical.siteAssets[0].assetName = '';
+  historical.meterDevices = [{ ...a3Meter('  serial-old  '), customName: '' }, {
+    ...a3Meter('  custom-serial  '),
+    id: 'meter-custom',
+    customName: '',
+    deviceFamily: 'OTHER',
+    deviceModel: 'OTHER',
+    customManufacturerName: 'Example manufacturer',
+    customModelName: 'Example model',
+    displayName: display('ACME-OTHER-001'),
+    channels: [{ ...channel(1, 'SPARE'), id: 'custom-channel-1' }],
+  }];
+  const before = structuredClone(historical);
+  const projected = projectCanonicalOptionalDefaults(historical);
+
+  assert.deepEqual(historical, before);
+  assert.equal(projected.installation.timezone, 'Australia/Sydney');
+  assert.equal(projected.installation.clientName, 'Acme');
+  assert.equal(projected.installation.siteName, 'Untitled installation');
+  assert.equal(projected.installation.siteAddress, '1 Test Street');
+  assert.equal(projected.installation.inspectorName, 'Inspector');
+  assert.equal(projected.installation.auditDate, '2026-08-01');
+  assert.equal(projected.gridSupplies[0].name, 'Incoming grid connection');
+  assert.equal(projected.zones[0].zoneName, 'Zone');
+  assert.equal(projected.zones[0].zoneDescription, 'North plant room');
+  assert.equal(projected.electricalAssets[0].assetName, 'Main Switchboard');
+  assert.equal(projected.siteAssets[0].assetName, 'HVAC');
+  assert.deepEqual(projected.meterDevices.map((meter) => meter.customName), [
+    'A3RM Meter',
+    'Example model',
+  ]);
+  assert.deepEqual(projected.meterDevices.map((meter) => meter.serialNumber), [
+    'serial-old',
+    'custom-serial',
+  ]);
+  assert.deepEqual(projectCanonicalOptionalDefaults(projected), projected);
+  const normalized = normalizeInstallationTreeV2(historical);
+  assert.equal(normalized.installation.clientName, projected.installation.clientName);
+  assert.equal(normalized.installation.siteName, projected.installation.siteName);
+  assert.equal(normalized.installation.timezone, projected.installation.timezone);
+  assert.equal(normalized.installation.siteAddress, projected.installation.siteAddress);
+  assert.equal(normalized.installation.inspectorName, projected.installation.inspectorName);
+  assert.equal(normalized.installation.auditDate, projected.installation.auditDate);
+  assert.equal(normalized.gridSupplies[0].name, projected.gridSupplies[0].name);
+  assert.equal(normalized.zones[0].zoneName, projected.zones[0].zoneName);
+  assert.equal(normalized.zones[0].zoneDescription, projected.zones[0].zoneDescription);
+  assert.equal(normalized.electricalAssets[0].assetName, projected.electricalAssets[0].assetName);
+  assert.equal(normalized.siteAssets[0].assetName, projected.siteAssets[0].assetName);
+  assert.deepEqual(
+    normalized.meterDevices.map((meter) => meter.customName),
+    projected.meterDevices.map((meter) => meter.customName),
+  );
+  assert.deepEqual(
+    normalized.meterDevices.map((meter) => meter.serialNumber),
+    projected.meterDevices.map((meter) => meter.serialNumber),
+  );
+  assert.equal(
+    canonicalTreeMutationFingerprint(historical),
+    canonicalTreeMutationFingerprint(projected),
+  );
+});
+
+test('optional default fields reject supplied non-string structural shapes', () => {
+  const fields: Array<[string, (tree: Record<string, unknown>) => void]> = [
+    ['installation.siteName', (tree) => {
+      (tree.installation as Record<string, unknown>).siteName = 42;
+    }],
+    ['installation.timezone', (tree) => {
+      (tree.installation as Record<string, unknown>).timezone = { name: 'Australia/Sydney' };
+    }],
+    ['gridSupplies[0].name', (tree) => {
+      (tree.gridSupplies as Array<Record<string, unknown>>)[0].name = false;
+    }],
+    ['zones[0].zoneName', (tree) => {
+      (tree.zones as Array<Record<string, unknown>>)[0].zoneName = [];
+    }],
+    ['zones[0].zoneDescription', (tree) => {
+      (tree.zones as Array<Record<string, unknown>>)[0].zoneDescription = 9;
+    }],
+    ['electricalAssets[0].assetName', (tree) => {
+      (tree.electricalAssets as Array<Record<string, unknown>>)[0].assetName = {};
+    }],
+    ['siteAssets[0].assetName', (tree) => {
+      (tree.siteAssets as Array<Record<string, unknown>>)[0].assetName = true;
+    }],
+  ];
+  for (const [label, mutate] of fields) {
+    const raw = structuredClone(baseTree()) as unknown as Record<string, unknown>;
+    mutate(raw);
+    assert.throws(
+      () => normalizeInstallationTreeV2(raw),
+      new RegExp(label.replaceAll('[', '\\[').replaceAll(']', '\\]')),
+    );
+  }
 });
 
 test('canonicalizer preserves a non-empty historical site code for immutable replay', () => {
@@ -975,7 +1084,7 @@ test('historical site code stays unchanged while new display codes use the bound
   );
 });
 
-test('readiness enforces exact A3/A6 ordinals, grouping, purpose, and WW context', () => {
+test('readiness ignores optional device/form quality and exposes only explicit TBC work', () => {
   const tree = baseTree();
   const meter = a3Meter();
   meter.channels[0].purpose = 'MAIN_SUPPLY';
@@ -1003,15 +1112,18 @@ test('readiness enforces exact A3/A6 ordinals, grouping, purpose, and WW context
     measurementAssignmentIds: ['assignment-1'],
   };
   const codes = installationReadiness(tree).issues.map((issue) => issue.code);
-  assert.ok(codes.includes('CHANNEL_NOT_FOUND'));
-  assert.ok(codes.includes('PHASE_GROUP_INVALID'));
-  assert.ok(codes.includes('CHANNEL_PURPOSE_CONFLICT'));
-  assert.ok(codes.includes('METER_BOARD_MISMATCH'));
+  assert.deepEqual(codes, []);
 
   tree.formSubmissions[0].boardId = 'missing-board';
   const invalidContext = installationReadiness(tree).issues;
-  assert.ok(invalidContext.some((issue) => issue.code === 'FORM_CONTEXT_REQUIRED'));
-  assert.ok(invalidContext.some((issue) => issue.code === 'METER_DEVICE_REQUIRED'));
+  assert.deepEqual(invalidContext, []);
+
+  tree.measurementAssignments[0].target = { kind: 'TBC' };
+  tree.measurementAssignments[0].status = 'TBC';
+  assert.deepEqual(
+    installationReadiness(tree).issues.map((issue) => issue.code),
+    ['MEASUREMENT_TARGET_TBC'],
+  );
 });
 
 test('virtual residual uses only immediate measured children and rejects ambiguous totals', () => {
@@ -1108,10 +1220,10 @@ test('virtual residual uses only immediate measured children and rejects ambiguo
     deriveVirtualMeterDefinitions(tree).some((item) => item.parentNodeId === 'board-1'),
     false,
   );
-  assert.ok(installationReadiness(tree).issues.some((issue) => (
+  assert.equal(installationReadiness(tree).issues.some((issue) => (
     issue.code === 'VIRTUAL_METER_SOURCE_INCOMPLETE'
     && issue.entityId === 'board-1'
-  )));
+  )), false);
   tree.measurementAssignments.pop();
 
   tree.measurementAssignments.push(
@@ -1121,9 +1233,9 @@ test('virtual residual uses only immediate measured children and rejects ambiguo
     deriveVirtualMeterDefinitions(tree).some((item) => item.parentNodeId === 'board-1'),
     false,
   );
-  assert.ok(installationReadiness(tree).issues.some(
+  assert.equal(installationReadiness(tree).issues.some(
     (issue) => issue.code === 'VIRTUAL_METER_SOURCE_INCOMPLETE',
-  ));
+  ), false);
 });
 
 test('terminal site-asset MAIN_SUPPLY measurements never create virtual residuals', () => {
@@ -1317,7 +1429,7 @@ test('views are deterministic, target-neutral, and mapping strips candidate hint
   );
 });
 
-test('confirmed unmetered assets remain non-blocking while broken and TBC mappings stay distinct', () => {
+test('optional broken mappings do not block completion while explicit TBC stays distinct', () => {
   const unmetered = baseTree();
   assert.equal(installationReadiness(unmetered).readyToComplete, true);
   assert.equal(buildAllAssetsView(unmetered, 1).assets[0]?.coverage.kind, 'UNMETERED');
@@ -1333,13 +1445,11 @@ test('confirmed unmetered assets remain non-blocking while broken and TBC mappin
     measurementAssignmentIds: ['missing-assignment'],
   };
   const brokenReadiness = installationReadiness(broken);
-  assert.equal(brokenReadiness.readyToComplete, false);
-  assert.ok(brokenReadiness.issues.some((issue) => (
-    issue.code === 'METERING_STATE_INVALID' && issue.entityId === 'asset-1'
-  )));
+  assert.equal(brokenReadiness.readyToComplete, true);
+  assert.deepEqual(brokenReadiness.issues, []);
   assert.deepEqual(buildAllAssetsView(broken, 1).assets[0]?.coverage, {
     kind: 'INVALID',
-    reason: 'MEASUREMENT_RELATIONSHIP_INVALID',
+    reason: 'METERING_STATE_MISMATCH',
   });
   assert.equal(buildInstallationMappingExport(broken, 1).assetCoverage[0]?.state, 'INVALID');
 
@@ -1370,10 +1480,7 @@ test('confirmed unmetered assets remain non-blocking while broken and TBC mappin
       && issue.entityId === 'asset-1'
       && issue.message.startsWith('Confirmed-unmetered'),
   );
-  assert.equal(
-    unmeteredAssignmentIssue?.field,
-    'meteringState.measurementAssignmentIds',
-  );
+  assert.equal(unmeteredAssignmentIssue, undefined);
 
   const invalidRelationship = structuredClone(unmetered);
   const invalidMeter = a3Meter();
@@ -1393,7 +1500,7 @@ test('confirmed unmetered assets remain non-blocking while broken and TBC mappin
     kind: 'METERED',
     measurementAssignmentIds: ['invalid-direct-assignment'],
   };
-  assert.equal(installationReadiness(invalidRelationship).readyToComplete, false);
+  assert.equal(installationReadiness(invalidRelationship).readyToComplete, true);
   assert.deepEqual(buildAllAssetsView(invalidRelationship, 1).assets[0]?.coverage, {
     kind: 'INVALID',
     reason: 'MEASUREMENT_RELATIONSHIP_INVALID',
@@ -1402,6 +1509,157 @@ test('confirmed unmetered assets remain non-blocking while broken and TBC mappin
     buildMeteringView(invalidRelationship, 1).unassignedChannels.map((channel) => channel.channelId),
     invalidMeter.channels.map((channel) => channel.id),
   );
+
+  const staleLegacyMeterPresent = structuredClone(unmetered);
+  const validMeter = a3Meter();
+  staleLegacyMeterPresent.meterDevices = [validMeter];
+  staleLegacyMeterPresent.measurementAssignments = [{
+    id: 'valid-direct-assignment',
+    installationId: staleLegacyMeterPresent.installation.id,
+    meterId: validMeter.id,
+    channelIds: [validMeter.channels[0].id],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: staleLegacyMeterPresent.siteAssets[0].id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  staleLegacyMeterPresent.siteAssets[0].meteringState = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['valid-direct-assignment'],
+  };
+  assert.equal(staleLegacyMeterPresent.siteAssets[0].meterPresent, false);
+  assert.equal(
+    buildAllAssetsView(staleLegacyMeterPresent, 1).assets[0]?.coverage.kind,
+    'DIRECT',
+  );
+  staleLegacyMeterPresent.measurementAssignments = [];
+  staleLegacyMeterPresent.siteAssets[0].meteringState = { kind: 'UNMETERED' };
+  staleLegacyMeterPresent.siteAssets[0].meterPresent = true;
+  assert.equal(
+    buildAllAssetsView(staleLegacyMeterPresent, 1).assets[0]?.coverage.kind,
+    'UNMETERED',
+  );
+});
+
+test('electrical view emits MEASURES only for semantically confirmed assignments', () => {
+  const directTree = () => {
+    const tree = baseTree();
+    const meter = a3Meter();
+    const assignment: MeasurementAssignment = {
+      id: 'direct-assignment',
+      installationId: tree.installation.id,
+      meterId: meter.id,
+      channelIds: [meter.channels[0].id],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: tree.siteAssets[0].id },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    };
+    tree.meterDevices = [meter];
+    tree.measurementAssignments = [assignment];
+    tree.siteAssets[0].meteringState = {
+      kind: 'METERED',
+      measurementAssignmentIds: [assignment.id],
+    };
+    return { tree, meter, assignment };
+  };
+  const resolved = directTree();
+  resolved.meter.channels[0].sensorRating = 'unrecognised-but-optional';
+  assert.deepEqual(
+    buildElectricalTreeView(resolved.tree, 1).edges.filter((edge) => edge.relationship === 'MEASURES'),
+    [{
+      id: 'measures:direct-assignment',
+      sourceNodeId: 'board-1',
+      targetNodeId: 'asset-1',
+      relationship: 'MEASURES',
+    }],
+  );
+
+  const cases: Array<{
+    name: string;
+    reason: 'TBC' | 'ORPHAN' | 'INVALID';
+    mutate: (fixture: ReturnType<typeof directTree>) => void;
+  }> = [
+    {
+      name: 'concrete target with TBC status',
+      reason: 'TBC',
+      mutate: ({ assignment }) => { assignment.status = 'TBC'; },
+    },
+    {
+      name: 'explicit TBC target',
+      reason: 'TBC',
+      mutate: ({ assignment }) => { assignment.target = { kind: 'TBC' }; },
+    },
+    {
+      name: 'missing meter',
+      reason: 'ORPHAN',
+      mutate: ({ assignment }) => { assignment.meterId = 'missing-meter'; },
+    },
+    {
+      name: 'missing target',
+      reason: 'ORPHAN',
+      mutate: ({ assignment }) => {
+        assignment.target = { kind: 'SITE_ASSET', siteAssetId: 'missing-asset' };
+      },
+    },
+    {
+      name: 'missing channel',
+      reason: 'INVALID',
+      mutate: ({ assignment }) => { assignment.channelIds = ['missing-channel']; },
+    },
+    {
+      name: 'invalid phase group',
+      reason: 'INVALID',
+      mutate: ({ assignment, meter }) => {
+        assignment.channelIds = [meter.channels[0].id, meter.channels[1].id];
+      },
+    },
+    {
+      name: 'invalid purpose',
+      reason: 'INVALID',
+      mutate: ({ meter }) => { meter.channels[0].purpose = 'MAIN_SUPPLY'; },
+    },
+    {
+      name: 'duplicate channel claim',
+      reason: 'INVALID',
+      mutate: ({ tree, assignment }) => {
+        tree.measurementAssignments.push({
+          ...structuredClone(assignment),
+          id: 'duplicate-claim',
+          target: { kind: 'TBC' },
+          status: 'TBC',
+        });
+      },
+    },
+    {
+      name: 'meter not on the direct supplying board',
+      reason: 'INVALID',
+      mutate: ({ tree }) => {
+        tree.electricalAssets.push({
+          ...structuredClone(tree.electricalAssets[0]),
+          id: 'board-2',
+          displayCode: display('ACME-DB-002'),
+          electricalSource: { kind: 'BOARD', boardId: 'board-1' },
+        });
+        tree.siteAssets[0].electricalSource = { kind: 'BOARD', boardId: 'board-2' };
+      },
+    },
+  ];
+  for (const testCase of cases) {
+    const fixture = directTree();
+    testCase.mutate(fixture);
+    const view = buildElectricalTreeView(fixture.tree, 1);
+    assert.equal(
+      view.edges.some((edge) => edge.id === 'measures:direct-assignment'),
+      false,
+      testCase.name,
+    );
+    assert.equal(
+      view.unresolved.find((item) => item.subjectId === 'direct-assignment')?.reason,
+      testCase.reason,
+      testCase.name,
+    );
+  }
 });
 
 test('metering inventory excludes explicitly spare channels from the unassigned cohort', () => {
@@ -1414,21 +1672,21 @@ test('metering inventory excludes explicitly spare channels from the unassigned 
   assert.deepEqual(view.unassignedChannels, []);
   assert.equal(view.summary.allSpareMeters, 1);
   assert.equal(view.summary.spareChannelCount, 3);
-  assert.equal(view.deviceSummaries[0]?.state, 'MAPPING_ISSUE');
+  assert.equal(view.deviceSummaries[0]?.state, 'ALL_SPARE');
 });
 
-test('invalid IANA timezone is a deterministic export warning and eligibility fence', () => {
+test('invalid IANA timezone stays out of TBC-only readiness and does not block exports', () => {
   const tree = baseTree();
   tree.installation.status = 'Completed';
   tree.installation.timezone = 'Australia/Definitely_Not_A_Zone';
   const readiness = installationReadiness(tree);
   assert.equal(readiness.readyToComplete, true);
-  assert.equal(readiness.eligibility.authoritativeReport, false);
-  assert.equal(readiness.eligibility.mappingExport, false);
-  assert.ok(readiness.issues.some((issue) => issue.code === 'TIMEZONE_REQUIRED_FOR_EXPORT'));
+  assert.equal(readiness.eligibility.authoritativeReport, true);
+  assert.equal(readiness.eligibility.mappingExport, true);
+  assert.equal(readiness.issues.some((issue) => issue.code === 'TIMEZONE_REQUIRED_FOR_EXPORT'), false);
 });
 
-test('all Draft forms block completion and invalid/future form states are rejected structurally', () => {
+test('Draft forms are optional while invalid/future form states remain rejected structurally', () => {
   const tree = baseTree();
   tree.formSubmissions = [{
     id: 'form-other',
@@ -1440,9 +1698,8 @@ test('all Draft forms block completion and invalid/future form states are reject
     attachments: [],
     historicalMeterRemoved: false,
   }];
-  assert.ok(installationReadiness(tree).issues.some((issue) => (
-    issue.code === 'FORM_INCOMPLETE' && issue.entityId === 'form-other'
-  )));
+  assert.equal(installationReadiness(tree).readyToComplete, true);
+  assert.deepEqual(installationReadiness(tree).issues, []);
 
   const invalidStatus = structuredClone(tree) as unknown as Record<string, unknown>;
   (invalidStatus.formSubmissions as Array<Record<string, unknown>>)[0].status = 'done';
@@ -1464,10 +1721,7 @@ test('completed commissioning evidence survives explicit historical meter remova
   )), false);
 
   historical.status = 'Draft';
-  assert.ok(installationReadiness(tree).issues.some((issue) => (
-    issue.entityId === historical.id
-    && (issue.code === 'FORM_CONTEXT_REQUIRED' || issue.code === 'METER_DEVICE_REQUIRED')
-  )));
+  assert.deepEqual(installationReadiness(tree).issues, []);
 });
 
 test('custom labels are bounded before persistence', () => {
@@ -1478,7 +1732,7 @@ test('custom labels are bounded before persistence', () => {
   assert.throws(() => normalizeInstallationTreeV2(tree), /at most 120 characters/);
 });
 
-test('only custom channels require capabilities and WW ratings accept Base44 plus persisted vocabularies', () => {
+test('custom capabilities and sensor vocabularies stay optional and out of readiness', () => {
   const custom = baseTree();
   custom.electricalAssets[0].meterPresent = true;
   custom.meterDevices = [{
@@ -1487,10 +1741,10 @@ test('only custom channels require capabilities and WW ratings accept Base44 plu
     customModelName: 'Custom meter',
     channels: [],
   }];
-  assert.ok(installationReadiness(custom).issues.some((issue) => (
+  assert.equal(installationReadiness(custom).issues.some((issue) => (
     issue.code === 'METER_CAPABILITY_REQUIRED'
     && issue.entityType === 'meter'
-  )));
+  )), false);
 
   const a3 = baseTree();
   const meter = a3Meter();
@@ -1511,9 +1765,9 @@ test('only custom channels require capabilities and WW ratings accept Base44 plu
     false,
   );
   meter.channels[1].sensorRating = '120A';
-  assert.ok(installationReadiness(a3).issues.some((issue) => (
+  assert.equal(installationReadiness(a3).issues.some((issue) => (
     issue.code === 'SENSOR_RATING_INVALID' && issue.entityId === 'channel-2'
-  )));
+  )), false);
   meter.channels[1].capabilities = {};
   assert.equal(installationReadiness(a3).issues.some((issue) => (
     issue.code === 'METER_CAPABILITY_REQUIRED' && issue.entityId === 'channel-2'
@@ -1529,9 +1783,9 @@ test('only custom channels require capabilities and WW ratings accept Base44 plu
     customModelName: 'Example model',
     channels: [{ ...channel(1), capabilities: {} }],
   }];
-  assert.ok(installationReadiness(customWithChannel).issues.some((issue) => (
+  assert.equal(installationReadiness(customWithChannel).issues.some((issue) => (
     issue.code === 'METER_CAPABILITY_REQUIRED' && issue.entityId === 'channel-1'
-  )));
+  )), false);
 });
 
 test('standard A3RM spare channels use model-defined capabilities', () => {
@@ -1546,7 +1800,7 @@ test('standard A3RM spare channels use model-defined capabilities', () => {
   )), false);
 });
 
-test('main-supply assignments allow explicit TBC but cannot target a downstream board', () => {
+test('assignment quality stays optional while explicit TBC remains the only readiness issue', () => {
   const draft = baseTree();
   const draftMeter = a3Meter();
   draftMeter.channels = [
@@ -1592,10 +1846,10 @@ test('main-supply assignments allow explicit TBC but cannot target a downstream 
     target: { kind: 'BOARD', boardId: 'board-2' },
     status: 'CONFIRMED',
   };
-  assert.ok(installationReadiness(wrongBoard).issues.some((issue) => (
+  assert.equal(installationReadiness(wrongBoard).issues.some((issue) => (
     issue.code === 'METER_BOARD_MISMATCH'
     && issue.entityId === 'assignment-main-child-board'
-  )));
+  )), false);
 
   const subCircuitAtInstalledBoard = structuredClone(draft);
   subCircuitAtInstalledBoard.meterDevices[0].channels[0] = {
@@ -1608,20 +1862,20 @@ test('main-supply assignments allow explicit TBC but cannot target a downstream 
     target: { kind: 'BOARD', boardId: 'board-1' },
     status: 'CONFIRMED',
   };
-  assert.ok(installationReadiness(subCircuitAtInstalledBoard).issues.some((issue) => (
+  assert.equal(installationReadiness(subCircuitAtInstalledBoard).issues.some((issue) => (
     issue.code === 'METER_BOARD_MISMATCH'
     && issue.entityId === 'assignment-subcircuit-installed-board'
-  )));
+  )), false);
 
   const unassignedActiveChannel = structuredClone(draft);
   unassignedActiveChannel.meterDevices[0].channels[1] = {
     ...channel(2, 'SUB_CIRCUIT'),
     sensorRating: '3000A - 9cm',
   };
-  assert.ok(installationReadiness(unassignedActiveChannel).issues.some((issue) => (
+  assert.equal(installationReadiness(unassignedActiveChannel).issues.some((issue) => (
     issue.code === 'CHANNEL_UNASSIGNED'
     && issue.entityId === 'channel-2'
-  )));
+  )), false);
 });
 
 test('high-card readiness and candidate search stay deterministically bounded and paginated', () => {
@@ -1632,6 +1886,7 @@ test('high-card readiness and candidate search stay deterministically bounded an
     id: `board-${String(index).padStart(4, '0')}`,
     assetName: `Board ${index}`,
     displayCode: display('DUPLICATE-CODE'),
+    electricalSource: { kind: 'TBC' as const },
   }));
   const readiness = installationReadiness(tree);
   assert.ok(readiness.issues.length >= 400);
@@ -1750,12 +2005,12 @@ test('supply reconciliation candidates include Grid and exclude a board self and
   assert.equal(issue.candidateIds?.includes('board-child'), false);
 });
 
-test('blank immutable external key blocks completion', () => {
+test('blank immutable external key is an identity concern, not a readiness issue', () => {
   const tree = baseTree();
   tree.installation.externalKey = '   ';
   const readiness = installationReadiness(tree);
-  assert.equal(readiness.readyToComplete, false);
-  assert.ok(readiness.issues.some((issue) => issue.code === 'EXTERNAL_KEY_REQUIRED'));
+  assert.equal(readiness.readyToComplete, true);
+  assert.deepEqual(readiness.issues, []);
 });
 
 test('commissioned meter identity changes require an equivalent completed amendment', () => {
@@ -1975,6 +2230,159 @@ test('historical snapshot pins rendered labels, versions, readiness, and artifac
   assert.equal(JSON.stringify(snapshot), before);
 });
 
+test('canonical snapshot pins confirmed evidence and omits every optional unconfirmed evidence shape', () => {
+  const photoIds = {
+    zone: '11111111-1111-4111-8111-111111111111',
+    board: '22222222-2222-4222-8222-222222222222',
+    boardExtra: '33333333-3333-4333-8333-333333333333',
+    assetExtra: '44444444-4444-4444-8444-444444444444',
+    meterOverview: '55555555-5555-4555-8555-555555555555',
+    meterExtra: '66666666-6666-4666-8666-666666666666',
+    form: '77777777-7777-4777-8777-777777777777',
+  };
+  const tree = baseTree();
+  tree.zones[0].photos = [
+    'file:///temporary/unconfirmed-zone.jpg',
+    'https://files.example.test/confirmed-zone.jpg',
+  ];
+  tree.electricalAssets[0].photo = 'https://files.example.test/confirmed-board.jpg';
+  tree.electricalAssets[0].extraPhotos = [
+    'file:///temporary/unconfirmed-board-extra.jpg',
+    'https://files.example.test/confirmed-board-extra.jpg',
+  ];
+  tree.siteAssets[0].locationPhoto = 'file:///temporary/unconfirmed-asset.jpg';
+  tree.siteAssets[0].extraPhotos = [
+    'https://files.example.test/confirmed-asset-extra.jpg',
+    'file:///temporary/unconfirmed-asset-extra.jpg',
+  ];
+  const meter = a3Meter();
+  meter.wwPhotos = {
+    device_installed: 'file:///temporary/unconfirmed-meter-device.jpg',
+    switchboard_overview: 'https://files.example.test/confirmed-meter-overview.jpg',
+    labeling: 'file:///temporary/unconfirmed-meter-label.jpg',
+    extra: [
+      'file:///temporary/unconfirmed-meter-extra.jpg',
+      'https://files.example.test/confirmed-meter-extra.jpg',
+    ],
+  };
+  tree.meterDevices = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+  const form = completedWwForm('form-evidence', meter);
+  form.attachments = [{
+    id: 'attachment-unconfirmed',
+    slot: 'commissioning.start_screenshot',
+    uri: 'file:///temporary/unconfirmed-form.jpg',
+    mimeType: 'image/jpeg',
+    capturedAt: '2026-08-01T01:00:00.000Z',
+  }, {
+    id: 'attachment-confirmed',
+    slot: 'commissioning.channels_screenshot',
+    uri: 'https://files.example.test/confirmed-form.jpg',
+    mimeType: 'image/jpeg',
+    capturedAt: '2026-08-01T01:01:00.000Z',
+  }];
+  tree.formSubmissions = [form];
+
+  type Manifest = Parameters<typeof buildCanonicalSnapshotPayload>[0]['mediaManifest'];
+  const mediaManifest: Manifest = [
+    ['zone', 'zone-1', 'photos[1]', photoIds.zone],
+    ['electrical_asset', 'board-1', 'photo', photoIds.board],
+    ['electrical_asset', 'board-1', 'extraPhotos[1]', photoIds.boardExtra],
+    ['site_asset', 'asset-1', 'extraPhotos[0]', photoIds.assetExtra],
+    ['meter_device', 'meter-1', 'wwPhotos.switchboardOverview', photoIds.meterOverview],
+    ['meter_device', 'meter-1', 'wwPhotos.extra[1]', photoIds.meterExtra],
+    ['form_submission', 'form-evidence', 'attachments[1].uri', photoIds.form],
+  ].map(([entityType, entityId, fieldName, id], index) => ({
+    id,
+    checksum: `checksum-${index}`,
+    entityType: entityType as Manifest[number]['entityType'],
+    entityId,
+    fieldName,
+    contentType: 'image/jpeg',
+    fileSizeBytes: index + 1,
+  }));
+
+  const snapshot = buildCanonicalSnapshotPayload({
+    tree,
+    mediaManifest,
+  });
+
+  assert.deepEqual(snapshot.installationTree.zones[0].photos, [
+    `urn:installhub:photo:${photoIds.zone}`,
+  ]);
+  assert.equal(snapshot.installationTree.electricalAssets[0].photo, `urn:installhub:photo:${photoIds.board}`);
+  assert.deepEqual(snapshot.installationTree.electricalAssets[0].extraPhotos, [
+    `urn:installhub:photo:${photoIds.boardExtra}`,
+  ]);
+  assert.equal(snapshot.installationTree.siteAssets[0].locationPhoto, null);
+  assert.deepEqual(snapshot.installationTree.siteAssets[0].extraPhotos, [
+    `urn:installhub:photo:${photoIds.assetExtra}`,
+  ]);
+  assert.equal(snapshot.installationTree.meterDevices[0].wwPhotos?.deviceInstalled, undefined);
+  assert.equal(
+    snapshot.installationTree.meterDevices[0].wwPhotos?.switchboardOverview,
+    `urn:installhub:photo:${photoIds.meterOverview}`,
+  );
+  assert.equal(snapshot.installationTree.meterDevices[0].wwPhotos?.labeling, undefined);
+  assert.equal(snapshot.installationTree.meterDevices[0].wwPhotos?.device_installed, undefined);
+  assert.equal(snapshot.installationTree.meterDevices[0].wwPhotos?.switchboard_overview, undefined);
+  assert.deepEqual(snapshot.installationTree.meterDevices[0].wwPhotos?.extra, [
+    `urn:installhub:photo:${photoIds.meterExtra}`,
+  ]);
+  assert.deepEqual(snapshot.installationTree.formSubmissions[0].attachments.map((item) => (
+    (item as { id: string; uri: string }).id
+  )), ['attachment-confirmed']);
+  assert.equal(
+    (snapshot.installationTree.formSubmissions[0].attachments[0] as { uri: string }).uri,
+    `urn:installhub:photo:${photoIds.form}`,
+  );
+  assert.deepEqual(snapshot.mediaManifest.map((item) => `${item.entityType}:${item.fieldName}`), [
+    'electrical_asset:extraPhotos[0]',
+    'electrical_asset:photo',
+    'form_submission:attachments[0].uri',
+    'meter_device:wwPhotos.extra[0]',
+    'meter_device:wwPhotos.switchboardOverview',
+    'site_asset:extraPhotos[0]',
+    'zone:photos[0]',
+  ]);
+  assert.equal(JSON.stringify(snapshot).includes('file:///temporary'), false);
+  assert.equal(JSON.stringify(snapshot).includes('https://files.example.test'), false);
+  assert.equal(
+    buildCanonicalSnapshotPayload({ tree, mediaManifest }).payloadHash,
+    snapshot.payloadHash,
+  );
+  const withoutUnconfirmed = structuredClone(tree);
+  withoutUnconfirmed.zones[0].photos = [withoutUnconfirmed.zones[0].photos[1]];
+  withoutUnconfirmed.electricalAssets[0].extraPhotos = [
+    withoutUnconfirmed.electricalAssets[0].extraPhotos[1],
+  ];
+  withoutUnconfirmed.siteAssets[0].locationPhoto = null;
+  withoutUnconfirmed.siteAssets[0].extraPhotos = [
+    withoutUnconfirmed.siteAssets[0].extraPhotos[0],
+  ];
+  withoutUnconfirmed.meterDevices[0].wwPhotos = {
+    switchboard_overview: 'https://files.example.test/confirmed-meter-overview.jpg',
+    extra: ['https://files.example.test/confirmed-meter-extra.jpg'],
+  };
+  withoutUnconfirmed.formSubmissions[0].attachments = [
+    withoutUnconfirmed.formSubmissions[0].attachments[1],
+  ];
+  const compactManifest = mediaManifest.map((item) => ({
+    ...item,
+    fieldName: ({
+      'photos[1]': 'photos[0]',
+      'extraPhotos[1]': 'extraPhotos[0]',
+      'wwPhotos.extra[1]': 'wwPhotos.extra[0]',
+      'attachments[1].uri': 'attachments[0].uri',
+    } as Record<string, string>)[item.fieldName] ?? item.fieldName,
+  }));
+  assert.equal(
+    buildCanonicalSnapshotPayload({ tree: withoutUnconfirmed, mediaManifest: compactManifest }).payloadHash,
+    snapshot.payloadHash,
+    'unconfirmed optional evidence does not change the pinned canonical content',
+  );
+});
+
 test('canonical snapshot hash and evidence fields ignore input array order', () => {
   const photoA = '11111111-1111-4111-8111-111111111111';
   const photoB = '22222222-2222-4222-8222-222222222222';
@@ -2049,5 +2457,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.6');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.7');
 });

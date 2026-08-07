@@ -146,11 +146,9 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!name.trim()) {
-      toast.error('Zone name is required.');
-      return;
-    }
-    const normalizedCode = zoneCode.trim().toUpperCase();
+    const normalizedName = name.trim() || 'Zone';
+    const normalizedCode = zoneCode.trim().toUpperCase()
+      || availableZoneCode(query.data!, normalizedName, zoneId);
     if (!isValidZoneCode(normalizedCode)) {
       const message = `Use 1–${ZONE_CODE_MAX_LENGTH} uppercase letters, numbers, or single hyphens.`;
       setZoneCodeError(message);
@@ -170,7 +168,7 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
       await writer.mutate((tree) => {
         if (mode === 'new') {
           const created = createZone(installationId, {
-            zoneName: name,
+            zoneName: normalizedName,
             zoneDescription: description,
             zoneCode: normalizedCode,
           });
@@ -180,7 +178,7 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
           if (!target) throw new Error('Zone not found.');
           const previousZoneCode = target.zoneCode
             || resolvedZoneCodes(tree.zones).get(target.id);
-          target.zoneName = name.trim();
+          target.zoneName = normalizedName;
           target.zoneDescription = description.trim();
           target.zoneCode = normalizedCode;
           target.updatedAt = nowIso();
@@ -213,8 +211,8 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
       <PageHeader title={mode === 'new' ? 'New zone' : 'Edit zone'} subtitle="A physical area that groups its boards and site assets." />
       <form onSubmit={(event) => void submit(event)}>
         <Card className="max-w-2xl">
-          <FieldLabel>Zone name *</FieldLabel>
-          <Input required value={name} onChange={(event) => {
+          <FieldLabel>Zone name</FieldLabel>
+          <Input value={name} placeholder="Defaults to Zone" onChange={(event) => {
             const value = event.target.value;
             setName(value);
             if (zoneCodePristine) {
@@ -222,10 +220,9 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
               setZoneCodeError('');
             }
           }} />
-          <FieldLabel htmlFor="zone-code">Zone short code *</FieldLabel>
+          <FieldLabel htmlFor="zone-code">Zone short code</FieldLabel>
           <Input
             id="zone-code"
-            required
             maxLength={ZONE_CODE_MAX_LENGTH}
             value={zoneCode}
             aria-invalid={Boolean(zoneCodeError)}
@@ -455,7 +452,7 @@ export function InstallHubZoneDetailPage() {
                 const coverage = coverageState(tree, asset, readinessIssues);
                 const channelCount = asset.meterChannelIds?.length || asset.meterChannels?.length || 0;
                 const meteringLabel = coverage === 'INVALID'
-                  ? 'Metering mapping issue · blocks completion'
+                  ? 'Metering mapping issue · excluded from confirmed map'
                   : state === 'UNMETERED'
                   ? 'Confirmed unmetered · metering state is non-blocking'
                   : state === 'TBC'

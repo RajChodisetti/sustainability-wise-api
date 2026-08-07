@@ -13,9 +13,9 @@ import {
   createSiteAsset,
   createZone,
   deleteDraftForm,
+  normalizeOptionalFormContext,
   removeZone,
   syncOperationalMeter,
-  wwFormCompletionContextError,
 } from './model';
 import { syncMeterDevice } from './workflow';
 import type { InstallHubUser } from '../types/domain';
@@ -100,7 +100,7 @@ test('draft forms can be deleted while completed and referenced records remain i
   assert.throws(() => deleteDraftForm(tree, referenced.id), /later amendment/);
 });
 
-test('meter-linked reconciliation keeps the required WW installation form available', () => {
+test('meter-linked reconciliation keeps the WW installation form available', () => {
   assert.deepEqual(
     allowedFormDefinitions({ boardId: 'board-1', meterId: 'meter-1' })
       .map((definition) => definition.type),
@@ -118,8 +118,13 @@ test('meter-linked reconciliation keeps the required WW installation form availa
   );
 });
 
-test('board-only WW forms may create a meter while stale linked-meter context is blocked', () => {
+test('stale optional form context is cleared instead of blocking completion', () => {
   const tree = fixtureTree();
+  const contextFree = createFormSubmission(tree, 'ww-installation', user);
+  normalizeOptionalFormContext(tree, contextFree);
+  assert.equal(contextFree.boardId, null);
+  assert.equal(contextFree.zoneId, null);
+
   const zone = createZone(tree.installation.id, {
     zoneName: 'Electrical',
     zoneDescription: '',
@@ -132,9 +137,18 @@ test('board-only WW forms may create a meter while stale linked-meter context is
     boardId: board.id,
   });
 
-  assert.equal(wwFormCompletionContextError(tree, form), null);
   form.meterId = 'missing-meter';
-  assert.match(wwFormCompletionContextError(tree, form) ?? '', /unavailable/);
+  normalizeOptionalFormContext(tree, form);
+  assert.equal(form.boardId, board.id);
+  assert.equal(form.meterId, null);
+
+  form.zoneId = 'missing-zone';
+  form.boardId = 'missing-board';
+  form.siteAssetId = 'missing-asset';
+  normalizeOptionalFormContext(tree, form);
+  assert.equal(form.zoneId, null);
+  assert.equal(form.boardId, null);
+  assert.equal(form.siteAssetId, null);
 });
 
 test('meter-linked WW completion preserves stable channel IDs and assignments', () => {

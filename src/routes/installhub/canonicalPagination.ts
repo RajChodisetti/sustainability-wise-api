@@ -3,6 +3,7 @@ import type {
   InstallationReadiness,
   ReadinessIssue,
 } from './canonical.js';
+import { isExplicitTbcReadinessIssue } from './canonical.js';
 
 export type ReadinessIssuePage = {
   issues: ReadinessIssue[];
@@ -17,13 +18,7 @@ export type ReadinessIssuePage = {
 export type ReadinessIssueCategory = 'RECONCILIATION' | 'COMPLETION';
 
 export function isUserDeferredReadinessIssue(issue: ReadinessIssue): boolean {
-  return issue.code === 'SUPPLY_TBC'
-    || issue.code === 'MEASUREMENT_TARGET_TBC'
-    || (
-      issue.code === 'METERING_STATE_INVALID'
-      && issue.entityType === 'site_asset'
-      && issue.field === 'meteringState'
-    );
+  return isExplicitTbcReadinessIssue(issue);
 }
 
 export function readinessEntityIdsForZone(

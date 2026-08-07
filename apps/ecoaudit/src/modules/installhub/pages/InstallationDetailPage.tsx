@@ -211,7 +211,7 @@ export function InstallHubInstallationDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="font-extrabold text-[var(--text)]">Completion readiness</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Server-authoritative checks cover unresolved supply, measurement, form, naming, and dependency rules.</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Only relationships explicitly left “To be confirmed” appear here and block completion. All other captured fields are optional.</p>
           </div>
           <span className={`rounded-full px-3 py-1.5 text-xs font-extrabold ${readiness?.readyToComplete ? 'bg-[var(--green-soft)] text-[var(--green)]' : 'bg-[var(--amber-soft)] text-[var(--text)]'}`}>
             {readinessQuery.isLoading
@@ -220,7 +220,7 @@ export function InstallHubInstallationDetailPage() {
                 ? 'Local advisory only'
                 : readiness?.readyToComplete
                   ? 'Ready to complete'
-                  : `${readinessIssueTotal} issue${readinessIssueTotal === 1 ? '' : 's'}`}
+                  : `${readinessIssueTotal} to confirm`}
           </span>
         </div>
         {readinessQuery.error ? <p className="mt-3 text-sm text-[var(--red)]">{installHubConnectionErrorMessage(readinessQuery.error)}</p> : null}
@@ -228,15 +228,15 @@ export function InstallHubInstallationDetailPage() {
         {meteringInventory.assets.confirmedUnmetered ? (
           <div className="mt-3">
             <InlineNotice tone="success">
-              {meteringInventory.assets.confirmedUnmetered} confirmed unmetered asset{meteringInventory.assets.confirmedUnmetered === 1 ? '' : 's'} remain in the asset register. That metering state alone does not block completion; TBC, broken mappings, and other readiness issues are still listed separately.
+              {meteringInventory.assets.confirmedUnmetered} confirmed unmetered asset{meteringInventory.assets.confirmedUnmetered === 1 ? '' : 's'} remain in the asset register. That metering state does not block completion; only explicit TBC relationships are listed below.
             </InlineNotice>
           </div>
         ) : null}
         {readinessGroups.length ? (
           <details className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
             <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">
-              Review {readinessGroups.length} issue categor{readinessGroups.length === 1 ? 'y' : 'ies'}
-              {readinessIssuesTruncated ? ` · first ${readinessIssueCount} of ${readinessIssueTotal} issues shown` : ''}
+              Review {readinessGroups.length} TBC categor{readinessGroups.length === 1 ? 'y' : 'ies'}
+              {readinessIssuesTruncated ? ` · first ${readinessIssueCount} of ${readinessIssueTotal} items shown` : ''}
             </summary>
             <div className="mt-3 space-y-2">
               {readinessGroups.map((group) => (
@@ -274,7 +274,7 @@ export function InstallHubInstallationDetailPage() {
         {readinessIssuesTruncated ? (
           <div className="mt-3">
             <InlineNotice>
-              This expanded view shows the first {readinessIssueCount} of {readinessIssueTotal} issues. <Link className="font-semibold underline" href={`/installhub/installations/${installationId}/data`}>Open reconciliation</Link> to search and page through every issue.
+              This expanded view shows the first {readinessIssueCount} of {readinessIssueTotal} TBC items. <Link className="font-semibold underline" href={`/installhub/installations/${installationId}/data`}>Open reconciliation</Link> to search and page through every item.
             </InlineNotice>
           </div>
         ) : null}
@@ -297,7 +297,7 @@ export function InstallHubInstallationDetailPage() {
         blockedMessage={readinessAdvisory
           ? 'Server-authoritative readiness is unavailable. Reconnect and recheck before completion.'
           : !readiness?.readyToComplete
-          ? `Resolve all ${readinessIssueTotal} readiness issue${readinessIssueTotal === 1 ? '' : 's'} before completion.`
+          ? `Resolve all ${readinessIssueTotal} TBC item${readinessIssueTotal === 1 ? '' : 's'} before completion.`
           : undefined}
         onConfirm={() => void completeCurrentInstallation()}
         onCancel={() => setCompleteOpen(false)}

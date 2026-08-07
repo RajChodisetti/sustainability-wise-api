@@ -89,7 +89,10 @@ labels, order and conditional visibility across the six schema-v2 form families
 and the readable schema-v1 A3RM/A6M forms. Server reports use the Sustainability
 Wise A4 theme and confirmed original evidence. Resolve every attachment by its
 exact `attachments[index].uri` registry identity; never guess by filename or
-slot, substitute a thumbnail, or silently omit a missing original.
+slot, or substitute a thumbnail. Unresolved optional evidence is omitted before
+the canonical-v2.7 snapshot is pinned. Once a confirmed attachment is included
+in that immutable snapshot, a missing original is an integrity error and must
+not be silently ignored.
 
 More than 120 photos or more than 120 MiB raw evidence activates semantic
 section-boundary chunking with a target of about 50 photos per rendered part.
@@ -106,7 +109,9 @@ GET /v1/installhub/installations/:installationId/versions/:versionNumber
 ```
 
 Files include accessible confirmed originals and completed Field App Complete report
-artifacts. Versions are immutable complete full sync snapshots and are added
+artifacts. Versions are immutable canonical-v2.7 full sync snapshots; unresolved
+optional evidence is omitted, while included confirmed media retains its exact
+registry identity. Versions are added
 only when a complete or legacy-unstaged push differs from the latest stable
 snapshot; metadata-stage pushes are excluded. All three routes use creator,
 assigned-inspector, or elevated access.
@@ -118,7 +123,7 @@ namespace and separate `ih_web_jwt`/`ih_web_refresh` browser keys. Portal
 installation edits write a complete cloud tree through the same sync contract
 used by mobile; evidence uploads retain the exact entity/field identities used
 by iOS. Dynamic form visibility, allowed selections, hidden-value cleanup,
-required evidence, completion rules, legacy read-only forms, amendment
+optional capture/evidence policy, TBC-only completion rules, legacy read-only forms, amendment
 provenance, and scanner modes must remain aligned with the mobile form catalog.
 
 The portal is cloud-first. It may expose files, immutable versions, reports,
@@ -174,11 +179,14 @@ is creator, assigned inspector, or elevated access. Imports are fresh-ID local c
 deterministic `cpN` names and immutable original media URLs; only 400 px authenticated thumbnails
 are cached. Backing up an imported copy reconciles shared photo-copy references instead of copying
 bytes. The four child arrays
-(`zones`, `electricalAssets`, `siteAssets`, and `formSubmissions`) are required;
-omitting a previously stored child from the snapshot soft-deletes it. The mobile
+(`zones`, `electricalAssets`, `siteAssets`, and `formSubmissions`) are structurally
+required by the full-snapshot transport; this is not a business-field
+completeness rule. Omitting a previously stored child from the snapshot
+soft-deletes it. Business capture fields and evidence are optional. The mobile
 client must push sanitized metadata before creating upload sessions, confirm
-every media upload, replace local-only URIs with confirmed remote URLs, and push
-the final snapshot before advancing its local backup watermark. The first push
+each optional media item it elects to retain, replace its local-only URI with the
+confirmed remote URL, and omit any still-unresolved optional evidence from the
+final canonical-v2.7 snapshot before advancing its local backup watermark. The first push
 uses `syncStage: "metadata"` and never creates a record version; the final push
 uses `syncStage: "complete"` and is versioned. An absent `syncStage` remains a
 versioned legacy-complete push. Before each attempt, mobile reconciles its
@@ -222,69 +230,54 @@ fallback keeps rollback possible. Derived thumbnails use app-scoped v2 keys.
 Field App Complete has six user-facing schema-v2 form families: WW Installation,
 Comms Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS
 Logger. Schema-v1 A3RM/A6M installation types remain accepted for installed-data
-compatibility but are not new-form choices. Completed WW and Communications
-Fault submissions require a canonical device ID / serial, A3RM/A6M type, and
-matching sensor selection. The optional device-number field remains a distinct,
-barcode-capable production field and falls back to the device ID only when it is
-left blank. WW Installation also retains the optional switchboard address/map
-locator used by the production form. New A3RM records present `10cm-200A`,
-`10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and `Not Used`.
-New A6M records present `CT-60A`, `CT-120A`, `CT-250A`, `CT-400A`,
-`CT-600A`, and `Not Used`. Historical sensor strings remain accepted and are
-injected into editors and reports when already persisted; they are not offered
-as new-record defaults.
+compatibility but are not new-form choices. Device IDs/numbers, serials, sensor
+ratings, job numbers, CT serials, logger details, and other business answers are
+optional in every lifecycle state and do not gate completion. Device number
+remains distinct from serial, and WW Installation retains the optional
+switchboard address/map locator.
 
-Adding a meter from a switchboard or an in-progress site asset first branches
-by device family. A3RM/A6M always opens the full WW Installation form. `Other`
-opens the canonical meter editor and requires an editable human name,
-manufacturer, model, serial, at least one explicit channel, and non-empty
-capabilities for every channel. Device number remains separate from serial,
-and a blank direct-Other device number remains blank rather than being copied
-from the serial. Classification/coverage use the controlled production choices
-while still showing any persisted legacy value. The A3RM/A6M Comms Fault
-workflow must not be offered for `Other` meters.
+When a business value is supplied, its serialized type and enclosing object
+shape still apply; no companion business answer becomes mandatory. New A3RM
+records present `10cm-200A`, `10cm-333mV`, `20cm-3000A`,
+`30cm-3000A`, `45cm-3000A`, and `Not Used`; new A6M records present `CT-60A`,
+`CT-120A`, `CT-250A`, `CT-400A`, `CT-600A`, and `Not Used`. Historical sensor
+strings remain accepted and visible for installed-client compatibility but are
+not offered as new-record defaults. `Not Used` remains a legacy load-only
+compatibility signal rather than a current load choice.
 
-A site asset explicitly classified `UNMETERED` with no direct measurement
-assignment remains in the all-assets register, and that metering state alone
-must not create a completion error. Other readiness errors on the same asset
-may still block completion. `TBC`, a declared `METERED` asset whose exact assignment is
-missing or contradictory, and every non-spare meter channel without a target
-remain blocking states. Coverage projections keep declared state and calculated
-coverage separate: a confirmed-unmetered asset may receive `VIRTUAL` residual
-coverage, while inconsistent metering relationships are `INVALID`/mapping
-issues and must never be presented as harmless unmetered inventory. Channels
-explicitly marked `SPARE` require no target and are excluded from unassigned
-active-channel counts.
+Adding a meter from a switchboard or in-progress site asset still branches by
+device family. A3RM/A6M opens the WW Installation form, while `Other` opens the
+canonical meter editor. Human name, manufacturer, model, serial, channels, and
+capabilities are optional business capture. Any entity or channel that is
+present must retain its stable ID, installation parentage, valid ordinal, and
+structural object shape. The A3RM/A6M Comms Fault workflow is not offered for
+`Other` meters.
 
-WW Installation exposes three channels for A3RM and six for A6M. Every visible
-current channel requires an explicit `channel.N.purpose`. `Main board supply`
-permits only the `Mains Supply` load. `Sub-circuit / asset` requires an active
-downstream load from HVAC, Lighting, Solar PV, Forklift Charger, Hot Water,
-General Power, or `Other`; selecting `Other` also requires a non-empty
-`channel.N.custom_load_type`. `Spare / unused` hides and clears that channel's
-load, custom load, rating, and description, and suppresses its load evidence and
-commissioning polarity/current in the app and report. An active channel requires
-the exact device-compatible rating. A3RM payloads cannot retain hidden channel
-4-6 values; the mobile condition engine clears their other hidden fields.
+Completion/readiness is blocked only by an explicit `TBC` electrical supply,
+asset metering state, or measurement target. `UNMETERED` is a resolved state and
+does not block. A missing optional assignment or channel target is not converted
+into a readiness issue; cross-installation IDs, contradictory discriminated
+union fields, and malformed relationship objects remain write-boundary
+structural errors. Coverage projections keep declared state and calculated
+coverage separate, and an explicitly `SPARE` channel requires no target.
 
-Current schema-v2 purpose/custom-load payloads are strict: they cannot use
-purpose-incompatible loads or omit the custom label for `Other`. Load-only
-schema-v2 Drafts from installed clients remain syncable through validation-only
-inference when the entire purpose/custom-load shape is absent. A load-only
-Completed form may use that projection only when the same ID is already
-persisted as immutable Completed, or when readiness/reporting validates that
-persisted row. Fresh Completed forms and Draft-to-Completed transitions remain
-strict. The inference operates on a temporary copy and never mutates the stored
-or returned snapshot. `Not Used` remains a legacy load-only compatibility signal
-and is not a current load option. Schema-v2 answers reject the legacy
-`not_applicable` value. Because form answers are already stored as JSON and
-compatibility is applied only at the validation boundary, this contract change
-requires no new database migration.
+WW Installation exposes three channels for A3RM and six for A6M, but purpose,
+load, custom load, rating, description, evidence, and commissioning values are
+optional. The editor guides purpose/load pairs through the controlled catalog,
+and `Spare / unused` clears hidden channel values; these UI rules do not create
+completion requirements. Current editors also clear hidden channel 4-6 values
+when A3RM is selected. Load-only and legacy answer shapes from
+installed clients remain syncable through compatibility projection on a
+temporary validation copy; the stored or returned snapshot is never rewritten.
 
-Completed ACE requires job number and all three phase CT serials; Honeywell Q400
-requires the water-meter serial; Captis and SUMS require meter and logger
-serials. SUMS retains the Captis field shape while the mobile scanner accepts
-both barcode and QR values.
+Form answers and attachments remain structurally validated when present:
+object/array and value types, stable IDs, unique attachment IDs, image media
+shape, capture timestamps, and HTTP(S) URI syntax still apply. Omitting an
+optional answer or evidence item is valid. Unresolved optional evidence is left
+out of the immutable canonical-v2.7 snapshot, while confirmed media that is
+included remains exact and immutable. This server-side policy preserves
+installed mobile payloads and aliases and requires no coordinated client or
+database migration.
 
 ## Database Changes
 

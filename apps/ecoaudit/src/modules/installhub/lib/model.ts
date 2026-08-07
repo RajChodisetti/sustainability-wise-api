@@ -100,6 +100,7 @@ export function createInstallationTree(
 ): InstallationTree {
   const timestamp = nowIso();
   const installationId = createId('installation');
+  const siteName = input.siteName.trim() || 'Untitled installation';
   return {
     treeSchemaVersion: 2,
     baseTreeRevision: 0,
@@ -111,11 +112,11 @@ export function createInstallationTree(
       treeRevision: 0,
       recordVersionNumber: 0,
       clientName: input.clientName.trim(),
-      siteName: input.siteName.trim(),
+      siteName,
       siteAddress: input.siteAddress.trim(),
       inspectorName: input.inspectorName.trim(),
-      auditDate: input.auditDate,
-      siteCode: canonicalSiteCode(input.siteName, input.siteCode),
+      auditDate: input.auditDate || todayIso(),
+      siteCode: canonicalSiteCode(siteName, input.siteCode),
       timezone: input.timezone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       externalKey: null,
       status: 'Draft',
@@ -217,10 +218,7 @@ function isRestorableInstallationCreateAttempt(
   if (!isRecord(gridSupply)) return false;
   const requiredText = [
     installation.id,
-    installation.clientName,
     installation.siteName,
-    installation.siteAddress,
-    installation.inspectorName,
     installation.auditDate,
     installation.siteCode,
     installation.timezone,
@@ -535,7 +533,7 @@ export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
     if (definition.availableForNew === false) return false;
     if (context.meterId) {
       // A meter detail can start a comms-fault record. Reconciliation links
-      // carry both board and meter IDs so the required WW installation form
+      // carry both board and meter IDs so the optional WW installation form
       // can also retain the exact stable meter relationship.
       return context.boardId
         ? ['ww-installation', 'comms-fault'].includes(definition.type)
@@ -552,20 +550,35 @@ export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
   });
 }
 
-export function wwFormCompletionContextError(
+/**
+ * Form context is optional capture metadata. Clear stale references before a
+ * write so referential integrity stays intact without turning context into a
+ * mandatory completion field.
+ */
+export function normalizeOptionalFormContext(
   tree: InstallationTree,
-  form: Pick<FormSubmission, 'formType' | 'boardId' | 'meterId'>,
-): string | null {
-  if (form.formType !== 'ww-installation') return null;
-  const board = tree.electricalAssets.find((item) => item.id === form.boardId);
-  if (!board) return 'Link this WW form to a valid switchboard before completion.';
-  if (!form.meterId) return null;
-  const meter = (tree.meterDevices ?? []).find(
-    (item) => item.id === form.meterId && item.installedOnBoardId === board.id,
-  );
-  return meter
-    ? null
-    : 'The linked meter is unavailable on this switchboard. Reconcile the form context before completion.';
+  form: FormSubmission,
+): FormSubmission {
+  if (form.zoneId && !tree.zones.some((item) => item.id === form.zoneId)) {
+    form.zoneId = null;
+  }
+  if (form.boardId && !tree.electricalAssets.some((item) => item.id === form.boardId)) {
+    form.boardId = null;
+  }
+  if (form.siteAssetId && !tree.siteAssets.some((item) => item.id === form.siteAssetId)) {
+    form.siteAssetId = null;
+  }
+  if (form.meterId) {
+    const canonicalMeter = (tree.meterDevices || []).find((item) => item.id === form.meterId);
+    const legacyBoard = tree.electricalAssets.find((board) => (
+      board.meters.some((item) => item.id === form.meterId)
+    ));
+    const installedOnBoardId = canonicalMeter?.installedOnBoardId ?? legacyBoard?.id;
+    if (!installedOnBoardId || (form.boardId && installedOnBoardId !== form.boardId)) {
+      form.meterId = null;
+    }
+  }
+  return form;
 }
 
 export function createFormSubmission(

@@ -52,14 +52,23 @@ The API owns a separate namespace:
 | `PUT /v1/installhub/sync/upload/:sessionId?expires=...&signature=...` | Use a short-lived app/session-bound HMAC capability, then verify size/checksum |
 | `POST /v1/installhub/sync/confirm-upload` | Confirm storage and return the durable URL |
 
-`push` requires `installation`, `zones`, `electricalAssets`, `siteAssets`, and
-`formSubmissions`. It is a full-snapshot contract: an existing child omitted
-from its corresponding array is soft-deleted. Every protected operation checks
+`push` structurally requires `installation`, `zones`, `electricalAssets`,
+`siteAssets`, and `formSubmissions`. It is a full-snapshot contract: an existing
+child omitted from its corresponding array is soft-deleted. This transport
+shape does not make business capture fields or evidence mandatory. Every
+protected operation checks
 the `installhub` app claim, inspector role, installation ownership, and entity
 parentage. Mobile labels the pre-upload push `syncStage: "metadata"` and the
 post-upload push `syncStage: "complete"`. Metadata pushes return
 `versionNumber: null`; complete pushes create/deduplicate an immutable version.
 For backward compatibility, an absent stage is treated as complete.
+
+Business capture fields and evidence are optional. Only an explicitly `TBC`
+electrical supply, asset metering state, or measurement target blocks
+completion/readiness. Authentication, ownership/parentage, compare-and-swap
+revisions, stable IDs, and structural tree/form/attachment shape remain
+enforced. This policy is applied server-side and remains compatible with
+installed mobile clients and their accepted aliases.
 
 New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
 numbers, and hyphens; maximum 16 characters). Newly unclaimed records receive
@@ -129,7 +138,9 @@ successful sync watermark.
 
 Each successful complete or legacy-unstaged `push` saves a new installation
 version only when the stable full-snapshot payload differs from the latest
-version. Metadata-stage pushes are intentionally excluded. File and version
+version. Canonical-v2.7 snapshots omit unresolved optional evidence; confirmed
+media included in a snapshot keeps its exact registry identity and is
+immutable. Metadata-stage pushes are intentionally excluded. File and version
 reads apply the same creator/assigned-inspector/elevated access rule as pull.
 
 ### Form and installation-pack PDF jobs
@@ -156,8 +167,9 @@ visible conditional fields, preserve evidence aspect ratio, and stamp `Page X
 of Y` in the repeated footer. Each
 `attachments[index].uri` must resolve to its exact confirmed
 `photo_registry.field_name = attachments[index].uri` original (or authorized
-copy reference); missing originals fail the job rather than silently omitting
-evidence.
+copy reference). Unresolved optional evidence is omitted before the v2.7
+snapshot is pinned; if a confirmed attachment is included, a missing original
+is an integrity failure rather than evidence that may be silently substituted.
 
 Large reports are compressed and rendered sequentially. More than 120 evidence
 photos or more than 120 MiB of raw registered evidence activates section-boundary
@@ -169,10 +181,12 @@ durable job lifecycle, and configured OneDrive mirroring.
 
 1. Persist edits locally and mark the installation tree dirty.
 2. Push metadata with all device-only media URIs removed.
-3. Discover and durably queue zone, board, embedded-meter, site-asset, and form
-   attachment media.
-4. Deduplicate by scoped SHA-256, otherwise create/upload/confirm a session.
-5. Push the full tree again with confirmed remote URLs.
+3. Discover and durably queue the optional zone, board, embedded-meter,
+   site-asset, and form attachment media selected for retention.
+4. Deduplicate retained media by scoped SHA-256, otherwise
+   create/upload/confirm a session.
+5. Push the full tree again with confirmed remote URLs and omit any still-local
+   or otherwise unresolved optional evidence.
 6. Advance the local installation watermark only after the final push succeeds.
 
 The queue survives restarts, caps automatic attempts at five, and can be reset
@@ -195,53 +209,38 @@ New submissions use schema version 2 and expose six form families:
 `ww-installation`, `comms-fault`, `ace-switchboard`, `honeywell-q400`,
 `captis-logger`, and `sums-logger`. The API continues accepting schema-v1
 `a3rm-installation` and `a6m-installation` records for existing mobile data.
-Completed Installation and Comms Fault submissions are rejected unless the
-device type, device ID, and exact type-compatible CT/Rogowski selection are
-present. Device number is a separate optional production field and falls back
-to the device ID only when blank in WW/comms form projection. Direct `Other`
-meter entry preserves a blank number separately from the serial. Scanner
-modality is a mobile capture concern; the API validates the resulting
-identifiers and conditional values.
+Device type, device ID/number, serials, CT/Rogowski selections, job numbers,
+logger details, channel purpose/load/rating, and other business answers are
+optional in Draft and Completed submissions. Their absence does not create a
+readiness issue. Device number remains distinct from serial, and direct `Other`
+meter entry preserves a blank number rather than copying the serial. Scanner
+modality remains a mobile capture concern.
 
-For Installation, A3RM exposes exactly three channels and A6M exactly six.
-Every visible current channel requires a `channel.N.purpose`. `Main board
-supply` permits only `Mains Supply`. `Sub-circuit / asset` requires HVAC,
-Lighting, Solar PV, Forklift Charger, Hot Water, General Power, or `Other`; an
-`Other` load also requires a non-empty `channel.N.custom_load_type`. `Spare /
-unused` hides and clears load, custom load, rating, and description, along with
-its load evidence and commissioning values. New A3RM records present
+For Installation, A3RM exposes exactly three channels and A6M exactly six, but
+channel business values are optional. Supplied values retain their serialized
+types and channel object shape, but no companion business answer becomes
+mandatory. The UI may clear hidden load, rating, description, evidence, and
+commissioning values for `Spare / unused`. New A3RM records present
 `10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and
 `Not Used`; new A6M records present `CT-60A`, `CT-120A`, `CT-250A`,
 `CT-400A`, `CT-600A`, and `Not Used`. Persisted legacy sensor strings remain
-accepted and visible for compatibility but are not offered for new choices.
-A3RM submissions must not carry hidden channel 4-6 values; the mobile
-condition engine clears those hidden fields.
+accepted and visible for installed-client compatibility but are not offered for
+new choices. Current editors clear hidden channel 4-6 values when A3RM is
+selected; historical hidden observations do not become readiness issues.
 
-Current schema-v2 purpose/custom-load payloads are validated strictly. Load-only
-schema-v2 Drafts from installed clients remain syncable when their entire
-purpose/custom-load shape is absent. The equivalent Completed projection is
-accepted only for a same-ID row already persisted as immutable Completed, or
-when readiness/reporting validates that persisted row; a fresh Completed form
-or Draft-to-Completed transition is strict. The API infers purpose solely in a
-temporary validation copy and never rewrites the stored or returned snapshot.
-`Not Used` remains a legacy load-only compatibility signal, not a current load
-choice. Schema-v2 answers reject the legacy `not_applicable` value; yes/no fields
-must use `yes` or `no`. Form answers are already stored as JSON, so this boundary
-validation compatibility requires no new database migration.
+Load-only and other accepted legacy answer shapes remain syncable through a
+temporary compatibility projection that never rewrites the stored or returned
+snapshot. `Not Used` remains a legacy load-only signal, not a current load
+choice. SUMS retains the Captis answer shape, and barcode versus QR acceptance
+remains a scanner concern.
 
-Completed standard forms require their ingestion identities: ACE job number and
-phase A/B/C CT serials; Honeywell Q400 water-meter serial; and both meter and
-logger serials for Captis and SUMS. SUMS uses the Captis answer shape. Barcode
-versus QR acceptance remains a mobile scanner concern (SUMS accepts both); the
-API stores and validates the resulting strings.
-
-For schema v2, a completed metadata-stage push must contain every visible
-required answer but may omit evidence while uploads are pending. A complete
-push requires every visible required evidence slot. The API rejects unknown or
-hidden stale answer keys, hidden evidence, invalid select/binary/numeric values,
-duplicate attachment IDs, non-image attachments, malformed capture timestamps,
-and non-HTTP(S) attachment URIs. Drafts remain incrementally valid and schema-v1
-records keep their compatibility behavior.
+Form answers and evidence may be omitted in either sync stage. When present,
+object/array and value types, stable IDs, unique attachment IDs, image
+attachment shape, capture timestamps, and HTTP(S) URI syntax remain enforced.
+Unresolved optional evidence is omitted from
+the immutable canonical-v2.7 snapshot; included confirmed media remains exact
+and immutable. Schema-v1 records and installed schema-v2 clients retain their
+compatibility behavior without a coordinated client release.
 
 ### Field App Complete web portal counterpart
 

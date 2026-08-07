@@ -21,6 +21,14 @@ assignment-channel links, retained display-code claims, and immutable record
 version snapshots. Every relationship is installation-scoped. Completed forms
 are immutable; commissioning identity changes require a completed amendment.
 
+Business capture fields and evidence are optional. Completion/readiness has one
+business gate: an explicitly unresolved (`TBC`) electrical supply, asset
+metering state, or measurement target. Missing names, ratings, serials, form
+answers, photos, and other optional capture do not create readiness issues.
+Authentication, ownership and parentage, compare-and-swap revisions, stable
+entity IDs, and structural tree/form/attachment shape remain enforced at their
+existing boundaries.
+
 Electrical graph node IDs are unique across Grid, Board, and SiteAsset nodes,
 and the deterministic `virtual_` ID namespace is reserved for virtual residuals.
 This keeps the existing untyped node IDs and edge endpoints in read/export
@@ -57,11 +65,14 @@ blocking backfill exception remains. After promotion, schema-v1 writes receive
 Completion atomically increments the tree revision and record version, records
 server completion time/actor, and stores the normalized tree, exact referenced
 confirmed media manifest, readiness result, controlled label catalog, formula
-versions, and rendered read/export artifacts under one payload hash. Historical
-version routes return these pinned artifacts and never run current
-canonicalizer, taxonomy, label, readiness, or virtual-meter code.
+versions, and rendered read/export artifacts under one payload hash. Canonical
+v2.7 omits unresolved optional evidence from the immutable snapshot. Any media
+that is included has already been confirmed by its exact registry identity and
+remains exact and immutable. Historical version routes return these pinned
+artifacts and never run current canonicalizer, taxonomy, label, readiness, or
+virtual-meter code.
 
-New snapshots use canonicalizer `installation-canonical-v2.2`. Optional
+New snapshots use canonicalizer `installation-canonical-v2.7`. Optional
 `baseTreeRevision` transport metadata is removed before hashing so an exact
 payload has the same hash before and after JSON persistence. A bounded verifier
 recognizes only the known v2.1 missing-key/`undefined` hashing defect for
@@ -76,7 +87,9 @@ portal or mobile edit. During the API-first rollout,
 from installed legacy clients, pins new sessions to the current revision, and
 emits deprecation telemetry. QA/test are strict by default; production is
 compatibility-first by default until the client-adoption gate is deliberately
-closed.
+closed. The optional-capture and TBC-only readiness policy is additive at the
+server boundary; installed mobile payloads, aliases, and sync sequencing remain
+backward compatible and do not require a coordinated client release.
 
 Canonical site codes are uppercase alphanumeric groups separated by single
 hyphens, with a total length of 1–16 characters. Existing data must be inventoried
@@ -124,5 +137,6 @@ mode while preserving stored base/confirmed revisions and telemetry.
 
 The model has one canonical write path and deterministic historical exports.
 Legacy ambiguity becomes visible work instead of fabricated topology. The
-tradeoff is an explicit reconciliation phase before every legacy installation
-can complete under v2.
+tradeoff is an explicit reconciliation phase only for supply, metering, or
+measurement relationships that are deliberately left `TBC`; optional business
+capture and unresolved optional evidence do not prevent completion under v2.

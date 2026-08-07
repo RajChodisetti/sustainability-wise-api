@@ -55,18 +55,17 @@ import type {
   Meter,
 } from '@/modules/installhub/types/domain';
 import {
+  activeMetersOnAssetSupplyingBoard,
   applyAuthoritativeTreeRevision,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
-  assetElectricalSource,
-  boardElectricalSource,
   boardTypeCode,
   coverageState,
   displayCodeMetadata,
   ensureCanonicalTree,
   generatedDisplayCode,
   installationDisplayCodePrefix,
-  insertBoardUpstreamOfAssetSupply,
+  localElectricalTree,
   localMappingExport,
   localReadiness,
   meterDependencyPreview,
@@ -178,24 +177,39 @@ function sixChannelMeter(): Meter {
   };
 }
 
-test('quick-added upstream meter board preserves the asset direct supply', () => {
+test('site asset meter choices include only active meters on its direct supplying board', () => {
   const tree = fixtureTree();
   const asset = tree.siteAssets[0];
-  const directBoard = tree.electricalAssets.find((board) => board.id === 'board-b')!;
-  const formerParent = tree.electricalAssets.find((board) => board.id === 'board-a')!;
-  const meterBoard = createBoard(tree.installation.id, asset.zoneId);
-  meterBoard.id = 'board-meter-location';
+  const meterFixture = (
+    id: string,
+    lifecycleState: NonNullable<Meter['lifecycleState']>,
+  ): Meter => {
+    const meter = sixChannelMeter();
+    meter.id = id;
+    meter.deviceId = `SERIAL-${id}`;
+    meter.lifecycleState = lifecycleState;
+    meter.wwChannels = meter.wwChannels?.map((channel, index) => ({
+      ...channel,
+      id: `${id}:${index + 1}`,
+    }));
+    return meter;
+  };
+  const directActive = meterFixture('meter-direct-active', 'ACTIVE');
+  const directInactive = meterFixture('meter-direct-inactive', 'INACTIVE');
+  const directPlanned = meterFixture('meter-direct-planned', 'PLANNED');
+  const upstreamActive = meterFixture('meter-upstream-active', 'ACTIVE');
+  syncMeterDevice(tree, 'board-b', directActive);
+  syncMeterDevice(tree, 'board-b', directInactive);
+  syncMeterDevice(tree, 'board-b', directPlanned);
+  syncMeterDevice(tree, 'board-a', upstreamActive);
 
-  assert.equal(insertBoardUpstreamOfAssetSupply(tree, asset, meterBoard), directBoard);
-  tree.electricalAssets.push(meterBoard);
-
-  assert.deepEqual(assetElectricalSource(asset), { kind: 'BOARD', boardId: directBoard.id });
-  assert.deepEqual(boardElectricalSource(directBoard), { kind: 'BOARD', boardId: meterBoard.id });
-  assert.deepEqual(boardElectricalSource(meterBoard), { kind: 'BOARD', boardId: formerParent.id });
   assert.deepEqual(
-    meterBoardsForAsset(tree, asset).map((board) => board.id).sort(),
-    ['board-a', 'board-b', 'board-meter-location'],
+    activeMetersOnAssetSupplyingBoard(tree, asset).map((meter) => meter.id),
+    ['meter-direct-active'],
   );
+
+  applyAssetElectricalSource(asset, { kind: 'TBC' });
+  assert.deepEqual(activeMetersOnAssetSupplyingBoard(tree, asset), []);
 });
 
 test('authoritative upload revisions advance every portal CAS field together', () => {
@@ -632,6 +646,7 @@ test('legacy ambiguous metering remains TBC and direct-Grid assets receive no in
 
 test('exact meter groups accept explicit main TBC and constrain confirmed board totals to the installed board', () => {
   const tree = fixtureTree();
+  applyAssetElectricalSource(tree.siteAssets[0], { kind: 'BOARD', boardId: 'board-a' });
   const meter = sixChannelMeter();
   tree.electricalAssets[0].meters = [meter];
   tree.electricalAssets[0].meterPresent = true;
@@ -642,10 +657,10 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
     [null, null, null, 'LIGHTING', 'LIGHTING', 'LIGHTING'],
   );
   assert.equal(tree.measurementAssignments?.length, 0);
-  const unassignedChannels = localReadiness(tree).issues.filter((item) => item.code === 'CHANNEL_UNASSIGNED');
-  assert.equal(unassignedChannels.length, 6);
-  assert.equal(unassignedChannels[0].field, 'measurementAssignments');
-  assert.equal(unassignedChannels[0].message, 'Every non-spare meter channel must belong to exactly one measurement assignment.');
+  assert.equal(
+    localReadiness(tree).issues.some((item) => item.code === 'CHANNEL_UNASSIGNED'),
+    false,
+  );
 
   const main: MeasurementAssignment = {
     id: 'assignment-main',
@@ -729,6 +744,40 @@ test('exact meter groups accept explicit main TBC and constrain confirmed board 
     phaseMode: 'SINGLE_PHASE',
     direction: 'CONSUMPTION',
   }), /spare, unavailable, or belongs/);
+});
+
+test('site-asset targets must be directly supplied while unchanged historical mappings remain read-only compatible', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[0].meters = [meter];
+  tree.electricalAssets[0].meterPresent = true;
+  syncMeterDevice(tree, 'board-a', meter);
+  const historical: MeasurementAssignment = {
+    id: 'historical-off-board',
+    installationId: tree.installation.id,
+    meterId: meter.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  };
+  tree.measurementAssignments = [structuredClone(historical)];
+
+  assert.doesNotThrow(() => replaceMeterAssignments(tree, meter.id, [historical]));
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...historical,
+    direction: 'GENERATION',
+  }]), /directly supplied/);
+  assert.throws(() => replaceMeterAssignments(tree, meter.id, [{
+    ...historical,
+    id: 'new-off-board',
+  }]), /directly supplied/);
+  assert.doesNotThrow(() => replaceMeterAssignments(tree, meter.id, [{
+    ...historical,
+    target: { kind: 'TBC' },
+    status: 'TBC',
+  }]));
 });
 
 test('site asset metering can claim explicit TBC channels without treating them as occupied', () => {
@@ -911,12 +960,11 @@ test('meter assignment replacement rejects a silent cross-meter asset remap atom
       id: `meter-b:${index + 1}`,
     })),
   };
-  tree.electricalAssets[0].meters = [meterA];
+  applyAssetElectricalSource(tree.siteAssets[0], { kind: 'BOARD', boardId: 'board-a' });
+  tree.electricalAssets[0].meters = [meterA, meterB];
   tree.electricalAssets[0].meterPresent = true;
-  tree.electricalAssets[1].meters = [meterB];
-  tree.electricalAssets[1].meterPresent = true;
   syncMeterDevice(tree, 'board-a', meterA);
-  syncMeterDevice(tree, 'board-b', meterB);
+  syncMeterDevice(tree, 'board-a', meterB);
   replaceMeterAssignments(tree, meterA.id, [{
     id: 'assignment-owner',
     installationId: tree.installation.id,
@@ -994,7 +1042,7 @@ test('meter assignment replacement rejects a silent cross-meter asset remap atom
   assert.equal(tree.siteAssets[0].meterId, meterB.id);
 });
 
-test('local readiness zone filtering includes both meter and measured-target zones', () => {
+test('local readiness zone filtering scopes a TBC assignment to its meter zone', () => {
   const tree = fixtureTree();
   const meter = sixChannelMeter();
   tree.electricalAssets[0].meters = [meter];
@@ -1005,15 +1053,15 @@ test('local readiness zone filtering includes both meter and measured-target zon
     installationId: tree.installation.id,
     meterId: meter.id,
     channelIds: ['meter-a:4'],
-    phaseMode: 'THREE_PHASE',
-    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
     direction: 'CONSUMPTION',
-    status: 'CONFIRMED',
+    status: 'TBC',
   }];
   const zoneA = localReadinessPage(tree, { zoneId: 'zone-a', entityType: 'measurement_assignment' });
   const zoneB = localReadinessPage(tree, { zoneId: 'zone-b', entityType: 'measurement_assignment' });
   assert.ok(zoneA.issues.some((issue) => issue.entityId === 'assignment-cross-zone'));
-  assert.ok(zoneB.issues.some((issue) => issue.entityId === 'assignment-cross-zone'));
+  assert.equal(zoneB.issues.some((issue) => issue.entityId === 'assignment-cross-zone'), false);
 });
 
 test('shared residual coverage may identify several unmetered descendants without numeric allocation', () => {
@@ -1046,7 +1094,7 @@ test('shared residual coverage may identify several unmetered descendants withou
   assert.equal(coverageState(tree, asset), 'INVALID');
 });
 
-test('coverage never presents a readiness-invalid direct assignment as mapped', () => {
+test('coverage stays invalid for a broken direct assignment without adding a readiness flag', () => {
   const tree = fixtureTree();
   const asset = tree.siteAssets[0];
   const meter = sixChannelMeter();
@@ -1069,26 +1117,146 @@ test('coverage never presents a readiness-invalid direct assignment as mapped', 
     kind: 'METERED',
     measurementAssignmentIds: ['invalid-direct-assignment'],
   };
-  assert.ok(localReadiness(tree).issues.some((issue) => (
+  assert.equal(localReadiness(tree).issues.some((issue) => (
     issue.code === 'CHANNEL_NOT_FOUND' && issue.entityId === 'invalid-direct-assignment'
-  )));
+  )), false);
   assert.equal(coverageState(tree, asset), 'INVALID');
+
+  tree.measurementAssignments[0].channelIds = ['meter-a:4'];
+  asset.meterPresent = false;
+  assert.equal(coverageState(tree, asset), 'DIRECT');
+
+  tree.measurementAssignments = [];
+  asset.meteringState = { kind: 'UNMETERED' };
+  asset.meterPresent = true;
+  assert.equal(coverageState(tree, asset), 'UNMETERED');
 });
 
-test('local readiness and mapping remain explicitly advisory and missing external keys block local consistency', () => {
+test('offline electrical projection excludes non-confirmed and structurally invalid MEASURES edges', () => {
+  const directTree = () => {
+    const tree = fixtureTree();
+    const source = sixChannelMeter();
+    const meter = syncMeterDevice(tree, 'board-b', source);
+    const assignment: MeasurementAssignment = {
+      id: 'direct-assignment',
+      installationId: tree.installation.id,
+      meterId: meter.id,
+      channelIds: [meter.channels[3].id],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: tree.siteAssets[0].id },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    };
+    tree.measurementAssignments = [assignment];
+    tree.siteAssets[0].meteringState = {
+      kind: 'METERED',
+      measurementAssignmentIds: [assignment.id],
+    };
+    return { tree, meter, assignment };
+  };
+  const resolved = directTree();
+  resolved.meter.channels[3].sensorRating = 'unrecognised-but-optional';
+  assert.equal(
+    localElectricalTree(resolved.tree).edges.some((edge) => edge.id === 'measure_direct-assignment'),
+    true,
+  );
+
+  const cases: Array<{
+    name: string;
+    reason: 'TBC' | 'ORPHAN' | 'INVALID';
+    mutate: (fixture: ReturnType<typeof directTree>) => void;
+  }> = [
+    {
+      name: 'concrete TBC status',
+      reason: 'TBC',
+      mutate: ({ assignment }) => { assignment.status = 'TBC'; },
+    },
+    {
+      name: 'explicit TBC target',
+      reason: 'TBC',
+      mutate: ({ assignment }) => { assignment.target = { kind: 'TBC' }; },
+    },
+    {
+      name: 'missing meter',
+      reason: 'ORPHAN',
+      mutate: ({ assignment }) => { assignment.meterId = 'missing-meter'; },
+    },
+    {
+      name: 'missing target',
+      reason: 'ORPHAN',
+      mutate: ({ assignment }) => {
+        assignment.target = { kind: 'SITE_ASSET', siteAssetId: 'missing-asset' };
+      },
+    },
+    {
+      name: 'missing channel',
+      reason: 'INVALID',
+      mutate: ({ assignment }) => { assignment.channelIds = ['missing-channel']; },
+    },
+    {
+      name: 'invalid phase group',
+      reason: 'INVALID',
+      mutate: ({ assignment, meter }) => {
+        assignment.channelIds = [meter.channels[3].id, meter.channels[4].id];
+      },
+    },
+    {
+      name: 'invalid purpose',
+      reason: 'INVALID',
+      mutate: ({ meter }) => { meter.channels[3].purpose = 'MAIN_SUPPLY'; },
+    },
+    {
+      name: 'duplicate channel claim',
+      reason: 'INVALID',
+      mutate: ({ tree, assignment }) => {
+        tree.measurementAssignments?.push({
+          ...structuredClone(assignment),
+          id: 'duplicate-claim',
+          target: { kind: 'TBC' },
+          status: 'TBC',
+        });
+      },
+    },
+    {
+      name: 'meter not on direct board',
+      reason: 'INVALID',
+      mutate: ({ meter }) => { meter.installedOnBoardId = 'board-a'; },
+    },
+  ];
+  for (const testCase of cases) {
+    const fixture = directTree();
+    testCase.mutate(fixture);
+    const view = localElectricalTree(fixture.tree);
+    assert.equal(
+      view.edges.some((edge) => edge.id === 'measure_direct-assignment'),
+      false,
+      testCase.name,
+    );
+    assert.equal(
+      view.unresolved.find((item) => item.subjectId === 'direct-assignment')?.reason,
+      testCase.reason,
+      testCase.name,
+    );
+  }
+});
+
+test('local readiness stays advisory while optional external keys do not create issues', () => {
   const tree = fixtureTree();
+  const beforeIssues = localReadiness(tree).issues;
   tree.installation.externalKey = null;
   const readiness = localReadiness(tree);
   assert.equal(readiness.authority, 'LOCAL_ADVISORY');
   assert.equal(readiness.readyToComplete, false);
   assert.equal(readiness.eligibility.mappingExport, false);
-  assert.ok(readiness.issues.some((issue) => issue.code === 'EXTERNAL_KEY_REQUIRED'));
+  assert.equal(readiness.locallyConsistent, false);
+  assert.deepEqual(readiness.issues, beforeIssues);
+  assert.equal(readiness.issues.some((issue) => issue.code === 'EXTERNAL_KEY_REQUIRED'), false);
   const mapping = localMappingExport(tree);
   assert.equal(mapping.authority, 'LOCAL_ADVISORY');
   assert.equal(mapping.installation.externalKey, '');
 });
 
-test('custom meters require explicit channels, positive ordinals, and non-empty capabilities', () => {
+test('custom meter channel and capability observations do not create readiness issues', () => {
   const tree = fixtureTree();
   tree.meterDevices = [{
     id: 'custom-meter',
@@ -1108,7 +1276,7 @@ test('custom meters require explicit channels, positive ordinals, and non-empty 
     channels: [],
   }];
   let readiness = localReadiness(tree);
-  assert.ok(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED' && issue.field === 'channels'));
+  assert.equal(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED'), false);
   tree.meterDevices[0].channels = [{
     id: 'custom-channel-1',
     ordinal: 1,
@@ -1116,7 +1284,7 @@ test('custom meters require explicit channels, positive ordinals, and non-empty 
     capabilities: {},
   }];
   readiness = localReadiness(tree);
-  assert.ok(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED' && issue.field === 'capabilities'));
+  assert.equal(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED'), false);
   tree.meterDevices[0].channels[0].capabilities = { currentRange: '0-600A' };
   readiness = localReadiness(tree);
   assert.equal(readiness.issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED'), false);

@@ -24,6 +24,63 @@ export function assignmentCollectionConcurrencySignature(
   );
 }
 
+/**
+ * Turns optional editor rows into assignments accepted by the structural write
+ * contract. Empty rows disappear. Malformed groups keep the first usable,
+ * unique, same-purpose channel subset and become explicit TBC work instead of
+ * blocking an otherwise unrelated meter save.
+ */
+export function structurallySavableMeterAssignments(
+  assignments: MeasurementAssignment[],
+  channels: WattwatcherChannel[],
+): MeasurementAssignment[] {
+  const purposeById = new Map(channels.map((channel) => [channel.id, channel.purpose]));
+  const usedChannelIds = new Set<string>();
+
+  return assignments.flatMap((assignment) => {
+    if (!assignment.channelIds.length) return [];
+    const retained: string[] = [];
+    const localIds = new Set<string>();
+    let sharedPurpose: WattwatcherChannel['purpose'] | undefined;
+    let structurallyChanged = false;
+
+    for (const channelId of assignment.channelIds) {
+      const purpose = purposeById.get(channelId);
+      if (
+        localIds.has(channelId)
+        || usedChannelIds.has(channelId)
+        || !purpose
+        || purpose === 'SPARE'
+        || (sharedPurpose !== undefined && purpose !== sharedPurpose)
+      ) {
+        structurallyChanged = true;
+        continue;
+      }
+      localIds.add(channelId);
+      usedChannelIds.add(channelId);
+      sharedPurpose = purpose;
+      retained.push(channelId);
+    }
+
+    if (!retained.length) return [];
+    const phaseMode = retained.length === 1
+      ? 'SINGLE_PHASE'
+      : retained.length === 3
+        ? 'THREE_PHASE'
+        : 'OTHER';
+    structurallyChanged ||= phaseMode !== assignment.phaseMode
+      || retained.length !== assignment.channelIds.length;
+    const target = structurallyChanged ? { kind: 'TBC' as const } : assignment.target;
+    return [{
+      ...assignment,
+      channelIds: retained,
+      phaseMode,
+      target,
+      status: target.kind === 'TBC' ? 'TBC' : 'CONFIRMED',
+    }];
+  });
+}
+
 export function meterStructuralConcurrencySignature(
   meter: Meter | null | undefined,
 ): string {

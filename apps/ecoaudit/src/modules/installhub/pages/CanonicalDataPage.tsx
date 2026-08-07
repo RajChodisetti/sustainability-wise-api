@@ -11,6 +11,7 @@ import { Icon } from '@/components/ui/Icon';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
 import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
+import { ConfirmDialog } from '@/modules/installhub/components/WorkflowUi';
 import {
   useInstallationElectricalTree,
   useInstallationMapping,
@@ -41,6 +42,10 @@ import {
   readinessIssueKey,
   readinessResolutionCandidates,
   applyReadinessCandidateResolution,
+  removeUnresolvedElectricalRelationship,
+  resolvedElectricalTopology,
+  unresolvedElectricalRecords,
+  unresolvedRelationshipRemovalPlan,
 } from '@/modules/installhub/lib/electricalPresentation';
 import type { InstallationTree, ReadinessIssue } from '@/modules/installhub/types/domain';
 import type { ElectricalTreeReadModel } from '@/modules/installhub/types/domain';
@@ -50,18 +55,10 @@ const TABLE_PAGE_SIZE = 50;
 const METER_PAGE_SIZE = 20;
 const ISSUE_PAGE_SIZE = 50;
 const HIERARCHY_PAGE_SIZE = 100;
-const UNRESOLVED_PAGE_SIZE = 50;
 const READINESS_ENTITY_TYPES = [
-  'installation',
-  'grid_supply',
-  'zone',
   'board',
   'site_asset',
-  'meter',
-  'channel',
   'measurement_assignment',
-  'virtual_meter',
-  'form',
 ] as const;
 
 function pageItems<T>(items: T[], page: number, pageSize: number): T[] {
@@ -155,6 +152,25 @@ function unresolvedRelationshipHref(
   }).href;
 }
 
+function unresolvedRelationshipName(
+  tree: InstallationTree,
+  item: ElectricalTreeReadModel['unresolved'][number],
+): string {
+  if (item.subjectType === 'BOARD') {
+    const board = tree.electricalAssets.find((candidate) => candidate.id === item.subjectId);
+    return board ? `${displayCodeValue(board)} — ${board.assetName}` : `Switchboard ${item.subjectId}`;
+  }
+  if (item.subjectType === 'SITE_ASSET') {
+    const asset = tree.siteAssets.find((candidate) => candidate.id === item.subjectId);
+    return asset ? `${displayCodeValue(asset)} — ${asset.assetName}` : `Site asset ${item.subjectId}`;
+  }
+  const assignment = measurementAssignments(tree).find((candidate) => candidate.id === item.subjectId);
+  const meter = meterDevices(tree).find((candidate) => candidate.id === assignment?.meterId);
+  return meter
+    ? `${meterDeviceName(meter)} · channel assignment`
+    : `Measurement assignment ${item.subjectId}`;
+}
+
 export function InstallHubCanonicalDataPage() {
   const { installationId } = useParams<{ installationId: string }>();
   const treeQuery = useInstallationTree(installationId);
@@ -162,8 +178,6 @@ export function InstallHubCanonicalDataPage() {
   const toast = useToast();
   const [issueSearch, setIssueSearch] = useState('');
   const [issuePage, setIssuePage] = useState(0);
-  const [issueCategory, setIssueCategory] = useState<'RECONCILIATION' | 'COMPLETION'>('RECONCILIATION');
-  const [issueSeverity, setIssueSeverity] = useState<'ALL' | 'ERROR' | 'WARNING'>('ALL');
   const [issueEntityType, setIssueEntityType] = useState('ALL');
   const [issueZoneId, setIssueZoneId] = useState('ALL');
   const [reviewedIssueKeys, setReviewedIssueKeys] = useState<Set<string>>(new Set());
@@ -176,21 +190,14 @@ export function InstallHubCanonicalDataPage() {
     offset: issuePage * ISSUE_PAGE_SIZE,
     limit: ISSUE_PAGE_SIZE,
     q: deferredIssueSearch,
-    ...(issueSeverity === 'ALL' ? {} : { severity: issueSeverity }),
     ...(issueEntityType === 'ALL' ? {} : { entityType: issueEntityType }),
-    category: issueCategory,
+    category: 'RECONCILIATION',
     ...(issueZoneId === 'ALL' ? {} : { zoneId: issueZoneId }),
   });
-  const readinessSummaryQuery = useInstallationReadiness(installationId, { offset: 0, limit: 1 });
   const reconciliationSummaryQuery = useInstallationReadiness(installationId, {
     offset: 0,
     limit: 1,
     category: 'RECONCILIATION',
-  });
-  const completionSummaryQuery = useInstallationReadiness(installationId, {
-    offset: 0,
-    limit: 1,
-    category: 'COMPLETION',
   });
   const electricalQuery = useInstallationElectricalTree(installationId);
   const mappingQuery = useInstallationMapping(installationId);
@@ -204,8 +211,10 @@ export function InstallHubCanonicalDataPage() {
   const [electricalAnnouncement, setElectricalAnnouncement] = useState('');
   const [hierarchyPage, setHierarchyPage] = useState(0);
   const [unresolvedSearch, setUnresolvedSearch] = useState('');
-  const [unresolvedPage, setUnresolvedPage] = useState(0);
+  const [pendingUnresolvedRemoval, setPendingUnresolvedRemoval] = useState<ElectricalTreeReadModel['unresolved'][number] | null>(null);
+  const [removingUnresolvedId, setRemovingUnresolvedId] = useState<string | null>(null);
   const hierarchyInitializedRef = useRef('');
+  const electricalToggleRef = useRef<HTMLButtonElement>(null);
   const [assetsOpen, setAssetsOpen] = useState(false);
   const currentTreeRevision = treeQuery.data?.treeRevision ?? treeQuery.data?.baseTreeRevision ?? 0;
 
@@ -218,7 +227,6 @@ export function InstallHubCanonicalDataPage() {
           treeRevision?: number;
           search?: string;
           page?: number;
-          severity?: 'ALL' | 'ERROR' | 'WARNING';
           entityType?: string;
           zoneId?: string;
           reviewed?: string[];
@@ -226,7 +234,6 @@ export function InstallHubCanonicalDataPage() {
         if (reconciliationResumedFor !== installationId) {
           setIssueSearch(saved.search || '');
           setIssuePage(Number.isInteger(saved.page) && (saved.page || 0) >= 0 ? saved.page || 0 : 0);
-          setIssueSeverity(saved.severity === 'ERROR' || saved.severity === 'WARNING' ? saved.severity : 'ALL');
           setIssueEntityType(saved.entityType || 'ALL');
           setIssueZoneId(saved.zoneId || 'ALL');
         }
@@ -250,15 +257,14 @@ export function InstallHubCanonicalDataPage() {
       treeRevision: currentTreeRevision,
       search: issueSearch,
       page: issuePage,
-      severity: issueSeverity,
       entityType: issueEntityType,
       zoneId: issueZoneId,
       reviewed: [...reviewedIssueKeys],
     }));
-  }, [currentTreeRevision, installationId, issueEntityType, issuePage, issueSearch, issueSeverity, issueZoneId, reconciliationResumedFor, reviewedIssueKeys, reviewedTreeRevision]);
+  }, [currentTreeRevision, installationId, issueEntityType, issuePage, issueSearch, issueZoneId, reconciliationResumedFor, reviewedIssueKeys, reviewedTreeRevision]);
 
   useEffect(() => {
-    const model = electricalQuery.data;
+    const model = resolvedElectricalTopology(electricalQuery.data);
     if (!model) return;
     const signature = `${model.treeRevision}:${model.nodes.length}:${model.edges.length}`;
     if (hierarchyInitializedRef.current === signature) return;
@@ -275,15 +281,14 @@ export function InstallHubCanonicalDataPage() {
   if (treeQuery.isLoading) return <Spinner />;
   if (treeQuery.error || !treeQuery.data) return <ErrorBanner message={installHubConnectionErrorMessage(treeQuery.error || new Error('Installation not found.'))} />;
   const tree = treeQuery.data;
-  const meteringInventory = meteringInventorySummary(tree);
   const readiness = readinessQuery.data;
   const electrical = electricalQuery.data;
+  const resolvedElectrical = resolvedElectricalTopology(electrical);
+  const unresolvedElectrical = unresolvedElectricalRecords(electrical);
   const localAdvisory = readiness?.authority === 'LOCAL_ADVISORY' || mappingQuery.data?.authority === 'LOCAL_ADVISORY';
   const visibleIssues = readiness?.issues || [];
   const issueTotal = readiness?.issuePage?.total ?? visibleIssues.length;
-  const fullIssueTotal = readinessSummaryQuery.data?.issuePage?.total ?? issueTotal;
   const reconciliationTotal = reconciliationSummaryQuery.data?.issuePage?.total ?? 0;
-  const completionTotal = completionSummaryQuery.data?.issuePage?.total ?? 0;
   const issueRows = visibleIssues.map((issue) => ({
     issue,
     key: readinessIssueKey(issue),
@@ -293,15 +298,13 @@ export function InstallHubCanonicalDataPage() {
     correction: readinessCorrectionAction(tree, issue),
   }));
   const visibleIssueRows = issueRows;
-  const reviewedPrefix = `${issueCategory}:`;
-  const reviewTotal = issueCategory === 'RECONCILIATION'
-    ? reconciliationTotal
-    : completionTotal;
+  const reviewedPrefix = 'RECONCILIATION:';
+  const reviewTotal = reconciliationTotal;
   const reviewedCount = Math.min(
     [...reviewedIssueKeys].filter((key) => key.startsWith(reviewedPrefix)).length,
     reviewTotal,
   );
-  const allElectricalRows = electricalHierarchyRows(electrical);
+  const allElectricalRows = electricalHierarchyRows(resolvedElectrical);
   const filteredElectricalRows = filterElectricalHierarchyRows(allElectricalRows, electricalSearch);
   const electricalParentIds = new Set(allElectricalRows.flatMap((row) => row.parent ? [row.parent.id] : []));
   const visibleHierarchyRows = electricalSearch.trim()
@@ -309,12 +312,15 @@ export function InstallHubCanonicalDataPage() {
     : filteredElectricalRows.filter((row) => !row.ancestorIds.some((id) => collapsedElectricalNodeIds.has(id)));
   const pagedHierarchyRows = pageItems(visibleHierarchyRows, hierarchyPage, HIERARCHY_PAGE_SIZE);
   const normalizedUnresolvedSearch = unresolvedSearch.trim().toLocaleLowerCase('en-AU');
-  const filteredUnresolved = (electrical?.unresolved || []).filter((item) => (
+  const filteredUnresolved = unresolvedElectrical.filter((item) => (
     !normalizedUnresolvedSearch
     || `${item.id} ${item.subjectType} ${item.subjectId} ${item.relation} ${item.missingEnd} ${item.reason}`
       .toLocaleLowerCase('en-AU')
       .includes(normalizedUnresolvedSearch)
   ));
+  const pendingRemovalPlan = pendingUnresolvedRemoval
+    ? unresolvedRelationshipRemovalPlan(tree, pendingUnresolvedRemoval)
+    : null;
   const normalizedAssetSearch = assetSearch.trim().toLowerCase();
   const filteredAssets = [...tree.siteAssets]
     .sort((left, right) => left.id.localeCompare(right.id))
@@ -346,21 +352,38 @@ export function InstallHubCanonicalDataPage() {
     try {
       await writer.mutate((next) => {
         if (!applyReadinessCandidateResolution(next, issue, candidateId)) {
-          throw new Error('This candidate is no longer valid. Recheck the reconciliation queue.');
+          throw new Error('This candidate is no longer valid. Recheck the TBC list.');
         }
       });
-      setReviewedIssueKeys((current) => new Set(current).add(`${issueCategory}:${key}`));
+      setReviewedIssueKeys((current) => new Set(current).add(`RECONCILIATION:${key}`));
       setResolutionSelections((current) => {
         const next = { ...current };
         delete next[key];
         return next;
       });
       setIssuePage(0);
-      toast.success('Reconciliation resolution saved and readiness is being rechecked.');
+      toast.success('TBC resolution saved and the list is being refreshed.');
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
       setResolvingIssueKey(null);
+    }
+  }
+
+  async function removePendingUnresolved() {
+    if (!pendingUnresolvedRemoval) return;
+    setRemovingUnresolvedId(pendingUnresolvedRemoval.id);
+    try {
+      await writer.mutate((next) => {
+        removeUnresolvedElectricalRelationship(next, pendingUnresolvedRemoval);
+      });
+      toast.success('Unresolved record removed. Confirmed electrical data was preserved.');
+      setPendingUnresolvedRemoval(null);
+      window.requestAnimationFrame(() => electricalToggleRef.current?.focus());
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setRemovingUnresolvedId(null);
     }
   }
 
@@ -373,45 +396,29 @@ export function InstallHubCanonicalDataPage() {
       ]} />
       <PageHeader
         title="Data & reconciliation"
-        subtitle="Physical locations, electrical relationships, unresolved items, full asset coverage, and canonical export readiness."
+        subtitle="Physical locations, confirmed electrical relationships, To be confirmed records, and full asset coverage."
         actions={<LinkButton href={`/installhub/installations/${installationId}/metering`}><Icon name="gauge" size={17} />Metering table</LinkButton>}
       />
 
       {localAdvisory ? (
-        <div className="mb-5"><InlineNotice>This is a local advisory projection. It cannot authorize completion or canonical export; reconnect to load server-authoritative readiness and pinned output.</InlineNotice></div>
+        <div className="mb-5"><InlineNotice>This is a local projection. Reconnect to load server-confirmed TBC data and pinned output.</InlineNotice></div>
       ) : null}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
           ['Physical zones', tree.zones.length],
-          ['Electrical nodes', electrical?.nodes.length || 0],
-          ['Readiness issues', fullIssueTotal],
+          ['Resolved electrical nodes', resolvedElectrical?.nodes.length || 0],
           ['All site assets', tree.siteAssets.length],
-          ['Confirmed unmetered', meteringInventory.assets.confirmedUnmetered],
-          ['Metering TBC', meteringInventory.assets.toBeConfirmed],
-          ['Broken mappings', meteringInventory.assets.brokenMappings],
-          ['Unassigned active channels', meteringInventory.channels.unassignedActive],
+          ['To be confirmed', reconciliationTotal],
         ].map(([label, value]) => <Card key={label}><p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">{label}</p><p className="mt-2 text-3xl font-extrabold text-[var(--text)]">{value}</p></Card>)}
       </div>
-
-      {meteringInventory.assets.confirmedUnmetered ? (
-        <div className="mb-6">
-          <InlineNotice tone="success">
-            Confirmed unmetered assets are accepted inventory records. They stay visible here, and that metering state alone does not block installation completion; TBC, broken mappings, or other readiness errors still require reconciliation.
-          </InlineNotice>
-        </div>
-      ) : null}
 
       <Card className="mb-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="font-extrabold text-[var(--text)]">
-              {issueCategory === 'RECONCILIATION' ? 'Reconciliation queue' : 'Completion issues'}
-            </h2>
+            <h2 className="font-extrabold text-[var(--text)]">To be confirmed</h2>
             <p className="mt-1 text-xs text-[var(--text-sub)]">
-              {issueCategory === 'RECONCILIATION'
-                ? 'Only relationships deliberately left To be confirmed appear here.'
-                : 'Validation, forms, evidence, naming, and mapping defects appear here without being labelled as reconciliation.'}
+              Only records deliberately left To be confirmed appear here. Optional or incomplete fields are not flagged.
             </p>
           </div>
           <Button
@@ -421,50 +428,20 @@ export function InstallHubCanonicalDataPage() {
             <Icon name="download" size={16} />Download pinned mapping
           </Button>
         </div>
-        <div className="mt-4 flex flex-wrap gap-2" aria-label="Readiness issue category">
-          <Button
-            variant={issueCategory === 'RECONCILIATION' ? 'primary' : 'secondary'}
-            aria-pressed={issueCategory === 'RECONCILIATION'}
-            onClick={() => {
-              setIssueCategory('RECONCILIATION');
-              setIssuePage(0);
-            }}
-          >
-            To be confirmed ({reconciliationTotal})
-          </Button>
-          <Button
-            variant={issueCategory === 'COMPLETION' ? 'primary' : 'secondary'}
-            aria-pressed={issueCategory === 'COMPLETION'}
-            onClick={() => {
-              setIssueCategory('COMPLETION');
-              setIssuePage(0);
-            }}
-          >
-            Other completion issues ({completionTotal})
-          </Button>
-        </div>
         <div className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-sm font-extrabold text-[var(--text)]">Review progress</p>
-              <p className="mt-1 text-xs text-[var(--text-sub)]">{reviewedCount} of {reviewTotal} {issueCategory === 'RECONCILIATION' ? 'reconciliation' : 'completion'} items reviewed in this browser. Your search, page, filters, and reviewed markers resume automatically.</p>
+              <p className="mt-1 text-xs text-[var(--text-sub)]">{reviewedCount} of {reviewTotal} TBC items reviewed in this browser. Your search, page, filters, and reviewed markers resume automatically.</p>
             </div>
             {reviewedCount ? <Button variant="ghost" onClick={() => setReviewedIssueKeys(new Set())}>Reset reviewed</Button> : null}
           </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface)]" role="progressbar" aria-label={`${issueCategory === 'RECONCILIATION' ? 'Reconciliation' : 'Completion issue'} review progress`} aria-valuemin={0} aria-valuemax={reviewTotal} aria-valuenow={reviewedCount}>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface)]" role="progressbar" aria-label="To be confirmed review progress" aria-valuemin={0} aria-valuemax={reviewTotal} aria-valuenow={reviewedCount}>
             <div className="h-full rounded-full bg-[var(--primary)]" style={{ width: `${reviewTotal ? (reviewedCount / reviewTotal) * 100 : 0}%` }} />
           </div>
         </div>
-        <Input className="mt-4" type="search" value={issueSearch} placeholder="Search by code, message, record, ID, or field" aria-label={`Search ${issueCategory === 'RECONCILIATION' ? 'reconciliation' : 'completion'} issues`} onChange={(event) => { setIssueSearch(event.target.value); setIssuePage(0); }} />
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <div>
-            <label className="mb-1.5 block text-xs font-bold text-[var(--text-sub)]" htmlFor="reconciliation-severity">Severity</label>
-            <Select id="reconciliation-severity" value={issueSeverity} onChange={(event) => { setIssueSeverity(event.target.value as typeof issueSeverity); setIssuePage(0); }}>
-              <option value="ALL">All severities</option>
-              <option value="ERROR">Errors</option>
-              <option value="WARNING">Warnings</option>
-            </Select>
-          </div>
+        <Input className="mt-4" type="search" value={issueSearch} placeholder="Search TBC record, ID, relationship, or field" aria-label="Search To be confirmed records" onChange={(event) => { setIssueSearch(event.target.value); setIssuePage(0); }} />
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1.5 block text-xs font-bold text-[var(--text-sub)]" htmlFor="reconciliation-entity">Record type</label>
             <Select id="reconciliation-entity" value={issueEntityType} onChange={(event) => { setIssueEntityType(event.target.value); setIssuePage(0); }}>
@@ -481,14 +458,14 @@ export function InstallHubCanonicalDataPage() {
           </div>
         </div>
         <p className="mt-2 text-xs text-[var(--text-sub)]">
-          Search, category, and every filter are applied by the server before paging. {issueTotal} item{issueTotal === 1 ? '' : 's'} match this category.
+          Search and filters are applied by the server before paging. {issueTotal} TBC item{issueTotal === 1 ? '' : 's'} match.
         </p>
         {readinessQuery.isLoading ? <div className="mt-4"><Spinner /></div> : readinessQuery.error ? (
           <div className="mt-4"><ErrorBanner message={installHubConnectionErrorMessage(readinessQuery.error)} /></div>
         ) : visibleIssueRows.length ? (
           <div className="mt-4 space-y-3">
             {visibleIssueRows.map(({ issue, key, entity, candidates, resolutions, correction }) => {
-              const reviewedKey = `${issueCategory}:${key}`;
+              const reviewedKey = `RECONCILIATION:${key}`;
               const reviewed = reviewedIssueKeys.has(reviewedKey);
               const resolutionOptions = resolutions.map((candidate) => ({
                 value: candidate.id,
@@ -507,7 +484,7 @@ export function InstallHubCanonicalDataPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${issue.severity === 'ERROR' ? 'bg-[var(--red-soft)] text-[var(--red)]' : 'bg-[var(--amber-soft)] text-[var(--text)]'}`}>{issue.severity}</span>
+                        <span className="rounded-full bg-[var(--surface)] px-2.5 py-1 text-xs font-extrabold text-[var(--text-sub)]">To be confirmed</span>
                         <span className="font-mono text-xs font-bold text-[var(--text-sub)]">{issue.code}</span>
                         {reviewed ? <span className="rounded-full bg-[var(--green)] px-2.5 py-1 text-xs font-extrabold text-white">Reviewed</span> : null}
                       </div>
@@ -553,7 +530,7 @@ export function InstallHubCanonicalDataPage() {
                   ) : (
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--primary)]/25 bg-[var(--surface)] p-3">
                       <div>
-                        <p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">Issue-specific resolution</p>
+                        <p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">Record-specific action</p>
                         <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-sub)]">{correction.instruction}</p>
                       </div>
                       <LinkButton href={correction.href}>{correction.label}<Icon name="chevron-right" size={16} /></LinkButton>
@@ -574,7 +551,7 @@ export function InstallHubCanonicalDataPage() {
           </div>
         ) : (
           <div>
-            <p className="mt-4 text-sm text-[var(--text-sub)]">No {issueCategory === 'RECONCILIATION' ? 'To be confirmed relationships' : 'other completion issues'} match the current search and filters.</p>
+            <p className="mt-4 text-sm text-[var(--text-sub)]">No To be confirmed records match the current search and filters.</p>
             {issueTotal ? <ResultPager page={issuePage} pageSize={ISSUE_PAGE_SIZE} total={issueTotal} onPage={setIssuePage} /> : null}
           </div>
         )}
@@ -582,17 +559,20 @@ export function InstallHubCanonicalDataPage() {
 
       <Card className="mb-6">
         <button
+          ref={electricalToggleRef}
           type="button"
           className="flex min-h-11 w-full items-center justify-between gap-3 text-left"
           aria-expanded={electricalOpen}
           aria-controls="canonical-electrical-map"
           onClick={() => setElectricalOpen((open) => !open)}
         >
-          <span><span className="block font-extrabold text-[var(--text)]">Electrical map</span><span className="mt-1 block text-xs text-[var(--text-sub)]">Distinct from physical placement · {electrical?.nodes.length || 0} nodes · {electrical?.unresolved.length || 0} unresolved</span></span>
+          <span><span className="block font-extrabold text-[var(--text)]">Electrical map</span><span className="mt-1 block text-xs text-[var(--text-sub)]">Confirmed topology only · {resolvedElectrical?.nodes.length || 0} resolved nodes</span></span>
           <Icon name="chevron-down" size={18} className={electricalOpen ? 'rotate-180' : ''} />
         </button>
         {electricalOpen ? <div id="canonical-electrical-map">
-          <Input className="mt-4" type="search" value={electricalSearch} placeholder="Search code, node, kind, or type" aria-label="Search electrical nodes" onChange={(event) => { setElectricalSearch(event.target.value); setElectricalPage(0); setHierarchyPage(0); }} />
+          <div className={`mt-4 grid items-start gap-4 ${unresolvedElectrical.length ? 'xl:grid-cols-[minmax(0,1fr)_19rem]' : ''}`}>
+          <div className="min-w-0">
+          <Input type="search" value={electricalSearch} placeholder="Search resolved code, node, kind, or type" aria-label="Search resolved electrical nodes" onChange={(event) => { setElectricalSearch(event.target.value); setElectricalPage(0); setHierarchyPage(0); }} />
           <div className="mt-3 flex flex-wrap gap-2" aria-label="Electrical map view">
             <Button variant={electricalView === 'HIERARCHY' ? 'primary' : 'secondary'} aria-pressed={electricalView === 'HIERARCHY'} onClick={() => setElectricalView('HIERARCHY')}>Relationship hierarchy</Button>
             <Button variant={electricalView === 'TABLE' ? 'primary' : 'secondary'} aria-pressed={electricalView === 'TABLE'} onClick={() => setElectricalView('TABLE')}>Relationship table</Button>
@@ -607,7 +587,6 @@ export function InstallHubCanonicalDataPage() {
                 {pagedHierarchyRows.map((row) => {
                   const hasChildren = electricalParentIds.has(row.node.id);
                   const collapsed = collapsedElectricalNodeIds.has(row.node.id);
-                  const unresolvedForNode = (electrical?.unresolved || []).filter((item) => item.subjectId === row.node.id);
                   return (
                   <li key={row.node.id} style={{ paddingInlineStart: `${Math.min(row.depth, 8) * 20}px` }}>
                     <div className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
@@ -639,7 +618,6 @@ export function InstallHubCanonicalDataPage() {
                             </Button>
                           ) : null}
                           <LinkButton href={electricalNodeHref(tree, row.node)} variant="secondary">Open record</LinkButton>
-                          {unresolvedForNode.length ? <LinkButton href={unresolvedRelationshipHref(tree, unresolvedForNode[0])}>Resolve topology</LinkButton> : null}
                         </div>
                       </div>
                       <div className="mt-3 grid gap-2 border-t border-[var(--border)] pt-3 sm:grid-cols-2">
@@ -654,7 +632,7 @@ export function InstallHubCanonicalDataPage() {
               </ol>
               <ResultPager page={hierarchyPage} pageSize={HIERARCHY_PAGE_SIZE} total={visibleHierarchyRows.length} onPage={setHierarchyPage} />
               </>
-            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No electrical relationships match this search.</p>
+            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No resolved electrical relationships match this search.</p>
           ) : (
             <>
               <div className="mt-4 overflow-x-auto">
@@ -666,24 +644,55 @@ export function InstallHubCanonicalDataPage() {
               <ResultPager page={electricalPage} pageSize={TABLE_PAGE_SIZE} total={filteredElectricalRows.length} onPage={setElectricalPage} />
             </>
           )}
-          {electrical?.unresolved.length ? (
-            <div className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] p-4">
-              <h3 className="text-sm font-extrabold text-[var(--text)]">Unresolved electrical relationships · {filteredUnresolved.length} matching</h3>
-              <Input
-                className="mt-3"
-                type="search"
-                value={unresolvedSearch}
-                placeholder="Search unresolved subject, relation, or reason"
-                aria-label="Search unresolved electrical relationships"
-                onChange={(event) => { setUnresolvedSearch(event.target.value); setUnresolvedPage(0); }}
-              />
-              <ul className="mt-2 space-y-1 text-xs text-[var(--text-sub)]">
-                {pageItems(filteredUnresolved, unresolvedPage, UNRESOLVED_PAGE_SIZE).map((item) => <li key={item.id} className="flex flex-wrap items-center justify-between gap-2"><span><strong className="text-[var(--text)]">{item.subjectType} {item.subjectId}</strong> · {item.relation} · missing {item.missingEnd.toLocaleLowerCase()} · {item.reason}</span><LinkButton href={unresolvedRelationshipHref(tree, item)} variant="secondary">Resolve</LinkButton></li>)}
-              </ul>
-              {filteredUnresolved.length ? <ResultPager page={unresolvedPage} pageSize={UNRESOLVED_PAGE_SIZE} total={filteredUnresolved.length} onPage={setUnresolvedPage} /> : <p className="mt-3 text-xs text-[var(--text-sub)]">No unresolved relationships match this search.</p>}
-            </div>
-          ) : null}
           <p className="sr-only" aria-live="polite" aria-atomic="true">{electricalAnnouncement}</p>
+          </div>
+          {unresolvedElectrical.length ? (
+            <aside aria-labelledby="unresolved-electrical-heading" className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 xl:sticky xl:top-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 id="unresolved-electrical-heading" className="text-xs font-extrabold text-[var(--text-sub)]">To be confirmed</h3>
+                  <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Deferred records kept outside the map · {unresolvedElectrical.length}</p>
+                </div>
+                <span className="rounded-full bg-[var(--surface)] px-2 py-1 text-xs font-bold text-[var(--text-sub)]" aria-label={`${unresolvedElectrical.length} To be confirmed records`}>{unresolvedElectrical.length}</span>
+              </div>
+              {unresolvedElectrical.length > 5 || unresolvedSearch ? (
+                <Input
+                  className="mt-3"
+                  type="search"
+                  value={unresolvedSearch}
+                  placeholder="Filter To be confirmed records"
+                  aria-label="Filter To be confirmed electrical records"
+                  onChange={(event) => setUnresolvedSearch(event.target.value)}
+                />
+              ) : null}
+              {filteredUnresolved.length ? (
+                <ul className="mt-3 max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+                  {filteredUnresolved.map((item) => {
+                    const name = unresolvedRelationshipName(tree, item);
+                    return (
+                      <li key={item.id} className="rounded-lg border border-[var(--border)] bg-[var(--surface)] p-2.5">
+                        <p className="line-clamp-2 text-xs font-bold leading-5 text-[var(--text)]">{name}</p>
+                        <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">{item.relation === 'SUPPLY' ? 'Supply' : 'Measurement'} · {item.reason === 'TBC' ? 'To be confirmed' : item.reason.toLocaleLowerCase()}</p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          <LinkButton href={unresolvedRelationshipHref(tree, item)} variant="ghost" className="min-h-11 px-2 text-xs">Open</LinkButton>
+                          <Button
+                            variant="ghost"
+                            className="min-h-11 px-2 text-xs text-[var(--red)]"
+                            aria-label={`Remove To be confirmed record ${name}`}
+                            disabled={removingUnresolvedId === item.id}
+                            onClick={() => setPendingUnresolvedRemoval(item)}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : <p className="mt-3 text-xs text-[var(--muted)]">No To be confirmed records match this filter.</p>}
+            </aside>
+          ) : null}
+          </div>
         </div> : null}
       </Card>
 
@@ -716,6 +725,18 @@ export function InstallHubCanonicalDataPage() {
           <ResultPager page={assetPage} pageSize={TABLE_PAGE_SIZE} total={filteredAssets.length} onPage={setAssetPage} />
         </div> : null}
       </Card>
+
+      <ConfirmDialog
+        open={Boolean(pendingUnresolvedRemoval)}
+        title={pendingUnresolvedRemoval ? `Remove ${unresolvedRelationshipName(tree, pendingUnresolvedRemoval)}?` : 'Remove To be confirmed record?'}
+        description={pendingRemovalPlan?.description}
+        consequences={pendingRemovalPlan?.consequences}
+        confirmLabel="Remove record"
+        busy={Boolean(removingUnresolvedId)}
+        blockedMessage={pendingRemovalPlan?.blockedMessage}
+        onConfirm={() => void removePendingUnresolved()}
+        onCancel={() => setPendingUnresolvedRemoval(null)}
+      />
     </div>
   );
 }
@@ -800,7 +821,7 @@ export function InstallHubCanonicalMeteringPage() {
       </div>
       <div className="mb-6">
         <InlineNotice tone="success">
-          Confirmed unmetered means no direct device/channel is installed. These assets remain in the complete register, and that metering state alone does not block completion. TBC, invalid mappings, and non-spare channels left unassigned remain separate readiness issues.
+          Confirmed unmetered means no direct device/channel is installed. These assets remain in the complete register. Only explicit TBC relationships block completion; invalid mappings and unassigned channels remain optional follow-up and stay outside confirmed topology.
         </InlineNotice>
       </div>
       <Card className="mb-6">
@@ -881,7 +902,7 @@ export function InstallHubCanonicalMeteringPage() {
                           ) : channel.purpose === 'SPARE' ? (
                             <span className="text-[var(--text-sub)]">Spare / unused — no target required</span>
                           ) : (
-                            <span className="font-bold text-[var(--amber)]">Unassigned active channel — blocks completion</span>
+                            <span className="font-bold text-[var(--text-sub)]">Unassigned active channel — optional follow-up</span>
                           )}</td>
                         </tr>
                       );

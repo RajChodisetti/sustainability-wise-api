@@ -1150,7 +1150,7 @@ function legacyDefinition(
   };
 }
 
-export const FORM_DEFINITIONS: readonly FormDefinition[] = [
+const AUTHORED_FORM_DEFINITIONS: readonly FormDefinition[] = [
   wwInstallation,
   legacyDefinition('a3rm-installation'),
   legacyDefinition('a6m-installation'),
@@ -1160,6 +1160,21 @@ export const FORM_DEFINITIONS: readonly FormDefinition[] = [
   loggerDefinition('captis-logger'),
   loggerDefinition('sums-logger'),
 ];
+
+/**
+ * Field App Complete captures whatever is observed. No answer or evidence slot
+ * is mandatory, including on completion; TBC relationship records are handled
+ * by installation readiness instead of by per-field validation.
+ */
+export const FORM_DEFINITIONS: readonly FormDefinition[] = AUTHORED_FORM_DEFINITIONS.map(
+  (definition) => ({
+    ...definition,
+    sections: definition.sections.map((section) => ({
+      ...section,
+      fields: section.fields.map((field) => ({ ...field, required: false })),
+    })),
+  }),
+);
 
 export const FORM_DEFINITION_BY_TYPE = Object.fromEntries(
   FORM_DEFINITIONS.map((definition) => [definition.type, definition]),
@@ -1286,69 +1301,8 @@ export type FormValidationIssue = {
 export function formValidationIssues(
   form: Pick<FormSubmission, 'formType' | 'answers' | 'attachments'>,
 ): FormValidationIssue[] {
-  const definition = FORM_DEFINITION_BY_TYPE[form.formType];
-  if (!definition) return [];
-  const errors: FormValidationIssue[] = [];
-  for (const section of definition.sections) {
-    if (!isSectionVisible(section, form.answers)) continue;
-    for (const field of section.fields) {
-      if (!isFieldVisible(field, form.answers)) continue;
-      if (field.kind === 'photo') {
-        if (
-          field.required &&
-          !form.attachments.some(
-            (attachment) => attachment.slot === field.key,
-          )
-        ) {
-          errors.push({
-            fieldKey: field.key,
-            message: `${section.title}: ${field.label}`,
-          });
-        }
-        continue;
-      }
-      const value = String(form.answers[field.key] ?? '').trim();
-      if (!value && field.required) {
-        errors.push({
-          fieldKey: field.key,
-          message: `${section.title}: ${field.label}`,
-        });
-      } else if (
-        value &&
-        field.kind === 'yesno' &&
-        ![
-          'yes',
-          'no',
-          ...(field.allowNotApplicable ? ['not_applicable'] : []),
-        ].includes(value)
-      ) {
-        errors.push({
-          fieldKey: field.key,
-          message: `${section.title}: ${field.label} has an invalid selection`,
-        });
-      } else if (
-        value &&
-        field.kind === 'number' &&
-        !Number.isFinite(Number(value))
-      ) {
-        errors.push({
-          fieldKey: field.key,
-          message: `${section.title}: ${field.label} must be a number`,
-        });
-      } else if (
-        value &&
-        field.kind === 'select' &&
-        !field.acceptUnlistedLegacyValue &&
-        !acceptedOptionsForField(field, form.answers).includes(value)
-      ) {
-        errors.push({
-          fieldKey: field.key,
-          message: `${section.title}: ${field.label} has an invalid selection`,
-        });
-      }
-    }
-  }
-  return errors;
+  void form;
+  return [];
 }
 
 export function validateForm(

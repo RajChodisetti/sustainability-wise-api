@@ -26,7 +26,6 @@ import {
   measurementAssignments,
   meterDeviceName,
   meterDevices,
-  meterBoardsForAsset,
   reachableGridSuppliesForBoard,
   replaceMeterAssignments,
   setAssetMetering,
@@ -37,6 +36,7 @@ import {
 
 export type ElectricalNode = ElectricalTreeReadModel['nodes'][number];
 export type ElectricalEdge = ElectricalTreeReadModel['edges'][number];
+export type UnresolvedElectricalRelationship = ElectricalTreeReadModel['unresolved'][number];
 
 export type ElectricalHierarchyRow = {
   node: ElectricalNode;
@@ -57,6 +57,300 @@ function nodeSort(left: ElectricalNode, right: ElectricalNode): number {
   return order[left.kind] - order[right.kind]
     || (left.displayCode || left.name).localeCompare(right.displayCode || right.name)
     || left.id.localeCompare(right.id);
+}
+
+/** Includes all records that must stay outside the confirmed topology. */
+function mapExcludedElectricalRecords(
+  model?: ElectricalTreeReadModel,
+): UnresolvedElectricalRelationship[] {
+  if (!model) return [];
+  const records = [...model.unresolved];
+  const existingKeys = new Set(records.map((item) => `${item.subjectType}:${item.subjectId}:${item.relation}`));
+  for (const node of model.nodes) {
+    if (
+      node.kind !== 'SITE_ASSET'
+      || (node.coverageState !== 'TBC' && node.coverageState !== 'INVALID')
+      || existingKeys.has(`SITE_ASSET:${node.id}:MEASUREMENT`)
+    ) continue;
+    records.push({
+      id: `unresolved:coverage:${node.id}`,
+      subjectType: 'SITE_ASSET',
+      subjectId: node.id,
+      relation: 'MEASUREMENT',
+      missingEnd: 'SOURCE',
+      reason: node.coverageState === 'TBC' ? 'TBC' : 'INVALID',
+    });
+  }
+  return records.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+/** Explicitly deferred records shown in the small To be confirmed tray. */
+export function unresolvedElectricalRecords(
+  model?: ElectricalTreeReadModel,
+): UnresolvedElectricalRelationship[] {
+  return mapExcludedElectricalRecords(model).filter((item) => item.reason === 'TBC');
+}
+
+/**
+ * Restricts the map to topology that has a complete, confirmed path from a
+ * grid root. Records whose source or coverage is TBC/invalid, and descendants
+ * that depend on those records, stay in the separate unresolved-record tray.
+ */
+export function resolvedElectricalTopology(
+  model?: ElectricalTreeReadModel,
+): ElectricalTreeReadModel | undefined {
+  if (!model) return undefined;
+  const unresolved = mapExcludedElectricalRecords(model);
+  const excludedSubjectIds = new Set(
+    unresolved.flatMap((item) => (
+      item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET'
+        ? [item.subjectId]
+        : []
+    )),
+  );
+  const includedNodeIds = new Set(
+    model.nodes
+      .filter((node) => node.kind === 'GRID' && !excludedSubjectIds.has(node.id))
+      .map((node) => node.id),
+  );
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of model.edges) {
+      if (
+        edge.relationship !== 'FED_FROM'
+        || !includedNodeIds.has(edge.sourceNodeId)
+        || includedNodeIds.has(edge.targetNodeId)
+        || excludedSubjectIds.has(edge.targetNodeId)
+      ) continue;
+      includedNodeIds.add(edge.targetNodeId);
+      changed = true;
+    }
+    for (const node of model.nodes) {
+      if (
+        node.kind !== 'VIRTUAL_RESIDUAL'
+        || !node.parentNodeId
+        || !includedNodeIds.has(node.parentNodeId)
+        || includedNodeIds.has(node.id)
+        || excludedSubjectIds.has(node.id)
+      ) continue;
+      includedNodeIds.add(node.id);
+      changed = true;
+    }
+  }
+
+  return {
+    ...model,
+    nodes: model.nodes.filter((node) => includedNodeIds.has(node.id)),
+    edges: model.edges.filter((edge) => (
+      includedNodeIds.has(edge.sourceNodeId)
+      && includedNodeIds.has(edge.targetNodeId)
+    )),
+    unresolved: [],
+  };
+}
+
+export type UnresolvedRelationshipRemovalPlan = {
+  canRemove: boolean;
+  description: string;
+  consequences: string[];
+  blockedMessage?: string;
+};
+
+function completedRemovalBlock(tree: InstallationTree): string | undefined {
+  return tree.installation.status === 'Completed'
+    ? 'Reopen this completed installation before removing an unresolved record.'
+    : undefined;
+}
+
+function currentlyToBeConfirmed(
+  tree: InstallationTree,
+  item: UnresolvedElectricalRelationship,
+): boolean {
+  if (item.reason !== 'TBC') return false;
+  if (item.subjectType === 'MEASUREMENT_ASSIGNMENT') {
+    const assignment = measurementAssignments(tree).find((candidate) => candidate.id === item.subjectId);
+    return Boolean(assignment && (assignment.status === 'TBC' || assignment.target.kind === 'TBC'));
+  }
+  if (item.subjectType === 'SITE_ASSET') {
+    const asset = tree.siteAssets.find((candidate) => candidate.id === item.subjectId);
+    if (!asset) return false;
+    return item.relation === 'SUPPLY'
+      ? assetElectricalSource(asset).kind === 'TBC'
+      : siteAssetMeteringState(asset).kind === 'TBC';
+  }
+  const board = tree.electricalAssets.find((candidate) => candidate.id === item.subjectId);
+  return Boolean(board && item.relation === 'SUPPLY' && boardElectricalSource(board).kind === 'TBC');
+}
+
+/**
+ * Returns a conservative removal plan. A TBC board or asset can be removed
+ * only when doing so cannot delete a confirmed topology edge, meter, or
+ * measurement assignment. This keeps the tray action scoped to unresolved
+ * data and prevents a convenient cleanup control from becoming a cascade.
+ */
+export function unresolvedRelationshipRemovalPlan(
+  tree: InstallationTree,
+  item: UnresolvedElectricalRelationship,
+): UnresolvedRelationshipRemovalPlan {
+  const completedBlock = completedRemovalBlock(tree);
+  const staleBlock = currentlyToBeConfirmed(tree, item)
+    ? undefined
+    : 'This record is no longer To be confirmed. Refresh the electrical map before making any change.';
+  if (item.subjectType === 'MEASUREMENT_ASSIGNMENT') {
+    const assignment = measurementAssignments(tree).find((candidate) => candidate.id === item.subjectId);
+    return {
+      canRemove: Boolean(assignment) && !completedBlock && !staleBlock,
+      description: 'Remove only this unresolved measurement assignment from the active installation data.',
+      consequences: [
+        'The metering device, channels, assets, switchboards, and all other assignments will remain.',
+        'If this was an asset’s only attempted measurement, that asset will remain To be confirmed.',
+      ],
+      ...(completedBlock
+        ? { blockedMessage: completedBlock }
+        : staleBlock
+          ? { blockedMessage: staleBlock }
+        : assignment
+          ? {}
+          : { blockedMessage: 'This unresolved assignment is no longer present. Refresh the electrical map.' }),
+    };
+  }
+
+  if (item.subjectType === 'SITE_ASSET') {
+    const asset = tree.siteAssets.find((candidate) => candidate.id === item.subjectId);
+    const linkedAssignments = measurementAssignments(tree).filter((assignment) => (
+      assignment.target.kind === 'SITE_ASSET'
+      && assignment.target.siteAssetId === item.subjectId
+    ));
+    const linkedForms = tree.formSubmissions.filter((form) => form.siteAssetId === item.subjectId);
+    const dependencyBlock = linkedAssignments.length
+      ? `This asset still has ${linkedAssignments.length} measurement assignment${linkedAssignments.length === 1 ? '' : 's'}. Remove those assignments first so resolved metering data is preserved.`
+      : linkedForms.length
+        ? `This asset is referenced by ${linkedForms.length} field form${linkedForms.length === 1 ? '' : 's'}. Remove or detach those forms first so their saved context is not broken.`
+        : undefined;
+    return {
+      canRemove: Boolean(asset) && !completedBlock && !staleBlock && !dependencyBlock,
+      description: 'Remove this unresolved site asset from the active installation register.',
+      consequences: [
+        'No confirmed switchboard, meter, channel, or measurement relationship will be removed.',
+        'Completed field records remain available in installation history.',
+      ],
+      ...(completedBlock
+        ? { blockedMessage: completedBlock }
+        : staleBlock
+          ? { blockedMessage: staleBlock }
+        : dependencyBlock
+          ? { blockedMessage: dependencyBlock }
+          : asset
+            ? {}
+            : { blockedMessage: 'This unresolved site asset is no longer present. Refresh the electrical map.' }),
+    };
+  }
+
+  const board = tree.electricalAssets.find((candidate) => candidate.id === item.subjectId);
+  const meterIds = new Set([
+    ...(board?.meters || []).map((meter) => meter.id),
+    ...meterDevices(tree)
+      .filter((meter) => meter.installedOnBoardId === item.subjectId)
+      .map((meter) => meter.id),
+  ]);
+  const childBoardCount = tree.electricalAssets.filter((candidate) => {
+    const source = boardElectricalSource(candidate);
+    return source.kind === 'BOARD' && source.boardId === item.subjectId;
+  }).length;
+  const suppliedAssetCount = tree.siteAssets.filter((candidate) => {
+    const source = assetElectricalSource(candidate);
+    return source.kind === 'BOARD' && source.boardId === item.subjectId;
+  }).length;
+  const linkedAssignmentCount = measurementAssignments(tree).filter((assignment) => (
+    meterIds.has(assignment.meterId)
+    || (assignment.target.kind === 'BOARD' && assignment.target.boardId === item.subjectId)
+  )).length;
+  const linkedFormCount = tree.formSubmissions.filter((form) => (
+    form.boardId === item.subjectId
+    || Boolean(form.meterId && meterIds.has(form.meterId))
+  )).length;
+  const dependencyCount = childBoardCount + suppliedAssetCount + meterIds.size + linkedAssignmentCount;
+  const dependencyBlock = dependencyCount
+    ? 'This switchboard still participates in confirmed downstream or metering data. Remove those relationships from their records first so resolved topology is preserved.'
+    : linkedFormCount
+      ? `This switchboard is referenced by ${linkedFormCount} field form${linkedFormCount === 1 ? '' : 's'}. Remove or detach those forms first so their saved context is not broken.`
+      : undefined;
+  return {
+    canRemove: Boolean(board) && !completedBlock && !staleBlock && !dependencyBlock,
+    description: 'Remove this unresolved switchboard from the active installation register.',
+    consequences: [
+      'No confirmed downstream supply edge, meter, or measurement assignment will be removed.',
+      'Completed field records remain available in installation history.',
+    ],
+    ...(completedBlock
+      ? { blockedMessage: completedBlock }
+      : staleBlock
+        ? { blockedMessage: staleBlock }
+      : dependencyBlock
+        ? { blockedMessage: dependencyBlock }
+        : board
+          ? {}
+          : { blockedMessage: 'This unresolved switchboard is no longer present. Refresh the electrical map.' }),
+  };
+}
+
+export function removeUnresolvedElectricalRelationship(
+  tree: InstallationTree,
+  item: UnresolvedElectricalRelationship,
+): void {
+  const plan = unresolvedRelationshipRemovalPlan(tree, item);
+  if (!plan.canRemove) {
+    throw new Error(plan.blockedMessage || 'This unresolved record cannot be removed.');
+  }
+
+  if (item.subjectType === 'MEASUREMENT_ASSIGNMENT') {
+    const assignments = measurementAssignments(tree);
+    const removed = assignments.find((assignment) => assignment.id === item.subjectId);
+    tree.measurementAssignments = assignments.filter((assignment) => assignment.id !== item.subjectId);
+    const affectedAssetIds = new Set([
+      ...(removed?.target.kind === 'SITE_ASSET' ? [removed.target.siteAssetId] : []),
+      ...tree.siteAssets.flatMap((asset) => {
+        const state = siteAssetMeteringState(asset);
+        return state.kind === 'METERED' && state.measurementAssignmentIds.includes(item.subjectId)
+          ? [asset.id]
+          : [];
+      }),
+    ]);
+    for (const asset of tree.siteAssets.filter((candidate) => affectedAssetIds.has(candidate.id))) {
+      const remaining = tree.measurementAssignments.filter((assignment) => (
+        assignment.target.kind === 'SITE_ASSET'
+        && assignment.target.siteAssetId === asset.id
+      ));
+      if (!remaining.length) {
+        setAssetMetering(tree, asset, { kind: 'TBC' });
+      } else if (asset.meteringState?.kind === 'METERED') {
+        asset.meteringState = {
+          kind: 'METERED',
+          measurementAssignmentIds: remaining.map((assignment) => assignment.id),
+        };
+      }
+    }
+    return;
+  }
+
+  if (item.subjectType === 'SITE_ASSET') {
+    tree.siteAssets = tree.siteAssets.filter((asset) => asset.id !== item.subjectId);
+    tree.formSubmissions = tree.formSubmissions.map((form) => (
+      form.status === 'Draft' && form.siteAssetId === item.subjectId
+        ? { ...form, siteAssetId: null }
+        : form
+    ));
+    return;
+  }
+
+  tree.electricalAssets = tree.electricalAssets.filter((board) => board.id !== item.subjectId);
+  tree.formSubmissions = tree.formSubmissions.map((form) => (
+    form.status === 'Draft' && form.boardId === item.subjectId
+      ? { ...form, boardId: null }
+      : form
+  ));
 }
 
 /**
@@ -465,14 +759,16 @@ function measurementTargetResolutionCandidates(
     board.id !== meter.installedOnBoardId
     && boardSupplyPath(tree, board.id).includes(meter.installedOnBoardId)
   ));
-  const eligibleAssets = tree.siteAssets.filter((asset) => (
-    meterBoardsForAsset(tree, asset).some((board) => board.id === meter.installedOnBoardId)
+  const eligibleAssets = tree.siteAssets.filter((asset) => {
+    const source = assetElectricalSource(asset);
+    return source.kind === 'BOARD'
+    && source.boardId === meter.installedOnBoardId
     && !measurementAssignments(tree).some((candidate) => (
       candidate.id !== assignment.id
       && candidate.target.kind === 'SITE_ASSET'
       && candidate.target.siteAssetId === asset.id
-    ))
-  ));
+    ));
+  });
   return [
     ...downstreamBoards.map((board) => asCandidate(board.id, 'SET_MEASUREMENT_TARGET_BOARD')),
     ...eligibleAssets.map((asset) => asCandidate(asset.id, 'SET_MEASUREMENT_TARGET_ASSET')),
@@ -771,8 +1067,8 @@ export function readinessCorrectionAction(
     const board = tree.electricalAssets.find((item) => item.id === meter?.installedOnBoardId);
     if (meter && board) return {
       href: `${base}/forms/new?zoneId=${encodeURIComponent(board.zoneId)}&boardId=${encodeURIComponent(board.id)}&meterId=${encodeURIComponent(meter.id)}&formType=ww-installation#new-form-ww-installation`,
-      label: 'Start required WW form',
-      instruction: 'Create the meter-linked Installation Form (WW), complete its required evidence, then choose Complete form.',
+      label: 'Start WW installation form',
+      instruction: 'Create the meter-linked Installation Form (WW), capture any available details, then choose Complete form.',
     };
   }
   if (issue.entityType === 'channel' || issue.entityType === 'measurement_assignment' || issue.entityType === 'meter') {
@@ -839,9 +1135,9 @@ export function readinessCorrectionAction(
       : '';
     return {
       href: `${entity.href}${incompleteFieldHash || (issue.code === 'FORM_INCOMPLETE' ? '#form-actions' : '')}`,
-      label: issue.code === 'FORM_INCOMPLETE' ? 'Open form to complete' : 'Open field-form correction',
+      label: issue.code === 'FORM_INCOMPLETE' ? 'Open form' : 'Open field-form correction',
       instruction: issue.code === 'FORM_INCOMPLETE'
-        ? 'Complete every required field and evidence item, then choose Complete form; or delete the draft explicitly.'
+        ? 'Review any available fields or evidence, then choose Complete form; or delete the draft explicitly.'
         : 'Correct or replace the linked form context and persist the form before retrying readiness.',
     };
   }
@@ -880,19 +1176,6 @@ export function pinSelectedResult<T>(
   if (!selectedId || bounded.some((item) => getId(item) === selectedId)) return bounded;
   const selected = all.find((item) => getId(item) === selectedId);
   return selected ? [selected, ...bounded].slice(0, Math.max(1, limit)) : bounded;
-}
-
-export function shouldShowMeterLocationOverride(input: {
-  overrideRequested: boolean;
-  directSupplyBoardId?: string | null;
-  meterSwitchboardId?: string | null;
-  meterSwitchboardTbc?: boolean | null;
-}): boolean {
-  return input.overrideRequested
-    || !input.directSupplyBoardId
-    || !input.meterSwitchboardId
-    || Boolean(input.meterSwitchboardTbc)
-    || input.meterSwitchboardId !== input.directSupplyBoardId;
 }
 
 export type ZoneElectricalSummary = {

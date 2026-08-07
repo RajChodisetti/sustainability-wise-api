@@ -171,21 +171,20 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       router.replace(`/installhub/installations/${acknowledgedCreateId}`);
       return;
     }
-    if (!form.clientName.trim() || !form.siteName.trim() || !form.siteAddress.trim() || !form.inspectorName.trim() || !form.auditDate || !form.timezone.trim()) {
-      toast.error('Complete every required installation field.');
-      return;
-    }
-    try {
-      new Intl.DateTimeFormat('en-AU', { timeZone: form.timezone.trim() }).format();
-    } catch {
-      toast.error('Enter a valid IANA timezone, such as Australia/Sydney.');
-      return;
-    }
+    const normalizedForm: FormState = {
+      clientName: form.clientName.trim(),
+      siteName: form.siteName.trim() || 'Untitled installation',
+      siteAddress: form.siteAddress.trim(),
+      inspectorName: form.inspectorName.trim(),
+      auditDate: form.auditDate || todayIso(),
+      timezone: form.timezone.trim() || 'UTC',
+      siteCode: form.siteCode,
+    };
     let normalizedSiteCode: string;
     try {
       normalizedSiteCode = canonicalSiteCodeForWrite(
-        form.siteName,
-        form.siteCode,
+        normalizedForm.siteName,
+        normalizedForm.siteCode,
         mode === 'edit' ? treeQuery.data?.installation.siteCode : undefined,
       );
     } catch (error) {
@@ -197,7 +196,7 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       const submittedOwnerId = activeUser.id;
       const operationGeneration = ++createOperationGenerationRef.current;
       try {
-        const tree = installationCreateAttempt(pendingCreateRef.current, form, activeUser);
+        const tree = installationCreateAttempt(pendingCreateRef.current, normalizedForm, activeUser);
         pendingCreateRef.current = tree;
         if (!persistInstallationCreateAttempt(tree, submittedOwnerId)) {
           setCreateRetryLocked(true);
@@ -271,7 +270,7 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
     try {
       if (mode === 'edit') {
         await writer.mutate((tree) => {
-          Object.assign(tree.installation, form, { siteCode: normalizedSiteCode });
+          Object.assign(tree.installation, normalizedForm, { siteCode: normalizedSiteCode });
         });
         setDirty(false);
         toast.success('Installation details saved.');
@@ -394,20 +393,20 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       <TreeDraftNavigationGuard active={!busy && (dirty || writer.hasPendingTree)} onDiscard={discardAndLeave} />
       <form onSubmit={(event) => void submit(event)}>
         <Card className="max-w-3xl">
-          <FieldLabel>Client name *</FieldLabel>
-          <Input value={form.clientName} required disabled={formLocked} onChange={(event) => updateForm({ clientName: event.target.value })} />
-          <FieldLabel>Site name *</FieldLabel>
-          <Input value={form.siteName} required disabled={formLocked} onChange={(event) => updateForm({ siteName: event.target.value })} />
-          <FieldLabel>Site address *</FieldLabel>
-          <Textarea value={form.siteAddress} required disabled={formLocked} onChange={(event) => updateForm({ siteAddress: event.target.value })} />
+          <FieldLabel>Client name</FieldLabel>
+          <Input value={form.clientName} disabled={formLocked} onChange={(event) => updateForm({ clientName: event.target.value })} />
+          <FieldLabel>Site name</FieldLabel>
+          <Input value={form.siteName} disabled={formLocked} placeholder="Defaults to Untitled installation" onChange={(event) => updateForm({ siteName: event.target.value })} />
+          <FieldLabel>Site address</FieldLabel>
+          <Textarea value={form.siteAddress} disabled={formLocked} onChange={(event) => updateForm({ siteAddress: event.target.value })} />
           <div className="grid gap-x-4 sm:grid-cols-2">
             <div>
-              <FieldLabel>Installer / inspector *</FieldLabel>
-              <Input value={form.inspectorName} required disabled={formLocked} onChange={(event) => updateForm({ inspectorName: event.target.value })} />
+              <FieldLabel>Installer / inspector</FieldLabel>
+              <Input value={form.inspectorName} disabled={formLocked} onChange={(event) => updateForm({ inspectorName: event.target.value })} />
             </div>
             <div>
-              <FieldLabel>Installation date *</FieldLabel>
-              <Input type="date" value={form.auditDate} required disabled={formLocked} onChange={(event) => updateForm({ auditDate: event.target.value })} />
+              <FieldLabel>Installation date</FieldLabel>
+              <Input type="date" value={form.auditDate} disabled={formLocked} onChange={(event) => updateForm({ auditDate: event.target.value })} />
             </div>
           </div>
           <div className="grid gap-x-4 sm:grid-cols-2">
@@ -417,8 +416,8 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
               <p className="mt-1 text-xs text-[var(--muted-foreground)]">Existing codes are preserved. New or changed codes use letters and digits, single hyphens between groups, and a 16-character maximum.</p>
             </div>
             <div>
-              <FieldLabel>Site timezone *</FieldLabel>
-              <Input id="installation-timezone" value={form.timezone} required disabled={formLocked} placeholder="e.g. Australia/Sydney" onChange={(event) => updateForm({ timezone: event.target.value })} />
+              <FieldLabel>Site timezone</FieldLabel>
+              <Input id="installation-timezone" value={form.timezone} disabled={formLocked} placeholder="Defaults to UTC" onChange={(event) => updateForm({ timezone: event.target.value })} />
             </div>
           </div>
           <div className="mt-6 flex flex-wrap gap-2 border-t border-[var(--border)] pt-5">

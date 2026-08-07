@@ -4,6 +4,13 @@ Prepared: 18 June 2026
 
 This backlog converts the implementation plan into buildable engineering tasks. Items are grouped by epic and should be refined into tickets before implementation.
 
+Shared components used by Field App Complete must follow its newer policy:
+business capture fields and evidence are optional; only explicit
+supply/metering/measurement `TBC` states block completion/readiness. The policy
+does not relax authentication, ownership, CAS, stable IDs, or structural
+payload/attachment validation and must remain compatible with installed mobile
+clients.
+
 ## Epic 1: App Shell and Authentication
 
 - [ ] Choose frontend app location and framework setup.
@@ -82,7 +89,11 @@ Acceptance checks:
   - [ ] Nested child record section.
   - [ ] Photo field.
   - [ ] Multi-photo field.
-- [ ] Add validation for required fields and numeric constraints.
+- [ ] Add validation driven by each product contract and numeric/type constraints
+  for values that are supplied.
+- [ ] Ensure Field App Complete does not mark missing business fields, invalid
+  optional capture, or missing evidence as readiness issues; show only explicit
+  supply/metering/measurement `TBC` blockers.
 - [ ] Add dirty-form warning on navigation.
 - [ ] Add completed-record read-only mode.
 - [ ] Add top-level copy-as-draft mode.
@@ -111,6 +122,8 @@ Acceptance checks:
 - [ ] Add PDF regenerate flow.
 - [ ] Add failed-job display and retry.
 - [ ] Verify browser uploads trigger OneDrive backup where enabled.
+- [ ] For Field App Complete, omit unresolved optional evidence from immutable
+  canonical-v2.7 snapshots while preserving exact confirmed media identity.
 
 Acceptance checks:
 
@@ -455,7 +468,8 @@ Acceptance checks:
 
 Acceptance checks:
 
-- [ ] Existing mobile sync still works.
+- [ ] Existing mobile sync still works, including installed Field App Complete
+  clients using accepted legacy payloads and aliases.
 - [ ] Existing old records still open.
 - [ ] New web-created records sync/display correctly.
 - [ ] OneDrive backup does not create duplicate files on retry.

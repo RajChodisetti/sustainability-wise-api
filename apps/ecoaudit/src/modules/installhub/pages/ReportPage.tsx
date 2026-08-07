@@ -226,8 +226,8 @@ export function InstallHubReportPage() {
       {draftForms.length ? (
         <InlineNotice tone="warning">
           {draftForms.length} draft form{draftForms.length === 1 ? '' : 's'}{' '}
-          will not be included. Complete the required fields and evidence before
-          generating the final pack.
+          will not be included. Mark a form complete when you want it included;
+          every answer and evidence field is optional.
         </InlineNotice>
       ) : (
         <InlineNotice tone="success">

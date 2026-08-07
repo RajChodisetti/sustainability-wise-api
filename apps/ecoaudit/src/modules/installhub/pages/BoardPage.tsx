@@ -178,15 +178,11 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   async function save(event?: FormEvent) {
     event?.preventDefault();
     const nextErrors: Array<{ id?: string; message: string }> = [];
-    if (!currentDraft.assetName.trim()) nextErrors.push({ id: 'board-name', message: 'Enter the switchboard name.' });
-    else if (currentDraft.assetName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'board-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the switchboard name.` });
-    if (boardTypeCode(currentDraft) === 'OTHER' && !currentDraft.customTypeName?.trim()) {
-      nextErrors.push({ id: 'board-custom-type', message: 'Enter the custom switchboard type.' });
-    }
+    if (currentDraft.assetName.trim().length > ENTITY_NAME_MAX_LENGTH) nextErrors.push({ id: 'board-name', message: `Use ${ENTITY_NAME_MAX_LENGTH} characters or fewer for the switchboard name.` });
     const electricalSource = boardElectricalSource(currentDraft);
-    if (electricalSource.kind === 'BOARD' && !electricalSource.boardId) {
-      nextErrors.push({ id: 'board-parent', message: 'Choose the confirmed parent switchboard.' });
-    }
+    const normalizedSource = electricalSource.kind === 'BOARD' && !electricalSource.boardId
+      ? { kind: 'TBC' as const }
+      : electricalSource;
     setErrors(nextErrors);
     if (nextErrors.length) {
       document.getElementById(nextErrors[0].id || '')?.focus();
@@ -197,16 +193,18 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
     try {
       await writer.mutate((next) => {
         const activeMeters = currentDraft.meters.filter((meter) => meter.lifecycleState !== 'INACTIVE');
+        const assetName = currentDraft.assetName.trim()
+          || defaultBoardName(boardTypeCode(currentDraft), currentDraft.customTypeName);
         const display = boardDisplayMetadata(
           next,
           currentDraft,
-          currentDraft.assetName.trim(),
+          assetName,
         );
         const value: ElectricalAsset = {
           ...structuredClone(currentDraft),
           meters: activeMeters,
           meterPresent: activeMeters.length > 0,
-          assetName: currentDraft.assetName.trim(),
+          assetName,
           assetType: legacyBoardType(boardTypeCode(currentDraft)),
           typeCode: boardTypeCode(currentDraft),
           customTypeName: boardTypeCode(currentDraft) === 'OTHER' ? currentDraft.customTypeName?.trim() : null,
@@ -214,7 +212,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
           displayCodeMeta: display,
           updatedAt: nowIso(),
         };
-        applyBoardElectricalSource(value, electricalSource);
+        applyBoardElectricalSource(value, normalizedSource);
         const index = next.electricalAssets.findIndex((item) => item.id === value.id);
         if (index >= 0) next.electricalAssets[index] = value;
         else next.electricalAssets.push(value);
@@ -470,11 +468,10 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         <Card className="mb-5">
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
-              <FieldLabel htmlFor="board-name">Switchboard name *</FieldLabel>
+              <FieldLabel htmlFor="board-name">Switchboard name</FieldLabel>
               <Input
                 id="board-name"
                 value={draft.assetName}
-                required
                 maxLength={ENTITY_NAME_MAX_LENGTH}
                 aria-invalid={errors.some((item) => item.id === 'board-name')}
                 aria-describedby={errors.some((item) => item.id === 'board-name') ? 'board-name-error' : undefined}
@@ -484,7 +481,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               <FieldError id="board-name-error" message={errors.find((item) => item.id === 'board-name')?.message} />
             </div>
             <div>
-              <FieldLabel htmlFor="board-type">Switchboard type *</FieldLabel>
+              <FieldLabel htmlFor="board-type">Switchboard type</FieldLabel>
               <Select id="board-type" value={boardTypeCode(draft)} onChange={(event) => chooseBoardType(event.target.value)}>
                 {BOARD_TYPE_OPTIONS.map((option) => (
                   <option key={option.code} value={option.code}>{option.label}</option>
@@ -493,7 +490,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             </div>
             {boardTypeCode(draft) === 'OTHER' ? (
               <div>
-                <FieldLabel htmlFor="board-custom-type">Custom switchboard type *</FieldLabel>
+                <FieldLabel htmlFor="board-custom-type">Custom switchboard type</FieldLabel>
                 <Input
                   id="board-custom-type"
                   value={draft.customTypeName ?? ''}
@@ -550,7 +547,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             />
             {sourceKind === 'GRID' ? (
               <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
-                <FieldLabel htmlFor="board-grid-supply" className="mt-0">Grid supply *</FieldLabel>
+                <FieldLabel htmlFor="board-grid-supply" className="mt-0">Grid supply</FieldLabel>
                 <Select
                   id="board-grid-supply"
                   value={draftSource.gridSupplyId}
@@ -571,7 +568,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             ) : null}
             {sourceKind === 'BOARD' ? (
               <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
-                <FieldLabel htmlFor="board-parent" className="mt-0">Confirmed parent *</FieldLabel>
+                <FieldLabel htmlFor="board-parent" className="mt-0">Confirmed parent</FieldLabel>
                 <SearchableSelect
                   id="board-parent"
                   value={draftSource.kind === 'BOARD' ? draftSource.boardId : ''}

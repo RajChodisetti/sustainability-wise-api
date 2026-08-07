@@ -60,18 +60,14 @@ export function GridSupplyEditor({
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!draft?.name.trim()) {
-      setError('Enter a name for the incoming connection.');
-      document.getElementById('grid-supply-name')?.focus();
-      return;
-    }
+    if (!draft) return;
     setBusy(true);
     try {
       await mutate((next) => {
         const value: GridSupply = {
           ...structuredClone(draft),
           installationId: next.installation.id,
-          name: draft.name.trim(),
+          name: draft.name.trim() || 'Incoming grid connection',
           nmi: draft.nmi?.trim() || null,
           externalKey: draft.externalKey?.trim() || null,
         };
@@ -180,8 +176,8 @@ export function GridSupplyEditor({
         <form onSubmit={(event) => void save(event)} className="mt-4 rounded-xl border border-[var(--primary)]/30 bg-[var(--primary-soft)] p-4">
           <div className="grid gap-x-4 lg:grid-cols-3">
             <div>
-              <FieldLabel htmlFor="grid-supply-name" className="mt-0">Connection name *</FieldLabel>
-              <Input id="grid-supply-name" value={draft.name} aria-invalid={Boolean(error)} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+              <FieldLabel htmlFor="grid-supply-name" className="mt-0">Connection name</FieldLabel>
+              <Input id="grid-supply-name" value={draft.name} placeholder="Defaults to Incoming grid connection" aria-invalid={Boolean(error)} onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
               <FieldError message={error} />
             </div>
             <div>

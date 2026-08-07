@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.6';
-export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.2';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.7';
+export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.3-tbc-only';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
 export const DISPLAY_CODE_RULE_VERSION = 4;
 export const INSTALLATION_SITE_CODE_MAX_LENGTH = 16;
@@ -347,6 +347,7 @@ const CAPABILITY_MAX_KEYS = 64;
 const CAPABILITY_MAX_SERIALIZED_BYTES = 8192;
 const METER_COMMISSIONING_TEXT_MAX_LENGTH = 4000;
 const METER_COMMISSIONING_DATA_MAX_SERIALIZED_BYTES = 16384;
+const DEFAULT_INSTALLATION_TIMEZONE = 'Australia/Sydney';
 
 function boundedCandidateIds(ids: string[]): string[] {
   return [...ids].sort().slice(0, READINESS_CANDIDATE_LIMIT);
@@ -404,6 +405,25 @@ function requiredText(value: unknown, label: string): string {
 function stringValue(value: unknown, label: string): string {
   if (typeof value !== 'string') throw new CanonicalInputError(`${label} must be a string`);
   return value.trim();
+}
+
+function stringValueOrDefault(
+  value: unknown,
+  label: string,
+  fallback: string,
+): string {
+  if (value === undefined || value === null) return fallback;
+  return stringValue(value, label) || fallback;
+}
+
+function timezoneValueOrDefault(value: unknown, label: string): string {
+  const timezone = stringValueOrDefault(value, label, DEFAULT_INSTALLATION_TIMEZONE);
+  try {
+    new Intl.DateTimeFormat('en-AU', { timeZone: timezone }).format(0);
+    return timezone;
+  } catch {
+    return DEFAULT_INSTALLATION_TIMEZONE;
+  }
 }
 
 function booleanValue(value: unknown, label: string): boolean {
@@ -688,6 +708,85 @@ function defaultMeterCustomName(input: {
     || 'Meter';
 }
 
+function defaultBoardTypeName(typeCode: BoardTypeCode): string {
+  return ({
+    MSB: 'Main Switchboard',
+    MSSB: 'Main Sub-Switchboard',
+    DB: 'Distribution Board',
+    HVAC_DB: 'HVAC Distribution Board',
+    LX_DB: 'Lighting Distribution Board',
+    PV_DB: 'Solar Distribution Board',
+    MCC: 'Motor Control Centre',
+    OTHER: 'Switchboard',
+  } satisfies Record<BoardTypeCode, string>)[typeCode];
+}
+
+function defaultSiteAssetTypeName(typeCode: SiteAssetTypeCode): string {
+  return ({
+    PV: 'Solar / PV',
+    HVAC: 'HVAC',
+    LIGHTING: 'Lighting',
+    EV_CHARGER: 'EV Charger',
+    VEHICLE_HOIST: 'Vehicle Hoist',
+    FORKLIFT: 'Forklift',
+    EXHAUST_FAN_SYSTEM: 'Exhaust / Fan System',
+    POWER_OUTLET: 'Power Outlet',
+    HEATER_GEYSER: 'Heater / Geyser',
+    REFRIGERATION: 'Refrigeration',
+    COMPRESSED_AIR: 'Compressed Air',
+    OTHER: 'Site asset',
+  } satisfies Record<SiteAssetTypeCode, string>)[typeCode];
+}
+
+/**
+ * Projects historical persisted blanks onto the same optional defaults used
+ * for new canonical writes. This is deliberately narrower than full input
+ * normalization so loading an existing tree cannot reinterpret identities or
+ * relationships. The projection is pure and idempotent.
+ */
+export function projectCanonicalOptionalDefaults(
+  input: CanonicalInstallationTree,
+): CanonicalInstallationTree {
+  const tree = structuredClone(input);
+  tree.installation.timezone = timezoneValueOrDefault(
+    tree.installation.timezone,
+    'installation.timezone',
+  );
+  tree.installation.clientName = tree.installation.clientName.trim();
+  tree.installation.siteName = tree.installation.siteName.trim()
+    || 'Untitled installation';
+  tree.installation.siteAddress = tree.installation.siteAddress.trim();
+  tree.installation.inspectorName = tree.installation.inspectorName.trim();
+  tree.installation.auditDate = tree.installation.auditDate.trim();
+  tree.gridSupplies = tree.gridSupplies.map((supply) => ({
+    ...supply,
+    name: supply.name.trim() || 'Incoming grid connection',
+  }));
+  tree.zones = tree.zones.map((zone) => ({
+    ...zone,
+    zoneName: zone.zoneName.trim() || 'Zone',
+    zoneDescription: zone.zoneDescription.trim(),
+  }));
+  tree.electricalAssets = tree.electricalAssets.map((board) => ({
+    ...board,
+    assetName: board.assetName.trim() || defaultBoardTypeName(board.typeCode),
+  }));
+  tree.siteAssets = tree.siteAssets.map((asset) => ({
+    ...asset,
+    assetName: asset.assetName.trim() || defaultSiteAssetTypeName(asset.typeCode),
+  }));
+  tree.meterDevices = tree.meterDevices.map((meter) => ({
+    ...meter,
+    customName: meter.customName.trim() || defaultMeterCustomName({
+      deviceModel: meter.deviceModel,
+      customManufacturerName: meter.customManufacturerName,
+      customModelName: meter.customModelName,
+    }),
+    serialNumber: meter.serialNumber.trim(),
+  }));
+  return tree;
+}
+
 /**
  * Historical site codes stay authoritative, but newly generated entity codes
  * need one bounded cross-client prefix. This projection never writes back to
@@ -806,12 +905,12 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     id: requiredText(item.id, 'installation.id'),
     externalKey: requiredText(item.externalKey, 'installation.externalKey'),
     siteCode,
-    timezone: requiredText(item.timezone, 'installation.timezone'),
-    clientName: requiredText(item.clientName, 'installation.clientName'),
-    siteName: requiredText(item.siteName, 'installation.siteName'),
-    siteAddress: requiredText(item.siteAddress, 'installation.siteAddress'),
-    inspectorName: requiredText(item.inspectorName, 'installation.inspectorName'),
-    auditDate: requiredText(item.auditDate, 'installation.auditDate'),
+    timezone: timezoneValueOrDefault(item.timezone, 'installation.timezone'),
+    clientName: stringValue(item.clientName ?? '', 'installation.clientName'),
+    siteName: stringValueOrDefault(item.siteName, 'installation.siteName', 'Untitled installation'),
+    siteAddress: stringValue(item.siteAddress ?? '', 'installation.siteAddress'),
+    inspectorName: stringValue(item.inspectorName ?? '', 'installation.inspectorName'),
+    auditDate: stringValue(item.auditDate ?? '', 'installation.auditDate'),
     status: enumValue(item.status, ['Draft', 'Completed'] as const, 'installation.status'),
     treeSchemaVersion: 2,
     treeRevision: requiredInteger(item.treeRevision, 'installation.treeRevision'),
@@ -865,7 +964,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
     return {
       id: requiredText(item.id, `gridSupplies[${index}].id`),
       installationId,
-      name: requiredText(item.name, `gridSupplies[${index}].name`),
+      name: stringValueOrDefault(item.name, `gridSupplies[${index}].name`, 'Incoming grid connection'),
       isDefault: booleanValue(item.isDefault, `gridSupplies[${index}].isDefault`),
       nmi: optionalText(item.nmi),
       externalKey: optionalText(item.externalKey),
@@ -885,8 +984,8 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       id: requiredText(item.id, `zones[${index}].id`),
       installationId,
       requestedZoneCode: requestedZoneCode || null,
-      zoneName: requiredText(item.zoneName, `zones[${index}].zoneName`),
-      zoneDescription: stringValue(item.zoneDescription, `zones[${index}].zoneDescription`),
+      zoneName: stringValueOrDefault(item.zoneName, `zones[${index}].zoneName`, 'Zone'),
+      zoneDescription: stringValueOrDefault(item.zoneDescription, `zones[${index}].zoneDescription`, ''),
       photos: stringArray(item.photos, `zones[${index}].photos`),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
@@ -922,7 +1021,11 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       id: requiredText(item.id, `electricalAssets[${index}].id`),
       installationId,
       zoneId: requiredText(item.zoneId, `electricalAssets[${index}].zoneId`),
-      assetName: requiredText(item.assetName, `electricalAssets[${index}].assetName`),
+      assetName: stringValueOrDefault(
+        item.assetName,
+        `electricalAssets[${index}].assetName`,
+        defaultBoardTypeName(classified.typeCode),
+      ),
       ...classified,
       displayCode: parseDisplayCode(item.displayCode, `electricalAssets[${index}].displayCode`),
       electricalSource: parseSource(item, `electricalAssets[${index}]`),
@@ -949,7 +1052,11 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       id: requiredText(item.id, `siteAssets[${index}].id`),
       installationId,
       zoneId: requiredText(item.zoneId, `siteAssets[${index}].zoneId`),
-      assetName: requiredText(item.assetName, `siteAssets[${index}].assetName`),
+      assetName: stringValueOrDefault(
+        item.assetName,
+        `siteAssets[${index}].assetName`,
+        defaultSiteAssetTypeName(classified.typeCode),
+      ),
       ...classified,
       displayCode: parseDisplayCode(item.displayCode, `siteAssets[${index}].displayCode`),
       electricalSource: parseSource(item, `siteAssets[${index}]`),
@@ -1033,7 +1140,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       customManufacturerName,
       customModelName,
       deviceNumber: optionalText(item.deviceNumber),
-      serialNumber: requiredText(item.serialNumber, `meterDevices[${index}].serialNumber`),
+      serialNumber: stringValue(item.serialNumber ?? '', `meterDevices[${index}].serialNumber`),
       displayName: parseDisplayCode(item.displayName, `meterDevices[${index}].displayName`),
       channels,
       commissioningData: parseMeterCommissioningData(
@@ -2089,6 +2196,22 @@ function formIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
   return issues;
 }
 
+/**
+ * Completion readiness is a reconciliation queue, not a data-quality score.
+ * Only values that the user deliberately left as TBC belong in it. Optional,
+ * missing, legacy, or out-of-vocabulary inspection data stays persisted and
+ * may be corrected later without blocking installation completion.
+ */
+export function isExplicitTbcReadinessIssue(issue: ReadinessIssue): boolean {
+  return issue.code === 'SUPPLY_TBC'
+    || issue.code === 'MEASUREMENT_TARGET_TBC'
+    || (
+      issue.code === 'METERING_STATE_INVALID'
+      && issue.entityType === 'site_asset'
+      && issue.field === 'meteringState'
+    );
+}
+
 export function installationReadiness(tree: CanonicalInstallationTree): InstallationReadiness {
   const issues = [
     ...graphIssues(tree),
@@ -2096,40 +2219,11 @@ export function installationReadiness(tree: CanonicalInstallationTree): Installa
     ...taxonomyIssues(tree),
     ...meterIssues(tree),
     ...formIssues(tree),
-  ];
-  if (!tree.installation.externalKey.trim()) {
-    issues.push({
-      code: 'EXTERNAL_KEY_REQUIRED',
-      severity: 'ERROR',
-      entityType: 'installation',
-      entityId: tree.installation.id,
-      field: 'externalKey',
-      message: 'Installation external key is required and immutable.',
-    });
-  }
-  const timezoneValid = (() => {
-    if (!tree.installation.timezone) return false;
-    try {
-      new Intl.DateTimeFormat('en-AU', { timeZone: tree.installation.timezone }).format(0);
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-  if (!timezoneValid) {
-    issues.push({
-      code: 'TIMEZONE_REQUIRED_FOR_EXPORT',
-      severity: 'WARNING',
-      entityType: 'installation',
-      entityId: tree.installation.id,
-      field: 'timezone',
-      message: 'A valid IANA timezone is required for authoritative export.',
-    });
-  }
+  ].filter(isExplicitTbcReadinessIssue);
   issues.sort((left, right) => issueSortKey(left).localeCompare(issueSortKey(right)));
   const readyToComplete = !issues.some((issue) => issue.severity === 'ERROR');
   const completedAndReady = tree.installation.status === 'Completed' && readyToComplete;
-  const exportReady = completedAndReady && timezoneValid;
+  const exportReady = completedAndReady;
   return {
     installationId: tree.installation.id,
     treeRevision: tree.installation.treeRevision,
@@ -2223,7 +2317,7 @@ export function canonicalOrderInstallationTree(
 }
 
 export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree): string {
-  const ordered = canonicalOrderInstallationTree(tree);
+  const ordered = canonicalOrderInstallationTree(projectCanonicalOptionalDefaults(tree));
   const stripLifecycle = <T extends Record<string, unknown>>(value: T) => {
     const {
       createdAt: _createdAt,

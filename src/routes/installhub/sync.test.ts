@@ -313,6 +313,18 @@ function freshCanonicalWrite(
 }
 
 test('canonical create preparation accepts exact portal and mobile first-sync shapes', () => {
+  const blankOptional = prepareCanonicalInstallHubWrite(freshCanonicalWrite('blank-optional', {
+    siteName: '   ',
+    timezone: 'Invalid/Timezone',
+    externalKey: null,
+    siteCode: null,
+    treeRevision: 0,
+    recordVersionNumber: 0,
+  }), undefined, 'ih_blank_optional');
+  const normalizedBlankOptional = normalizeInstallationTreeV2(blankOptional);
+  assert.equal(blankOptional.installation?.siteName, 'Untitled installation');
+  assert.equal(normalizedBlankOptional.installation.timezone, 'Australia/Sydney');
+
   const portal = prepareCanonicalInstallHubWrite(freshCanonicalWrite('portal-new', {
     externalKey: null,
     siteCode: 'FRESH-1',
@@ -553,6 +565,23 @@ test('canonical update preparation preserves meter custom names omitted by legac
 });
 
 test('canonical write preparation keeps explicit invalid metadata fail-closed', () => {
+  assert.throws(
+    () => prepareCanonicalInstallHubWrite(
+      freshCanonicalWrite('invalid-site-name', {
+        siteName: 42,
+        treeRevision: 0,
+        recordVersionNumber: 0,
+      }),
+      undefined,
+      'ih_invalid_never_persisted',
+    ),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'siteName must be a string'
+    ),
+  );
   for (const installation of [
     { treeRevision: '0', recordVersionNumber: 0 },
     { treeRevision: 0, recordVersionNumber: -1 },
@@ -589,7 +618,7 @@ const completedHoneywellForm = {
   updatedAt: '2026-07-23T12:00:00.000Z',
 };
 
-test('InstallHub never persists a new Completed form before complete evidence validation', () => {
+test('InstallHub completion keeps metadata staging immutable while answers and evidence stay optional', () => {
   assert.throws(
     () => formValues(completedHoneywellForm, 'installation-1', undefined, 'metadata'),
     (error: unknown) => (
@@ -598,13 +627,8 @@ test('InstallHub never persists a new Completed form before complete evidence va
       && error.detail === 'metadata_stage_cannot_complete_form'
     ),
   );
-  assert.throws(
+  assert.doesNotThrow(
     () => formValues(completedHoneywellForm, 'installation-1'),
-    (error: unknown) => (
-      error instanceof Error
-      && 'detail' in error
-      && error.detail === 'Completed form requires attachments slot water.lcd_photo'
-    ),
   );
 
   const completed = {
@@ -715,16 +739,10 @@ function currentWwForm() {
   return form;
 }
 
-test('legacy form mapping accepts load-only drafts and only replays an exact persisted Completed form', () => {
-  const purposeRequired = (error: unknown) => {
-    assert.ok(error && typeof error === 'object' && 'detail' in error);
-    assert.match(String(error.detail), /purpose/);
-    return true;
-  };
+test('legacy form mapping accepts load-only drafts and completions while preserving Completed immutability', () => {
   const legacyCompleted = loadOnlyWwForm('Completed');
-  assert.throws(
+  assert.doesNotThrow(
     () => formValues(legacyCompleted, 'installation-1', undefined, 'complete'),
-    purposeRequired,
   );
 
   const legacyDraft = loadOnlyWwForm('Draft');
@@ -735,9 +753,8 @@ test('legacy form mapping accepts load-only drafts and only replays an exact per
     'metadata',
   );
   assert.equal(persistedDraft.status, 'Draft');
-  assert.throws(
+  assert.doesNotThrow(
     () => formValues(legacyCompleted, 'installation-1', persistedDraft, 'complete'),
-    purposeRequired,
   );
 
   const persistedCompleted = formValues(
@@ -782,35 +799,27 @@ test('legacy form mapping accepts load-only drafts and only replays an exact per
   );
 });
 
-test('canonical sync grants Completed load-only projection only to the same persisted Completed id', () => {
-  const purposeRequired = (error: unknown) => {
-    assert.ok(error && typeof error === 'object' && 'detail' in error);
-    assert.match(String(error.detail), /purpose/);
-    return true;
-  };
+test('canonical sync accepts optional load-only completion data across lifecycle contexts', () => {
   const legacyCompleted = loadOnlyWwForm('Completed');
-  assert.throws(
+  assert.doesNotThrow(
     () => validateCanonicalFormContractsForSync({
       incoming: [legacyCompleted],
       syncStage: 'complete',
     }),
-    purposeRequired,
   );
-  assert.throws(
+  assert.doesNotThrow(
     () => validateCanonicalFormContractsForSync({
       incoming: [legacyCompleted],
       existing: [loadOnlyWwForm('Draft')],
       syncStage: 'complete',
     }),
-    purposeRequired,
   );
-  assert.throws(
+  assert.doesNotThrow(
     () => validateCanonicalFormContractsForSync({
       incoming: [legacyCompleted],
       existing: [{ ...currentWwForm(), id: 'different-completed-form' }],
       syncStage: 'complete',
     }),
-    purposeRequired,
   );
   assert.doesNotThrow(() => validateCanonicalFormContractsForSync({
     incoming: [loadOnlyWwForm('Draft')],

@@ -28,6 +28,12 @@ admin-visible trees for explicit local-copy import. Imported copies receive
 fresh entity IDs and deterministic `cp1`, `cp2`, ... names while retaining
 source installation/form IDs and immutable original evidence references.
 
+Field App Complete treats business capture fields and evidence as optional.
+Only an explicitly `TBC` electrical supply, asset metering state, or measurement
+target blocks completion/readiness. This does not relax authentication,
+ownership/parentage, compare-and-swap revision checks, stable IDs, or structural
+tree/form/attachment shape.
+
 Field App Complete administrators manage users and assign one active user access to a
 backed-up installation. The iOS app also exposes API/sync diagnostics and
 protected local storage cleanup. Original evidence and form data are never part
@@ -148,34 +154,33 @@ creates an immutable installation version. A `syncStage: "metadata"` staging
 push is persisted for upload-session parent validation but is not versioned;
 an absent stage is treated as legacy complete. `/files` combines confirmed
 originals with completed Field App Complete form/pack report artifacts; it does not
-expose device-local paths.
+expose device-local paths. Canonical-v2.7 snapshots omit unresolved optional
+evidence; confirmed media included in a snapshot is resolved by exact registry
+identity and remains immutable.
 
 The six current schema-v2 form families are WW Installation, Comms
 Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger.
 Schema-v1 A3RM/A6M records remain readable. WW Installation exposes three
-channels for A3RM and six for A6M. Every visible current channel has an explicit
-purpose. `Main board supply` permits only `Mains Supply`; `Sub-circuit / asset`
-requires one of HVAC, Lighting, Solar PV, Forklift Charger, Hot Water, General
-Power, or `Other`, with a required `channel.N.custom_load_type` when `Other` is
-selected. `Spare / unused` hides and clears load, rating, and description. Each
-active channel also requires an exact A3RM Rogowski or A6M CT choice. Current
-purpose and custom-load fields, including partially authored current-shape
-payloads, are validated strictly. Load-only schema-v2 Drafts from installed
-clients remain syncable through inference on a temporary validation copy.
-Completed load-only projection is narrower: only a same-ID row already persisted
-as immutable Completed, or readiness/reporting of that persisted row, may opt in.
-Fresh Completed forms and Draft-to-Completed transitions stay strict. Stored or
-returned snapshots are never mutated. `Not Used` is therefore a legacy load-only
-compatibility value, not a current load choice. These conditions are shared by
-API validation and the server report manifest. The answers already live in form
-JSON, so this boundary compatibility does not require a database migration.
+channels for A3RM and six for A6M. Purpose, load, sensor rating, custom load,
+commissioning values, serials, and other business answers are optional and do
+not gate completion. Supplied values retain their serialized types and channel
+object shape, but no companion business answer becomes mandatory. The UI may
+still clear values hidden by choices such as `Spare / unused`. Legacy
+load-only schema-v2 data and schema-v1 aliases remain readable/syncable for
+installed clients. Compatibility inference operates only on a temporary
+validation projection and never mutates stored or returned snapshots. Form and
+attachment object shape, IDs, and supplied-value types remain validated; the
+absence of optional answers or evidence is not a readiness error.
 
 Field App Complete PDF start routes accept only completed backed-up forms and return a
 durable job ID. The renderer resolves exact confirmed attachment originals,
 uses the Sustainability Wise A4 format, and chunks above 120 photos or 120 MiB
 raw evidence at semantic section boundaries (about 50 photos per rendered part)
-before merging. The mobile client polls the shared export-job routes and uses
-the authenticated download rather than holding a request open.
+before merging. Unresolved optional evidence has already been omitted from the
+v2.7 source snapshot; a confirmed attachment that is present must resolve
+exactly and is never silently substituted. The mobile client polls the shared
+export-job routes and uses the authenticated download rather than holding a
+request open.
 
 ## Shared Capabilities
 
@@ -209,5 +214,7 @@ database mapping, photo registry, PDF builder, and mobile sync contract.
 The API and portal are separate processes and release paths. A portal change can
 pass locally while its API dependency is not deployed, and the reverse is also
 true. Any cross-process contract change must be backward compatible during a
-rolling deployment. See `docs/INFRASTRUCTURE.md` and
+rolling deployment. In particular, the Field App Complete optional-capture
+policy is server-compatible with installed mobile clients; it does not remove
+accepted legacy fields or aliases. See `docs/INFRASTRUCTURE.md` and
 `docs/ECOSENSE_PORTAL_DEPLOYMENT.md` for operational details.

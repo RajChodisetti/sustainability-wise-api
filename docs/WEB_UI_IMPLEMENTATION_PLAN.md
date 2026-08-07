@@ -6,6 +6,11 @@ Prepared: 18 June 2026
 
 This document defines the build plan for **SustainabilityWiseUI**, a web application that exposes the existing SolarSense and EcoAudit Pro workflows through one role-aware web interface.
 
+Although this plan predates the Field App Complete workspace, any shared form,
+completion, evidence, or sync component reused under `/installhub` must follow
+its current contract: business capture and evidence are optional, and only an
+explicit supply/metering/measurement `TBC` blocks completion/readiness.
+
 The web app must copy the key capabilities already present in the mobile apps and backend:
 
 - App-level login.
@@ -40,10 +45,16 @@ The web app must copy the key capabilities already present in the mobile apps an
 - Completed records should stay locked. If a completed resource needs changes, the user copies the top-level SolarSense site or EcoAudit audit and edits the new draft.
 - Copy must exist only at the top-level resource. Child assessments, zones, and equipment do not have separate copy actions.
 - Copied top-level resources must retain the full parent name plus a short random suffix, for example `Original Name a1b2`, so they do not collide with app-generated copies or clones.
-- Top-level copy must create usable editable drafts and preserve required child data.
+- Top-level copy must create usable editable drafts and preserve
+  contract-defined child data.
 - Destructive actions must require confirmation and show clearly what will be deleted.
 - Photo and PDF actions must work for both existing records and newly created records.
 - New storage paths and OneDrive paths must follow the current name-based naming convention, with compatibility for ID-based legacy records.
+- Field App Complete must not reuse generic browser `required` rules for business
+  capture or evidence. Authentication, ownership, CAS, stable IDs, and
+  structural payload/attachment validation remain enforced; unresolved optional
+  evidence is omitted from immutable v2.7 snapshots and included confirmed
+  media remains exact and immutable.
 
 ## Phase 0: Scope, API, and Data Model Confirmation
 
@@ -138,7 +149,9 @@ Deliverables:
   - Repeated sections.
   - Nested child records.
   - Photo fields.
-  - Validation and required fields.
+  - Product-contract-driven validation. Required-field rules apply only where
+    that product defines them; Field App Complete business fields/evidence stay
+    optional and use TBC-only completion readiness.
 - Shared photo component:
   - Preview.
   - Upload.
@@ -305,7 +318,8 @@ Deliverables:
   - PDF generation.
   - PDF download.
   - OneDrive backup verification.
-- Regression checks for existing mobile API behavior.
+- Regression checks for existing mobile API behavior, including installed Field
+  App Complete client compatibility if shared components or contracts change.
 - Production deploy to current DigitalOcean environment.
 - Smoke test production login, CRUD, PDF, ZIP, and OneDrive backup.
 - Rollback notes.

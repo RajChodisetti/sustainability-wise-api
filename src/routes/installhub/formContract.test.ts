@@ -97,7 +97,7 @@ function generatedCompletedFixture(
   for (const section of definition.sections) {
     if (!visible(section.showWhen, answers)) continue;
     for (const field of section.fields) {
-      if (!visible(field.showWhen, answers) || !field.required) continue;
+      if (!visible(field.showWhen, answers)) continue;
       if (field.kind === 'photo') {
         attachments.push(attachment(field.key));
       } else if (!answers[field.key]) {
@@ -116,10 +116,16 @@ function generatedCompletedFixture(
   };
 }
 
-test('generated finalized fixtures satisfy every required field and photo for all six forms', () => {
+test('every schema-v2 field is optional and finalized fixtures remain accepted', () => {
   for (const formType of Object.keys(
     INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS,
   ) as CurrentFormType[]) {
+    assert.ok(
+      INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS[formType].sections.every(
+        (section) => section.fields.every((field) => field.required === false),
+      ),
+      `${formType} must not expose mandatory answer or evidence fields`,
+    );
     const fixture = generatedCompletedFixture(formType);
     assert.doesNotThrow(
       () => validateInstallHubFormContract(fixture),
@@ -128,7 +134,7 @@ test('generated finalized fixtures satisfy every required field and photo for al
   }
 });
 
-test('metadata stage may omit evidence but still requires every completed answer', () => {
+test('metadata and complete stages may omit every optional answer and evidence slot', () => {
   const fixture = generatedCompletedFixture('honeywell-q400');
   assert.doesNotThrow(() => validateInstallHubFormContract({
     ...fixture,
@@ -137,36 +143,33 @@ test('metadata stage may omit evidence but still requires every completed answer
   }));
 
   delete fixture.answers['water.serial_number'];
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract({
       ...fixture,
       attachments: [],
       syncStage: 'metadata',
     }),
-    detailMatches(/answers\.water\.serial_number/),
   );
 });
 
-test('complete and legacy-final stages require every visible required photo slot', () => {
+test('complete and legacy-final stages accept missing evidence', () => {
   const fixture = generatedCompletedFixture('honeywell-q400');
   fixture.attachments = fixture.attachments.filter(
     (item) => item.slot !== 'water.lcd_photo',
   );
 
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/attachments slot water\.lcd_photo/),
   );
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract({
       ...fixture,
       syncStage: undefined,
     }),
-    detailMatches(/attachments slot water\.lcd_photo/),
   );
 });
 
-test('drafts remain incomplete but validate any value they do contain', () => {
+test('drafts and completed forms retain any observed text value', () => {
   assert.doesNotThrow(() => validateInstallHubFormContract({
     formType: 'ace-switchboard',
     schemaVersion: 2,
@@ -175,7 +178,7 @@ test('drafts remain incomplete but validate any value they do contain', () => {
     attachments: [],
     syncStage: 'complete',
   }));
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract({
       formType: 'ace-switchboard',
       schemaVersion: 2,
@@ -184,7 +187,6 @@ test('drafts remain incomplete but validate any value they do contain', () => {
       attachments: [],
       syncStage: 'metadata',
     }),
-    detailMatches(/must be a number/),
   );
 });
 
@@ -202,9 +204,8 @@ test('WW installation presents Base44 choices and accepts persisted legacy choic
   assert.doesNotThrow(() => validateInstallHubFormContract(a3rm));
 
   a3rm.answers['channel.1.rating'] = 'CT-60A';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(a3rm),
-    detailMatches(/channel\.1\.rating is not a valid selection/),
   );
 
   const a6m = generatedCompletedFixture('ww-installation', {
@@ -271,12 +272,12 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
           key: `${prefix}.purpose`,
           kind: 'select',
           options: purposeOptions,
-          required: true,
+          required: false,
         },
         {
           key: `${prefix}.load`,
           kind: 'select',
-          required: true,
+          required: false,
           optionsWhen: {
             key: `${prefix}.purpose`,
             values: {
@@ -289,13 +290,13 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
         {
           key: `${prefix}.custom_load_type`,
           kind: 'text',
-          required: true,
+          required: false,
           showWhen: { key: `${prefix}.load`, equals: 'Other' },
         },
         {
           key: `${prefix}.rating`,
           kind: 'select',
-          required: true,
+          required: false,
           optionsWhen: {
             key: 'device.type',
             values: {
@@ -343,7 +344,7 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
   }));
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '3b00b0da4b860d09c8fbe38771a186a4a314dc4b8775fe04d487f2f93a596713',
+    'fde8e7b441b6607221a658fba6dfce3ab49e76dda1b03338d5af539d3d0c31b3',
   );
 
   assert.doesNotThrow(() => validateInstallHubFormContract({
@@ -359,7 +360,7 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
   }));
 });
 
-test('WW current load choices are constrained by channel purpose', () => {
+test('WW current load values are advisory and never completion gates', () => {
   const draft = (purpose: string, load: string) => ({
     formType: 'ww-installation',
     schemaVersion: 2,
@@ -383,27 +384,24 @@ test('WW current load choices are constrained by channel purpose', () => {
     draft('Sub-circuit / asset', 'Mains Supply'),
     draft('Sub-circuit / asset', 'Not Used'),
   ]) {
-    assert.throws(
+    assert.doesNotThrow(
       () => validateInstallHubFormContract(invalid),
-      detailMatches(/channel\.1\.load is not a valid selection/),
     );
   }
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(draft('Spare / unused', 'Not Used')),
-    detailMatches(/channel\.1\.load.*hidden/),
   );
 });
 
-test('WW Other loads require a separate custom label and reject it when hidden', () => {
+test('WW Other custom labels are optional and hidden legacy values are retained', () => {
   const fixture = generatedCompletedFixture('ww-installation', {
     'device.type': 'A3RM',
   });
   fixture.answers['channel.1.purpose'] = 'Sub-circuit / asset';
   fixture.answers['channel.1.load'] = 'Other';
 
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/Completed form requires answers\.channel\.1\.custom_load_type/),
   );
 
   fixture.answers['channel.1.custom_load_type'] = 'Packaging line';
@@ -411,13 +409,12 @@ test('WW Other loads require a separate custom label and reject it when hidden',
   assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
 
   fixture.answers['channel.1.load'] = 'HVAC';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.1\.custom_load_type.*hidden/),
   );
 });
 
-test('WW spare channels require a purpose and reject hidden load details', () => {
+test('WW spare channels may retain optional purpose and load details', () => {
   const fixture = generatedCompletedFixture('ww-installation', {
     'device.type': 'A3RM',
   });
@@ -427,26 +424,23 @@ test('WW spare channels require a purpose and reject hidden load details', () =>
   assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
 
   fixture.answers['channel.1.load'] = 'Not Used';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.1\.load.*hidden/),
   );
   delete fixture.answers['channel.1.load'];
 
   fixture.answers['channel.1.purpose'] = 'Unused';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.1\.purpose is not a valid selection/),
   );
 
   delete fixture.answers['channel.1.purpose'];
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/Completed form requires answers\.channel\.1\.purpose/),
   );
 });
 
-test('WW spare channels reject hidden rating, description, evidence and commissioning data', () => {
+test('WW spare channels retain optional rating, description, evidence and commissioning data', () => {
   const fixture = generatedCompletedFixture('ww-installation', {
     'device.type': 'A6M',
   });
@@ -462,22 +456,19 @@ test('WW spare channels reject hidden rating, description, evidence and commissi
     ['commissioning.channel_4_current', '12'],
   ] as const) {
     fixture.answers[key] = value;
-    assert.throws(
+    assert.doesNotThrow(
       () => validateInstallHubFormContract(fixture),
-      detailMatches(/must be empty while the field is hidden/),
-      key,
     );
     delete fixture.answers[key];
   }
 
   fixture.attachments.push(attachment('channel.4.nameplate_photos', 'stale-channel-4'));
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.4\.nameplate_photos.*hidden/),
   );
 });
 
-test('load-only WW compatibility is non-mutating and gated by lifecycle context', () => {
+test('load-only WW compatibility is non-mutating and accepted in every lifecycle context', () => {
   const historical = generatedCompletedFixture('ww-installation', {
     'device.type': 'A3RM',
   });
@@ -491,9 +482,8 @@ test('load-only WW compatibility is non-mutating and gated by lifecycle context'
   }
   const before = structuredClone(historical.answers);
 
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(historical),
-    detailMatches(/Completed form requires answers\.channel\.1\.purpose/),
   );
   assert.doesNotThrow(() => validateInstallHubFormContract({
     ...historical,
@@ -508,12 +498,11 @@ test('load-only WW compatibility is non-mutating and gated by lifecycle context'
 
   const partialCurrent = structuredClone(historical);
   partialCurrent.answers['channel.1.purpose'] = 'Main board supply';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract({
       ...partialCurrent,
       allowLegacyCompletedWwLoadOnly: true,
     }),
-    detailMatches(/Completed form requires answers\.channel\.2\.purpose/),
   );
 
   const currentOther = generatedCompletedFixture('ww-installation', {
@@ -521,31 +510,28 @@ test('load-only WW compatibility is non-mutating and gated by lifecycle context'
   });
   currentOther.answers['channel.2.purpose'] = 'Sub-circuit / asset';
   currentOther.answers['channel.2.load'] = 'Other';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(currentOther),
-    detailMatches(/Completed form requires answers\.channel\.2\.custom_load_type/),
   );
 });
 
-test('A3RM rejects all hidden channel 4-6 answers and photos', () => {
+test('A3RM retains optional channel 4-6 legacy answers and photos', () => {
   const fixture = generatedCompletedFixture('ww-installation', {
     'device.type': 'A3RM',
   });
   fixture.answers['channel.4.load'] = 'Mains Supply';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.4\.load.*hidden/),
   );
   delete fixture.answers['channel.4.load'];
 
   fixture.attachments.push(attachment('channel.4.nameplate_photos', 'a3rm-hidden-channel'));
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/channel\.4\.nameplate_photos.*hidden/),
   );
 });
 
-test('communications replacement requires conditional fields and evidence only when selected', () => {
+test('communications replacement fields and evidence stay optional in every branch', () => {
   const replacement = generatedCompletedFixture('comms-fault');
   assert.equal(replacement.answers['works.replace_device'], 'yes');
   assert.doesNotThrow(() => validateInstallHubFormContract(replacement));
@@ -555,9 +541,8 @@ test('communications replacement requires conditional fields and evidence only w
   assert.doesNotThrow(() => validateInstallHubFormContract(replacement));
 
   delete replacement.answers['works.new_device_id'];
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(replacement),
-    detailMatches(/answers\.works\.new_device_id/),
   );
 
   const noReplacement = generatedCompletedFixture('comms-fault', {
@@ -565,52 +550,46 @@ test('communications replacement requires conditional fields and evidence only w
   });
   assert.doesNotThrow(() => validateInstallHubFormContract(noReplacement));
   noReplacement.answers['works.new_device_id'] = 'stale-device';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(noReplacement),
-    detailMatches(/works\.new_device_id.*hidden/),
   );
   delete noReplacement.answers['works.new_device_id'];
   noReplacement.attachments.push(
     attachment('commissioning.start_screenshot', 'stale-replacement-photo'),
   );
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(noReplacement),
-    detailMatches(/commissioning\.start_screenshot.*hidden/),
   );
 });
 
-test('WW installation keeps device number optional while requiring the device ID', () => {
+test('WW installation keeps both device identity fields optional', () => {
   const fixture = generatedCompletedFixture('ww-installation');
   delete fixture.answers['device.number'];
   assert.doesNotThrow(() => validateInstallHubFormContract(fixture));
 
   delete fixture.answers['device.id'];
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(fixture),
-    detailMatches(/answers\.device\.id/),
   );
 });
 
-test('all schema-v2 yes/no, numeric and select values use the mobile catalog types', () => {
+test('schema-v2 observed values do not become completion validation issues', () => {
   const honeywell = generatedCompletedFixture('honeywell-q400');
   honeywell.answers['water.activated'] = 'not_applicable';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(honeywell),
-    detailMatches(/water\.activated must be yes or no/),
   );
 
   const captis = generatedCompletedFixture('captis-logger');
   captis.answers['logger.rsrp'] = 'NaN';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(captis),
-    detailMatches(/logger\.rsrp must be a number/),
   );
 
   const ww = generatedCompletedFixture('ww-installation');
   ww.answers['commissioning.signal_strength'] = 'Strong-ish';
-  assert.throws(
+  assert.doesNotThrow(
     () => validateInstallHubFormContract(ww),
-    detailMatches(/signal_strength is not a valid selection/),
   );
 });
 
