@@ -1240,6 +1240,25 @@ test('offline electrical projection excludes non-confirmed and structurally inva
   }
 });
 
+test('offline electrical projection retains virtual residual formula parentage', () => {
+  const tree = fixtureTree();
+  tree.serverDerived = {
+    virtualMeterDefinitions: [{
+      id: 'virtual-board-b',
+      parentNodeId: 'board-b',
+      totalMeasurementAssignmentId: 'assignment-total',
+      subtractAssignmentIds: ['assignment-subtract'],
+      formulaVersion: 2,
+      allocation: 'UNALLOCATED_RESIDUAL',
+    }],
+  };
+
+  const residual = localElectricalTree(tree).nodes.find((node) => node.id === 'virtual-board-b');
+  assert.equal(residual?.kind, 'VIRTUAL_RESIDUAL');
+  assert.equal(residual?.parentNodeId, 'board-b');
+  assert.equal(residual?.formulaVersion, 2);
+});
+
 test('local readiness stays advisory while optional external keys do not create issues', () => {
   const tree = fixtureTree();
   const beforeIssues = localReadiness(tree).issues;

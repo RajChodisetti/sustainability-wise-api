@@ -10,6 +10,7 @@ import { Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import { Breadcrumbs, InlineNotice } from '@/modules/installhub/components/InstallHubUi';
+import { ElectricalTreeCanvas } from '@/modules/installhub/components/ElectricalTreeCanvas';
 import { SearchableSelect } from '@/modules/installhub/components/SearchableSelect';
 import { ConfirmDialog } from '@/modules/installhub/components/WorkflowUi';
 import {
@@ -206,7 +207,7 @@ export function InstallHubCanonicalDataPage() {
   const [electricalPage, setElectricalPage] = useState(0);
   const [assetPage, setAssetPage] = useState(0);
   const [electricalOpen, setElectricalOpen] = useState(true);
-  const [electricalView, setElectricalView] = useState<'HIERARCHY' | 'TABLE'>('HIERARCHY');
+  const [electricalView, setElectricalView] = useState<'TREE' | 'HIERARCHY' | 'TABLE'>('TREE');
   const [collapsedElectricalNodeIds, setCollapsedElectricalNodeIds] = useState<Set<string>>(new Set());
   const [electricalAnnouncement, setElectricalAnnouncement] = useState('');
   const [hierarchyPage, setHierarchyPage] = useState(0);
@@ -283,8 +284,9 @@ export function InstallHubCanonicalDataPage() {
   const tree = treeQuery.data;
   const readiness = readinessQuery.data;
   const electrical = electricalQuery.data;
-  const resolvedElectrical = resolvedElectricalTopology(electrical);
-  const unresolvedElectrical = unresolvedElectricalRecords(electrical);
+  const currentElectrical = electrical?.treeRevision === currentTreeRevision ? electrical : undefined;
+  const resolvedElectrical = resolvedElectricalTopology(currentElectrical);
+  const unresolvedElectrical = unresolvedElectricalRecords(currentElectrical);
   const localAdvisory = readiness?.authority === 'LOCAL_ADVISORY' || mappingQuery.data?.authority === 'LOCAL_ADVISORY';
   const visibleIssues = readiness?.issues || [];
   const issueTotal = readiness?.issuePage?.total ?? visibleIssues.length;
@@ -306,6 +308,7 @@ export function InstallHubCanonicalDataPage() {
   );
   const allElectricalRows = electricalHierarchyRows(resolvedElectrical);
   const filteredElectricalRows = filterElectricalHierarchyRows(allElectricalRows, electricalSearch);
+  const filteredElectricalNodeIds = new Set(filteredElectricalRows.map((row) => row.node.id));
   const electricalParentIds = new Set(allElectricalRows.flatMap((row) => row.parent ? [row.parent.id] : []));
   const visibleHierarchyRows = electricalSearch.trim()
     ? filteredElectricalRows
@@ -328,7 +331,6 @@ export function InstallHubCanonicalDataPage() {
       const zoneName = tree.zones.find((zone) => zone.id === asset.zoneId)?.zoneName || '';
       return !normalizedAssetSearch || `${displayCodeValue(asset)} ${asset.assetName} ${siteAssetTypeLabel(asset)} ${zoneName}`.toLowerCase().includes(normalizedAssetSearch);
     });
-  const currentElectrical = electrical?.treeRevision === tree.treeRevision ? electrical : undefined;
   const serverCoverageByAsset = new Map(
     (currentElectrical?.nodes || [])
       .filter((node) => node.kind === 'SITE_ASSET')
@@ -574,13 +576,24 @@ export function InstallHubCanonicalDataPage() {
           <div className="min-w-0">
           <Input type="search" value={electricalSearch} placeholder="Search resolved code, node, kind, or type" aria-label="Search resolved electrical nodes" onChange={(event) => { setElectricalSearch(event.target.value); setElectricalPage(0); setHierarchyPage(0); }} />
           <div className="mt-3 flex flex-wrap gap-2" aria-label="Electrical map view">
+            <Button variant={electricalView === 'TREE' ? 'primary' : 'secondary'} aria-pressed={electricalView === 'TREE'} onClick={() => setElectricalView('TREE')}>Interactive tree</Button>
             <Button variant={electricalView === 'HIERARCHY' ? 'primary' : 'secondary'} aria-pressed={electricalView === 'HIERARCHY'} onClick={() => setElectricalView('HIERARCHY')}>Relationship hierarchy</Button>
             <Button variant={electricalView === 'TABLE' ? 'primary' : 'secondary'} aria-pressed={electricalView === 'TABLE'} onClick={() => setElectricalView('TABLE')}>Relationship table</Button>
           </div>
           <div className="mt-3"><InlineNotice>
             <strong>Supply and measurement stay separate:</strong> FED_FROM builds the electrical parent/child hierarchy. MEASURES shows which installed meter board measures a target and never changes that target’s supply parent.
           </InlineNotice></div>
-          {electricalView === 'HIERARCHY' ? (
+          {electricalView === 'TREE' ? (
+            resolvedElectrical?.nodes.length && (!electricalSearch.trim() || filteredElectricalRows.length) ? (
+              <ElectricalTreeCanvas
+                tree={tree}
+                model={resolvedElectrical}
+                visibleNodeIds={electricalSearch.trim() ? filteredElectricalNodeIds : undefined}
+                getNodeHref={(node) => electricalNodeHref(tree, node)}
+                onRevealNode={() => setElectricalSearch('')}
+              />
+            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No resolved electrical nodes match this search.</p>
+          ) : electricalView === 'HIERARCHY' ? (
             visibleHierarchyRows.length ? (
               <>
               <ol className="mt-4 space-y-2" aria-label="Electrical supply hierarchy">

@@ -1437,6 +1437,8 @@ export function localElectricalTree(input: InstallationTree): ElectricalTreeRead
       name: `Shared, unallocated residual at ${definition.parentNodeId}`,
       displayCode: `VIRTUAL-${definition.id.replace(/^virtual_/, '').toUpperCase()}`,
       coverageState: 'UNALLOCATED',
+      parentNodeId: definition.parentNodeId,
+      formulaVersion: definition.formulaVersion,
     })),
   ];
   const edges: ElectricalTreeReadModel['edges'] = [];
