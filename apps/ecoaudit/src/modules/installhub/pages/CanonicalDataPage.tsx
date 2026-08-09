@@ -603,7 +603,7 @@ export function InstallHubCanonicalDataPage() {
               tree.installation.status === 'Completed' ? (
                 <><strong>Saved client view:</strong> this arrangement is pinned to the completed report version. Reopen the installation to move symbols and save a new report layout.</>
               ) : (
-                <><strong>Client view:</strong> copper curves show where power comes from. Choose Arrange items to move symbols, then save the layout for the PDF report.</>
+                <><strong>Client view:</strong> copper curves show where power comes from. Drag any symbol to move it, then save the layout for the PDF report. Arrange items also enables keyboard movement.</>
               )
             ) : (
               <><strong>Supply and measurement stay separate:</strong> FED_FROM builds the electrical parent/child hierarchy. MEASURES shows which installed meter board measures a target and never changes that target’s supply parent.</>

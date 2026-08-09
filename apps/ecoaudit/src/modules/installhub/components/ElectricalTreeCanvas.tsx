@@ -37,6 +37,7 @@ import {
   electricalTreeMapLayoutDocument,
   electricalTreeMapLayoutDraft,
   electricalTreeMapLayoutsEqual,
+  electricalTreeDirectPointerDragEnabled,
   electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
   electricalTreeNodeContexts,
@@ -347,6 +348,11 @@ export function ElectricalTreeCanvas({
   }, [initialWorkspace]);
   const arrangementAvailable = Boolean(onSaveLayout) && !visibleNodeIds;
   const arranging = arrangeMode && arrangementAvailable && workspace.phase !== 'saving';
+  const pointerDraggingAvailable = electricalTreeDirectPointerDragEnabled({
+    canSaveLayout: Boolean(onSaveLayout),
+    hasVisibleNodeFilter: Boolean(visibleNodeIds),
+    saving: workspace.phase === 'saving',
+  });
   const layoutDirty = !electricalTreeMapLayoutsEqual(workspace.draft, workspace.saved);
   const focusableNodeId = selectedNode && layoutById.has(selectedNode.id)
     ? selectedNode.id
@@ -577,7 +583,7 @@ export function ElectricalTreeCanvas({
     event: ReactPointerEvent<HTMLButtonElement>,
     nodeId: string,
   ) {
-    if (!arranging || event.button !== 0) return false;
+    if (!pointerDraggingAvailable || !event.isPrimary || event.button !== 0) return false;
     if (nodeDragRef.current && nodeDragRef.current.pointerId !== event.pointerId) {
       event.preventDefault();
       event.stopPropagation();
@@ -619,6 +625,7 @@ export function ElectricalTreeCanvas({
     event.stopPropagation();
     if (!drag.started) {
       drag.started = true;
+      setDetailsOpen(false);
       setDraggedNodeId(drag.nodeId);
       setLayoutAnnouncement(`Moving ${nodeTitle(completeLayoutById.get(drag.nodeId)!.node)}. Use Escape to cancel.`);
     }
@@ -930,7 +937,7 @@ export function ElectricalTreeCanvas({
           <div className="min-w-0">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--primary)]">Electrical system overview</p>
             <h3 id="electrical-tree-heading" className="mt-1 text-base font-extrabold text-[var(--text)]">{tree.installation.siteName}</h3>
-            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the centre · switchboards and equipment arranged around their supply · hover or focus for a summary, click or tap for full details</p>
+            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the centre · switchboards and equipment arranged around their supply · hover or focus for a summary, click or tap for full details{onSaveLayout ? ' · drag any symbol to reposition it' : ''}</p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-bold text-[var(--text-sub)]" aria-label="Electrical map summary">
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.boards} switchboard{mapSummary.boards === 1 ? '' : 's'}</span>
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.meters} meter{mapSummary.meters === 1 ? '' : 's'}</span>
@@ -990,9 +997,11 @@ export function ElectricalTreeCanvas({
               <span>{workspace.phase === 'error' ? workspace.error : workspace.phase === 'saving' ? 'Saving layout…' : layoutDirty ? 'Layout changes not saved' : model.mapLayout ? 'Layout saved for reports' : 'Automatic layout'}</span>
             </div>
             {visibleNodeIds ? <p className="w-full text-xs font-semibold text-[var(--amber)]">Clear the map search to arrange the complete electrical system.</p> : null}
+            {!visibleNodeIds && onSaveLayout ? <p className="w-full text-xs font-semibold text-[var(--text-sub)]">Drag any symbol to move it; click without moving to open its details. Choose Arrange items for keyboard controls.</p> : null}
           </div>
         ) : null}
         <p id="electrical-arrange-instructions" className="sr-only">In Arrange mode, drag a symbol with a pointer. With a keyboard, focus a symbol and press Enter or Space to pick it up, use arrow keys to move it, then press Enter or Space to finish. Press Escape to cancel.</p>
+        <p id="electrical-pointer-drag-instructions" className="sr-only">Drag this symbol to reposition it. A click or tap without movement opens its details.</p>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{layoutAnnouncement}</p>
         <div className="relative">
           <div
@@ -1076,6 +1085,11 @@ export function ElectricalTreeCanvas({
               ].filter(Boolean).join('. ');
               const selected = item.node.id === selectedNode?.id;
               const moving = item.node.id === draggedNodeId || item.node.id === keyboardDrag?.nodeId;
+              const nodeActionLabel = arranging
+                ? `Arrange ${symbolLabel}`
+                : pointerDraggingAvailable
+                  ? `Open details for ${symbolLabel} or drag it to move`
+                  : `Open details for ${symbolLabel}`;
               return (
                 <button
                   key={item.node.id}
@@ -1085,18 +1099,18 @@ export function ElectricalTreeCanvas({
                   }}
                   type="button"
                   data-electrical-node-id={item.node.id}
-                  className={`group absolute overflow-visible rounded-[2rem] border border-transparent bg-transparent p-1 text-center transition-[filter] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-4 focus-visible:ring-offset-[#F8FBFF] ${arranging ? 'cursor-move hover:brightness-[0.97]' : 'cursor-pointer hover:brightness-[0.97]'} ${moving ? 'z-20 drop-shadow-[0_14px_24px_rgba(30,64,175,0.24)]' : selected ? 'z-10' : ''}`}
+                  className={`group absolute overflow-visible rounded-[2rem] border border-transparent bg-transparent p-1 text-center transition-[filter] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-4 focus-visible:ring-offset-[#F8FBFF] ${moving ? 'cursor-grabbing' : pointerDraggingAvailable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:brightness-[0.97] ${moving ? 'z-20 drop-shadow-[0_14px_24px_rgba(30,64,175,0.24)]' : selected ? 'z-10' : ''}`}
                   style={{
                     left: `${item.x}px`,
                     top: `${item.y}px`,
                     width: `${item.width}px`,
                     height: `${item.height}px`,
-                    touchAction: arranging ? 'none' : undefined,
+                    touchAction: pointerDraggingAvailable ? 'none' : undefined,
                   }}
-                  aria-label={`${arranging ? 'Arrange' : 'Open details for'} ${symbolLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : '. Click or press Enter to open item details.'}`}
+                  aria-label={`${nodeActionLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : pointerDraggingAvailable ? '. Drag to reposition, or click or press Enter to open item details.' : '. Click or press Enter to open item details.'}`}
                   aria-controls="electrical-node-details-panel"
                   aria-describedby={[
-                    arranging ? 'electrical-arrange-instructions' : '',
+                    arranging ? 'electrical-arrange-instructions' : pointerDraggingAvailable ? 'electrical-pointer-drag-instructions' : '',
                     tooltipNodeId === item.node.id ? 'electrical-map-node-tooltip' : '',
                   ].filter(Boolean).join(' ') || undefined}
                   aria-keyshortcuts={arranging ? 'Enter Space ArrowUp ArrowDown ArrowLeft ArrowRight Escape' : undefined}
@@ -1269,7 +1283,7 @@ export function ElectricalTreeCanvas({
               </div>
             </section>
           </div>
-          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> hover or focus a symbol for a summary, then click or tap it for the item detail panel; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Choose Arrange items to reposition symbols, then save the layout for reports.' : ''} Items still to be confirmed stay outside this client view.</p>
+          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> hover or focus a symbol for a summary, then click or tap it for the item detail panel; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Drag any symbol to reposition it, then save the layout for reports; Arrange items also enables keyboard movement.' : ''} Items still to be confirmed stay outside this client view.</p>
         </div>
       </section>
 

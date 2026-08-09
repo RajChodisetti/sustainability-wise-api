@@ -24,6 +24,7 @@ import {
   electricalTreeNodeSize,
   electricalTreeNodeVisualSize,
   electricalTreeOrthogonalPath,
+  electricalTreeDirectPointerDragEnabled,
   electricalTreePointerDelta,
   electricalTreePointerDragStarted,
   electricalTreeStraightPath,
@@ -444,6 +445,29 @@ test('pointer movement is converted from screen pixels to design coordinates at 
   assert.equal(electricalTreePointerDragStarted(3, 4), false);
   assert.equal(electricalTreePointerDragStarted(3.6, 4.8), true);
   assert.equal(electricalTreePointerDragStarted(Number.NaN, 10), false);
+});
+
+test('direct pointer dragging does not require Arrange mode on an editable full map', () => {
+  assert.equal(electricalTreeDirectPointerDragEnabled({
+    canSaveLayout: true,
+    hasVisibleNodeFilter: false,
+    saving: false,
+  }), true);
+  assert.equal(electricalTreeDirectPointerDragEnabled({
+    canSaveLayout: true,
+    hasVisibleNodeFilter: true,
+    saving: false,
+  }), false);
+  assert.equal(electricalTreeDirectPointerDragEnabled({
+    canSaveLayout: false,
+    hasVisibleNodeFilter: false,
+    saving: false,
+  }), false);
+  assert.equal(electricalTreeDirectPointerDragEnabled({
+    canSaveLayout: true,
+    hasVisibleNodeFilter: false,
+    saving: true,
+  }), false);
 });
 
 test('map layout documents are sorted, rounded, clamped, and compare by presentation fields', () => {

@@ -640,6 +640,15 @@ export function electricalTreePointerDragStarted(
   return Math.hypot(deltaX, deltaY) >= Math.max(0, threshold);
 }
 
+/** Pointer dragging is direct on editable full maps; Arrange mode is not required. */
+export function electricalTreeDirectPointerDragEnabled(options: {
+  canSaveLayout: boolean;
+  hasVisibleNodeFilter: boolean;
+  saving: boolean;
+}): boolean {
+  return options.canSaveLayout && !options.hasVisibleNodeFilter && !options.saving;
+}
+
 /** Replaces one centre while keeping its marker fully inside the design canvas. */
 export function moveElectricalTreeMapLayoutNode(
   layout: ElectricalMapLayoutDocument,
