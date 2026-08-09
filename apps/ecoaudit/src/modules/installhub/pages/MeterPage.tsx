@@ -287,8 +287,7 @@ export function InstallHubMeterPage({
   const zone = tree.zones.find((item) => item.id === zoneId);
   const saved = mode === 'edit';
   const currentDraft = draft;
-  const fixedOtherWorkflow = initialDeviceType === 'Other'
-    || (mode === 'edit' && source?.deviceType === 'Other');
+  const fixedOtherWorkflow = mode === 'edit' && source?.deviceType === 'Other';
   const showWattwatchersSections = showsWattwatchersCommissioningSections(
     draft.deviceType,
   );
@@ -1380,13 +1379,15 @@ export function InstallHubMeterPage({
         { label: tree.installation.siteName, href: `/installhub/installations/${installationId}` },
         { label: zone?.zoneName ?? 'Zone', href: `/installhub/installations/${installationId}/zones/${zoneId}` },
         { label: board.assetName, href: `/installhub/installations/${installationId}/zones/${zoneId}/boards/${boardId}` },
-        { label: mode === 'new' ? 'New meter' : visibleDeviceName },
+        { label: mode === 'new' ? 'Add meter' : visibleDeviceName },
       ]} />
       <PageHeader
-        title={mode === 'new' ? (draft.deviceType === 'Other' ? 'New other meter' : 'New Wattwatcher meter') : visibleDeviceName}
-        subtitle={draft.deviceType === 'Other'
-          ? 'Device identity, classification, coverage, channels, assignments, and evidence.'
-          : 'Device identity, safety, switchboard, channels, verification, commissioning, and evidence.'}
+        title={mode === 'new' ? 'Add a meter' : visibleDeviceName}
+        subtitle={mode === 'new'
+          ? 'Choose the device family below. The form adapts to collect only the identity, channel, installation, commissioning, and evidence details that apply.'
+          : draft.deviceType === 'Other'
+            ? 'Device identity, classification, coverage, channels, assignments, and evidence.'
+            : 'Device identity, safety, switchboard, channels, verification, commissioning, and evidence.'}
         actions={saved ? (
           <>
             {commissionedForm ? (
@@ -1485,10 +1486,15 @@ export function InstallHubMeterPage({
           <div className="grid gap-x-4 lg:grid-cols-2">
             <div>
               <FieldLabel htmlFor="meter-family">Device family</FieldLabel>
-              <Select id="meter-family" value={draft.deviceFamily || 'WATTWATCHERS'} disabled={Boolean(commissionedForm) || fixedOtherWorkflow} onChange={(event) => chooseDeviceFamily(event.target.value as 'WATTWATCHERS' | 'OTHER')}>
+              <Select id="meter-family" value={draft.deviceFamily || 'WATTWATCHERS'} aria-describedby="meter-family-hint" disabled={Boolean(commissionedForm) || fixedOtherWorkflow} onChange={(event) => chooseDeviceFamily(event.target.value as 'WATTWATCHERS' | 'OTHER')}>
                 <option value="WATTWATCHERS">Wattwatchers</option>
                 <option value="OTHER">Other manufacturer</option>
               </Select>
+              <FieldHint id="meter-family-hint">
+                {draft.deviceFamily === 'OTHER'
+                  ? 'Showing custom manufacturer, model, channel, assignment, and evidence fields.'
+                  : 'Showing Wattwatchers identity, safety, switchboard, channel, verification, commissioning, and evidence fields.'}
+              </FieldHint>
             </div>
             <div>
               <FieldLabel htmlFor="meter-model">Device model</FieldLabel>
@@ -1500,9 +1506,9 @@ export function InstallHubMeterPage({
               >
                 {draft.deviceFamily !== 'OTHER' ? <option>A3RM</option> : null}
                 {draft.deviceFamily !== 'OTHER' ? <option>A6M</option> : null}
-                <option>Other</option>
+                {draft.deviceFamily === 'OTHER' ? <option>Other</option> : null}
               </Select>
-              {fixedOtherWorkflow ? <FieldHint>Wattwatchers devices must be added through the full installation form.</FieldHint> : null}
+              {fixedOtherWorkflow ? <FieldHint>This saved other-manufacturer meter keeps its existing device family.</FieldHint> : null}
             </div>
             {draft.deviceFamily === 'OTHER' ? (
               <div>
