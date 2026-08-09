@@ -13,12 +13,22 @@ import {
   ensureCanonicalTree,
 } from './workflow';
 import {
+  applyElectricalTreeMapLayout,
   buildElectricalTreeLayout,
+  electricalTreeCurvedPath,
+  electricalTreeMapLayoutDocument,
+  electricalTreeMapLayoutDraft,
+  electricalTreeMapLayoutsEqual,
   electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
   electricalTreeNodeSize,
   electricalTreeOrthogonalPath,
+  electricalTreePointerDelta,
+  electricalTreePointerDragStarted,
+  electricalTreeStraightPath,
+  filterElectricalTreeLayout,
   fitElectricalTreeViewport,
+  moveElectricalTreeMapLayoutNode,
   resolvedElectricalMeasurementDetails,
   zoomElectricalTreeViewport,
 } from './electricalTreeLayout';
@@ -74,12 +84,90 @@ function largeTerminalFanoutTopology(): ElectricalTreeReadModel {
   };
 }
 
-test('interactive electrical tree lays out FED_FROM branches and derived residuals deterministically', () => {
+function balancedBranchTopology(): ElectricalTreeReadModel {
+  const boards = Array.from({ length: 4 }, (_, index) => ({
+    id: `board-${index + 1}`,
+    kind: 'BOARD' as const,
+    name: `Branch board ${index + 1}`,
+  }));
+  const assets = Array.from({ length: 4 }, (_, index) => ({
+    id: `asset-${index + 1}`,
+    kind: 'SITE_ASSET' as const,
+    name: `Branch load ${index + 1}`,
+  }));
+  return {
+    installationId: 'installation-1',
+    treeRevision: 1,
+    nodes: [
+      { id: 'grid-1', kind: 'GRID', name: 'Incoming grid' },
+      ...boards,
+      ...assets,
+    ],
+    edges: [
+      ...boards.map((board, index) => ({
+        id: `fed-board-${index + 1}`,
+        sourceNodeId: 'grid-1',
+        targetNodeId: board.id,
+        relationship: 'FED_FROM' as const,
+      })),
+      ...assets.map((asset, index) => ({
+        id: `fed-asset-${index + 1}`,
+        sourceNodeId: boards[index].id,
+        targetNodeId: asset.id,
+        relationship: 'FED_FROM' as const,
+      })),
+    ],
+    unresolved: [],
+  };
+}
+
+type LayoutNode = ReturnType<typeof buildElectricalTreeLayout>['nodes'][number];
+
+function nodeCenter(node: LayoutNode): { x: number; y: number } {
+  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+}
+
+function nodesOverlap(left: LayoutNode, right: LayoutNode): boolean {
+  return left.x < right.x + right.width
+    && left.x + left.width > right.x
+    && left.y < right.y + right.height
+    && left.y + left.height > right.y;
+}
+
+function assertNoNodeOverlap(nodes: LayoutNode[]) {
+  for (let leftIndex = 0; leftIndex < nodes.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < nodes.length; rightIndex += 1) {
+      assert.equal(
+        nodesOverlap(nodes[leftIndex], nodes[rightIndex]),
+        false,
+        `${nodes[leftIndex].node.id} should not overlap ${nodes[rightIndex].node.id}`,
+      );
+    }
+  }
+}
+
+function pointIsOnNodePerimeter(node: LayoutNode, x: number, y: number): boolean {
+  const epsilon = 0.03;
+  const withinX = x >= node.x - epsilon && x <= node.x + node.width + epsilon;
+  const withinY = y >= node.y - epsilon && y <= node.y + node.height + epsilon;
+  const onVertical = Math.abs(x - node.x) <= epsilon || Math.abs(x - node.x - node.width) <= epsilon;
+  const onHorizontal = Math.abs(y - node.y) <= epsilon || Math.abs(y - node.y - node.height) <= epsilon;
+  return withinX && withinY && (onVertical || onHorizontal);
+}
+
+test('electrical constellation centres the grid and lays out FED_FROM branches deterministically', () => {
   const layout = buildElectricalTreeLayout(topology());
   const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
+  const grid = byId.get('grid-1')!;
+  const board = byId.get('board-1')!;
+  const gridCenter = nodeCenter(grid);
 
-  assert.ok(byId.get('grid-1')!.x < byId.get('board-1')!.x);
-  assert.ok(byId.get('board-1')!.x < byId.get('asset-1')!.x);
+  assert.ok(Math.abs(gridCenter.x - layout.width / 2) <= 0.02);
+  assert.ok(Math.abs(gridCenter.y - layout.height / 2) <= 0.02);
+  assert.equal(grid.presentationRing, 0);
+  assert.equal(board.presentationRing, 1);
+  assert.ok((board.radialDistance || 0) > 0);
+  assert.ok((byId.get('asset-1')!.radialDistance || 0) > (board.radialDistance || 0));
   assert.equal(byId.get('virtual-1')?.parentId, 'board-1');
   assert.equal(layout.edges.some((edge) => (
     edge.derived
@@ -87,15 +175,29 @@ test('interactive electrical tree lays out FED_FROM branches and derived residua
     && edge.targetNodeId === 'virtual-1'
   )), true);
 
-  const branches = ['board-2', 'asset-1', 'virtual-1']
-    .map((id) => byId.get(id)!)
-    .sort((left, right) => left.y - right.y);
-  assert.ok(branches[0].y + branches[0].height < branches[1].y);
-  assert.ok(branches[1].y + branches[1].height < branches[2].y);
+  const branchAngles = ['board-2', 'asset-1', 'virtual-1'].map((id) => byId.get(id)!.angle!);
+  assert.ok(Math.max(...branchAngles) - Math.min(...branchAngles) > Math.PI * 0.65);
+  assertNoNodeOverlap(layout.nodes);
   assert.deepEqual(buildElectricalTreeLayout(topology()), layout);
 });
 
-test('single-line schematic uses variable equipment footprints and orthogonal connectors', () => {
+test('balanced primary branches occupy all four quadrants around the incoming grid', () => {
+  const layout = buildElectricalTreeLayout(balancedBranchTopology());
+  const grid = layout.nodes.find((item) => item.node.id === 'grid-1')!;
+  const gridCenter = nodeCenter(grid);
+  const boards = layout.nodes.filter((item) => item.node.kind === 'BOARD');
+  const quadrants = new Set(boards.map((board) => {
+    const center = nodeCenter(board);
+    return `${Math.sign(center.x - gridCenter.x)},${Math.sign(center.y - gridCenter.y)}`;
+  }));
+
+  assert.equal(quadrants.size, 4);
+  assert.deepEqual([...new Set(boards.map((board) => board.presentationRing))], [1]);
+  assert.equal(new Set(boards.map((board) => board.branchId)).size, 4);
+  assertNoNodeOverlap(layout.nodes);
+});
+
+test('constellation uses compact equipment footprints and straight perimeter connectors', () => {
   const layout = buildElectricalTreeLayout(topology());
   const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
   const grid = byId.get('grid-1')!;
@@ -110,27 +212,36 @@ test('single-line schematic uses variable equipment footprints and orthogonal co
   assert.ok(board.width > asset.width);
   assert.ok(board.height > asset.height);
   assert.ok(residual.height < asset.height);
-  assert.ok(grid.x + grid.width < board.x);
+  assert.equal(grid.radialDistance, 0);
+  assert.ok((board.radialDistance || 0) < (asset.radialDistance || 0));
 
-  const supplyPath = electricalTreeOrthogonalPath(grid, board);
-  assert.match(supplyPath, /^M -?\d+(?:\.\d+)? -?\d+(?:\.\d+)? H -?\d+(?:\.\d+)? V -?\d+(?:\.\d+)? H -?\d+(?:\.\d+)?$/);
-  assert.doesNotMatch(supplyPath, /[CQ]/);
+  const supplyPath = electricalTreeStraightPath(grid, board);
+  assert.match(supplyPath, /^M -?\d+(?:\.\d+)? -?\d+(?:\.\d+)? L -?\d+(?:\.\d+)? -?\d+(?:\.\d+)?$/);
+  assert.doesNotMatch(supplyPath, /[CHVQ]/);
+  assert.equal(electricalTreeCurvedPath(grid, board), supplyPath);
+  assert.equal(electricalTreeOrthogonalPath(grid, board), supplyPath);
   assert.notEqual(
     supplyPath,
-    electricalTreeOrthogonalPath(grid, board, { sourceYOffset: 13, targetYOffset: 13, trunkRatio: 0.58 }),
+    electricalTreeStraightPath(grid, board, { sourceYOffset: 13, targetYOffset: 13 }),
   );
-  const selfMeasurementPath = electricalTreeOrthogonalPath(board, board, { sourceYOffset: 13 });
-  assert.match(selfMeasurementPath, /^M .+ H .+ V .+ H .+ V .+$/);
-  assert.doesNotMatch(selfMeasurementPath, /[CQ]/);
+  const selfMeasurementPath = electricalTreeStraightPath(board, board, { sourceYOffset: 13 });
+  assert.match(selfMeasurementPath, /^M .+ L .+$/);
+  assert.doesNotMatch(selfMeasurementPath, /[CHVQ]/);
 
-  for (const depth of new Set(layout.nodes.map((item) => item.depth))) {
-    const column = layout.nodes
-      .filter((item) => item.depth === depth)
-      .sort((left, right) => left.y - right.y);
-    for (let index = 1; index < column.length; index += 1) {
-      assert.ok(column[index - 1].y + column[index - 1].height < column[index].y);
-    }
-  }
+  const coordinates = (supplyPath.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  assert.equal(coordinates.length, 4);
+  assert.equal(pointIsOnNodePerimeter(grid, coordinates[0], coordinates[1]), true);
+  assert.equal(pointIsOnNodePerimeter(board, coordinates[2], coordinates[3]), true);
+
+  const coincidentBoard = {
+    ...board,
+    x: grid.x + (grid.width - board.width) / 2,
+    y: grid.y + (grid.height - board.height) / 2,
+  };
+  const coincidentPath = electricalTreeStraightPath(grid, coincidentBoard);
+  assert.match(coincidentPath, /^M .+ L .+$/);
+  assert.doesNotMatch(coincidentPath, /NaN|Infinity/);
+  assertNoNodeOverlap(layout.nodes);
 });
 
 test('variable-height sibling boards reserve enough branch space to avoid overlap', () => {
@@ -158,13 +269,15 @@ test('variable-height sibling boards reserve enough branch space to avoid overla
   const secondResidual = byId.get('residual-2')!;
 
   assert.equal(firstBoard.depth, secondBoard.depth);
-  assert.ok(firstBoard.y + firstBoard.height < secondBoard.y);
-  assert.ok(firstResidual.y + firstResidual.height < secondResidual.y);
-  assert.equal(firstBoard.y + firstBoard.height / 2, firstResidual.y + firstResidual.height / 2);
-  assert.equal(secondBoard.y + secondBoard.height / 2, secondResidual.y + secondResidual.height / 2);
+  assert.equal(firstBoard.presentationRing, secondBoard.presentationRing);
+  assert.equal(firstBoard.angle, firstResidual.angle);
+  assert.equal(secondBoard.angle, secondResidual.angle);
+  assert.ok((firstResidual.radialDistance || 0) > (firstBoard.radialDistance || 0));
+  assert.ok((secondResidual.radialDistance || 0) > (secondBoard.radialDistance || 0));
+  assertNoNodeOverlap(layout.nodes);
 });
 
-test('large terminal asset fan-outs pack into legible presentation lanes without changing semantic depth', () => {
+test('large terminal fan-outs form a non-overlapping local branch cluster without changing semantic depth', () => {
   const model = largeTerminalFanoutTopology();
   const layout = buildElectricalTreeLayout(model);
   const assets = layout.nodes.filter((item) => item.node.kind === 'SITE_ASSET');
@@ -172,43 +285,170 @@ test('large terminal asset fan-outs pack into legible presentation lanes without
 
   assert.equal(assets.length, 10);
   assert.deepEqual([...new Set(assets.map((item) => item.depth))], [2]);
-  assert.deepEqual([...new Set(assets.map((item) => item.presentationLane))], [0, 1]);
-  assert.ok(Math.max(...assets.map((item) => item.presentationRow || 0)) <= 4);
-  assert.ok(fitted.scale >= 0.6, `expected a legible overview scale, received ${fitted.scale}`);
-  assert.ok(8 * fitted.scale >= 4.8, 'compact labels should retain at least a 4.8px rendered overview size');
+  assert.deepEqual([...new Set(assets.map((item) => item.presentationRing))], [2]);
+  assert.deepEqual([...new Set(assets.map((item) => item.clusterParentId))], ['board-1']);
+  assert.deepEqual([...new Set(assets.map((item) => item.branchId))], ['board-1']);
+  assert.ok(fitted.scale >= 0.45, `expected a legible overview scale, received ${fitted.scale}`);
+  assert.ok(11 * fitted.scale >= 4.95, 'primary labels should retain at least a 4.95px rendered overview size');
 
-  for (let leftIndex = 0; leftIndex < assets.length; leftIndex += 1) {
-    for (let rightIndex = leftIndex + 1; rightIndex < assets.length; rightIndex += 1) {
-      const left = assets[leftIndex];
-      const right = assets[rightIndex];
-      const overlaps = left.x < right.x + right.width
-        && left.x + left.width > right.x
-        && left.y < right.y + right.height
-        && left.y + left.height > right.y;
-      assert.equal(overlaps, false, `${left.node.id} should not overlap ${right.node.id}`);
-    }
-  }
+  const grid = layout.nodes.find((item) => item.node.id === 'grid-1')!;
+  const gridCenter = nodeCenter(grid);
+  const quadrants = new Set(assets.map((asset) => {
+    const center = nodeCenter(asset);
+    return `${Math.sign(center.x - gridCenter.x)},${Math.sign(center.y - gridCenter.y)}`;
+  }));
+  assert.ok(quadrants.size >= 3);
+  assertNoNodeOverlap(layout.nodes);
 
-  const secondLaneAsset = assets.find((item) => item.presentationLane === 1)!;
+  const branchAsset = assets[assets.length - 1];
   const board = layout.nodes.find((item) => item.node.id === 'board-1')!;
-  const deeperLanePath = electricalTreeOrthogonalPath(board, secondLaneAsset);
-  assert.match(deeperLanePath, /^M .+ H .+ V .+ H .+ V .+$/);
-  const coordinates = (deeperLanePath.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
-  assert.equal(coordinates.length, 6);
-  const [, sourceY, trunkX, routeY, finalX] = coordinates;
-  const firstLaneAssets = assets.filter((item) => item.presentationLane === 0);
-  const firstLaneX = Math.min(...firstLaneAssets.map((item) => item.x));
-  const firstLaneRight = Math.max(...firstLaneAssets.map((item) => item.x + item.width));
-  assert.ok(trunkX > board.x + board.width && trunkX < firstLaneX);
-  assert.ok(sourceY > board.y && sourceY < board.y + board.height);
-  assert.ok(finalX > firstLaneRight);
-  for (const firstLaneAsset of firstLaneAssets) {
-    assert.ok(
-      routeY < firstLaneAsset.y || routeY > firstLaneAsset.y + firstLaneAsset.height,
-      `deeper-lane horizontal route should stay outside ${firstLaneAsset.node.id}`,
-    );
-  }
+  const branchPath = electricalTreeStraightPath(board, branchAsset);
+  assert.match(branchPath, /^M .+ L .+$/);
+  assert.equal((branchPath.match(/-?\d+(?:\.\d+)?/g) || []).length, 4);
   assert.deepEqual(buildElectricalTreeLayout(structuredClone(model)), layout);
+});
+
+test('multiple incoming grids are packed into separate centred constellation islands', () => {
+  const model: ElectricalTreeReadModel = {
+    installationId: 'installation-1',
+    treeRevision: 1,
+    nodes: [
+      { id: 'grid-a', kind: 'GRID', name: 'Grid A' },
+      { id: 'board-a', kind: 'BOARD', name: 'Board A' },
+      { id: 'asset-a', kind: 'SITE_ASSET', name: 'Load A' },
+      { id: 'grid-b', kind: 'GRID', name: 'Grid B' },
+      { id: 'board-b', kind: 'BOARD', name: 'Board B' },
+      { id: 'asset-b', kind: 'SITE_ASSET', name: 'Load B' },
+    ],
+    edges: [
+      { id: 'fed-a-1', sourceNodeId: 'grid-a', targetNodeId: 'board-a', relationship: 'FED_FROM' },
+      { id: 'fed-a-2', sourceNodeId: 'board-a', targetNodeId: 'asset-a', relationship: 'FED_FROM' },
+      { id: 'fed-b-1', sourceNodeId: 'grid-b', targetNodeId: 'board-b', relationship: 'FED_FROM' },
+      { id: 'fed-b-2', sourceNodeId: 'board-b', targetNodeId: 'asset-b', relationship: 'FED_FROM' },
+    ],
+    unresolved: [],
+  };
+  const layout = buildElectricalTreeLayout(model);
+  const gridA = layout.nodes.find((item) => item.node.id === 'grid-a')!;
+  const gridB = layout.nodes.find((item) => item.node.id === 'grid-b')!;
+
+  assert.notEqual(nodeCenter(gridA).x, nodeCenter(gridB).x);
+  assert.equal(nodeCenter(gridA).y, nodeCenter(gridB).y);
+  assertNoNodeOverlap(layout.nodes);
+});
+
+test('saved electrical map centres override automatic positions in a stable design canvas', () => {
+  const automatic = buildElectricalTreeLayout(topology());
+  const automaticDocument = electricalTreeMapLayoutDocument(automatic);
+  const board = automatic.nodes.find((item) => item.node.id === 'board-1')!;
+  const movedDocument = moveElectricalTreeMapLayoutNode(
+    automaticDocument,
+    board.node.id,
+    automaticDocument.canvas.width - board.width / 2,
+    board.height / 2,
+    board,
+  );
+  const arranged = applyElectricalTreeMapLayout(automatic, movedDocument);
+  const movedBoard = arranged.nodes.find((item) => item.node.id === board.node.id)!;
+
+  assert.equal(movedBoard.x + movedBoard.width / 2, movedDocument.canvas.width - board.width / 2);
+  assert.equal(movedBoard.y + movedBoard.height / 2, board.height / 2);
+  assert.equal(arranged.width, movedDocument.canvas.width);
+  assert.equal(arranged.height, movedDocument.canvas.height);
+  assert.notEqual(electricalTreeStraightPath(
+    arranged.nodes.find((item) => item.node.id === 'grid-1')!,
+    movedBoard,
+  ), electricalTreeStraightPath(
+    automatic.nodes.find((item) => item.node.id === 'grid-1')!,
+    board,
+  ));
+  assert.equal(electricalTreeMapLayoutsEqual(
+    electricalTreeMapLayoutDocument(arranged),
+    movedDocument,
+  ), true);
+});
+
+test('saved map application ignores removed IDs and leaves new topology nodes automatically placed', () => {
+  const original = buildElectricalTreeLayout(topology());
+  const originalDocument = electricalTreeMapLayoutDocument(original);
+  const changedModel = topology();
+  changedModel.nodes = changedModel.nodes.filter((node) => node.id !== 'asset-2');
+  changedModel.edges = changedModel.edges.filter((edge) => (
+    edge.sourceNodeId !== 'asset-2' && edge.targetNodeId !== 'asset-2'
+  ));
+  changedModel.nodes.push({ id: 'asset-new', kind: 'SITE_ASSET', name: 'New load' });
+  changedModel.edges.push({
+    id: 'fed-new',
+    sourceNodeId: 'board-2',
+    targetNodeId: 'asset-new',
+    relationship: 'FED_FROM',
+  });
+  const changedAutomatic = buildElectricalTreeLayout(changedModel);
+  const arranged = applyElectricalTreeMapLayout(changedAutomatic, {
+    ...originalDocument,
+    nodes: [
+      ...originalDocument.nodes,
+      { nodeId: 'removed-node', centerX: 12, centerY: 12 },
+    ],
+  });
+  const automaticNew = changedAutomatic.nodes.find((item) => item.node.id === 'asset-new')!;
+  const arrangedNew = arranged.nodes.find((item) => item.node.id === 'asset-new')!;
+
+  assert.deepEqual(
+    { x: arrangedNew.x, y: arrangedNew.y },
+    { x: automaticNew.x, y: automaticNew.y },
+  );
+  assert.equal(arranged.nodes.some((item) => item.node.id === 'removed-node'), false);
+  assert.equal(arranged.nodes.some((item) => item.node.id === 'asset-2'), false);
+});
+
+test('filtering an arranged map preserves complete-canvas coordinates', () => {
+  const complete = buildElectricalTreeLayout(topology());
+  const board = complete.nodes.find((item) => item.node.id === 'board-1')!;
+  const filtered = filterElectricalTreeLayout(complete, new Set(['grid-1', 'board-1']));
+
+  assert.equal(filtered.width, complete.width);
+  assert.equal(filtered.height, complete.height);
+  assert.deepEqual(filtered.nodes.map((item) => item.node.id), ['grid-1', 'board-1']);
+  assert.deepEqual(filtered.nodes.find((item) => item.node.id === 'board-1'), board);
+  assert.deepEqual(filtered.edges.map((edge) => edge.id), ['fed-1']);
+});
+
+test('pointer movement is converted from screen pixels to design coordinates at any zoom', () => {
+  assert.deepEqual(electricalTreePointerDelta(30, -20, 0.5), { x: 60, y: -40 });
+  assert.deepEqual(electricalTreePointerDelta(30, -20, 1), { x: 30, y: -20 });
+  assert.deepEqual(electricalTreePointerDelta(30, -20, 2), { x: 15, y: -10 });
+  assert.deepEqual(electricalTreePointerDelta(30, -20, 0), { x: 30, y: -20 });
+  assert.equal(electricalTreePointerDragStarted(3, 4), false);
+  assert.equal(electricalTreePointerDragStarted(3.6, 4.8), true);
+  assert.equal(electricalTreePointerDragStarted(Number.NaN, 10), false);
+});
+
+test('map layout documents are sorted, rounded, clamped, and compare by presentation fields', () => {
+  const automatic = buildElectricalTreeLayout(topology());
+  const document = electricalTreeMapLayoutDocument(automatic);
+  const board = automatic.nodes.find((item) => item.node.id === 'board-1')!;
+  const moved = moveElectricalTreeMapLayoutNode(document, 'board-1', -500, 50_000, board);
+  const movedBoard = moved.nodes.find((item) => item.nodeId === 'board-1')!;
+  const saved = {
+    ...moved,
+    nodes: [...moved.nodes].reverse(),
+    layoutRevision: 7,
+    updatedAt: '2026-08-09T00:00:00.000Z',
+  };
+
+  assert.deepEqual(document.nodes.map((item) => item.nodeId), [...document.nodes.map((item) => item.nodeId)].sort());
+  assert.equal(movedBoard.centerX, board.width / 2);
+  assert.equal(movedBoard.centerY, document.canvas.height - board.height / 2);
+  assert.equal(electricalTreeMapLayoutsEqual(moved, electricalTreeMapLayoutDraft(saved)), true);
+  assert.equal(
+    moveElectricalTreeMapLayoutNode(moved, 'missing', 10, 10, board),
+    moved,
+  );
+  assert.equal(
+    moveElectricalTreeMapLayoutNode(moved, 'board-1', Number.NaN, 10, board),
+    moved,
+  );
 });
 
 test('interactive electrical tree is stable across input order and draws only its chosen supply parent', () => {
@@ -233,8 +473,10 @@ test('interactive electrical tree is stable across input order and draws only it
   assert.equal(electricalTreeNodeContext(multiParentLayout, 'asset-1').parentId, 'grid-1');
   const multiParentById = new Map(multiParentLayout.nodes.map((item) => [item.node.id, item]));
   assert.equal(multiParentById.get('asset-1')?.depth, 1);
-  assert.equal(multiParentById.get('asset-1')?.x, multiParentById.get('board-1')?.x);
-  assert.ok(multiParentById.get('grid-1')!.x < multiParentById.get('asset-1')!.x);
+  assert.equal(multiParentById.get('asset-1')?.presentationRing, 1);
+  assert.equal(multiParentById.get('board-1')?.presentationRing, 1);
+  assert.notEqual(multiParentById.get('asset-1')?.branchId, multiParentById.get('board-1')?.branchId);
+  assertNoNodeOverlap(multiParentLayout.nodes);
 });
 
 test('interactive electrical tree context separates supply descendants from measurement overlays', () => {

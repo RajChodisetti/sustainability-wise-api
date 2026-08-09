@@ -44,6 +44,14 @@ import {
   meterHistoryStateHash,
   restoreMeterFromHistory,
 } from './meterHistory.js';
+import {
+  clientElectricalMapNodeIds,
+  electricalMapLayoutMatchesNodeIds,
+  validateElectricalMapLayout,
+  validStoredElectricalMapLayout,
+  type ElectricalMapLayoutDocument,
+  type SavedElectricalMapLayout,
+} from './electricalMapLayout.js';
 
 function positiveVersion(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -54,10 +62,10 @@ function positiveVersion(value: unknown): number | undefined {
   return parsed;
 }
 
-function nonNegativeRevision(value: unknown): number {
+function nonNegativeRevision(value: unknown, label = 'baseTreeRevision'): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
-    throw badRequest('baseTreeRevision must be a non-negative integer');
+    throw badRequest(`${label} must be a non-negative integer`);
   }
   return parsed;
 }
@@ -824,15 +832,167 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
     return reply.send(result);
   });
 
+  app.put('/:installationId/electrical-map-layout', {
+    ...protectedRoute,
+    schema: {
+      ...protectedRoute.schema,
+      summary: 'Save the client-facing electrical map arrangement',
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['baseTreeRevision', 'baseLayoutRevision', 'layout'],
+        properties: {
+          baseTreeRevision: { type: 'integer', minimum: 0 },
+          baseLayoutRevision: { type: 'integer', minimum: 0 },
+          layout: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['version', 'canvas', 'nodes'],
+            properties: {
+              version: { type: 'integer', const: 1 },
+              canvas: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['width', 'height'],
+                properties: {
+                  width: { type: 'number', minimum: 320, maximum: 20_000 },
+                  height: { type: 'number', minimum: 320, maximum: 20_000 },
+                },
+              },
+              nodes: {
+                type: 'array',
+                minItems: 1,
+                maxItems: 2_000,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['nodeId', 'centerX', 'centerY'],
+                  properties: {
+                    nodeId: { type: 'string', minLength: 1, maxLength: 256 },
+                    centerX: { type: 'number', minimum: 0, maximum: 20_000 },
+                    centerY: { type: 'number', minimum: 0, maximum: 20_000 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { installationId } = request.params as { installationId: string };
+    const body = request.body as {
+      baseTreeRevision: unknown;
+      baseLayoutRevision: unknown;
+      layout: unknown;
+    };
+    const baseTreeRevision = nonNegativeRevision(body.baseTreeRevision);
+    const baseLayoutRevision = nonNegativeRevision(
+      body.baseLayoutRevision,
+      'baseLayoutRevision',
+    );
+    let layout: ElectricalMapLayoutDocument;
+    try {
+      layout = validateElectricalMapLayout(body.layout);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : 'electrical map layout is invalid');
+    }
+
+    const result = await db.transaction(async (tx) => {
+      const [installation] = await tx.select().from(ihInstallations).where(and(
+        eq(ihInstallations.id, installationId),
+        isNull(ihInstallations.deletedAt),
+      )).for('update');
+      if (!installation) throw notFound('Installation');
+      assertInstallationAccess(installation, request.user);
+      if (installation.treeSchemaVersion < 2) throw conflict('upgrade_required');
+      if (installation.status === 'Completed') {
+        throw conflict('installation_completed_reopen_required');
+      }
+      if (installation.treeRevision !== baseTreeRevision) throw conflict('snapshot_conflict');
+      if (installation.electricalMapLayoutRevision !== baseLayoutRevision) {
+        throw conflict('electrical_map_layout_conflict');
+      }
+      const tree = await loadCanonicalInstallationTree(installationId, tx);
+      if (!tree) throw notFound('Installation');
+      const electricalTree = buildElectricalTreeView(
+        tree,
+        tree.installation.recordVersionNumber,
+      );
+      const currentNodeIds = clientElectricalMapNodeIds(electricalTree);
+      if (!electricalMapLayoutMatchesNodeIds(layout, currentNodeIds)) {
+        throw badRequest('layout nodes must exactly match the current client electrical map');
+      }
+      const existingLayout = validStoredElectricalMapLayout(installation.electricalMapLayout);
+      if (existingLayout && JSON.stringify(existingLayout) === JSON.stringify(layout)) {
+        return {
+          installationId,
+          treeRevision: installation.treeRevision,
+          mapLayout: {
+            ...existingLayout,
+            layoutRevision: installation.electricalMapLayoutRevision,
+            ...(installation.electricalMapLayoutUpdatedAt
+              ? { updatedAt: installation.electricalMapLayoutUpdatedAt.toISOString() }
+              : {}),
+          },
+        };
+      }
+
+      const changedAt = new Date();
+      const nextTreeRevision = installation.treeRevision + 1;
+      const nextLayoutRevision = installation.electricalMapLayoutRevision + 1;
+      const [updated] = await tx.update(ihInstallations).set({
+        electricalMapLayout: layout,
+        electricalMapLayoutRevision: nextLayoutRevision,
+        electricalMapLayoutUpdatedAt: changedAt,
+        treeRevision: nextTreeRevision,
+        updatedAt: changedAt,
+        syncStatus: 'synced',
+      }).where(and(
+        eq(ihInstallations.id, installationId),
+        eq(ihInstallations.treeRevision, baseTreeRevision),
+        eq(ihInstallations.electricalMapLayoutRevision, baseLayoutRevision),
+        eq(ihInstallations.status, 'Draft'),
+        isNull(ihInstallations.deletedAt),
+      )).returning();
+      if (!updated) throw conflict('snapshot_conflict');
+      return {
+        installationId,
+        treeRevision: nextTreeRevision,
+        mapLayout: {
+          ...layout,
+          layoutRevision: nextLayoutRevision,
+          updatedAt: changedAt.toISOString(),
+        },
+      };
+    });
+    return reply.send(result);
+  });
+
   app.get('/:installationId/electrical-tree', protectedRoute, async (request, reply) => {
     const { installationId } = request.params as { installationId: string };
     await accessibleInstallation(installationId, request.user);
     const requested = positiveVersion((request.query as { recordVersionNumber?: unknown }).recordVersionNumber);
     const selected = await selectedTree({ installationId, recordVersionNumber: requested });
-    return reply.send(
-      selected.snapshot?.viewArtifacts.electricalTree
-      ?? buildElectricalTreeView(selected.tree, selected.recordVersionNumber),
+    const view = selected.snapshot?.viewArtifacts.electricalTree
+      ?? buildElectricalTreeView(selected.tree, selected.recordVersionNumber);
+    const storedLayout = validStoredElectricalMapLayout(
+      selected.tree.installation.electricalMapLayout,
     );
+    const clientNodeIds = clientElectricalMapNodeIds(view);
+    const mapLayout: SavedElectricalMapLayout | undefined = storedLayout
+      && electricalMapLayoutMatchesNodeIds(storedLayout, clientNodeIds) ? {
+          ...storedLayout,
+          layoutRevision: selected.tree.installation.electricalMapLayoutRevision ?? 0,
+          ...(selected.tree.installation.electricalMapLayoutUpdatedAt
+            ? { updatedAt: selected.tree.installation.electricalMapLayoutUpdatedAt }
+            : {}),
+        }
+      : undefined;
+    return reply.send({
+      ...view,
+      ...(mapLayout ? { mapLayout } : {}),
+    });
   });
 
   app.get('/:installationId/all-assets', protectedRoute, async (request, reply) => {

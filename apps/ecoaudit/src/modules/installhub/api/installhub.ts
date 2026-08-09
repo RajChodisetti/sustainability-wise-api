@@ -8,6 +8,8 @@ import type {
   InstallationMappingExport,
   InstallationReadiness,
   InstallationTree,
+  ElectricalMapLayoutDocument,
+  SavedElectricalMapLayout,
   InstallationVersionRecord,
   InstallationVersionSummary,
   InstallHubExportJob,
@@ -239,6 +241,27 @@ export function getInstallationElectricalTree(
   );
 }
 
+export type SaveElectricalMapLayoutResult = {
+  installationId: string;
+  treeRevision: number;
+  mapLayout: SavedElectricalMapLayout;
+};
+
+export function saveInstallationElectricalMapLayout(
+  installationId: string,
+  input: {
+    baseTreeRevision: number;
+    baseLayoutRevision: number;
+    layout: ElectricalMapLayoutDocument;
+  },
+): Promise<SaveElectricalMapLayoutResult> {
+  return installHubRequest(
+    'PUT',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/electrical-map-layout`,
+    input,
+  );
+}
+
 export async function uploadInstallationPhoto(
   tree: InstallationTree,
   identity: PhotoIdentity,
@@ -375,7 +398,7 @@ export function matchesInstallHubReportProvenance(
   );
 }
 
-export const INSTALLHUB_REPORT_RENDERER_VERSION = 3;
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 4;
 
 export function installHubReportVariantKey(input: {
   detailMode: InstallHubReportDetailMode;

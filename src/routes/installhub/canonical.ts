@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
+import {
+  validStoredElectricalMapLayout,
+  type ElectricalMapLayoutDocument,
+} from './electricalMapLayout.js';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.7';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.8';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.3-tbc-only';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
 export const DISPLAY_CODE_RULE_VERSION = 4;
@@ -108,6 +112,9 @@ export type CanonicalInstallation = {
   treeSchemaVersion: 2;
   treeRevision: number;
   recordVersionNumber: number;
+  electricalMapLayout?: ElectricalMapLayoutDocument;
+  electricalMapLayoutRevision?: number;
+  electricalMapLayoutUpdatedAt?: string | null;
   createdByUserId?: string | null;
   assignedInspectorUserId?: string | null;
   completedAt?: string | null;
@@ -901,6 +908,7 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
   // the canonicalizer itself must remain able to read, hash, complete and
   // exactly replay a non-empty historical value without renaming display-code
   // identity underneath it.
+  const electricalMapLayout = validStoredElectricalMapLayout(item.electricalMapLayout);
   return {
     id: requiredText(item.id, 'installation.id'),
     externalKey: requiredText(item.externalKey, 'installation.externalKey'),
@@ -915,6 +923,19 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     treeSchemaVersion: 2,
     treeRevision: requiredInteger(item.treeRevision, 'installation.treeRevision'),
     recordVersionNumber: requiredInteger(item.recordVersionNumber, 'installation.recordVersionNumber'),
+    ...(electricalMapLayout
+      ? {
+          electricalMapLayout,
+          electricalMapLayoutRevision: item.electricalMapLayoutRevision == null
+            ? 0
+            : integer(
+                item.electricalMapLayoutRevision,
+                0,
+                'installation.electricalMapLayoutRevision',
+              ),
+          electricalMapLayoutUpdatedAt: iso(item.electricalMapLayoutUpdatedAt),
+        }
+      : {}),
     createdByUserId: optionalText(item.createdByUserId),
     assignedInspectorUserId: optionalText(item.assignedInspectorUserId),
     completedAt: iso(item.completedAt),
@@ -2313,6 +2334,9 @@ export function canonicalOrderInstallationTree(
   }));
   tree.serverDerived.virtualMeterDefinitions.sort((left, right) => left.id.localeCompare(right.id));
   tree.serverDerived.virtualMeterDefinitions.forEach((definition) => definition.subtractAssignmentIds.sort());
+  tree.installation.electricalMapLayout?.nodes.sort((left, right) => (
+    left.nodeId.localeCompare(right.nodeId)
+  ));
   return tree;
 }
 

@@ -407,6 +407,24 @@ test('portal writes strip server-owned virtual definitions without mutating the 
   assert.equal(tree.serverDerived.virtualMeterDefinitions.length, 1);
 });
 
+test('ordinary tree sync omits the endpoint-owned electrical map arrangement', () => {
+  const tree = fixtureTree();
+  tree.installation.electricalMapLayout = {
+    version: 1,
+    canvas: { width: 1_000, height: 700 },
+    nodes: [{ nodeId: 'grid-a', centerX: 500, centerY: 350 }],
+  };
+  tree.installation.electricalMapLayoutRevision = 2;
+  tree.installation.electricalMapLayoutUpdatedAt = '2026-08-09T12:00:00.000Z';
+
+  const wire = serializeInstallationTree(tree);
+  const installation = wire.installation as Record<string, unknown>;
+  assert.equal(installation.electricalMapLayout, undefined);
+  assert.equal(installation.electricalMapLayoutRevision, undefined);
+  assert.equal(installation.electricalMapLayoutUpdatedAt, undefined);
+  assert.ok(tree.installation.electricalMapLayout);
+});
+
 test('fresh portal forms serialize an explicit non-historical meter marker', () => {
   const tree = fixtureTree();
   const form = createFormSubmission(tree, 'ww-installation', user, {

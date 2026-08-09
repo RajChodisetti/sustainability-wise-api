@@ -89,9 +89,42 @@ type FormRow = typeof ihFormSubmissions.$inferSelect;
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type ReportMode = 'form' | 'installation-pack';
 
-export const INSTALLHUB_REPORT_RENDERER_VERSION = 3;
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 4;
 export const DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE: InstallHubReportDetailMode =
   'by-electrical-hierarchy';
+
+const INSTALLHUB_CHANNEL_LOAD_LABELS: Record<string, string> = {
+  PV: 'Solar / PV',
+  HVAC: 'AC / HVAC',
+  LIGHTING: 'Lighting',
+  EV_CHARGER: 'EV charger',
+  VEHICLE_HOIST: 'Vehicle hoist',
+  FORKLIFT: 'Forklift charger',
+  EXHAUST_FAN_SYSTEM: 'Exhaust / fan system',
+  POWER_OUTLET: 'Power outlet',
+  HEATER_GEYSER: 'Heater / geyser',
+  REFRIGERATION: 'Refrigeration',
+  COMPRESSED_AIR: 'Compressed air',
+};
+
+/** Client-facing load label for the PDF map and meter/channel schedule. */
+export function installHubChannelLoadLabel(channel: {
+  purpose: string;
+  loadTypeCode?: string | null;
+  customLoadTypeName?: string | null;
+}): string {
+  if (channel.purpose === 'SPARE') return 'Spare / not used';
+  const custom = channel.customLoadTypeName?.trim();
+  if (custom) return custom;
+  const code = channel.loadTypeCode?.trim();
+  if (code && code !== 'OTHER') {
+    return INSTALLHUB_CHANNEL_LOAD_LABELS[code]
+      ?? code.replaceAll('_', ' ').toLowerCase().replace(/^./, (value) => value.toUpperCase());
+  }
+  if (code === 'OTHER') return 'Other load';
+  if (channel.purpose === 'MAIN_SUPPLY') return 'Main supply';
+  return 'Unclassified load';
+}
 
 export function requestedReportDetailMode(value: unknown): InstallHubReportDetailMode {
   if (value === undefined || value === null || value === '') {
@@ -189,6 +222,9 @@ function canonicalReportProjection(input: {
     authoritative: input.reportSource === 'canonical-version'
       && input.readiness.eligibility.authoritativeReport,
     readyToComplete: input.readiness.readyToComplete,
+    ...(input.tree.installation.electricalMapLayout
+      ? { electricalMapLayout: input.tree.installation.electricalMapLayout }
+      : {}),
     physicalLocations: input.tree.zones.map((zone) => ({
       id: zone.id,
       name: zone.zoneName,
@@ -199,6 +235,7 @@ function canonicalReportProjection(input: {
       kind: node.kind,
       name: node.name,
       ...('displayCode' in node ? { displayCode: node.displayCode } : {}),
+      ...('typeCode' in node ? { typeCode: node.typeCode } : {}),
       ...('typeLabel' in node ? { typeLabel: node.typeLabel } : {}),
       ...('physicalLocationId' in node
         ? { physicalLocationId: node.physicalLocationId }
@@ -232,9 +269,12 @@ function canonicalReportProjection(input: {
       ...(meter.deviceNumber ? { deviceNumber: meter.deviceNumber } : {}),
       ...(meter.serialNumber ? { serialNumber: meter.serialNumber } : {}),
       channels: meter.channels.map((channel) => ({
+        id: channel.id,
         ordinal: channel.ordinal,
         purpose: channel.purpose,
-        load: channel.customLoadTypeName || channel.loadTypeCode || '',
+        load: installHubChannelLoadLabel(channel),
+        ...(channel.phaseLabel ? { phaseLabel: channel.phaseLabel } : {}),
+        ...(channel.sensorRating ? { sensorRating: channel.sensorRating } : {}),
         ...(channel.description ? { description: channel.description } : {}),
       })),
     })),
@@ -258,10 +298,16 @@ function canonicalReportProjection(input: {
     })),
     meteringRows: input.metering.rows.map((row) => ({
       assignmentId: row.assignmentId,
+      meterId: row.meterId,
+      channelId: row.channelId,
       meterDisplayName: row.meterDisplayName,
       channelOrdinal: row.channelOrdinal,
+      channelPurpose: row.channelPurpose,
+      channelDescription: row.channelDescription,
+      phaseMode: row.phaseMode,
       target: row.target,
       direction: row.direction,
+      status: row.status,
     })),
     virtualMeterDefinitions: input.tree.serverDerived.virtualMeterDefinitions.map((definition) => ({
       id: definition.id,

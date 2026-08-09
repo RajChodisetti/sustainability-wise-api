@@ -10,6 +10,7 @@ import {
   getInstallationReadiness,
   getInstallationTree,
   listInstallationTrees,
+  saveInstallationElectricalMapLayout,
   saveInstallationTree,
   type MeterRemovalResult,
 } from '@/modules/installhub/api/installhub';
@@ -25,7 +26,13 @@ import {
 } from '@/modules/installhub/lib/workflow';
 import { isUserDeferredReadinessIssue } from '@/modules/installhub/lib/readinessPresentation';
 import { InstallHubApiError } from '@/modules/installhub/api/client';
-import type { InstallationTree, ReadinessIssue } from '@/modules/installhub/types/domain';
+import type {
+  ElectricalMapLayoutDocument,
+  ElectricalTreeReadModel,
+  InstallationTree,
+  ReadinessIssue,
+  SavedElectricalMapLayout,
+} from '@/modules/installhub/types/domain';
 
 export const installationTreesKey = ['installhub', 'installations'] as const;
 export const INSTALLHUB_TREES_QUERY_KEY = installationTreesKey;
@@ -205,6 +212,69 @@ export function useInstallationElectricalTree(
       }
     },
   });
+}
+
+export function useElectricalMapLayoutWriter(installationId: string) {
+  const queryClient = useQueryClient();
+  return useCallback(async (
+    layout: ElectricalMapLayoutDocument,
+    baseTreeRevision: number,
+    baseLayoutRevision: number,
+  ): Promise<SavedElectricalMapLayout> => {
+    const electricalKey = installationElectricalTreeKey(installationId);
+    const treeKey = installationTreeKey(installationId);
+    await Promise.all([
+      queryClient.cancelQueries({ queryKey: electricalKey, exact: true }),
+      queryClient.cancelQueries({ queryKey: treeKey, exact: true }),
+    ]);
+    let result;
+    try {
+      result = await saveInstallationElectricalMapLayout(installationId, {
+        baseTreeRevision,
+        baseLayoutRevision,
+        layout,
+      });
+    } catch (error) {
+      if (error instanceof InstallHubApiError && error.status === 409) {
+        await Promise.allSettled([
+          queryClient.refetchQueries({ queryKey: electricalKey, exact: true, type: 'active' }),
+          queryClient.refetchQueries({ queryKey: treeKey, exact: true, type: 'active' }),
+        ]);
+      }
+      throw error;
+    }
+    queryClient.setQueryData<ElectricalTreeReadModel>(
+      installationElectricalTreeKey(installationId),
+      (current) => current ? {
+        ...current,
+        treeRevision: result.treeRevision,
+        mapLayout: result.mapLayout,
+      } : current,
+    );
+    queryClient.setQueryData<InstallationTree>(
+      installationTreeKey(installationId),
+      (current) => current ? {
+        ...current,
+        treeRevision: result.treeRevision,
+        baseTreeRevision: result.treeRevision,
+        installation: {
+          ...current.installation,
+          treeRevision: result.treeRevision,
+          electricalMapLayout: {
+            version: result.mapLayout.version,
+            canvas: result.mapLayout.canvas,
+            nodes: result.mapLayout.nodes,
+          },
+          electricalMapLayoutRevision: result.mapLayout.layoutRevision,
+          electricalMapLayoutUpdatedAt: result.mapLayout.updatedAt ?? null,
+        },
+      } : current,
+    );
+    void queryClient.invalidateQueries({ queryKey: installationTreesKey });
+    void queryClient.invalidateQueries({ queryKey: electricalKey, exact: true });
+    void queryClient.invalidateQueries({ queryKey: treeKey, exact: true });
+    return result.mapLayout;
+  }, [installationId, queryClient]);
 }
 
 export type TreeWritePhase = 'saved' | 'saving' | 'failed' | 'conflict';

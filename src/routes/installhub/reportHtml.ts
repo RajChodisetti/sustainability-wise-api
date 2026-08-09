@@ -9,6 +9,7 @@ import {
   renderPdfEquipmentIcon,
   type PdfEquipmentIconName,
 } from '../../pdf/equipmentIcons.js';
+import type { ElectricalMapLayoutDocument } from './electricalMapLayout.js';
 
 export const INSTALLHUB_LARGE_REPORT_PHOTO_COUNT = 120;
 export const INSTALLHUB_LARGE_REPORT_RAW_BYTES = 120 * 1024 * 1024;
@@ -92,6 +93,7 @@ export type InstallHubCanonicalReport = {
   mappingContentHash: string | null;
   authoritative: boolean;
   readyToComplete: boolean;
+  electricalMapLayout?: ElectricalMapLayoutDocument;
   physicalLocations: Array<{
     id: string;
     name: string;
@@ -102,6 +104,7 @@ export type InstallHubCanonicalReport = {
     kind: string;
     name: string;
     displayCode?: string;
+    typeCode?: string;
     typeLabel?: string;
     physicalLocationId?: string;
     coverageState?: string;
@@ -125,9 +128,12 @@ export type InstallHubCanonicalReport = {
     deviceNumber?: string;
     serialNumber?: string;
     channels: Array<{
+      id?: string;
       ordinal: number;
       purpose: string;
       load: string;
+      phaseLabel?: string;
+      sensorRating?: string;
       description?: string;
     }>;
   }>;
@@ -151,10 +157,16 @@ export type InstallHubCanonicalReport = {
   }>;
   meteringRows: Array<{
     assignmentId: string;
+    meterId?: string;
+    channelId?: string;
     meterDisplayName: string;
     channelOrdinal: number | null;
+    channelPurpose?: string | null;
+    channelDescription?: string | null;
+    phaseMode?: string;
     target: unknown;
     direction: string;
+    status?: string;
   }>;
   virtualMeterDefinitions: Array<{
     id: string;
@@ -636,6 +648,10 @@ function installationCoverHtml(
 function reportCss(): string {
   return `
 @page{size:A4;background:#FFFFFF;}
+/* The pictorial electrical overview is inherently landscape. Its own named page
+   keeps the constellation and labels comfortably readable; a renderer without named-page
+   support simply keeps the portrait page it produces today. */
+@page electricalmap{size:A4 landscape;background:#FFFFFF;}
 *{box-sizing:border-box;}
 html,body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
 body{margin:0;color:#1E293B;background:#FFFFFF;font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue",Arial,sans-serif;font-size:10pt;line-height:1.45;}
@@ -690,13 +706,15 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .canonical-table{width:100%;border-collapse:collapse;font-size:7.5pt;margin:7px 0 14px;}
 .canonical-table th,.canonical-table td{border:1px solid #CBD5E1;padding:5px 7px;text-align:left;vertical-align:top;overflow-wrap:anywhere;}
 .canonical-table th{color:#1E3A8A;background:#EFF6FF;font-weight:800;text-transform:uppercase;letter-spacing:.04em;}
+.meter-channel-schedule tbody tr{page-break-inside:avoid;break-inside:avoid;}
+.meter-channel-schedule small{display:block;margin-top:2px;color:#64748B;font-size:6.7pt;line-height:1.3;}
 .canonical-meta{padding:8px 10px;background:#F8FAFC;border:1px solid #CBD5E1;font-size:7.5pt;overflow-wrap:anywhere;}
-.electrical-map{margin-top:18px;}
+.electrical-map{page:electricalmap;page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
 .electrical-map-frame{margin:8px 0 14px;padding:8px;border:1px solid #CBD5E1;border-radius:7px;background:#FFFFFF;page-break-inside:avoid;break-inside:avoid;}
-.electrical-map-frame img{display:block;width:100%;height:auto;max-height:620px;object-fit:contain;}
+.electrical-map-frame img{display:block;width:100%;height:auto;max-height:555px;object-fit:contain;}
 .electrical-map-caption{margin-top:5px;color:#64748B;font-size:7pt;line-height:1.35;}
-.electrical-map-detail{page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
-.electrical-map-detail .electrical-map-frame img{max-height:680px;}
+.electrical-map-detail{page:electricalmap;page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
+.electrical-map-detail .electrical-map-frame img{max-height:585px;}
 .electrical-map-segment-label{font-weight:800;color:#1E3A8A;}
 .detail-group{margin:0 0 13px;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 7px 7px 0;page-break-inside:auto;break-inside:auto;}
 .detail-group-title{padding:7px 10px;background:#EFF6FF;color:#1E3A8A;font-size:9pt;font-weight:900;page-break-after:avoid;break-after:avoid;}
@@ -729,6 +747,90 @@ function reportTargetNodeId(value: unknown): string | null {
   return null;
 }
 
+function readableReportCode(value: string): string {
+  return value.replaceAll('_', ' ').toLowerCase().replace(/^./, (character) => (
+    character.toUpperCase()
+  ));
+}
+
+function reportChannelSummary(
+  channel: InstallHubCanonicalReport['meters'][number]['channels'][number],
+): string {
+  const context = [
+    channel.load || (channel.purpose === 'SPARE' ? 'Spare / not used' : 'Unclassified load'),
+    channel.description,
+  ].filter(Boolean).join(' - ');
+  const phase = channel.phaseLabel ? ` - phase ${channel.phaseLabel}` : '';
+  return `Ch ${channel.ordinal}${phase}${context ? ` - ${context}` : ''}`;
+}
+
+function reportNodeDisplayName(report: InstallHubCanonicalReport, nodeId: string): string {
+  const node = report.electricalNodes.find((candidate) => candidate.id === nodeId);
+  return node ? `${node.displayCode ? `${node.displayCode} - ` : ''}${node.name}` : nodeId;
+}
+
+function meterChannelScheduleHtml(report: InstallHubCanonicalReport): string {
+  if (!report.meters.length) {
+    return '<p class="canonical-meta">No meter devices or channels are recorded for this report source.</p>';
+  }
+  const meters = report.meters.slice().sort((left, right) => (
+    left.installedOnBoardId.localeCompare(right.installedOnBoardId)
+      || left.name.localeCompare(right.name)
+      || left.id.localeCompare(right.id)
+  ));
+  const rows = meters.flatMap((meter) => {
+    const meterMeta = [
+      meter.model,
+      meter.deviceNumber ? `Device ${meter.deviceNumber}` : '',
+      meter.serialNumber ? `Serial ${meter.serialNumber}` : '',
+    ].filter(Boolean).join(' - ');
+    const meterCell = `<strong>${escapeHtml(meter.name)}</strong><small>${escapeHtml(meterMeta)}</small>`;
+    const boardCell = escapeHtml(reportNodeDisplayName(report, meter.installedOnBoardId));
+    if (!meter.channels.length) {
+      return [`<tr data-meter-id="${escapeHtml(meter.id)}"><td>${meterCell}</td><td>${boardCell}</td><td colspan="3">No channels configured.</td></tr>`];
+    }
+    return meter.channels
+      .slice()
+      .sort((left, right) => left.ordinal - right.ordinal)
+      .map((channel) => {
+        const allocations = report.meteringRows.filter((row) => {
+          const meterMatches = row.meterId
+            ? row.meterId === meter.id
+            : row.meterDisplayName === meter.name;
+          if (!meterMatches) return false;
+          return row.channelId && channel.id
+            ? row.channelId === channel.id
+            : row.channelOrdinal === channel.ordinal;
+        }).map((row) => {
+          const targetId = reportTargetNodeId(row.target);
+          const target = targetId ? reportNodeDisplayName(report, targetId) : 'Unresolved target';
+          const state = [
+            readableReportCode(row.direction),
+            row.phaseMode ? readableReportCode(row.phaseMode) : '',
+            row.status ? readableReportCode(row.status) : '',
+          ].filter(Boolean).join(' - ');
+          return `${target}${state ? ` (${state})` : ''}`;
+        });
+        const uniqueAllocations = [...new Set(allocations)];
+        const allocationText = uniqueAllocations.length
+          ? uniqueAllocations.join('; ')
+          : channel.purpose === 'SPARE'
+            ? 'Not used (spare)'
+            : 'Unassigned active channel';
+        const channelMeta = [
+          readableReportCode(channel.purpose),
+          channel.phaseLabel ? `Phase ${channel.phaseLabel}` : '',
+          channel.sensorRating ? `Sensor ${channel.sensorRating}` : '',
+        ].filter(Boolean).join(' - ');
+        const load = channel.load || (channel.purpose === 'SPARE'
+          ? 'Spare / not used'
+          : 'Unclassified load');
+        return `<tr data-meter-id="${escapeHtml(meter.id)}" data-meter-channel-id="${escapeHtml(channel.id ?? `${meter.id}:channel:${channel.ordinal}`)}"><td>${meterCell}</td><td>${boardCell}</td><td><strong>Ch ${channel.ordinal}</strong><small>${escapeHtml(channelMeta)}</small></td><td><strong>${escapeHtml(load)}</strong>${channel.description ? `<small>${escapeHtml(channel.description)}</small>` : ''}</td><td>${escapeHtml(allocationText)}</td></tr>`;
+      });
+  }).join('');
+  return `<table class="canonical-table meter-channel-schedule"><colgroup><col style="width:18%"/><col style="width:24%"/><col style="width:13%"/><col style="width:17%"/><col style="width:28%"/></colgroup><thead><tr><th>Meter</th><th>Installed at</th><th>Channel</th><th>Electrical load</th><th>Recorded allocation</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function reportNodeIcon(node: InstallHubCanonicalReport['electricalNodes'][number]): PdfEquipmentIconName {
   if (node.kind === 'BOARD') return 'switchboard';
   if (node.kind === 'GRID' || node.kind === 'VIRTUAL_RESIDUAL') return 'electricity';
@@ -751,30 +853,39 @@ function reportNodeSummary(
     ? report.physicalLocations.find((zone) => zone.id === node.physicalLocationId)?.name
     : undefined;
   const meters = report.meters.filter((meter) => meter.installedOnBoardId === node.id);
-  const measuredBy = report.meteringRows.filter((row) => reportTargetNodeId(row.target) === node.id);
+  const measuredBy = report.meteringRows.filter((row) => (
+    (!row.status || row.status === 'CONFIRMED')
+      && reportTargetNodeId(row.target) === node.id
+  ));
   const icon = renderPdfEquipmentIcon(reportNodeIcon(node));
-  const channelSummary = (channel: InstallHubCanonicalReport['meters'][number]['channels'][number]) => {
-    const context = [channel.load, channel.description].filter(Boolean).join(' - ');
-    return `${channel.ordinal}${context ? ` (${context})` : ''}`;
-  };
   const meterText = meters.map((meter) => {
     const channels = meter.channels
       .filter((channel) => channel.purpose !== 'SPARE')
-      .map(channelSummary)
+      .map(reportChannelSummary)
       .join(', ');
     return `${meter.name} - ${meter.model}${channels ? ` - channels ${channels}` : ''}`;
   }).join('; ');
   const measuredText = measuredBy.map((row) => {
-    const meter = report.meters.find((candidate) => candidate.name === row.meterDisplayName);
+    const meter = report.meters.find((candidate) => (
+      row.meterId ? candidate.id === row.meterId : candidate.name === row.meterDisplayName
+    ));
     const channel = row.channelOrdinal === null
       ? undefined
-      : meter?.channels.find((candidate) => candidate.ordinal === row.channelOrdinal);
+      : meter?.channels.find((candidate) => (
+          row.channelId && candidate.id
+            ? candidate.id === row.channelId
+            : candidate.ordinal === row.channelOrdinal
+        ));
     const measuredChannel = row.channelOrdinal === null
       ? ''
-      : ` channel ${channel ? channelSummary(channel) : row.channelOrdinal}`;
+      : ` ${channel ? reportChannelSummary(channel) : `Ch ${row.channelOrdinal}`}`;
     return `${row.meterDisplayName}${measuredChannel}`;
   }).join('; ');
-  const typeAndCoverage = [node.typeLabel, node.coverageState].filter(Boolean).join(' - ');
+  const typeAndCoverage = [
+    node.kind === 'SITE_ASSET' ? 'Connected load' : '',
+    node.typeLabel,
+    node.coverageState,
+  ].filter(Boolean).join(' - ');
   return `<div class="detail-row" data-electrical-node-id="${escapeHtml(node.id)}">
     <div class="detail-icon">${icon}</div>
     <div class="detail-main"><span class="hierarchy-indent" style="width:${Math.min(depth, 8) * 12}px"></span>${escapeHtml(node.displayCode || node.name)}${node.displayCode ? `<small>${escapeHtml(node.name)}</small>` : ''}</div>
@@ -922,7 +1033,7 @@ function installationDetailsHtml(
     ? `<div class="electrical-map">
         <div class="section-bar">Installation electrical map</div>
         <div class="electrical-map-frame"><img src="${escapeHtml(electricalMapImages.overviewDataUri)}" alt="Complete electrical supply, metering and connected load overview" /></div>
-        <p class="electrical-map-caption">Solid copper lines show electrical supply. Blue dashed lines show measurements. Grey dotted lines show calculated residual relationships. Device names and active channel numbers are shown on their installed switchboards.${detailPagesCapped ? ` This complete overview is retained; visual detail pages are capped at ${electricalMapImages.detailTiles.length} representative windows from ${electricalMapImages.totalDetailWindows}.` : ''}</p>
+        <p class="electrical-map-caption">This client-facing overview uses the saved electrical map arrangement when one has been prepared; otherwise it uses the automatic grid-centred arrangement. Straight copper lines show where power comes from, grey dotted lines show calculated residual relationships, and each board keeps its installed meters close by with active channel and load labels. Every connected load carries its own pictogram, name, location, coverage and confirmed meter/channel allocation.${detailPagesCapped ? ` This complete overview is retained; visual detail pages are capped at ${electricalMapImages.detailTiles.length} representative windows from ${electricalMapImages.totalDetailWindows}.` : ''}</p>
       </div>${detailMapPages}`
     : '';
   const cappedFallbackNotice = detailPagesCapped
@@ -945,6 +1056,9 @@ function installationDetailsHtml(
     ${zoneModeHierarchyFallback}
     <h3>${detailTitle}</h3>
     ${details}
+    <h3>Meter and channel schedule</h3>
+    <p class="canonical-meta">This index lists every installed meter and channel, its electrical load classification, and each recorded target allocation with its phase mode and status.</p>
+    ${meterChannelScheduleHtml(report)}
     ${compactCanonicalAppendices(report)}
   </div>`;
 }
@@ -1050,6 +1164,8 @@ function canonicalReportHtml(report: InstallHubCanonicalReport): string {
     <table class="canonical-table"><thead><tr><th>Subject</th><th>Stable ID</th><th>Relation</th><th>Missing end</th><th>Known node</th><th>Reason</th></tr></thead><tbody>${unresolved}</tbody></table>
     <h3>All-assets coverage</h3>
     <table class="canonical-table"><thead><tr><th>Display</th><th>Asset</th><th>Type</th><th>Physical zone</th><th>Coverage</th><th>Stable ID</th></tr></thead><tbody>${assets}</tbody></table>
+    <h3>Meter and channel schedule</h3>
+    ${meterChannelScheduleHtml(report)}
     <h3>Metering assignments</h3>
     <table class="canonical-table"><thead><tr><th>Meter</th><th>Channel</th><th>Direction</th><th>Target</th><th>Assignment ID</th></tr></thead><tbody>${metering}</tbody></table>
     <h3>Virtual-meter definitions</h3>

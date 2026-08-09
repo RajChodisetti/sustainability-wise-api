@@ -238,7 +238,7 @@ Form answers and evidence may be omitted in either sync stage. When present,
 object/array and value types, stable IDs, unique attachment IDs, image
 attachment shape, capture timestamps, and HTTP(S) URI syntax remain enforced.
 Unresolved optional evidence is omitted from
-the immutable canonical-v2.7 snapshot; included confirmed media remains exact
+the immutable canonical-v2.8 snapshot; included confirmed media remains exact
 and immutable. Schema-v1 records and installed schema-v2 clients retain their
 compatibility behavior without a coordinated client release.
 

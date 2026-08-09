@@ -227,11 +227,32 @@ export type UnifiedPortalUsersResponse = {
   };
 };
 
+export type ElectricalMapLayoutDocument = {
+  version: 1;
+  canvas: {
+    width: number;
+    height: number;
+  };
+  nodes: Array<{
+    nodeId: string;
+    centerX: number;
+    centerY: number;
+  }>;
+};
+
+export type SavedElectricalMapLayout = ElectricalMapLayoutDocument & {
+  layoutRevision: number;
+  updatedAt?: string;
+};
+
 export type Installation = {
   id: string;
   treeSchemaVersion?: 2;
   treeRevision?: number;
   recordVersionNumber?: number;
+  electricalMapLayout?: ElectricalMapLayoutDocument;
+  electricalMapLayoutRevision?: number;
+  electricalMapLayoutUpdatedAt?: string | null;
   serverId?: string | null;
   clientName: string;
   siteName: string;
@@ -533,11 +554,13 @@ export type ElectricalTreeReadModel = {
   treeRevision: number;
   recordVersionNumber?: number;
   payloadHash?: string;
+  mapLayout?: SavedElectricalMapLayout;
   nodes: Array<{
     id: string;
     kind: 'GRID' | 'BOARD' | 'SITE_ASSET' | 'VIRTUAL_RESIDUAL';
     name: string;
     displayCode?: string;
+    typeCode?: string;
     typeLabel?: string;
     physicalLocationId?: string;
     coverageState?: string;

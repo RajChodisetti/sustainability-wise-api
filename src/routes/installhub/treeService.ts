@@ -60,6 +60,7 @@ import {
   buildMeteringView,
 } from './canonicalViews.js';
 import { classifyLegacyMeterLoadType } from './legacyBackfill.js';
+import { validStoredElectricalMapLayout } from './electricalMapLayout.js';
 
 // Drizzle transactions expose the same query builder surface used here. This
 // narrow structural type keeps every lifecycle write on the caller's tx.
@@ -154,6 +155,7 @@ export async function loadCanonicalInstallationTree(
     channelIdsByAssignment.set(row.assignmentId, rows);
   }
 
+  const electricalMapLayout = validStoredElectricalMapLayout(installation.electricalMapLayout);
   const tree: CanonicalInstallationTree = {
     treeSchemaVersion: 2,
     installation: {
@@ -170,6 +172,13 @@ export async function loadCanonicalInstallationTree(
       treeSchemaVersion: 2,
       treeRevision: installation.treeRevision,
       recordVersionNumber: installation.recordVersionNumber,
+      ...(electricalMapLayout
+        ? {
+            electricalMapLayout,
+            electricalMapLayoutRevision: installation.electricalMapLayoutRevision,
+            electricalMapLayoutUpdatedAt: iso(installation.electricalMapLayoutUpdatedAt),
+          }
+        : {}),
       createdByUserId: installation.createdByUserId,
       assignedInspectorUserId: installation.assignedInspectorUserId,
       completedAt: iso(installation.completedAt),

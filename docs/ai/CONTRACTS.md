@@ -112,7 +112,7 @@ and the readable schema-v1 A3RM/A6M forms. Server reports use the Sustainability
 Wise A4 theme and confirmed original evidence. Resolve every attachment by its
 exact `attachments[index].uri` registry identity; never guess by filename or
 slot, or substitute a thumbnail. Unresolved optional evidence is omitted before
-the canonical-v2.7 snapshot is pinned. Once a confirmed attachment is included
+the canonical-v2.8 snapshot is pinned. Once a confirmed attachment is included
 in that immutable snapshot, a missing original is an integrity error and must
 not be silently ignored.
 
@@ -133,7 +133,7 @@ POST /v1/installhub/installations/:installationId/meters/:meterId/history/rollba
 ```
 
 Files include accessible confirmed originals and completed Field App Complete report
-artifacts. Versions are immutable canonical-v2.7 full sync snapshots; unresolved
+artifacts. Versions are immutable canonical-v2.8 full sync snapshots; unresolved
 optional evidence is omitted, while included confirmed media retains its exact
 registry identity. Versions are added
 only when a complete or legacy-unstaged push differs from the latest stable
@@ -227,7 +227,7 @@ soft-deletes it. Business capture fields and evidence are optional. The mobile
 client must push sanitized metadata before creating upload sessions, confirm
 each optional media item it elects to retain, replace its local-only URI with the
 confirmed remote URL, and omit any still-unresolved optional evidence from the
-final canonical-v2.7 snapshot before advancing its local backup watermark. The first push
+final canonical-v2.8 snapshot before advancing its local backup watermark. The first push
 uses `syncStage: "metadata"` and never creates a record version; the final push
 uses `syncStage: "complete"` and is versioned. An absent `syncStage` remains a
 versioned legacy-complete push. Before each attempt, mobile reconciles its
@@ -315,7 +315,7 @@ Form answers and attachments remain structurally validated when present:
 object/array and value types, stable IDs, unique attachment IDs, image media
 shape, capture timestamps, and HTTP(S) URI syntax still apply. Omitting an
 optional answer or evidence item is valid. Unresolved optional evidence is left
-out of the immutable canonical-v2.7 snapshot, while confirmed media that is
+out of the immutable canonical-v2.8 snapshot, while confirmed media that is
 included remains exact and immutable. This server-side policy preserves
 installed mobile payloads and aliases and requires no coordinated client or
 database migration.

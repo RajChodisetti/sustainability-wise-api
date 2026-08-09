@@ -8,19 +8,21 @@ import type {
 import { electricalHierarchyRows } from './electricalPresentation';
 import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
-export const ELECTRICAL_TREE_NODE_WIDTH = 148;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 116;
-const ELECTRICAL_TREE_BOARD_WIDTH = 214;
-const ELECTRICAL_TREE_BOARD_HEIGHT = 172;
-const ELECTRICAL_TREE_GRID_WIDTH = 128;
-const ELECTRICAL_TREE_GRID_HEIGHT = 116;
-const ELECTRICAL_TREE_RESIDUAL_WIDTH = 144;
-const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 88;
-const HORIZONTAL_GAP = 136;
-const VERTICAL_GAP = 36;
-const PACKED_TERMINAL_MAX_ROWS = 5;
-const PACKED_TERMINAL_LANE_GAP = 44;
-const CANVAS_PADDING = 64;
+export const ELECTRICAL_TREE_NODE_WIDTH = 144;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 142;
+const ELECTRICAL_TREE_BOARD_WIDTH = 172;
+const ELECTRICAL_TREE_BOARD_HEIGHT = 166;
+const ELECTRICAL_TREE_GRID_WIDTH = 176;
+const ELECTRICAL_TREE_GRID_HEIGHT = 172;
+const ELECTRICAL_TREE_RESIDUAL_WIDTH = 136;
+const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 126;
+const CANVAS_PADDING = 72;
+const ISLAND_GAP = 96;
+const NODE_CLEARANCE = 24;
+const RING_CLEARANCE = 64;
+const MIN_FIRST_RING_RADIUS = 210;
+const SINGLE_BRANCH_ARC = (220 * Math.PI) / 180;
+const FULL_CIRCLE = Math.PI * 2;
 
 export type ElectricalTreeNodeSize = {
   width: number;
@@ -50,6 +52,13 @@ export type ElectricalTreeLayoutNode = {
   height: number;
   depth: number;
   parentId?: string;
+  /** Stable presentation metadata for radial rendering; depth remains semantic. */
+  angle?: number;
+  radialDistance?: number;
+  presentationRing?: number;
+  branchId?: string;
+  clusterParentId?: string;
+  /** Legacy lane metadata retained for callers compiled against the prior layout. */
   presentationLane?: number;
   presentationRow?: number;
   packedTerminal?: boolean;
@@ -104,13 +113,25 @@ export type ElectricalTreeViewport = {
   scale: number;
 };
 
+export type ElectricalMapLayoutDocument = Pick<
+  NonNullable<ElectricalTreeReadModel['mapLayout']>,
+  'version' | 'canvas' | 'nodes'
+>;
+
+export type SavedElectricalMapLayout = NonNullable<ElectricalTreeReadModel['mapLayout']>;
+
+const ELECTRICAL_MAP_MIN_CANVAS_SIZE = 320;
+const ELECTRICAL_MAP_MAX_CANVAS_SIZE = 20_000;
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
 /**
- * Produces a deterministic left-to-right forest from the confirmed electrical
+ * Produces a deterministic, grid-centred constellation from the confirmed
  * topology. FED_FROM controls placement; MEASURES remains a visual overlay.
+ * Descendant sector size follows terminal-node weight so large branches receive
+ * more circumference without changing the semantic hierarchy.
  */
 export function buildElectricalTreeLayout(
   model?: ElectricalTreeReadModel,
@@ -134,10 +155,10 @@ export function buildElectricalTreeLayout(
     childrenById.set(candidateParentId, children);
   }
   for (const children of childrenById.values()) {
-    children.sort((left, right) => (orderById.get(left) || 0) - (orderById.get(right) || 0));
+    children.sort((left, right) => (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0));
   }
-  const depthById = new Map<string, number>();
 
+  const depthById = new Map<string, number>();
   function selectedParentDepth(nodeId: string, path = new Set<string>()): number {
     const cached = depthById.get(nodeId);
     if (cached !== undefined) return cached;
@@ -153,148 +174,262 @@ export function buildElectricalTreeLayout(
     depthById.set(nodeId, depth);
     return depth;
   }
-
   for (const row of rows) selectedParentDepth(row.node.id);
 
   const sizeById = new Map(rows.map((row) => [row.node.id, electricalTreeNodeSize(row.node.kind)]));
-  const centerYById = new Map<string, number>();
-  const presentationById = new Map<string, { lane: number; row: number }>();
-  type ChildUnit =
-    | { kind: 'NODE'; nodeIds: [string] }
-    | { kind: 'PACKED_TERMINALS'; nodeIds: string[]; laneCount: number; rowCount: number };
-  const childUnitsById = new Map<string, ChildUnit[]>();
-  const subtreeHeightById = new Map<string, number>();
-
-  function childUnits(nodeId: string): ChildUnit[] {
-    const cached = childUnitsById.get(nodeId);
-    if (cached) return cached;
-    const children = childrenById.get(nodeId) || [];
-    const packableIds = children.filter((childId) => (
-      rowById.get(childId)?.node.kind === 'SITE_ASSET'
-      && !(childrenById.get(childId)?.length)
-    ));
-    if (packableIds.length <= PACKED_TERMINAL_MAX_ROWS) {
-      const units: ChildUnit[] = children.map((childId) => ({ kind: 'NODE', nodeIds: [childId] }));
-      childUnitsById.set(nodeId, units);
-      return units;
-    }
-    const packable = new Set(packableIds);
-    const laneCount = Math.ceil(packableIds.length / PACKED_TERMINAL_MAX_ROWS);
-    const rowCount = Math.ceil(packableIds.length / laneCount);
-    const units: ChildUnit[] = [];
-    let packedInserted = false;
-    for (const childId of children) {
-      if (!packable.has(childId)) {
-        units.push({ kind: 'NODE', nodeIds: [childId] });
-      } else if (!packedInserted) {
-        units.push({ kind: 'PACKED_TERMINALS', nodeIds: packableIds, laneCount, rowCount });
-        packedInserted = true;
-      }
-    }
-    childUnitsById.set(nodeId, units);
-    return units;
-  }
-
-  function packedUnitHeight(unit: Extract<ChildUnit, { kind: 'PACKED_TERMINALS' }>): number {
-    const tallestNode = Math.max(...unit.nodeIds.map((nodeId) => (
-      sizeById.get(nodeId)?.height || ELECTRICAL_TREE_NODE_HEIGHT
-    )));
-    return unit.rowCount * tallestNode + Math.max(0, unit.rowCount - 1) * VERTICAL_GAP;
-  }
-
-  function subtreeHeight(nodeId: string, path = new Set<string>()): number {
-    const cached = subtreeHeightById.get(nodeId);
+  const weightById = new Map<string, number>();
+  function subtreeWeight(nodeId: string, path = new Set<string>()): number {
+    const cached = weightById.get(nodeId);
     if (cached !== undefined) return cached;
-    const ownHeight = sizeById.get(nodeId)?.height || ELECTRICAL_TREE_NODE_HEIGHT;
-    if (path.has(nodeId)) return ownHeight;
-    const nextPath = new Set(path).add(nodeId);
-    const units = childUnits(nodeId);
-    const childrenHeight = units.reduce((total, unit) => (
-      total + (unit.kind === 'PACKED_TERMINALS'
-        ? packedUnitHeight(unit)
-        : subtreeHeight(unit.nodeIds[0], nextPath))
-    ), 0) + Math.max(0, units.length - 1) * VERTICAL_GAP;
-    const height = Math.max(ownHeight, childrenHeight);
-    subtreeHeightById.set(nodeId, height);
-    return height;
+    if (path.has(nodeId)) return 1;
+    const children = childrenById.get(nodeId) || [];
+    const node = rowById.get(nodeId)?.node;
+    const weight = children.length
+      ? Math.max(1, children.reduce((total, childId) => (
+        total + subtreeWeight(childId, new Set(path).add(nodeId))
+      ), 0))
+      : node?.kind === 'VIRTUAL_RESIDUAL' ? 0.72 : 1;
+    weightById.set(nodeId, weight);
+    return weight;
   }
+  for (const row of rows) subtreeWeight(row.node.id);
 
-  function placeNode(nodeId: string, top: number, path = new Set<string>()) {
-    if (centerYById.has(nodeId)) return;
-    const height = subtreeHeight(nodeId, path);
-    centerYById.set(nodeId, top + height / 2);
-    if (path.has(nodeId)) return;
-    const nextPath = new Set(path).add(nodeId);
-    const units = childUnits(nodeId);
-    const unitHeights = units.map((unit) => (
-      unit.kind === 'PACKED_TERMINALS'
-        ? packedUnitHeight(unit)
-        : subtreeHeight(unit.nodeIds[0], nextPath)
-    ));
-    const totalChildrenHeight = unitHeights.reduce((total, unitHeight) => total + unitHeight, 0)
-      + Math.max(0, units.length - 1) * VERTICAL_GAP;
-    let childTop = top + (height - totalChildrenHeight) / 2;
-    units.forEach((unit, unitIndex) => {
-      if (unit.kind === 'NODE') {
-        placeNode(unit.nodeIds[0], childTop, nextPath);
-      } else {
-        const tallestNode = Math.max(...unit.nodeIds.map((childId) => (
-          sizeById.get(childId)?.height || ELECTRICAL_TREE_NODE_HEIGHT
-        )));
-        unit.nodeIds.forEach((childId, childIndex) => {
-          const lane = Math.floor(childIndex / unit.rowCount);
-          const row = childIndex % unit.rowCount;
-          centerYById.set(
-            childId,
-            childTop + row * (tallestNode + VERTICAL_GAP) + tallestNode / 2,
-          );
-          presentationById.set(childId, { lane, row });
-        });
-      }
-      childTop += unitHeights[unitIndex] + VERTICAL_GAP;
+  type RadialPlacement = {
+    nodeId: string;
+    centerX: number;
+    centerY: number;
+    angle: number;
+    radialDistance: number;
+    presentationRing: number;
+    branchId: string;
+    clusterParentId?: string;
+  };
+  type RadialIsland = {
+    rootId: string;
+    width: number;
+    height: number;
+    placements: Map<string, RadialPlacement>;
+  };
+
+  function buildIsland(rootId: string): RadialIsland {
+    const islandIds: string[] = [];
+    const queued = [rootId];
+    const visited = new Set<string>();
+    while (queued.length) {
+      const nodeId = queued.shift();
+      if (!nodeId || visited.has(nodeId)) continue;
+      visited.add(nodeId);
+      islandIds.push(nodeId);
+      queued.push(...(childrenById.get(nodeId) || []));
+    }
+    islandIds.sort((left, right) => (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0));
+
+    const maximumDepth = Math.max(0, ...islandIds.map((nodeId) => depthById.get(nodeId) || 0));
+    const radiusByDepth = [0];
+    let previousHalfExtent = Math.max(
+      ...(islandIds.filter((nodeId) => (depthById.get(nodeId) || 0) === 0).map((nodeId) => {
+        const size = sizeById.get(nodeId) || electricalTreeNodeSize(rowById.get(nodeId)!.node.kind);
+        return Math.max(size.width, size.height) / 2;
+      })),
+      ELECTRICAL_TREE_GRID_WIDTH / 2,
+    );
+    const rootChildren = childrenById.get(rootId) || [];
+    for (let depth = 1; depth <= maximumDepth; depth += 1) {
+      const levelIds = islandIds.filter((nodeId) => (depthById.get(nodeId) || 0) === depth);
+      const halfExtent = Math.max(...levelIds.map((nodeId) => {
+        const size = sizeById.get(nodeId)!;
+        return Math.max(size.width, size.height) / 2;
+      }));
+      const circumferenceDemand = levelIds.reduce((total, nodeId) => {
+        const size = sizeById.get(nodeId)!;
+        return total + Math.max(size.width, size.height) + NODE_CLEARANCE;
+      }, 0);
+      const angularCoverage = rootChildren.length === 1 && depth > 1 ? SINGLE_BRANCH_ARC : FULL_CIRCLE;
+      const circumferenceRadius = circumferenceDemand / Math.max(0.001, angularCoverage * 0.94);
+      const separationRadius = radiusByDepth[depth - 1]
+        + previousHalfExtent
+        + halfExtent
+        + RING_CLEARANCE;
+      radiusByDepth[depth] = Math.max(
+        depth === 1 ? MIN_FIRST_RING_RADIUS : 0,
+        separationRadius,
+        circumferenceRadius,
+      );
+      previousHalfExtent = halfExtent;
+    }
+
+    const placements = new Map<string, RadialPlacement>();
+    placements.set(rootId, {
+      nodeId: rootId,
+      centerX: 0,
+      centerY: 0,
+      angle: 0,
+      radialDistance: 0,
+      presentationRing: 0,
+      branchId: rootId,
     });
+
+    function placeChild(
+      nodeId: string,
+      angle: number,
+      sectorStart: number,
+      sectorSpan: number,
+      branchId: string,
+    ) {
+      const depth = depthById.get(nodeId) || 0;
+      const radialDistance = radiusByDepth[depth] || 0;
+      const node = rowById.get(nodeId)?.node;
+      const parentId = parentById.get(nodeId);
+      placements.set(nodeId, {
+        nodeId,
+        centerX: Math.cos(angle) * radialDistance,
+        centerY: Math.sin(angle) * radialDistance,
+        angle,
+        radialDistance,
+        presentationRing: depth,
+        branchId,
+        ...(node?.kind === 'SITE_ASSET' && parentId && !(childrenById.get(nodeId)?.length)
+          ? { clusterParentId: parentId }
+          : {}),
+      });
+      placeChildren(nodeId, sectorStart, sectorSpan, branchId);
+    }
+
+    function placeChildren(
+      parentId: string,
+      sectorStart: number,
+      sectorSpan: number,
+      inheritedBranchId: string,
+    ) {
+      const children = childrenById.get(parentId) || [];
+      if (!children.length) return;
+      const totalWeight = children.reduce((total, childId) => total + (weightById.get(childId) || 1), 0);
+      let cursor = sectorStart;
+      for (const childId of children) {
+        const rawSpan = sectorSpan * ((weightById.get(childId) || 1) / totalWeight);
+        const gutter = children.length > 1 ? Math.min(0.055, rawSpan * 0.1) : 0;
+        const childStart = cursor + gutter / 2;
+        const childSpan = Math.max(0.001, rawSpan - gutter);
+        const childAngle = childStart + childSpan / 2;
+        const branchId = parentId === rootId ? childId : inheritedBranchId;
+        placeChild(childId, childAngle, childStart, childSpan, branchId);
+        cursor += rawSpan;
+      }
+    }
+
+    if (rootChildren.length === 1) {
+      const childId = rootChildren[0];
+      const childAngle = Math.PI / 2;
+      const sectorStart = childAngle - SINGLE_BRANCH_ARC / 2;
+      placeChild(childId, childAngle, sectorStart, SINGLE_BRANCH_ARC, childId);
+    } else {
+      placeChildren(rootId, -Math.PI / 2, FULL_CIRCLE, rootId);
+    }
+
+    function overlaps(left: RadialPlacement, right: RadialPlacement): boolean {
+      const leftSize = sizeById.get(left.nodeId)!;
+      const rightSize = sizeById.get(right.nodeId)!;
+      return Math.abs(left.centerX - right.centerX)
+          < (leftSize.width + rightSize.width) / 2 + NODE_CLEARANCE
+        && Math.abs(left.centerY - right.centerY)
+          < (leftSize.height + rightSize.height) / 2 + NODE_CLEARANCE;
+    }
+
+    const collisionOrder = [...islandIds].sort((left, right) => (
+      (depthById.get(left) || 0) - (depthById.get(right) || 0)
+      || (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0)
+    ));
+    const maximumCollisionPasses = Math.max(24, islandIds.length * 8);
+    for (let pass = 0; pass < maximumCollisionPasses; pass += 1) {
+      let moved = false;
+      for (let leftIndex = 0; leftIndex < collisionOrder.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < collisionOrder.length; rightIndex += 1) {
+          const left = placements.get(collisionOrder[leftIndex])!;
+          const right = placements.get(collisionOrder[rightIndex])!;
+          if (!overlaps(left, right)) continue;
+          const leftDepth = depthById.get(left.nodeId) || 0;
+          const rightDepth = depthById.get(right.nodeId) || 0;
+          const candidate = rightDepth > leftDepth
+            ? right
+            : leftDepth > rightDepth
+              ? left
+              : (orderById.get(right.nodeId) ?? 0) >= (orderById.get(left.nodeId) ?? 0)
+                ? right
+                : left;
+          if (candidate.radialDistance === 0) continue;
+          candidate.radialDistance += NODE_CLEARANCE;
+          candidate.centerX = Math.cos(candidate.angle) * candidate.radialDistance;
+          candidate.centerY = Math.sin(candidate.angle) * candidate.radialDistance;
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+
+    let halfWidth = 0;
+    let halfHeight = 0;
+    for (const placement of placements.values()) {
+      const size = sizeById.get(placement.nodeId)!;
+      halfWidth = Math.max(
+        halfWidth,
+        Math.abs(placement.centerX - size.width / 2),
+        Math.abs(placement.centerX + size.width / 2),
+      );
+      halfHeight = Math.max(
+        halfHeight,
+        Math.abs(placement.centerY - size.height / 2),
+        Math.abs(placement.centerY + size.height / 2),
+      );
+    }
+    return {
+      rootId,
+      width: (halfWidth + CANVAS_PADDING) * 2,
+      height: (halfHeight + CANVAS_PADDING) * 2,
+      placements,
+    };
   }
 
-  const roots = rows.filter((row) => !parentById.has(row.node.id));
-  let nextRootTop = CANVAS_PADDING;
-  for (const root of roots) {
-    placeNode(root.node.id, nextRootTop);
-    nextRootTop += subtreeHeight(root.node.id) + VERTICAL_GAP;
+  const rootIds = rows
+    .filter((row) => !parentById.has(row.node.id))
+    .map((row) => row.node.id);
+  const islands = rootIds.map(buildIsland);
+  const islandByNodeId = new Map<string, RadialIsland>();
+  for (const island of islands) {
+    for (const nodeId of island.placements.keys()) islandByNodeId.set(nodeId, island);
   }
-  for (const row of rows) {
-    if (centerYById.has(row.node.id)) continue;
-    placeNode(row.node.id, nextRootTop);
-    nextRootTop += subtreeHeight(row.node.id) + VERTICAL_GAP;
-  }
+  const cellWidth = Math.max(...islands.map((island) => island.width));
+  const cellHeight = Math.max(...islands.map((island) => island.height));
+  const columnCount = Math.max(1, Math.ceil(Math.sqrt(islands.length)));
+  const rowCount = Math.ceil(islands.length / columnCount);
+  const islandOriginByRootId = new Map<string, { x: number; y: number }>();
+  islands.forEach((island, index) => {
+    const column = index % columnCount;
+    const row = Math.floor(index / columnCount);
+    islandOriginByRootId.set(island.rootId, {
+      x: column * (cellWidth + ISLAND_GAP) + cellWidth / 2,
+      y: row * (cellHeight + ISLAND_GAP) + cellHeight / 2,
+    });
+  });
 
-  const maxDepth = Math.max(0, ...rows.map((row) => depthById.get(row.node.id) || 0));
-  const maxWidthByDepth = Array.from({ length: maxDepth + 1 }, () => 0);
-  for (const row of rows) {
-    const width = sizeById.get(row.node.id)?.width || ELECTRICAL_TREE_NODE_WIDTH;
-    const depth = depthById.get(row.node.id) || 0;
-    maxWidthByDepth[depth] = Math.max(maxWidthByDepth[depth], width);
-  }
-  const xByDepth = [CANVAS_PADDING];
-  for (let depth = 1; depth <= maxDepth; depth += 1) {
-    xByDepth[depth] = xByDepth[depth - 1] + maxWidthByDepth[depth - 1] + HORIZONTAL_GAP;
-  }
   const nodes = rows.map((row) => {
     const size = sizeById.get(row.node.id) || electricalTreeNodeSize(row.node.kind);
-    const presentation = presentationById.get(row.node.id);
+    const island = islandByNodeId.get(row.node.id)!;
+    const origin = islandOriginByRootId.get(island.rootId)!;
+    const placement = island.placements.get(row.node.id)!;
     const depth = depthById.get(row.node.id) || 0;
     return {
       node: row.node,
-      x: xByDepth[depth] + (presentation?.lane || 0) * (size.width + PACKED_TERMINAL_LANE_GAP),
-      y: (centerYById.get(row.node.id) || CANVAS_PADDING) - size.height / 2,
+      x: cleanCoordinate(origin.x + placement.centerX - size.width / 2),
+      y: cleanCoordinate(origin.y + placement.centerY - size.height / 2),
       width: size.width,
       height: size.height,
       depth,
+      angle: placement.angle,
+      radialDistance: placement.radialDistance,
+      presentationRing: placement.presentationRing,
+      branchId: placement.branchId,
+      ...(placement.clusterParentId ? { clusterParentId: placement.clusterParentId } : {}),
       ...(parentById.has(row.node.id) ? { parentId: parentById.get(row.node.id) } : {}),
-      ...(presentation ? {
-        presentationLane: presentation.lane,
-        presentationRow: presentation.row,
-        packedTerminal: true,
-      } : {}),
     };
   });
   const nodeIds = new Set(nodes.map((item) => item.node.id));
@@ -329,11 +464,9 @@ export function buildElectricalTreeLayout(
     });
   }
 
-  const maxRight = Math.max(CANVAS_PADDING, ...nodes.map((item) => item.x + item.width));
-  const maxBottom = Math.max(CANVAS_PADDING, ...nodes.map((item) => item.y + item.height));
   return {
-    width: maxRight + CANVAS_PADDING,
-    height: maxBottom + CANVAS_PADDING,
+    width: columnCount * cellWidth + Math.max(0, columnCount - 1) * ISLAND_GAP,
+    height: rowCount * cellHeight + Math.max(0, rowCount - 1) * ISLAND_GAP,
     nodes,
     edges,
   };
@@ -343,39 +476,270 @@ function cleanCoordinate(value: number): number {
   return Number(value.toFixed(2));
 }
 
+function safeCanvasDimension(value: number, fallback: number): number {
+  const candidate = Number.isFinite(value) ? value : fallback;
+  return cleanCoordinate(clamp(
+    Math.max(candidate, fallback, ELECTRICAL_MAP_MIN_CANVAS_SIZE),
+    ELECTRICAL_MAP_MIN_CANVAS_SIZE,
+    ELECTRICAL_MAP_MAX_CANVAS_SIZE,
+  ));
+}
+
 /**
- * Produces the orthogonal, single-line-diagram route used for supply,
- * measurement, and calculated-residual connectors.
+ * Serializes node centres only. Viewport pan and zoom are deliberately not
+ * part of this document so the same coordinates can drive the portal and PDF.
  */
-export function electricalTreeOrthogonalPath(
+export function electricalTreeMapLayoutDocument(
+  layout: ElectricalTreeLayout,
+): ElectricalMapLayoutDocument {
+  const width = safeCanvasDimension(layout.width, ELECTRICAL_MAP_MIN_CANVAS_SIZE);
+  const height = safeCanvasDimension(layout.height, ELECTRICAL_MAP_MIN_CANVAS_SIZE);
+  return {
+    version: 1,
+    canvas: { width, height },
+    nodes: layout.nodes
+      .map((item) => ({
+        nodeId: item.node.id,
+        centerX: cleanCoordinate(clamp(item.x + item.width / 2, 0, width)),
+        centerY: cleanCoordinate(clamp(item.y + item.height / 2, 0, height)),
+      }))
+      .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
+  };
+}
+
+/** Returns the presentation fields from either a saved or unsaved document. */
+export function electricalTreeMapLayoutDraft(
+  layout: ElectricalMapLayoutDocument | SavedElectricalMapLayout,
+): ElectricalMapLayoutDocument {
+  return {
+    version: 1,
+    canvas: {
+      width: cleanCoordinate(layout.canvas.width),
+      height: cleanCoordinate(layout.canvas.height),
+    },
+    nodes: layout.nodes
+      .map((item) => ({
+        nodeId: item.nodeId,
+        centerX: cleanCoordinate(item.centerX),
+        centerY: cleanCoordinate(item.centerY),
+      }))
+      .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
+  };
+}
+
+/**
+ * Applies saved centres to the current topology. Unknown saved IDs are ignored
+ * and newly introduced nodes retain their deterministic automatic positions.
+ */
+export function applyElectricalTreeMapLayout(
+  automaticLayout: ElectricalTreeLayout,
+  savedLayout?: ElectricalMapLayoutDocument | SavedElectricalMapLayout,
+): ElectricalTreeLayout {
+  if (!savedLayout) return automaticLayout;
+  const width = safeCanvasDimension(savedLayout.canvas.width, automaticLayout.width);
+  const height = safeCanvasDimension(savedLayout.canvas.height, automaticLayout.height);
+  const centres = new Map(savedLayout.nodes.flatMap((item) => (
+    item
+      && typeof item.nodeId === 'string'
+      && Number.isFinite(item.centerX)
+      && Number.isFinite(item.centerY)
+      ? [[item.nodeId, item] as const]
+      : []
+  )));
+  return {
+    ...automaticLayout,
+    width,
+    height,
+    nodes: automaticLayout.nodes.map((item) => {
+      const centre = centres.get(item.node.id);
+      if (!centre) return item;
+      const centerX = clamp(centre.centerX, item.width / 2, Math.max(item.width / 2, width - item.width / 2));
+      const centerY = clamp(centre.centerY, item.height / 2, Math.max(item.height / 2, height - item.height / 2));
+      return {
+        ...item,
+        x: cleanCoordinate(centerX - item.width / 2),
+        y: cleanCoordinate(centerY - item.height / 2),
+      };
+    }),
+  };
+}
+
+/** Filters visibility without recomputing or rebasing saved coordinates. */
+export function filterElectricalTreeLayout(
+  layout: ElectricalTreeLayout,
+  visibleNodeIds?: ReadonlySet<string>,
+): ElectricalTreeLayout {
+  if (!visibleNodeIds) return layout;
+  return {
+    ...layout,
+    nodes: layout.nodes.filter((item) => visibleNodeIds.has(item.node.id)),
+    edges: layout.edges.filter((edge) => (
+      visibleNodeIds.has(edge.sourceNodeId) && visibleNodeIds.has(edge.targetNodeId)
+    )),
+  };
+}
+
+/** Converts a pointer movement in CSS pixels into unscaled design-space units. */
+export function electricalTreePointerDelta(
+  deltaX: number,
+  deltaY: number,
+  viewportScale: number,
+): { x: number; y: number } {
+  const scale = Number.isFinite(viewportScale) && viewportScale > 0 ? viewportScale : 1;
+  return {
+    x: cleanCoordinate(deltaX / scale),
+    y: cleanCoordinate(deltaY / scale),
+  };
+}
+
+export function electricalTreePointerDragStarted(
+  deltaX: number,
+  deltaY: number,
+  threshold = 6,
+): boolean {
+  if (![deltaX, deltaY, threshold].every(Number.isFinite)) return false;
+  return Math.hypot(deltaX, deltaY) >= Math.max(0, threshold);
+}
+
+/** Replaces one centre while keeping its marker fully inside the design canvas. */
+export function moveElectricalTreeMapLayoutNode(
+  layout: ElectricalMapLayoutDocument,
+  nodeId: string,
+  centerX: number,
+  centerY: number,
+  size: ElectricalTreeNodeSize,
+): ElectricalMapLayoutDocument {
+  if (!Number.isFinite(centerX) || !Number.isFinite(centerY)) return layout;
+  let found = false;
+  const nodes = layout.nodes.map((item) => {
+    if (item.nodeId !== nodeId) return item;
+    found = true;
+    return {
+      ...item,
+      centerX: cleanCoordinate(clamp(
+        centerX,
+        size.width / 2,
+        Math.max(size.width / 2, layout.canvas.width - size.width / 2),
+      )),
+      centerY: cleanCoordinate(clamp(
+        centerY,
+        size.height / 2,
+        Math.max(size.height / 2, layout.canvas.height - size.height / 2),
+      )),
+    };
+  });
+  return found ? { ...layout, nodes } : layout;
+}
+
+export function electricalTreeMapLayoutsEqual(
+  left: ElectricalMapLayoutDocument,
+  right: ElectricalMapLayoutDocument,
+): boolean {
+  if (
+    cleanCoordinate(left.canvas.width) !== cleanCoordinate(right.canvas.width)
+    || cleanCoordinate(left.canvas.height) !== cleanCoordinate(right.canvas.height)
+    || left.nodes.length !== right.nodes.length
+  ) return false;
+  const leftNodes = [...left.nodes].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+  const rightNodes = [...right.nodes].sort((a, b) => a.nodeId.localeCompare(b.nodeId));
+  return leftNodes.every((item, index) => (
+    item.nodeId === rightNodes[index]?.nodeId
+    && cleanCoordinate(item.centerX) === cleanCoordinate(rightNodes[index].centerX)
+    && cleanCoordinate(item.centerY) === cleanCoordinate(rightNodes[index].centerY)
+  ));
+}
+
+/** Options shared by direct connectors and retained compatibility aliases. */
+export type ElectricalTreeConnectorOptions = {
+  sourceYOffset?: number;
+  targetYOffset?: number;
+  /** Retained for compatibility with callers compiled against curved routes. */
+  trunkRatio?: number;
+  /** Retained for compatibility with callers compiled against curved routes. */
+  bend?: number;
+};
+
+/**
+ * Connects the visible perimeters of two draggable nodes with one direct line.
+ * Geometry is derived at render time, so moving a saved node immediately moves
+ * its connector without changing any persisted coordinates.
+ */
+export function electricalTreeStraightPath(
   source: ElectricalTreeLayoutNode,
   target: ElectricalTreeLayoutNode,
-  options: { sourceYOffset?: number; targetYOffset?: number; trunkRatio?: number } = {},
+  options: ElectricalTreeConnectorOptions = {},
 ): string {
   if (source.node.id === target.node.id) {
     const sourceX = source.x + source.width;
     const sourceY = source.y + source.height / 2 + (options.sourceYOffset || 0);
-    const loopX = sourceX + 30;
-    const targetX = source.x + source.width * 0.68;
-    const targetY = source.y + source.height;
-    const loopY = targetY + 24;
-    return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(loopX)} V ${cleanCoordinate(loopY)} H ${cleanCoordinate(targetX)} V ${cleanCoordinate(targetY)}`;
+    const targetX = source.x + source.width * 0.72;
+    const targetY = source.y;
+    return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} L ${cleanCoordinate(targetX)} ${cleanCoordinate(targetY)}`;
   }
-  const movingRight = target.x >= source.x;
-  const sourceX = movingRight ? source.x + source.width : source.x;
-  const targetX = movingRight ? target.x : target.x + target.width;
-  const sourceY = source.y + source.height / 2 + (options.sourceYOffset || 0);
-  const targetY = target.y + target.height / 2 + (options.targetYOffset || 0);
-  const trunkRatio = clamp(options.trunkRatio ?? 0.46, 0.2, 0.8);
-  const presentationLane = target.presentationLane || 0;
-  const firstLaneX = target.x - presentationLane * (target.width + PACKED_TERMINAL_LANE_GAP);
-  const trunkDestinationX = target.packedTerminal ? firstLaneX : targetX;
-  const trunkX = sourceX + (trunkDestinationX - sourceX) * trunkRatio;
-  if (movingRight && target.packedTerminal && presentationLane > 0) {
-    const routeY = target.y - VERTICAL_GAP / 2;
-    return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(trunkX)} V ${cleanCoordinate(routeY)} H ${cleanCoordinate(targetX)} V ${cleanCoordinate(targetY)}`;
+
+  const sourceCenter = {
+    x: source.x + source.width / 2,
+    y: source.y + source.height / 2 + (options.sourceYOffset || 0),
+  };
+  const targetCenter = {
+    x: target.x + target.width / 2,
+    y: target.y + target.height / 2 + (options.targetYOffset || 0),
+  };
+  const deltaX = targetCenter.x - sourceCenter.x;
+  const deltaY = targetCenter.y - sourceCenter.y;
+  const routeDirectionX = deltaX === 0 && deltaY === 0 ? 1 : deltaX;
+  const routeDirectionY = deltaX === 0 && deltaY === 0 ? 0 : deltaY;
+
+  function perimeterPoint(
+    center: { x: number; y: number },
+    width: number,
+    height: number,
+    directionX: number,
+    directionY: number,
+  ) {
+    const scale = 1 / Math.max(
+      Math.abs(directionX) / Math.max(1, width / 2),
+      Math.abs(directionY) / Math.max(1, height / 2),
+    );
+    return {
+      x: center.x + directionX * scale,
+      y: center.y + directionY * scale,
+    };
   }
-  return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(trunkX)} V ${cleanCoordinate(targetY)} H ${cleanCoordinate(targetX)}`;
+
+  const start = perimeterPoint(
+    sourceCenter,
+    source.width,
+    source.height,
+    routeDirectionX,
+    routeDirectionY,
+  );
+  const end = perimeterPoint(
+    targetCenter,
+    target.width,
+    target.height,
+    -routeDirectionX,
+    -routeDirectionY,
+  );
+  return `M ${cleanCoordinate(start.x)} ${cleanCoordinate(start.y)} L ${cleanCoordinate(end.x)} ${cleanCoordinate(end.y)}`;
+}
+
+/** Compatibility alias for callers that have not migrated to the explicit name. */
+export function electricalTreeCurvedPath(
+  source: ElectricalTreeLayoutNode,
+  target: ElectricalTreeLayoutNode,
+  options: ElectricalTreeConnectorOptions = {},
+): string {
+  return electricalTreeStraightPath(source, target, options);
+}
+
+/** Compatibility alias while renderers migrate from the prior orthogonal API. */
+export function electricalTreeOrthogonalPath(
+  source: ElectricalTreeLayoutNode,
+  target: ElectricalTreeLayoutNode,
+  options: ElectricalTreeConnectorOptions = {},
+): string {
+  return electricalTreeStraightPath(source, target, options);
 }
 
 function appendUnique(items: string[], value: string) {

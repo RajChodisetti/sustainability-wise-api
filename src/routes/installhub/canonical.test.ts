@@ -188,6 +188,49 @@ test('canonicalizer preserves a non-empty historical site code for immutable rep
     ' Legacy Site Code / 2024 ',
   );
 });
+
+test('saved electrical map layout is normalized and pinned without becoming a sync mutation field', () => {
+  const tree = baseTree();
+  tree.installation.electricalMapLayout = {
+    version: 1,
+    canvas: { width: 1_200, height: 800 },
+    nodes: [
+      { nodeId: 'grid-1', centerX: 300, centerY: 400 },
+      { nodeId: 'board-1', centerX: 700, centerY: 400 },
+    ],
+  };
+  tree.installation.electricalMapLayoutRevision = 3;
+  tree.installation.electricalMapLayoutUpdatedAt = '2026-08-09T12:00:00.000Z';
+  const normalized = normalizeInstallationTreeV2(tree);
+  const canonicalLayout = {
+    version: 1 as const,
+    canvas: { width: 1_200, height: 800 },
+    nodes: [
+      { nodeId: 'board-1', centerX: 700, centerY: 400 },
+      { nodeId: 'grid-1', centerX: 300, centerY: 400 },
+    ],
+  };
+  assert.deepEqual(
+    normalized.installation.electricalMapLayout,
+    canonicalLayout,
+  );
+  assert.equal(normalized.installation.electricalMapLayoutRevision, 3);
+
+  const withoutLayout = structuredClone(tree);
+  delete withoutLayout.installation.electricalMapLayout;
+  delete withoutLayout.installation.electricalMapLayoutRevision;
+  delete withoutLayout.installation.electricalMapLayoutUpdatedAt;
+  assert.equal(
+    canonicalTreeMutationFingerprint(tree),
+    canonicalTreeMutationFingerprint(withoutLayout),
+  );
+
+  const snapshot = buildCanonicalSnapshotPayload({ tree, mediaManifest: [] });
+  assert.deepEqual(
+    snapshot.installationTree.installation.electricalMapLayout,
+    canonicalLayout,
+  );
+});
 import {
   buildAllAssetsView,
   buildElectricalTreeView,
@@ -2472,5 +2515,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.7');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.8');
 });

@@ -4,6 +4,7 @@ import {
   assertAuthoritativeCanonicalSnapshot,
   assertPinnedOrExplicitLive,
   assertPinnedSnapshotProvenance,
+  installHubChannelLoadLabel,
   liveDiagnosticCanonicalReport,
   installHubReportVariantKey,
   pinnedPhotoMatchesManifest,
@@ -63,7 +64,7 @@ test('installation-pack detail mode and durable variant normalize deterministica
   }));
   assert.match(
     normalized,
-    /^installation-pack:v3:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
+    /^installation-pack:v4:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
   );
   assert.notEqual(
     installHubReportVariantKey({
@@ -82,6 +83,25 @@ test('installation-pack detail mode and durable variant normalize deterministica
     formIds: Array.from({ length: 1_000 }, (_, index) => `form-${index}`),
     sourceKey: 'tree-revision-7',
   }).length < 100);
+});
+
+test('PDF channel load labels are explicit for classified, custom, main and spare channels', () => {
+  assert.equal(installHubChannelLoadLabel({
+    purpose: 'SUB_CIRCUIT',
+    loadTypeCode: 'HVAC',
+  }), 'AC / HVAC');
+  assert.equal(installHubChannelLoadLabel({
+    purpose: 'SUB_CIRCUIT',
+    loadTypeCode: 'OTHER',
+    customLoadTypeName: 'Process line 4',
+  }), 'Process line 4');
+  assert.equal(installHubChannelLoadLabel({
+    purpose: 'MAIN_SUPPLY',
+  }), 'Main supply');
+  assert.equal(installHubChannelLoadLabel({
+    purpose: 'SPARE',
+    loadTypeCode: 'HVAC',
+  }), 'Spare / not used');
 });
 
 test('draft pinned versions are refused while an eligible historical version remains authoritative after reopen', () => {
@@ -127,6 +147,15 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
       treeSchemaVersion: 2,
       treeRevision: 13,
       recordVersionNumber: 0,
+      electricalMapLayout: {
+        version: 1,
+        canvas: { width: 1_000, height: 700 },
+        nodes: [
+          { nodeId: 'board-tbc', centerX: 700, centerY: 350 },
+          { nodeId: 'grid-1', centerX: 300, centerY: 350 },
+        ],
+      },
+      electricalMapLayoutRevision: 2,
     },
     gridSupplies: [{
       id: 'grid-1',
@@ -156,11 +185,61 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
       },
       electricalSource: { kind: 'TBC' },
       extraPhotos: [],
-      meterPresent: false,
+      meterPresent: true,
     }],
-    siteAssets: [],
-    meterDevices: [],
-    measurementAssignments: [],
+    siteAssets: [{
+      id: 'asset-1',
+      installationId: 'installation-diagnostic',
+      zoneId: 'zone-1',
+      assetName: 'Workshop HVAC',
+      typeCode: 'HVAC',
+      displayCode: {
+        value: 'DIAG-HVAC-001',
+        generatedValue: 'DIAG-HVAC-001',
+        isOverridden: false,
+        ruleVersion: 1,
+      },
+      electricalSource: { kind: 'BOARD', boardId: 'board-tbc' },
+      meteringState: { kind: 'METERED', measurementAssignmentIds: ['assignment-1'] },
+      meterPresent: true,
+      extraPhotos: [],
+    }],
+    meterDevices: [{
+      id: 'meter-1',
+      installationId: 'installation-diagnostic',
+      installedOnBoardId: 'board-tbc',
+      customName: 'Plant meter',
+      deviceFamily: 'WATTWATCHERS',
+      deviceModel: 'A3RM',
+      deviceNumber: 'DEVICE-1',
+      serialNumber: 'SERIAL-1',
+      displayName: {
+        value: 'DIAG-A3RM-001',
+        generatedValue: 'DIAG-A3RM-001',
+        isOverridden: false,
+        ruleVersion: 1,
+      },
+      channels: [{
+        id: 'channel-1',
+        ordinal: 1,
+        phaseLabel: 'L1',
+        purpose: 'SUB_CIRCUIT',
+        loadTypeCode: 'HVAC',
+        sensorRating: '60A',
+        description: 'Workshop mechanical load',
+      }],
+      wwPhotos: {},
+    }],
+    measurementAssignments: [{
+      id: 'assignment-1',
+      installationId: 'installation-diagnostic',
+      meterId: 'meter-1',
+      channelIds: ['channel-1'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    }],
     formSubmissions: [{
       id: 'draft-form',
       installationId: 'installation-diagnostic',
@@ -181,6 +260,29 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
   assert.equal(report.snapshotPayloadHash, null);
   assert.equal(report.mappingContentHash, null);
   assert.equal(report.readyToComplete, false);
+  assert.deepEqual(report.electricalMapLayout, tree.installation.electricalMapLayout);
+  assert.deepEqual(report.meters[0]?.channels[0], {
+    id: 'channel-1',
+    ordinal: 1,
+    purpose: 'SUB_CIRCUIT',
+    load: 'AC / HVAC',
+    phaseLabel: 'L1',
+    sensorRating: '60A',
+    description: 'Workshop mechanical load',
+  });
+  assert.deepEqual(report.meteringRows[0], {
+    assignmentId: 'assignment-1',
+    meterId: 'meter-1',
+    channelId: 'channel-1',
+    meterDisplayName: 'DIAG-A3RM-001',
+    channelOrdinal: 1,
+    channelPurpose: 'SUB_CIRCUIT',
+    channelDescription: 'Workshop mechanical load',
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  });
   assert.ok(report.readinessIssues.some((issue) => issue.code === 'SUPPLY_TBC'));
   assert.ok(report.unresolvedRelationships.some((item) => (
     item.subjectId === 'board-tbc' && item.reason === 'TBC'

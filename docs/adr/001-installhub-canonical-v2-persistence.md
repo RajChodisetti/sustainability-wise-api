@@ -72,7 +72,10 @@ remains exact and immutable. Historical version routes return these pinned
 artifacts and never run current canonicalizer, taxonomy, label, readiness, or
 virtual-meter code.
 
-New snapshots use canonicalizer `installation-canonical-v2.7`. Optional
+New snapshots use canonicalizer `installation-canonical-v2.8`. The optional,
+endpoint-owned electrical-map layout is included in immutable snapshots so
+completed PDF reports preserve the saved client arrangement, while ordinary
+full-sync writers cannot replace or erase it. Optional
 `baseTreeRevision` transport metadata is removed before hashing so an exact
 payload has the same hash before and after JSON persistence. A bounded verifier
 recognizes only the known v2.1 missing-key/`undefined` hashing defect for

@@ -1020,8 +1020,12 @@ export function normalizeInstallationTree(input: InstallationTree): Installation
 export function serializeInstallationTree(input: InstallationTree): Record<string, unknown> {
   const tree = ensureCanonicalTree(structuredClone(input));
   const wire = structuredClone(tree) as unknown as Record<string, unknown>;
+  const writeableInstallation = structuredClone(tree.installation);
+  delete writeableInstallation.electricalMapLayout;
+  delete writeableInstallation.electricalMapLayoutRevision;
+  delete writeableInstallation.electricalMapLayoutUpdatedAt;
   wire.installation = {
-    ...tree.installation,
+    ...writeableInstallation,
     treeSchemaVersion: 2,
     treeRevision: tree.treeRevision ?? tree.installation.treeRevision ?? 0,
     recordVersionNumber: tree.recordVersionNumber
@@ -1419,6 +1423,7 @@ export function localElectricalTree(input: InstallationTree): ElectricalTreeRead
       kind: 'BOARD' as const,
       name: board.assetName,
       displayCode: displayCodeValue(board),
+      typeCode: boardTypeCode(board),
       typeLabel: boardTypeLabel(board),
       physicalLocationId: board.zoneId,
     })),
@@ -1427,6 +1432,7 @@ export function localElectricalTree(input: InstallationTree): ElectricalTreeRead
       kind: 'SITE_ASSET' as const,
       name: asset.assetName,
       displayCode: displayCodeValue(asset),
+      typeCode: siteAssetTypeCode(asset),
       typeLabel: siteAssetTypeLabel(asset),
       physicalLocationId: asset.zoneId,
       coverageState: coverageState(tree, asset),

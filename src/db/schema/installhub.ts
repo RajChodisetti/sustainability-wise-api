@@ -41,6 +41,9 @@ export const ihInstallations = pgTable('ih_installations', {
   treeSchemaVersion: integer('tree_schema_version').notNull().default(1),
   treeRevision: integer('tree_revision').notNull().default(0),
   recordVersionNumber: integer('record_version_number').notNull().default(0),
+  electricalMapLayout: jsonb('electrical_map_layout'),
+  electricalMapLayoutRevision: integer('electrical_map_layout_revision').notNull().default(0),
+  electricalMapLayoutUpdatedAt: timestamp('electrical_map_layout_updated_at'),
   clientName: text('client_name').notNull(),
   siteName: text('site_name').notNull(),
   siteAddress: text('site_address').notNull(),
@@ -64,6 +67,7 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_tree_schema_version_check', sql`${table.treeSchemaVersion} IN (1, 2)`),
   check('ih_installations_tree_revision_check', sql`${table.treeRevision} >= 0`),
   check('ih_installations_record_version_check', sql`${table.recordVersionNumber} >= 0`),
+  check('ih_installations_electrical_map_layout_revision_check', sql`${table.electricalMapLayoutRevision} >= 0`),
   check('ih_installations_status_check', sql`${table.status} IN ('Draft', 'Completed')`),
   check('ih_installations_external_key_nonempty_check', sql`length(btrim(${table.externalKey})) > 0`),
 ]);

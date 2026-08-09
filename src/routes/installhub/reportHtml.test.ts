@@ -645,9 +645,12 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
       model: 'A3RM',
       serialNumber: 'SERIAL-1',
       channels: [{
+        id: 'channel-1',
         ordinal: 1,
         purpose: 'SUB_CIRCUIT',
-        load: 'HVAC',
+        load: 'AC / HVAC',
+        phaseLabel: 'L1',
+        sensorRating: '60A',
         description: 'Main refrigeration feed',
       }],
     }],
@@ -663,10 +666,15 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
     }],
     meteringRows: [{
       assignmentId: 'assignment-1',
+      meterId: 'meter-1',
+      channelId: 'channel-1',
       meterDisplayName: 'SITE-A3RM-001',
       channelOrdinal: 1,
+      channelPurpose: 'SUB_CIRCUIT',
+      phaseMode: 'SINGLE_PHASE',
       target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
       direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
     }],
     virtualMeterDefinitions: [{
       id: 'virtual-1',
@@ -706,8 +714,15 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
   assert.match(first, /Details by electrical hierarchy/);
   assert.match(first, /Plant room/);
   assert.match(first, /Incoming supply to connected loads/);
-  assert.match(first, /Installed device: SITE-A3RM-001 - A3RM - channels 1 \(HVAC - Main refrigeration feed\)/);
-  assert.match(first, /Measured by: SITE-A3RM-001 channel 1 \(HVAC - Main refrigeration feed\)/);
+  assert.match(first, /Connected load - AC \/ HVAC/);
+  assert.match(first, /Installed device: SITE-A3RM-001 - A3RM - channels Ch 1 - phase L1 - AC \/ HVAC - Main refrigeration feed/);
+  assert.match(first, /Measured by: SITE-A3RM-001 Ch 1 - phase L1 - AC \/ HVAC - Main refrigeration feed/);
+  assert.match(first, /Meter and channel schedule/);
+  assert.match(first, /data-meter-channel-id="channel-1"/);
+  assert.match(first, /<colgroup><col style="width:18%"/);
+  assert.match(first, /<th>Electrical load<\/th><th>Recorded allocation<\/th>/);
+  assert.match(first, /SITE-HVAC-001 - Air conditioner \(Consumption - Single phase - Confirmed\)/);
+  assert.match(first, /Sensor 60A/);
   assert.match(first, /Calculated residuals/);
   assert.match(first, /TOTAL\(assignment-total\) - SUM\(assignment-1\)/);
   assert.match(first, /calculated residual, not a direct meter reading/);
@@ -715,6 +730,25 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
   assert.match(first, /snapshot-hash-7/);
   assert.match(first, /mapping-hash-7/);
   assert.match(first, /Generated 01\/08\/2026/);
+
+  const pendingReport = structuredClone(canonicalReport);
+  pendingReport.reportSource = 'diagnostic-live';
+  pendingReport.authoritative = false;
+  pendingReport.meteringRows[0].status = 'TBC';
+  const pendingHtml = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: '',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated',
+    canonicalReport: pendingReport,
+  });
+  assert.doesNotMatch(pendingHtml, /Measured by:/);
+  assert.match(pendingHtml, /SITE-HVAC-001 - Air conditioner \(Consumption - Single phase - Tbc\)/);
 });
 
 test('live diagnostic HTML labels mutable data and shows draft forms, blockers, and unresolved TBC relationships', () => {
@@ -938,8 +972,71 @@ test('capped electrical maps keep the complete overview and add an indexed hiera
   assert.match(html, /28 additional map windows/);
   assert.match(html, /data-map-detail-fallback="indexed-hierarchy"/);
   assert.match(html, /Supplied from \/ parent/);
-  assert.match(html, /\.electrical-map-detail\{page-break-before:always/);
-  assert.match(html, /Solid copper lines show electrical supply/);
+  assert.match(html, /\.electrical-map-detail\{page:electricalmap;page-break-before:always/);
+  assert.match(html, /Straight copper lines show where power comes from/);
+  assert.match(html, /installed meters close by with active channel and load labels/);
+});
+
+test('the electrical map prints on its own landscape plate', () => {
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    detailMode: 'by-electrical-hierarchy',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: '',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated',
+    canonicalReport: {
+      reportSource: 'canonical-version',
+      treeRevision: 8,
+      recordVersionNumber: 5,
+      snapshotPayloadHash: 'snapshot-5',
+      mappingContentHash: 'mapping-5',
+      authoritative: true,
+      readyToComplete: true,
+      physicalLocations: [],
+      electricalNodes: [],
+      supplyEdges: [],
+      measurementEdges: [],
+      meters: [],
+      unresolvedRelationships: [],
+      assets: [],
+      meteringRows: [],
+      virtualMeterDefinitions: [],
+      readinessIssues: [],
+    },
+    electricalMapImages: {
+      overviewDataUri: 'data:image/png;base64,AAAA',
+      sourceWidth: 1670,
+      sourceHeight: 856,
+      overviewWidth: 1670,
+      overviewHeight: 856,
+      totalDetailWindows: 2,
+      omittedDetailWindows: 0,
+      detailTiles: [{
+        dataUri: 'data:image/png;base64,BBBB',
+        left: 0,
+        top: 68,
+        width: 1080,
+        height: 660,
+        row: 1,
+        column: 1,
+        rowCount: 1,
+        columnCount: 2,
+        windowIndex: 1,
+        windowCount: 2,
+      }],
+    },
+  });
+  // Portrait stays the document default; only the map claims the wide plate.
+  assert.match(html, /@page\{size:A4;/);
+  assert.match(html, /@page electricalmap\{size:A4 landscape;/);
+  assert.match(html, /\.electrical-map\{page:electricalmap;page-break-before:always/);
+  assert.match(html, /\.electrical-map-detail\{page:electricalmap;page-break-before:always/);
+  assert.match(html, /\.electrical-map\{[^}]*break-after:page/);
 });
 
 test('zone details render every electrical node exactly once and retain shared or unknown-zone infrastructure', () => {

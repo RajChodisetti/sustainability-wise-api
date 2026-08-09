@@ -123,7 +123,7 @@ Acceptance checks:
 - [ ] Add failed-job display and retry.
 - [ ] Verify browser uploads trigger OneDrive backup where enabled.
 - [ ] For Field App Complete, omit unresolved optional evidence from immutable
-  canonical-v2.7 snapshots while preserving exact confirmed media identity.
+  canonical-v2.8 snapshots while preserving exact confirmed media identity.
 
 Acceptance checks:
 
