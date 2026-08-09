@@ -11,7 +11,7 @@ import {
   Spinner,
   StatCard,
 } from '@/components/ui/Card';
-import { Checkbox } from '@/components/ui/FormFields';
+import { Checkbox, FieldLabel, Select } from '@/components/ui/FormFields';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/contexts/ToastContext';
@@ -22,8 +22,9 @@ import {
   findRecordVersionContainingForms,
   getAuthoritativeReportProvenance,
   getExportJobStatus,
-  getLatestExportJob,
-  matchesInstallHubReportProvenance,
+  getLatestInstallationReportJob,
+  installHubReportVariantKey,
+  matchesInstallHubInstallationReport,
   requireRecordVersionNumber,
   startInstallationPdfJob,
 } from '@/modules/installhub/api/installhub';
@@ -35,13 +36,19 @@ import {
 } from '@/modules/installhub/components/InstallHubUi';
 import { FORM_DEFINITION_BY_TYPE } from '@/modules/installhub/forms/catalog';
 import { useInstallationTree } from '@/modules/installhub/hooks/useInstallationTree';
-import type { InstallHubReportProvenance } from '@/modules/installhub/types/domain';
+import type {
+  InstallHubReportDetailMode,
+  InstallHubReportProvenance,
+} from '@/modules/installhub/types/domain';
 
 export function InstallHubReportPage() {
   const { installationId } = useParams<{ installationId: string }>();
   const query = useInstallationTree(installationId);
   const toast = useToast();
   const [selectedOverride, setSelectedOverride] = useState<string[] | null>(null);
+  const [detailMode, setDetailMode] = useState<InstallHubReportDetailMode>(
+    'by-electrical-hierarchy',
+  );
   const completedForms = query.data?.formSubmissions.filter(
     (form) => form.status === 'Completed',
   ) ?? [];
@@ -53,15 +60,36 @@ export function InstallHubReportPage() {
     (form) => selectedIds.includes(form.id) && form.historicalMeterRemoved,
   );
   const selectedScope = [...selectedIds].sort().join(',') || 'no-forms';
-  const expectedReport = useRef<InstallHubReportProvenance | null>(null);
+  const reportVariantKey = installHubReportVariantKey({
+    detailMode,
+    formIds: selectedIds,
+    sourceKey: query.data?.installation.status === 'Draft'
+      ? `tree-revision-${query.data.treeRevision ?? 0}`
+      : 'canonical',
+  });
+  const isLiveDiagnostic = query.data?.installation.status === 'Draft';
+  const expectedReport = useRef<
+    InstallHubReportProvenance | { reportSource: 'diagnostic-live' } | null
+  >(null);
   const report = useExportJob({
     scopeKey: [
       'installhub-installation',
       installationId,
       String(query.data?.recordVersionNumber ?? 'unversioned'),
+      isLiveDiagnostic ? String(query.data?.treeRevision ?? 'live') : 'canonical',
+      detailMode,
       selectedScope,
     ],
     loadLatest: async () => {
+      if (isLiveDiagnostic) {
+        const expected = { reportSource: 'diagnostic-live' as const };
+        expectedReport.current = expected;
+        return getLatestInstallationReportJob(
+          installationId,
+          expected,
+          reportVariantKey,
+        );
+      }
       const versionNumber = query.data?.recordVersionNumber;
       if (!Number.isInteger(versionNumber) || (versionNumber ?? 0) < 1) return null;
       const reportVersion = selectedIncludesHistoricalForm
@@ -76,12 +104,21 @@ export function InstallHubReportPage() {
         reportVersion,
       );
       expectedReport.current = expected;
-      return getLatestExportJob(installationId, expected);
+      return getLatestInstallationReportJob(
+        installationId,
+        expected,
+        reportVariantKey,
+      );
     },
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id),
     fallbackFilename: `${slugify(query.data?.installation.siteName ?? 'installation')}-field-app-complete-pack.pdf`,
-    matchesJob: (job) => matchesInstallHubReportProvenance(job, expectedReport.current),
+    matchesJob: (job) => matchesInstallHubInstallationReport(
+      job,
+      expectedReport.current,
+      reportVariantKey,
+      detailMode,
+    ),
   });
 
   if (query.isLoading) return <Spinner />;
@@ -108,24 +145,35 @@ export function InstallHubReportPage() {
 
   async function generate() {
     try {
-      const preferredVersion = requireRecordVersionNumber(tree.recordVersionNumber);
-      const recordVersionNumber = selectedIncludesHistoricalForm
-        ? await findRecordVersionContainingForms(
-            installationId,
-            selectedIds,
-            preferredVersion,
-          )
-        : preferredVersion;
-      expectedReport.current = await getAuthoritativeReportProvenance(
-        installationId,
-        recordVersionNumber,
-      );
+      const reportVersion = tree.installation.status === 'Draft'
+        ? { liveMode: true as const }
+        : (() => {
+            const preferredVersion = requireRecordVersionNumber(tree.recordVersionNumber);
+            return { recordVersionNumber: preferredVersion };
+          })();
+      if ('liveMode' in reportVersion) {
+        expectedReport.current = { reportSource: 'diagnostic-live' };
+      } else {
+        const recordVersionNumber = selectedIncludesHistoricalForm
+          ? await findRecordVersionContainingForms(
+              installationId,
+              selectedIds,
+              reportVersion.recordVersionNumber,
+            )
+          : reportVersion.recordVersionNumber;
+        reportVersion.recordVersionNumber = recordVersionNumber;
+        expectedReport.current = await getAuthoritativeReportProvenance(
+          installationId,
+          recordVersionNumber,
+        );
+      }
       await report.start(() =>
         startInstallationPdfJob(
           installationId,
           {
-            recordVersionNumber,
+            ...reportVersion,
             formSubmissionIds: completedForms.length ? selectedIds : undefined,
+            detailMode,
           },
         ),
       );
@@ -236,14 +284,52 @@ export function InstallHubReportPage() {
         </InlineNotice>
       )}
 
-      {!hasPinnedVersion ? (
+      {tree.installation.status === 'Draft' ? (
         <div className="mt-5">
           <InlineNotice tone="warning">
-            Authoritative PDF generation requires a pinned record version.
-            Complete the installation workflow before generating this report.
+            This Draft report uses the current cloud tree and is clearly marked
+            non-authoritative. Complete the installation to create an immutable,
+            pinned report source.
+          </InlineNotice>
+        </div>
+      ) : !hasPinnedVersion ? (
+        <div className="mt-5">
+          <InlineNotice tone="warning">
+            This Completed installation has no eligible pinned record version,
+            so an authoritative PDF cannot be generated.
           </InlineNotice>
         </div>
       ) : null}
+
+      <Card className="mt-5">
+        <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,360px)] md:items-end">
+          <div>
+            <h2 className="text-lg font-extrabold text-[var(--text)]">
+              Report organisation
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
+              The electrical map is always included. Choose how the supporting
+              switchboard, device and load details are grouped.
+            </p>
+          </div>
+          <div>
+            <FieldLabel htmlFor="installhub-report-detail-mode">
+              Detail grouping
+            </FieldLabel>
+            <Select
+              id="installhub-report-detail-mode"
+              value={detailMode}
+              disabled={report.active || report.starting}
+              onChange={(event) => setDetailMode(
+                event.target.value as InstallHubReportDetailMode,
+              )}
+            >
+              <option value="by-electrical-hierarchy">By electrical hierarchy</option>
+              <option value="by-zone">By physical zone</option>
+            </Select>
+          </div>
+        </div>
+      </Card>
 
       <Card className="my-5">
         <div className="mb-4">
@@ -298,9 +384,10 @@ export function InstallHubReportPage() {
               API server PDF
             </h2>
             <p className="mt-1 max-w-2xl text-sm leading-6 text-[var(--text-sub)]">
-              The server reads pinned record version {tree.recordVersionNumber ?? '—'}
-              {' '}and its original evidence, then keeps the finished PDF in
-              cloud file history.
+              {tree.installation.status === 'Draft'
+                ? 'The server renders the current cloud tree as a non-authoritative diagnostic, including its electrical map.'
+                : `The server reads pinned record version ${tree.recordVersionNumber ?? '—'} and its original evidence.`}
+              {' '}The finished PDF remains available in cloud file history.
             </p>
           </div>
           <Button
@@ -308,7 +395,7 @@ export function InstallHubReportPage() {
             disabled={
               report.active ||
               report.starting ||
-              !hasPinnedVersion ||
+              (tree.installation.status === 'Completed' && !hasPinnedVersion) ||
               (completedForms.length > 0 && selectedIds.length === 0)
             }
             onClick={() => void generate()}

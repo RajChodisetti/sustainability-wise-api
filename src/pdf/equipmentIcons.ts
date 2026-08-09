@@ -25,9 +25,17 @@ const ICON_MARKUP: Record<PdfEquipmentIconName, string> = {
 };
 
 /**
+ * Returns the trusted, static vector body for use inside another SVG document.
+ * Callers remain responsible for the surrounding viewBox and presentation.
+ */
+export function pdfEquipmentIconMarkup(name: PdfEquipmentIconName): string {
+  return ICON_MARKUP[name];
+}
+
+/**
  * Inline vector markup keeps PDF icons independent of host emoji fonts.
  * All paths are ASCII-only so Chromium can print them consistently on Linux.
  */
 export function renderPdfEquipmentIcon(name: PdfEquipmentIconName): string {
-  return `<span class="iico" data-pdf-icon="${name}" aria-hidden="true"><svg class="iico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">${ICON_MARKUP[name]}</svg></span>`;
+  return `<span class="iico" data-pdf-icon="${name}" aria-hidden="true"><svg class="iico-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">${pdfEquipmentIconMarkup(name)}</svg></span>`;
 }

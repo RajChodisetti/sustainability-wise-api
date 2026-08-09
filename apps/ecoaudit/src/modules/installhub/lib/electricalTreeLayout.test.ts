@@ -13,10 +13,11 @@ import {
   ensureCanonicalTree,
 } from './workflow';
 import {
-  ELECTRICAL_TREE_NODE_HEIGHT,
   buildElectricalTreeLayout,
   electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
+  electricalTreeNodeSize,
+  electricalTreeOrthogonalPath,
   fitElectricalTreeViewport,
   resolvedElectricalMeasurementDetails,
   zoomElectricalTreeViewport,
@@ -45,6 +46,34 @@ function topology(): ElectricalTreeReadModel {
   };
 }
 
+function largeTerminalFanoutTopology(): ElectricalTreeReadModel {
+  const assets = Array.from({ length: 10 }, (_, index) => ({
+    id: `asset-${index + 1}`,
+    kind: 'SITE_ASSET' as const,
+    name: `HVAC load ${index + 1}`,
+    typeLabel: 'AC / HVAC',
+  }));
+  return {
+    installationId: 'installation-1',
+    treeRevision: 1,
+    nodes: [
+      { id: 'grid-1', kind: 'GRID', name: 'Incoming grid' },
+      { id: 'board-1', kind: 'BOARD', name: 'Main switchboard' },
+      ...assets,
+    ],
+    edges: [
+      { id: 'fed-board', sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+      ...assets.map((asset, index) => ({
+        id: `fed-asset-${index + 1}`,
+        sourceNodeId: 'board-1',
+        targetNodeId: asset.id,
+        relationship: 'FED_FROM' as const,
+      })),
+    ],
+    unresolved: [],
+  };
+}
+
 test('interactive electrical tree lays out FED_FROM branches and derived residuals deterministically', () => {
   const layout = buildElectricalTreeLayout(topology());
   const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
@@ -58,10 +87,128 @@ test('interactive electrical tree lays out FED_FROM branches and derived residua
     && edge.targetNodeId === 'virtual-1'
   )), true);
 
-  const branchYs = ['board-2', 'asset-1', 'virtual-1'].map((id) => byId.get(id)!.y).sort((left, right) => left - right);
-  assert.ok(branchYs[1] - branchYs[0] >= ELECTRICAL_TREE_NODE_HEIGHT);
-  assert.ok(branchYs[2] - branchYs[1] >= ELECTRICAL_TREE_NODE_HEIGHT);
+  const branches = ['board-2', 'asset-1', 'virtual-1']
+    .map((id) => byId.get(id)!)
+    .sort((left, right) => left.y - right.y);
+  assert.ok(branches[0].y + branches[0].height < branches[1].y);
+  assert.ok(branches[1].y + branches[1].height < branches[2].y);
   assert.deepEqual(buildElectricalTreeLayout(topology()), layout);
+});
+
+test('single-line schematic uses variable equipment footprints and orthogonal connectors', () => {
+  const layout = buildElectricalTreeLayout(topology());
+  const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
+  const grid = byId.get('grid-1')!;
+  const board = byId.get('board-1')!;
+  const asset = byId.get('asset-1')!;
+  const residual = byId.get('virtual-1')!;
+
+  assert.deepEqual(
+    { width: board.width, height: board.height },
+    electricalTreeNodeSize('BOARD'),
+  );
+  assert.ok(board.width > asset.width);
+  assert.ok(board.height > asset.height);
+  assert.ok(residual.height < asset.height);
+  assert.ok(grid.x + grid.width < board.x);
+
+  const supplyPath = electricalTreeOrthogonalPath(grid, board);
+  assert.match(supplyPath, /^M -?\d+(?:\.\d+)? -?\d+(?:\.\d+)? H -?\d+(?:\.\d+)? V -?\d+(?:\.\d+)? H -?\d+(?:\.\d+)?$/);
+  assert.doesNotMatch(supplyPath, /[CQ]/);
+  assert.notEqual(
+    supplyPath,
+    electricalTreeOrthogonalPath(grid, board, { sourceYOffset: 13, targetYOffset: 13, trunkRatio: 0.58 }),
+  );
+  const selfMeasurementPath = electricalTreeOrthogonalPath(board, board, { sourceYOffset: 13 });
+  assert.match(selfMeasurementPath, /^M .+ H .+ V .+ H .+ V .+$/);
+  assert.doesNotMatch(selfMeasurementPath, /[CQ]/);
+
+  for (const depth of new Set(layout.nodes.map((item) => item.depth))) {
+    const column = layout.nodes
+      .filter((item) => item.depth === depth)
+      .sort((left, right) => left.y - right.y);
+    for (let index = 1; index < column.length; index += 1) {
+      assert.ok(column[index - 1].y + column[index - 1].height < column[index].y);
+    }
+  }
+});
+
+test('variable-height sibling boards reserve enough branch space to avoid overlap', () => {
+  const model: ElectricalTreeReadModel = {
+    installationId: 'installation-1',
+    treeRevision: 1,
+    nodes: [
+      { id: 'grid-1', kind: 'GRID', name: 'Grid' },
+      { id: 'board-1', kind: 'BOARD', name: 'Board one' },
+      { id: 'board-2', kind: 'BOARD', name: 'Board two' },
+      { id: 'residual-1', kind: 'VIRTUAL_RESIDUAL', name: 'Residual one', parentNodeId: 'board-1' },
+      { id: 'residual-2', kind: 'VIRTUAL_RESIDUAL', name: 'Residual two', parentNodeId: 'board-2' },
+    ],
+    edges: [
+      { id: 'fed-1', sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+      { id: 'fed-2', sourceNodeId: 'grid-1', targetNodeId: 'board-2', relationship: 'FED_FROM' },
+    ],
+    unresolved: [],
+  };
+  const layout = buildElectricalTreeLayout(model);
+  const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
+  const firstBoard = byId.get('board-1')!;
+  const secondBoard = byId.get('board-2')!;
+  const firstResidual = byId.get('residual-1')!;
+  const secondResidual = byId.get('residual-2')!;
+
+  assert.equal(firstBoard.depth, secondBoard.depth);
+  assert.ok(firstBoard.y + firstBoard.height < secondBoard.y);
+  assert.ok(firstResidual.y + firstResidual.height < secondResidual.y);
+  assert.equal(firstBoard.y + firstBoard.height / 2, firstResidual.y + firstResidual.height / 2);
+  assert.equal(secondBoard.y + secondBoard.height / 2, secondResidual.y + secondResidual.height / 2);
+});
+
+test('large terminal asset fan-outs pack into legible presentation lanes without changing semantic depth', () => {
+  const model = largeTerminalFanoutTopology();
+  const layout = buildElectricalTreeLayout(model);
+  const assets = layout.nodes.filter((item) => item.node.kind === 'SITE_ASSET');
+  const fitted = fitElectricalTreeViewport(1200, 640, layout.width, layout.height);
+
+  assert.equal(assets.length, 10);
+  assert.deepEqual([...new Set(assets.map((item) => item.depth))], [2]);
+  assert.deepEqual([...new Set(assets.map((item) => item.presentationLane))], [0, 1]);
+  assert.ok(Math.max(...assets.map((item) => item.presentationRow || 0)) <= 4);
+  assert.ok(fitted.scale >= 0.6, `expected a legible overview scale, received ${fitted.scale}`);
+  assert.ok(8 * fitted.scale >= 4.8, 'compact labels should retain at least a 4.8px rendered overview size');
+
+  for (let leftIndex = 0; leftIndex < assets.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < assets.length; rightIndex += 1) {
+      const left = assets[leftIndex];
+      const right = assets[rightIndex];
+      const overlaps = left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y;
+      assert.equal(overlaps, false, `${left.node.id} should not overlap ${right.node.id}`);
+    }
+  }
+
+  const secondLaneAsset = assets.find((item) => item.presentationLane === 1)!;
+  const board = layout.nodes.find((item) => item.node.id === 'board-1')!;
+  const deeperLanePath = electricalTreeOrthogonalPath(board, secondLaneAsset);
+  assert.match(deeperLanePath, /^M .+ H .+ V .+ H .+ V .+$/);
+  const coordinates = (deeperLanePath.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+  assert.equal(coordinates.length, 6);
+  const [, sourceY, trunkX, routeY, finalX] = coordinates;
+  const firstLaneAssets = assets.filter((item) => item.presentationLane === 0);
+  const firstLaneX = Math.min(...firstLaneAssets.map((item) => item.x));
+  const firstLaneRight = Math.max(...firstLaneAssets.map((item) => item.x + item.width));
+  assert.ok(trunkX > board.x + board.width && trunkX < firstLaneX);
+  assert.ok(sourceY > board.y && sourceY < board.y + board.height);
+  assert.ok(finalX > firstLaneRight);
+  for (const firstLaneAsset of firstLaneAssets) {
+    assert.ok(
+      routeY < firstLaneAsset.y || routeY > firstLaneAsset.y + firstLaneAsset.height,
+      `deeper-lane horizontal route should stay outside ${firstLaneAsset.node.id}`,
+    );
+  }
+  assert.deepEqual(buildElectricalTreeLayout(structuredClone(model)), layout);
 });
 
 test('interactive electrical tree is stable across input order and draws only its chosen supply parent', () => {
@@ -84,6 +231,10 @@ test('interactive electrical tree is stable across input order and draws only it
   ));
   assert.deepEqual(inboundSupply.map((edge) => edge.id), ['fed-0-competing-parent']);
   assert.equal(electricalTreeNodeContext(multiParentLayout, 'asset-1').parentId, 'grid-1');
+  const multiParentById = new Map(multiParentLayout.nodes.map((item) => [item.node.id, item]));
+  assert.equal(multiParentById.get('asset-1')?.depth, 1);
+  assert.equal(multiParentById.get('asset-1')?.x, multiParentById.get('board-1')?.x);
+  assert.ok(multiParentById.get('grid-1')!.x < multiParentById.get('asset-1')!.x);
 });
 
 test('interactive electrical tree context separates supply descendants from measurement overlays', () => {
@@ -199,7 +350,7 @@ test('node details expose exact meter channels only through canonical MEASURES e
   assert.deepEqual(resolvedElectricalMeasurementDetails(tree, model, 'asset-1').map((detail) => detail.assignment.id), ['assignment-valid']);
 });
 
-test('map card summaries expose installed device identity, channel loads, and confirmed assigned assets', () => {
+test('schematic summaries expose installed device identity, channel loads, and confirmed assigned assets', () => {
   const tree = measurementTree();
   const model = topology();
   model.edges = [

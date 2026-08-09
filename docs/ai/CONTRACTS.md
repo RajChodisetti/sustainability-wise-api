@@ -71,18 +71,40 @@ Field App Complete queues reports through:
 ```text
 POST /v1/installhub/installations/:installationId/forms/:formId/report/pdf/jobs
 POST /v1/installhub/installations/:installationId/report/pdf/jobs
-     body: { formSubmissionIds?: string[] }
-GET  /v1/export/jobs/latest?entityId=<id>&artifactType=pdf
+     body: {
+       formSubmissionIds?: string[],
+       detailMode?: "by-zone" | "by-electrical-hierarchy",
+       recordVersionNumber?: number,
+       liveMode?: true
+     }
+GET  /v1/export/jobs/latest?entityId=<id>&artifactType=pdf&reportVariantKey=<key>
 GET  /v1/export/jobs/:jobId
 GET  /v1/export/jobs/:jobId/download
 ```
 
-The two start routes require a completed, backed-up form source and installation
-access and return HTTP 202 `{ jobId, reused }`. The installation route includes
-all completed forms when `formSubmissionIds` is omitted. Status/download is
-app-scoped and owner-scoped, with admin override; download returns 409 until the
-job is complete. Active equivalent work is reused, and clients persist/poll the
-job instead of applying a fixed overall timeout.
+The two start routes require installation access and a completed form source and
+return HTTP 202 with durable job identity, provenance, detail mode, and report
+variant fields. Authoritative reports use an eligible immutable
+`recordVersionNumber`. An explicit `liveMode: true` preserves the legacy mobile
+diagnostic path and produces a visibly non-authoritative report from one captured
+tree revision; it must fail instead of mixing revisions if the live tree changes
+after queueing. The portal offers live diagnostics for Draft installations and
+requires an eligible pinned version for Completed installations. Supplying both
+source modes, or neither, is invalid.
+
+The installation route includes all completed forms when `formSubmissionIds` is
+omitted. It always embeds the electrical map generated from the exact same
+canonical or captured live tree and supports detail sections grouped either by
+physical zone or by electrical hierarchy. Zone grouping must include shared or
+unassigned infrastructure exactly once. Sustainability Wise branding, A4 page
+frames, evidence handling, section-boundary pagination, and page stamping follow
+the same PDF rules as SolarSense and EcoAudit. Equivalent work is isolated by a
+fixed-length digest of the normalized form selection plus renderer, source, and
+detail-mode identity; raw form IDs must not be placed in the latest-job query.
+
+Status/download is app-scoped and owner-scoped, with admin override; download
+returns 409 until the job is complete. Active equivalent work is reused, and
+clients persist/poll the job instead of applying a fixed overall timeout.
 
 The versioned Field App Complete report manifest is the shared source for server form
 labels, order and conditional visibility across the six schema-v2 form families

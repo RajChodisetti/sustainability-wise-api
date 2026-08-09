@@ -8,6 +8,9 @@ import {
   findRecordVersionContainingForms,
   getInstallationReadiness,
   getLatestExportJob,
+  getLatestInstallationReportJob,
+  installHubReportVariantKey,
+  matchesInstallHubInstallationReport,
   matchesInstallHubReportProvenance,
   requireRecordVersionNumber,
   startFormPdfJob,
@@ -1569,12 +1572,28 @@ test('authoritative report starters require a pinned version and send it in the 
     await startInstallationPdfJob('installation-golden', {
       recordVersionNumber: 7,
       formSubmissionIds: ['form-a', 'form-a', 'form-b'],
+      detailMode: 'by-zone',
     });
     await getLatestExportJob('installation-golden', {
       recordVersionNumber: 7,
       recordVersionPayloadHash: 'payload-hash-7',
       reportSource: 'canonical-version',
     });
+    await startInstallationPdfJob('installation-golden', {
+      liveMode: true,
+      formSubmissionIds: ['form-b', 'form-a'],
+      detailMode: 'by-electrical-hierarchy',
+    });
+    const diagnosticVariant = installHubReportVariantKey({
+      detailMode: 'by-electrical-hierarchy',
+      formIds: ['form-a', 'form-b'],
+      sourceKey: 'tree-revision-11',
+    });
+    await getLatestInstallationReportJob(
+      'installation-golden',
+      { reportSource: 'diagnostic-live' },
+      diagnosticVariant,
+    );
     assert.match(
       requests[0].url,
       /\/forms\/form%2Fhistory\/report\/pdf\/jobs\?recordVersionNumber=7$/,
@@ -1584,6 +1603,7 @@ test('authoritative report starters require a pinned version and send it in the 
     assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
       recordVersionNumber: 7,
       formSubmissionIds: ['form-a', 'form-b'],
+      detailMode: 'by-zone',
     });
     const latestUrl = new URL(requests[2].url, 'http://localhost');
     assert.equal(latestUrl.pathname, '/v1/export/jobs/latest');
@@ -1591,6 +1611,14 @@ test('authoritative report starters require a pinned version and send it in the 
     assert.equal(latestUrl.searchParams.get('recordVersionNumber'), '7');
     assert.equal(latestUrl.searchParams.get('recordVersionPayloadHash'), 'payload-hash-7');
     assert.equal(latestUrl.searchParams.get('reportSource'), 'canonical-version');
+    assert.deepEqual(JSON.parse(String(requests[3].init?.body)), {
+      liveMode: true,
+      formSubmissionIds: ['form-a', 'form-b'],
+      detailMode: 'by-electrical-hierarchy',
+    });
+    const diagnosticLatestUrl = new URL(requests[4].url, 'http://localhost');
+    assert.equal(diagnosticLatestUrl.searchParams.get('reportSourceFilter'), 'diagnostic-live');
+    assert.equal(diagnosticLatestUrl.searchParams.get('reportVariantKey'), diagnosticVariant);
   } finally {
     globalThis.fetch = priorFetch;
     if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
@@ -1706,6 +1734,43 @@ test('portal report provenance matching rejects stale versions, stale hashes, an
     reportSource: 'diagnostic-live',
   }, expected), false);
   assert.equal(matchesInstallHubReportProvenance(null, expected), false);
+});
+
+test('installation report matching isolates detail mode, selected forms, and Draft tree revision', () => {
+  const hierarchyVariant = installHubReportVariantKey({
+    detailMode: 'by-electrical-hierarchy',
+    formIds: ['form-b', 'form-a'],
+    sourceKey: 'tree-revision-8',
+  });
+  const job = {
+    recordVersionNumber: null,
+    recordVersionPayloadHash: null,
+    reportSource: 'diagnostic-live' as const,
+    detailMode: 'by-electrical-hierarchy' as const,
+    reportVariantKey: hierarchyVariant,
+  };
+  assert.equal(matchesInstallHubInstallationReport(
+    job,
+    { reportSource: 'diagnostic-live' },
+    hierarchyVariant,
+    'by-electrical-hierarchy',
+  ), true);
+  assert.equal(matchesInstallHubInstallationReport(
+    job,
+    { reportSource: 'diagnostic-live' },
+    installHubReportVariantKey({
+      detailMode: 'by-electrical-hierarchy',
+      formIds: ['form-a', 'form-b'],
+      sourceKey: 'tree-revision-9',
+    }),
+    'by-electrical-hierarchy',
+  ), false);
+  assert.equal(matchesInstallHubInstallationReport(
+    job,
+    { reportSource: 'diagnostic-live' },
+    hierarchyVariant,
+    'by-zone',
+  ), false);
 });
 
 test('readiness paging and search keep issues beyond the first one hundred reachable', async () => {

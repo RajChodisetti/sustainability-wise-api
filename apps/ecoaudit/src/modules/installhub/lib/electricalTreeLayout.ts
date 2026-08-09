@@ -8,18 +8,51 @@ import type {
 import { electricalHierarchyRows } from './electricalPresentation';
 import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
-export const ELECTRICAL_TREE_NODE_WIDTH = 280;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 156;
-const HORIZONTAL_GAP = 104;
+export const ELECTRICAL_TREE_NODE_WIDTH = 148;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 116;
+const ELECTRICAL_TREE_BOARD_WIDTH = 214;
+const ELECTRICAL_TREE_BOARD_HEIGHT = 172;
+const ELECTRICAL_TREE_GRID_WIDTH = 128;
+const ELECTRICAL_TREE_GRID_HEIGHT = 116;
+const ELECTRICAL_TREE_RESIDUAL_WIDTH = 144;
+const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 88;
+const HORIZONTAL_GAP = 136;
 const VERTICAL_GAP = 36;
-const CANVAS_PADDING = 48;
+const PACKED_TERMINAL_MAX_ROWS = 5;
+const PACKED_TERMINAL_LANE_GAP = 44;
+const CANVAS_PADDING = 64;
+
+export type ElectricalTreeNodeSize = {
+  width: number;
+  height: number;
+};
+
+export function electricalTreeNodeSize(
+  kind: ElectricalTreeReadModel['nodes'][number]['kind'],
+): ElectricalTreeNodeSize {
+  if (kind === 'BOARD') {
+    return { width: ELECTRICAL_TREE_BOARD_WIDTH, height: ELECTRICAL_TREE_BOARD_HEIGHT };
+  }
+  if (kind === 'GRID') {
+    return { width: ELECTRICAL_TREE_GRID_WIDTH, height: ELECTRICAL_TREE_GRID_HEIGHT };
+  }
+  if (kind === 'VIRTUAL_RESIDUAL') {
+    return { width: ELECTRICAL_TREE_RESIDUAL_WIDTH, height: ELECTRICAL_TREE_RESIDUAL_HEIGHT };
+  }
+  return { width: ELECTRICAL_TREE_NODE_WIDTH, height: ELECTRICAL_TREE_NODE_HEIGHT };
+}
 
 export type ElectricalTreeLayoutNode = {
   node: ElectricalTreeReadModel['nodes'][number];
   x: number;
   y: number;
+  width: number;
+  height: number;
   depth: number;
   parentId?: string;
+  presentationLane?: number;
+  presentationRow?: number;
+  packedTerminal?: boolean;
 };
 
 export type ElectricalTreeLayoutEdge = Omit<ElectricalTreeReadModel['edges'][number], 'relationship'> & {
@@ -103,48 +136,167 @@ export function buildElectricalTreeLayout(
   for (const children of childrenById.values()) {
     children.sort((left, right) => (orderById.get(left) || 0) - (orderById.get(right) || 0));
   }
+  const depthById = new Map<string, number>();
 
-  const yById = new Map<string, number>();
-  const visited = new Set<string>();
-  let nextLeafY = CANVAS_PADDING;
-
-  function place(nodeId: string, path: Set<string>): number {
-    const existing = yById.get(nodeId);
-    if (existing !== undefined) return existing;
-    if (path.has(nodeId)) {
-      const cycleY = nextLeafY;
-      nextLeafY += ELECTRICAL_TREE_NODE_HEIGHT + VERTICAL_GAP;
-      yById.set(nodeId, cycleY);
-      return cycleY;
+  function selectedParentDepth(nodeId: string, path = new Set<string>()): number {
+    const cached = depthById.get(nodeId);
+    if (cached !== undefined) return cached;
+    const parentId = parentById.get(nodeId);
+    if (!parentId || !rowById.has(parentId) || path.has(nodeId)) {
+      depthById.set(nodeId, 0);
+      return 0;
     }
+    const parentDepth = selectedParentDepth(parentId, new Set(path).add(nodeId));
+    const cycleRootDepth = depthById.get(nodeId);
+    if (cycleRootDepth !== undefined) return cycleRootDepth;
+    const depth = parentDepth + 1;
+    depthById.set(nodeId, depth);
+    return depth;
+  }
+
+  for (const row of rows) selectedParentDepth(row.node.id);
+
+  const sizeById = new Map(rows.map((row) => [row.node.id, electricalTreeNodeSize(row.node.kind)]));
+  const centerYById = new Map<string, number>();
+  const presentationById = new Map<string, { lane: number; row: number }>();
+  type ChildUnit =
+    | { kind: 'NODE'; nodeIds: [string] }
+    | { kind: 'PACKED_TERMINALS'; nodeIds: string[]; laneCount: number; rowCount: number };
+  const childUnitsById = new Map<string, ChildUnit[]>();
+  const subtreeHeightById = new Map<string, number>();
+
+  function childUnits(nodeId: string): ChildUnit[] {
+    const cached = childUnitsById.get(nodeId);
+    if (cached) return cached;
+    const children = childrenById.get(nodeId) || [];
+    const packableIds = children.filter((childId) => (
+      rowById.get(childId)?.node.kind === 'SITE_ASSET'
+      && !(childrenById.get(childId)?.length)
+    ));
+    if (packableIds.length <= PACKED_TERMINAL_MAX_ROWS) {
+      const units: ChildUnit[] = children.map((childId) => ({ kind: 'NODE', nodeIds: [childId] }));
+      childUnitsById.set(nodeId, units);
+      return units;
+    }
+    const packable = new Set(packableIds);
+    const laneCount = Math.ceil(packableIds.length / PACKED_TERMINAL_MAX_ROWS);
+    const rowCount = Math.ceil(packableIds.length / laneCount);
+    const units: ChildUnit[] = [];
+    let packedInserted = false;
+    for (const childId of children) {
+      if (!packable.has(childId)) {
+        units.push({ kind: 'NODE', nodeIds: [childId] });
+      } else if (!packedInserted) {
+        units.push({ kind: 'PACKED_TERMINALS', nodeIds: packableIds, laneCount, rowCount });
+        packedInserted = true;
+      }
+    }
+    childUnitsById.set(nodeId, units);
+    return units;
+  }
+
+  function packedUnitHeight(unit: Extract<ChildUnit, { kind: 'PACKED_TERMINALS' }>): number {
+    const tallestNode = Math.max(...unit.nodeIds.map((nodeId) => (
+      sizeById.get(nodeId)?.height || ELECTRICAL_TREE_NODE_HEIGHT
+    )));
+    return unit.rowCount * tallestNode + Math.max(0, unit.rowCount - 1) * VERTICAL_GAP;
+  }
+
+  function subtreeHeight(nodeId: string, path = new Set<string>()): number {
+    const cached = subtreeHeightById.get(nodeId);
+    if (cached !== undefined) return cached;
+    const ownHeight = sizeById.get(nodeId)?.height || ELECTRICAL_TREE_NODE_HEIGHT;
+    if (path.has(nodeId)) return ownHeight;
     const nextPath = new Set(path).add(nodeId);
-    const children = (childrenById.get(nodeId) || []).filter((childId) => !nextPath.has(childId));
-    let y: number;
-    if (!children.length) {
-      y = nextLeafY;
-      nextLeafY += ELECTRICAL_TREE_NODE_HEIGHT + VERTICAL_GAP;
-    } else {
-      const childYs = children.map((childId) => place(childId, nextPath));
-      y = (childYs[0] + childYs[childYs.length - 1]) / 2;
-    }
-    yById.set(nodeId, y);
-    visited.add(nodeId);
-    return y;
+    const units = childUnits(nodeId);
+    const childrenHeight = units.reduce((total, unit) => (
+      total + (unit.kind === 'PACKED_TERMINALS'
+        ? packedUnitHeight(unit)
+        : subtreeHeight(unit.nodeIds[0], nextPath))
+    ), 0) + Math.max(0, units.length - 1) * VERTICAL_GAP;
+    const height = Math.max(ownHeight, childrenHeight);
+    subtreeHeightById.set(nodeId, height);
+    return height;
+  }
+
+  function placeNode(nodeId: string, top: number, path = new Set<string>()) {
+    if (centerYById.has(nodeId)) return;
+    const height = subtreeHeight(nodeId, path);
+    centerYById.set(nodeId, top + height / 2);
+    if (path.has(nodeId)) return;
+    const nextPath = new Set(path).add(nodeId);
+    const units = childUnits(nodeId);
+    const unitHeights = units.map((unit) => (
+      unit.kind === 'PACKED_TERMINALS'
+        ? packedUnitHeight(unit)
+        : subtreeHeight(unit.nodeIds[0], nextPath)
+    ));
+    const totalChildrenHeight = unitHeights.reduce((total, unitHeight) => total + unitHeight, 0)
+      + Math.max(0, units.length - 1) * VERTICAL_GAP;
+    let childTop = top + (height - totalChildrenHeight) / 2;
+    units.forEach((unit, unitIndex) => {
+      if (unit.kind === 'NODE') {
+        placeNode(unit.nodeIds[0], childTop, nextPath);
+      } else {
+        const tallestNode = Math.max(...unit.nodeIds.map((childId) => (
+          sizeById.get(childId)?.height || ELECTRICAL_TREE_NODE_HEIGHT
+        )));
+        unit.nodeIds.forEach((childId, childIndex) => {
+          const lane = Math.floor(childIndex / unit.rowCount);
+          const row = childIndex % unit.rowCount;
+          centerYById.set(
+            childId,
+            childTop + row * (tallestNode + VERTICAL_GAP) + tallestNode / 2,
+          );
+          presentationById.set(childId, { lane, row });
+        });
+      }
+      childTop += unitHeights[unitIndex] + VERTICAL_GAP;
+    });
   }
 
   const roots = rows.filter((row) => !parentById.has(row.node.id));
-  for (const root of roots) place(root.node.id, new Set());
+  let nextRootTop = CANVAS_PADDING;
+  for (const root of roots) {
+    placeNode(root.node.id, nextRootTop);
+    nextRootTop += subtreeHeight(root.node.id) + VERTICAL_GAP;
+  }
   for (const row of rows) {
-    if (!visited.has(row.node.id)) place(row.node.id, new Set());
+    if (centerYById.has(row.node.id)) continue;
+    placeNode(row.node.id, nextRootTop);
+    nextRootTop += subtreeHeight(row.node.id) + VERTICAL_GAP;
   }
 
-  const nodes = rows.map((row) => ({
-    node: row.node,
-    x: CANVAS_PADDING + row.depth * (ELECTRICAL_TREE_NODE_WIDTH + HORIZONTAL_GAP),
-    y: yById.get(row.node.id) || CANVAS_PADDING,
-    depth: row.depth,
-    ...(parentById.has(row.node.id) ? { parentId: parentById.get(row.node.id) } : {}),
-  }));
+  const maxDepth = Math.max(0, ...rows.map((row) => depthById.get(row.node.id) || 0));
+  const maxWidthByDepth = Array.from({ length: maxDepth + 1 }, () => 0);
+  for (const row of rows) {
+    const width = sizeById.get(row.node.id)?.width || ELECTRICAL_TREE_NODE_WIDTH;
+    const depth = depthById.get(row.node.id) || 0;
+    maxWidthByDepth[depth] = Math.max(maxWidthByDepth[depth], width);
+  }
+  const xByDepth = [CANVAS_PADDING];
+  for (let depth = 1; depth <= maxDepth; depth += 1) {
+    xByDepth[depth] = xByDepth[depth - 1] + maxWidthByDepth[depth - 1] + HORIZONTAL_GAP;
+  }
+  const nodes = rows.map((row) => {
+    const size = sizeById.get(row.node.id) || electricalTreeNodeSize(row.node.kind);
+    const presentation = presentationById.get(row.node.id);
+    const depth = depthById.get(row.node.id) || 0;
+    return {
+      node: row.node,
+      x: xByDepth[depth] + (presentation?.lane || 0) * (size.width + PACKED_TERMINAL_LANE_GAP),
+      y: (centerYById.get(row.node.id) || CANVAS_PADDING) - size.height / 2,
+      width: size.width,
+      height: size.height,
+      depth,
+      ...(parentById.has(row.node.id) ? { parentId: parentById.get(row.node.id) } : {}),
+      ...(presentation ? {
+        presentationLane: presentation.lane,
+        presentationRow: presentation.row,
+        packedTerminal: true,
+      } : {}),
+    };
+  });
   const nodeIds = new Set(nodes.map((item) => item.node.id));
   const seenEdgeIds = new Set<string>();
   const edges: ElectricalTreeLayoutEdge[] = [...model.edges]
@@ -177,14 +329,53 @@ export function buildElectricalTreeLayout(
     });
   }
 
-  const maxDepth = Math.max(0, ...nodes.map((item) => item.depth));
-  const maxY = Math.max(CANVAS_PADDING, ...nodes.map((item) => item.y));
+  const maxRight = Math.max(CANVAS_PADDING, ...nodes.map((item) => item.x + item.width));
+  const maxBottom = Math.max(CANVAS_PADDING, ...nodes.map((item) => item.y + item.height));
   return {
-    width: CANVAS_PADDING * 2 + ELECTRICAL_TREE_NODE_WIDTH + maxDepth * (ELECTRICAL_TREE_NODE_WIDTH + HORIZONTAL_GAP),
-    height: maxY + ELECTRICAL_TREE_NODE_HEIGHT + CANVAS_PADDING,
+    width: maxRight + CANVAS_PADDING,
+    height: maxBottom + CANVAS_PADDING,
     nodes,
     edges,
   };
+}
+
+function cleanCoordinate(value: number): number {
+  return Number(value.toFixed(2));
+}
+
+/**
+ * Produces the orthogonal, single-line-diagram route used for supply,
+ * measurement, and calculated-residual connectors.
+ */
+export function electricalTreeOrthogonalPath(
+  source: ElectricalTreeLayoutNode,
+  target: ElectricalTreeLayoutNode,
+  options: { sourceYOffset?: number; targetYOffset?: number; trunkRatio?: number } = {},
+): string {
+  if (source.node.id === target.node.id) {
+    const sourceX = source.x + source.width;
+    const sourceY = source.y + source.height / 2 + (options.sourceYOffset || 0);
+    const loopX = sourceX + 30;
+    const targetX = source.x + source.width * 0.68;
+    const targetY = source.y + source.height;
+    const loopY = targetY + 24;
+    return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(loopX)} V ${cleanCoordinate(loopY)} H ${cleanCoordinate(targetX)} V ${cleanCoordinate(targetY)}`;
+  }
+  const movingRight = target.x >= source.x;
+  const sourceX = movingRight ? source.x + source.width : source.x;
+  const targetX = movingRight ? target.x : target.x + target.width;
+  const sourceY = source.y + source.height / 2 + (options.sourceYOffset || 0);
+  const targetY = target.y + target.height / 2 + (options.targetYOffset || 0);
+  const trunkRatio = clamp(options.trunkRatio ?? 0.46, 0.2, 0.8);
+  const presentationLane = target.presentationLane || 0;
+  const firstLaneX = target.x - presentationLane * (target.width + PACKED_TERMINAL_LANE_GAP);
+  const trunkDestinationX = target.packedTerminal ? firstLaneX : targetX;
+  const trunkX = sourceX + (trunkDestinationX - sourceX) * trunkRatio;
+  if (movingRight && target.packedTerminal && presentationLane > 0) {
+    const routeY = target.y - VERTICAL_GAP / 2;
+    return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(trunkX)} V ${cleanCoordinate(routeY)} H ${cleanCoordinate(targetX)} V ${cleanCoordinate(targetY)}`;
+  }
+  return `M ${cleanCoordinate(sourceX)} ${cleanCoordinate(sourceY)} H ${cleanCoordinate(trunkX)} V ${cleanCoordinate(targetY)} H ${cleanCoordinate(targetX)}`;
 }
 
 function appendUnique(items: string[], value: string) {

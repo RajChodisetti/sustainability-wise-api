@@ -12,6 +12,7 @@ import type {
   InstallationVersionSummary,
   InstallHubExportJob,
   InstallHubPullResponse,
+  InstallHubReportDetailMode,
   InstallHubReportProvenance,
   ManagedInstallHubUser,
   MeterHistoryResponse,
@@ -374,6 +375,42 @@ export function matchesInstallHubReportProvenance(
   );
 }
 
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 3;
+
+export function installHubReportVariantKey(input: {
+  detailMode: InstallHubReportDetailMode;
+  formIds: string[];
+  sourceKey: string;
+}): string {
+  const formIds = [...new Set(input.formIds.filter(Boolean))].sort();
+  const formSelectionDigest = sha256(JSON.stringify(formIds)).slice(0, 24);
+  return `installation-pack:v${INSTALLHUB_REPORT_RENDERER_VERSION}:${input.detailMode}:map:${input.sourceKey}:forms-${formSelectionDigest}`;
+}
+
+export function matchesInstallHubInstallationReport(
+  actual: Pick<InstallHubExportJob,
+    | 'recordVersionNumber'
+    | 'recordVersionPayloadHash'
+    | 'reportSource'
+    | 'detailMode'
+    | 'reportVariantKey'
+  > | null | undefined,
+  expected: InstallHubReportProvenance | { reportSource: 'diagnostic-live' } | null | undefined,
+  reportVariantKey: string,
+  detailMode: InstallHubReportDetailMode,
+): boolean {
+  if (!actual || !expected) return false;
+  const sourceMatches = expected.reportSource === 'canonical-version'
+    ? actual.recordVersionNumber === expected.recordVersionNumber
+      && actual.recordVersionPayloadHash === expected.recordVersionPayloadHash
+      && actual.reportSource === expected.reportSource
+    : actual.recordVersionNumber == null
+      && actual.reportSource === 'diagnostic-live';
+  return sourceMatches
+    && actual.detailMode === detailMode
+    && actual.reportVariantKey === reportVariantKey;
+}
+
 export function authoritativeReportProvenanceFromVersion(
   version: InstallationVersionRecord,
 ): InstallHubReportProvenance {
@@ -407,7 +444,12 @@ export async function getAuthoritativeReportProvenance(
 export type QueuedInstallHubReportJob = {
   jobId: string;
   reused?: boolean;
-} & InstallHubReportProvenance;
+  recordVersionNumber: number | null;
+  recordVersionPayloadHash: string | null;
+  reportSource: 'canonical-version' | 'diagnostic-live';
+  detailMode?: InstallHubReportDetailMode;
+  reportVariantKey?: string | null;
+};
 
 export function startFormPdfJob(
   installationId: string,
@@ -426,22 +468,55 @@ export function startFormPdfJob(
 
 export function startInstallationPdfJob(
   installationId: string,
-  input: {
+  input: ({
     recordVersionNumber: number;
+    liveMode?: never;
+  } | {
+    recordVersionNumber?: never;
+    liveMode: true;
+  }) & {
     formSubmissionIds?: string[];
+    detailMode?: InstallHubReportDetailMode;
   },
 ): Promise<QueuedInstallHubReportJob> {
+  const formSubmissionIds = input.formSubmissionIds?.length
+    ? [...new Set(input.formSubmissionIds)].sort()
+    : undefined;
   return installHubRequest(
     'POST',
     `/v1/installhub/installations/${encodeURIComponent(installationId)}/report/pdf/jobs`,
     {
-      recordVersionNumber: requireRecordVersionNumber(input.recordVersionNumber),
-      formSubmissionIds:
-        input.formSubmissionIds?.length
-          ? [...new Set(input.formSubmissionIds)]
-          : undefined,
+      ...('liveMode' in input && input.liveMode
+        ? { liveMode: true }
+        : { recordVersionNumber: requireRecordVersionNumber(input.recordVersionNumber) }),
+      formSubmissionIds,
+      detailMode: input.detailMode ?? 'by-electrical-hierarchy',
     },
   );
+}
+
+export async function getLatestInstallationReportJob(
+  entityId: string,
+  expected: InstallHubReportProvenance | { reportSource: 'diagnostic-live' },
+  reportVariantKey: string,
+): Promise<InstallHubExportJob | null> {
+  const query = new URLSearchParams({
+    entityId,
+    artifactType: 'pdf',
+    reportVariantKey,
+  });
+  if (expected.reportSource === 'canonical-version') {
+    query.set('recordVersionNumber', String(expected.recordVersionNumber));
+    query.set('recordVersionPayloadHash', expected.recordVersionPayloadHash);
+    query.set('reportSource', expected.reportSource);
+  } else {
+    query.set('reportSourceFilter', 'diagnostic-live');
+  }
+  const result = await installHubRequest<{ job: InstallHubExportJob | null }>(
+    'GET',
+    `/v1/export/jobs/latest?${query}`,
+  );
+  return result.job;
 }
 
 export function getExportJobStatus(jobId: string): Promise<InstallHubExportJob> {

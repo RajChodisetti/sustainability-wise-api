@@ -5,8 +5,10 @@ import {
   assertPinnedOrExplicitLive,
   assertPinnedSnapshotProvenance,
   liveDiagnosticCanonicalReport,
+  installHubReportVariantKey,
   pinnedPhotoMatchesManifest,
   requestedLiveMode,
+  requestedReportDetailMode,
   requestedRecordVersion,
 } from './pdf.js';
 import type { CanonicalInstallationTree } from './canonical.js';
@@ -43,6 +45,43 @@ test('authoritative reports require a version and live diagnostics are explicit'
     recordVersionNumber: 7,
     liveMode: true,
   }));
+});
+
+test('installation-pack detail mode and durable variant normalize deterministically', () => {
+  assert.equal(requestedReportDetailMode(undefined), 'by-electrical-hierarchy');
+  assert.equal(requestedReportDetailMode('by-zone'), 'by-zone');
+  assert.throws(() => requestedReportDetailMode('other'));
+  const normalized = installHubReportVariantKey({
+    detailMode: 'by-zone',
+    formIds: ['form-b', 'form-a', 'form-a'],
+    sourceKey: 'tree-revision-7',
+  });
+  assert.equal(normalized, installHubReportVariantKey({
+    detailMode: 'by-zone',
+    formIds: ['form-a', 'form-b'],
+    sourceKey: 'tree-revision-7',
+  }));
+  assert.match(
+    normalized,
+    /^installation-pack:v3:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
+  );
+  assert.notEqual(
+    installHubReportVariantKey({
+      detailMode: 'by-zone',
+      formIds: ['form-a'],
+      sourceKey: 'tree-revision-7',
+    }),
+    installHubReportVariantKey({
+      detailMode: 'by-zone',
+      formIds: ['form-a'],
+      sourceKey: 'tree-revision-8',
+    }),
+  );
+  assert.ok(installHubReportVariantKey({
+    detailMode: 'by-zone',
+    formIds: Array.from({ length: 1_000 }, (_, index) => `form-${index}`),
+    sourceKey: 'tree-revision-7',
+  }).length < 100);
 });
 
 test('draft pinned versions are refused while an eligible historical version remains authoritative after reopen', () => {

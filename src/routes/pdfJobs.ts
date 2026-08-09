@@ -30,6 +30,13 @@ export function exportJobParamsMatchExpectedProvenance(
     && params.reportSource === expected.reportSource;
 }
 
+export function exportJobParamsMatchReportVariant(
+  value: unknown,
+  reportVariantKey: string,
+): boolean {
+  return exportJobParams(value).reportVariantKey === reportVariantKey;
+}
+
 function expectedReportProvenance(query: {
   recordVersionNumber?: unknown;
   recordVersionPayloadHash?: unknown;
@@ -106,6 +113,13 @@ function serializeJob(job: ExportJob) {
     || params.reportSource === 'diagnostic-live'
     ? params.reportSource
     : null;
+  const detailMode = params.detailMode === 'by-zone'
+    || params.detailMode === 'by-electrical-hierarchy'
+    ? params.detailMode
+    : null;
+  const reportVariantKey = typeof params.reportVariantKey === 'string'
+    ? params.reportVariantKey
+    : null;
   return {
     id: job.id,
     status: job.status,
@@ -123,6 +137,8 @@ function serializeJob(job: ExportJob) {
     recordVersionNumber,
     recordVersionPayloadHash,
     reportSource,
+    detailMode,
+    reportVariantKey,
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),
   };
@@ -176,6 +192,13 @@ const statusRoute: RouteShorthandOptions = {
               { type: 'null' },
             ],
           },
+          detailMode: {
+            anyOf: [
+              { type: 'string', enum: ['by-zone', 'by-electrical-hierarchy'] },
+              { type: 'null' },
+            ],
+          },
+          reportVariantKey: { type: ['string', 'null'] },
           createdAt: { type: 'string' },
           updatedAt: { type: 'string' },
         },
@@ -235,6 +258,8 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
           recordVersionNumber: { anyOf: [{ type: 'integer' }, { type: 'string' }] },
           recordVersionPayloadHash: { type: 'string' },
           reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
+          reportSourceFilter: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
+          reportVariantKey: { type: 'string' },
         },
       },
     },
@@ -246,6 +271,8 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
       recordVersionNumber?: unknown;
       recordVersionPayloadHash?: unknown;
       reportSource?: unknown;
+      reportSourceFilter?: unknown;
+      reportVariantKey?: unknown;
     };
     const { entityId, artifactType } = query;
     const expected = expectedReportProvenance(query);
@@ -262,6 +289,21 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
         sql`${pdfJobs.params} ->> 'reportSource' = ${expected.reportSource}`,
       );
     }
+    if (query.reportSourceFilter !== undefined) {
+      if (
+        query.reportSourceFilter !== 'canonical-version'
+        && query.reportSourceFilter !== 'diagnostic-live'
+      ) {
+        throw badRequest('reportSourceFilter is invalid');
+      }
+      conditions.push(sql`${pdfJobs.params} ->> 'reportSource' = ${query.reportSourceFilter}`);
+    }
+    if (query.reportVariantKey !== undefined) {
+      if (typeof query.reportVariantKey !== 'string' || !query.reportVariantKey.trim()) {
+        throw badRequest('reportVariantKey must be a non-empty string');
+      }
+      conditions.push(sql`${pdfJobs.params} ->> 'reportVariantKey' = ${query.reportVariantKey}`);
+    }
     const jobs = await db
       .select()
       .from(pdfJobs)
@@ -271,6 +313,10 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
     const job = jobs.find((candidate) => (
       artifactMetadata(candidate).artifactType === artifactType
       && (!expected || exportJobParamsMatchExpectedProvenance(candidate.params, expected))
+      && (query.reportSourceFilter === undefined
+        || exportJobParams(candidate.params).reportSource === query.reportSourceFilter)
+      && (query.reportVariantKey === undefined
+        || exportJobParamsMatchReportVariant(candidate.params, query.reportVariantKey as string))
     ));
     return reply.send({ job: job ? serializeJob(job) : null });
   });

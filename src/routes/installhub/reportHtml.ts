@@ -5,10 +5,41 @@ import {
   type InstallHubReportDefinition,
   type InstallHubReportFormType,
 } from './reportManifest.js';
+import {
+  renderPdfEquipmentIcon,
+  type PdfEquipmentIconName,
+} from '../../pdf/equipmentIcons.js';
 
 export const INSTALLHUB_LARGE_REPORT_PHOTO_COUNT = 120;
 export const INSTALLHUB_LARGE_REPORT_RAW_BYTES = 120 * 1024 * 1024;
 export const INSTALLHUB_REPORT_CHUNK_PHOTO_TARGET = 50;
+
+export type InstallHubReportDetailMode =
+  | 'by-zone'
+  | 'by-electrical-hierarchy';
+
+export type InstallHubElectricalMapImages = {
+  overviewDataUri: string;
+  sourceWidth: number;
+  sourceHeight: number;
+  overviewWidth: number;
+  overviewHeight: number;
+  totalDetailWindows: number;
+  omittedDetailWindows: number;
+  detailTiles: Array<{
+    dataUri: string;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    row: number;
+    column: number;
+    rowCount: number;
+    columnCount: number;
+    windowIndex: number;
+    windowCount: number;
+  }>;
+};
 
 export type InstallHubReportAttachment = {
   id?: string;
@@ -71,12 +102,34 @@ export type InstallHubCanonicalReport = {
     kind: string;
     name: string;
     displayCode?: string;
+    typeLabel?: string;
     physicalLocationId?: string;
+    coverageState?: string;
+    parentNodeId?: string;
   }>;
   supplyEdges: Array<{
     sourceNodeId: string;
     targetNodeId: string;
     relationship: string;
+  }>;
+  measurementEdges: Array<{
+    sourceNodeId: string;
+    targetNodeId: string;
+    relationship: string;
+  }>;
+  meters: Array<{
+    id: string;
+    installedOnBoardId: string;
+    name: string;
+    model: string;
+    deviceNumber?: string;
+    serialNumber?: string;
+    channels: Array<{
+      ordinal: number;
+      purpose: string;
+      load: string;
+      description?: string;
+    }>;
   }>;
   unresolvedRelationships: Array<{
     id: string;
@@ -638,6 +691,26 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .canonical-table th,.canonical-table td{border:1px solid #CBD5E1;padding:5px 7px;text-align:left;vertical-align:top;overflow-wrap:anywhere;}
 .canonical-table th{color:#1E3A8A;background:#EFF6FF;font-weight:800;text-transform:uppercase;letter-spacing:.04em;}
 .canonical-meta{padding:8px 10px;background:#F8FAFC;border:1px solid #CBD5E1;font-size:7.5pt;overflow-wrap:anywhere;}
+.electrical-map{margin-top:18px;}
+.electrical-map-frame{margin:8px 0 14px;padding:8px;border:1px solid #CBD5E1;border-radius:7px;background:#FFFFFF;page-break-inside:avoid;break-inside:avoid;}
+.electrical-map-frame img{display:block;width:100%;height:auto;max-height:620px;object-fit:contain;}
+.electrical-map-caption{margin-top:5px;color:#64748B;font-size:7pt;line-height:1.35;}
+.electrical-map-detail{page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
+.electrical-map-detail .electrical-map-frame img{max-height:680px;}
+.electrical-map-segment-label{font-weight:800;color:#1E3A8A;}
+.detail-group{margin:0 0 13px;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 7px 7px 0;page-break-inside:auto;break-inside:auto;}
+.detail-group-title{padding:7px 10px;background:#EFF6FF;color:#1E3A8A;font-size:9pt;font-weight:900;page-break-after:avoid;break-after:avoid;}
+.detail-row{display:table;width:100%;border-top:1px solid #E2E8F0;page-break-inside:avoid;break-inside:avoid;}
+.detail-icon,.detail-main,.detail-meta{display:table-cell;padding:6px 8px;vertical-align:top;}
+.detail-icon{width:36px;color:#1E3A8A;text-align:center;}
+.detail-icon .iico{display:inline-flex;width:22px;height:22px;align-items:center;justify-content:center;}
+.detail-icon .iico-svg{display:block;width:22px;height:22px;}
+.detail-main{width:44%;font-size:8.5pt;font-weight:800;color:#0F172A;}
+.detail-main small,.detail-meta small{display:block;margin-top:2px;color:#64748B;font-size:7pt;font-weight:500;line-height:1.35;}
+.detail-meta{font-size:7.5pt;color:#334155;}
+.hierarchy-indent{display:inline-block;min-width:0;}
+.compact-appendix{margin-top:12px;page-break-inside:auto;break-inside:auto;}
+.compact-list{margin:6px 0 12px;padding-left:18px;color:#334155;font-size:7.5pt;line-height:1.45;}
 `;
 }
 
@@ -645,6 +718,235 @@ function compactJson(value: unknown): string {
   if (!value || typeof value !== 'object') return String(value ?? '');
   const source = value as Record<string, unknown>;
   return `{${Object.keys(source).sort().map((key) => `${key}: ${String(source[key])}`).join(', ')}}`;
+}
+
+function reportTargetNodeId(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const target = value as Record<string, unknown>;
+  if (target.kind === 'BOARD') return typeof target.boardId === 'string' ? target.boardId : null;
+  if (target.kind === 'SITE_ASSET') return typeof target.siteAssetId === 'string' ? target.siteAssetId : null;
+  if (target.kind === 'GRID_BOUNDARY') return typeof target.gridSupplyId === 'string' ? target.gridSupplyId : null;
+  return null;
+}
+
+function reportNodeIcon(node: InstallHubCanonicalReport['electricalNodes'][number]): PdfEquipmentIconName {
+  if (node.kind === 'BOARD') return 'switchboard';
+  if (node.kind === 'GRID' || node.kind === 'VIRTUAL_RESIDUAL') return 'electricity';
+  const value = `${node.typeLabel ?? ''} ${node.name}`.toUpperCase();
+  if (/HVAC|AIR\s*CON|REFRIG|CHILL|FREEZ|COOL/.test(value)) return 'hvac';
+  if (/LIGHT/.test(value)) return 'lighting';
+  if (/SOLAR|\bPV\b/.test(value)) return 'solar';
+  if (/EV|CHARG|FORKLIFT|BATTER|OUTLET|PLUG/.test(value)) return 'charger';
+  if (/HOT\s*WATER|HEAT|GEYSER/.test(value)) return 'hot-water';
+  if (/WATER/.test(value)) return 'water';
+  return 'electricity';
+}
+
+function reportNodeSummary(
+  report: InstallHubCanonicalReport,
+  node: InstallHubCanonicalReport['electricalNodes'][number],
+  depth = 0,
+): string {
+  const zoneName = node.physicalLocationId
+    ? report.physicalLocations.find((zone) => zone.id === node.physicalLocationId)?.name
+    : undefined;
+  const meters = report.meters.filter((meter) => meter.installedOnBoardId === node.id);
+  const measuredBy = report.meteringRows.filter((row) => reportTargetNodeId(row.target) === node.id);
+  const icon = renderPdfEquipmentIcon(reportNodeIcon(node));
+  const channelSummary = (channel: InstallHubCanonicalReport['meters'][number]['channels'][number]) => {
+    const context = [channel.load, channel.description].filter(Boolean).join(' - ');
+    return `${channel.ordinal}${context ? ` (${context})` : ''}`;
+  };
+  const meterText = meters.map((meter) => {
+    const channels = meter.channels
+      .filter((channel) => channel.purpose !== 'SPARE')
+      .map(channelSummary)
+      .join(', ');
+    return `${meter.name} - ${meter.model}${channels ? ` - channels ${channels}` : ''}`;
+  }).join('; ');
+  const measuredText = measuredBy.map((row) => {
+    const meter = report.meters.find((candidate) => candidate.name === row.meterDisplayName);
+    const channel = row.channelOrdinal === null
+      ? undefined
+      : meter?.channels.find((candidate) => candidate.ordinal === row.channelOrdinal);
+    const measuredChannel = row.channelOrdinal === null
+      ? ''
+      : ` channel ${channel ? channelSummary(channel) : row.channelOrdinal}`;
+    return `${row.meterDisplayName}${measuredChannel}`;
+  }).join('; ');
+  const typeAndCoverage = [node.typeLabel, node.coverageState].filter(Boolean).join(' - ');
+  return `<div class="detail-row" data-electrical-node-id="${escapeHtml(node.id)}">
+    <div class="detail-icon">${icon}</div>
+    <div class="detail-main"><span class="hierarchy-indent" style="width:${Math.min(depth, 8) * 12}px"></span>${escapeHtml(node.displayCode || node.name)}${node.displayCode ? `<small>${escapeHtml(node.name)}</small>` : ''}</div>
+    <div class="detail-meta">${escapeHtml(typeAndCoverage || node.kind.replaceAll('_', ' '))}${zoneName ? `<small>Physical zone: ${escapeHtml(zoneName)}</small>` : ''}${meterText ? `<small>Installed device: ${escapeHtml(meterText)}</small>` : ''}${measuredText ? `<small>Measured by: ${escapeHtml(measuredText)}</small>` : ''}</div>
+  </div>`;
+}
+
+function hierarchyNodeOrder(report: InstallHubCanonicalReport): Array<{
+  node: InstallHubCanonicalReport['electricalNodes'][number];
+  depth: number;
+}> {
+  const byId = new Map(report.electricalNodes.map((node) => [node.id, node]));
+  const children = new Map<string, string[]>();
+  const incoming = new Set<string>();
+  for (const edge of report.supplyEdges) {
+    const entries = children.get(edge.sourceNodeId) ?? [];
+    entries.push(edge.targetNodeId);
+    children.set(edge.sourceNodeId, entries);
+    incoming.add(edge.targetNodeId);
+  }
+  for (const node of report.electricalNodes) {
+    if (node.kind !== 'VIRTUAL_RESIDUAL' || !node.parentNodeId) continue;
+    const entries = children.get(node.parentNodeId) ?? [];
+    entries.push(node.id);
+    children.set(node.parentNodeId, entries);
+    incoming.add(node.id);
+  }
+  for (const entries of children.values()) {
+    entries.sort((left, right) => left.localeCompare(right));
+  }
+  const visited = new Set<string>();
+  const ordered: Array<{
+    node: InstallHubCanonicalReport['electricalNodes'][number];
+    depth: number;
+  }> = [];
+  const walk = (nodeId: string, depth: number): void => {
+    if (visited.has(nodeId)) return;
+    visited.add(nodeId);
+    const node = byId.get(nodeId);
+    if (!node) return;
+    ordered.push({ node, depth });
+    for (const childId of children.get(nodeId) ?? []) walk(childId, depth + 1);
+  };
+  const roots = report.electricalNodes
+    .filter((node) => !incoming.has(node.id))
+    .sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id));
+  for (const node of roots) walk(node.id, 0);
+  for (const node of report.electricalNodes
+    .filter((node) => !visited.has(node.id))
+    .sort((left, right) => left.id.localeCompare(right.id))) walk(node.id, 0);
+  return ordered;
+}
+
+function hierarchyRows(report: InstallHubCanonicalReport): string {
+  return hierarchyNodeOrder(report)
+    .map(({ node, depth }) => reportNodeSummary(report, node, depth))
+    .join('');
+}
+
+function indexedHierarchyFallbackTable(report: InstallHubCanonicalReport): string {
+  const nodeNames = new Map(report.electricalNodes.map((node) => [
+    node.id,
+    node.displayCode || node.name,
+  ]));
+  const supplyParent = new Map<string, string>();
+  for (const edge of report.supplyEdges
+    .slice()
+    .sort((left, right) => left.targetNodeId.localeCompare(right.targetNodeId)
+      || left.sourceNodeId.localeCompare(right.sourceNodeId))) {
+    if (!supplyParent.has(edge.targetNodeId)) supplyParent.set(edge.targetNodeId, edge.sourceNodeId);
+  }
+  const zoneNames = new Map(report.physicalLocations.map((zone) => [zone.id, zone.name]));
+  const rows = hierarchyNodeOrder(report).map(({ node, depth }, index) => {
+    const parentId = supplyParent.get(node.id) ?? node.parentNodeId;
+    return `<tr data-electrical-node-id="${escapeHtml(node.id)}"><td>${index + 1}</td><td><span class="hierarchy-indent" style="width:${Math.min(depth, 8) * 12}px"></span><strong>${escapeHtml(node.displayCode || node.name)}</strong>${node.displayCode ? `<small>${escapeHtml(node.name)}</small>` : ''}</td><td>${escapeHtml(node.typeLabel || node.kind.replaceAll('_', ' '))}</td><td>${escapeHtml(parentId ? nodeNames.get(parentId) ?? parentId : 'Electrical root')}</td><td>${escapeHtml(node.physicalLocationId ? zoneNames.get(node.physicalLocationId) ?? node.physicalLocationId : 'Shared / unassigned')}</td></tr>`;
+  }).join('');
+  return `<table class="canonical-table hierarchy-fallback-table"><thead><tr><th>#</th><th>Electrical node</th><th>Type</th><th>Supplied from / parent</th><th>Zone</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No electrical nodes recorded.</td></tr>'}</tbody></table>`;
+}
+
+function compactCanonicalAppendices(report: InstallHubCanonicalReport): string {
+  const unresolved = report.unresolvedRelationships.length
+    ? `<ul class="compact-list">${report.unresolvedRelationships.map((item) => `<li>${escapeHtml(`${item.subjectType} ${item.subjectId}: ${item.relation} ${item.reason}`)}</li>`).join('')}</ul>`
+    : '<p class="canonical-meta">No unresolved electrical relationships.</p>';
+  const readiness = report.readinessIssues.length
+    ? `<ul class="compact-list">${report.readinessIssues.map((issue) => `<li><strong>${escapeHtml(issue.code)}</strong> - ${escapeHtml(issue.message)}</li>`).join('')}</ul>`
+    : '<p class="canonical-meta">No blocking readiness issues in this report source.</p>';
+  const residual = report.virtualMeterDefinitions.length
+    ? `<ul class="compact-list">${report.virtualMeterDefinitions.map((definition) => `<li><strong>${escapeHtml(definition.id)}</strong> - ${escapeHtml(definition.formula)} - calculated residual, not a direct meter reading.</li>`).join('')}</ul>`
+    : '<p class="canonical-meta">No calculated residual loads.</p>';
+  return `<div class="compact-appendix">
+    <h3>Unresolved relationships</h3>${unresolved}
+    <h3>Calculated residuals</h3>${residual}
+    <h3>Readiness</h3>${readiness}
+  </div>`;
+}
+
+function zoneDetailsHtml(report: InstallHubCanonicalReport): string {
+  const renderedZoneIds = new Set<string>();
+  const zones = report.physicalLocations.filter((zone) => {
+    if (renderedZoneIds.has(zone.id)) return false;
+    renderedZoneIds.add(zone.id);
+    return true;
+  });
+  const knownZoneIds = new Set(zones.map((zone) => zone.id));
+  const renderNodes = (nodes: InstallHubCanonicalReport['electricalNodes']) => (
+    nodes.length
+      ? nodes
+        .slice()
+        .sort((left, right) => left.kind.localeCompare(right.kind) || left.id.localeCompare(right.id))
+        .map((node) => reportNodeSummary(report, node))
+        .join('')
+      : '<div class="canonical-meta">No switchboards or loads recorded in this zone.</div>'
+  );
+  const zoneGroups = zones.map((zone) => {
+    const nodes = report.electricalNodes.filter((node) => node.physicalLocationId === zone.id);
+    return `<div class="detail-group" data-zone-id="${escapeHtml(zone.id)}"><div class="detail-group-title">${escapeHtml(zone.name)}${zone.description ? ` - ${escapeHtml(zone.description)}` : ''}</div>${renderNodes(nodes)}</div>`;
+  }).join('');
+  const sharedNodes = report.electricalNodes.filter((node) => (
+    !node.physicalLocationId || !knownZoneIds.has(node.physicalLocationId)
+  ));
+  const sharedGroup = sharedNodes.length
+    ? `<div class="detail-group" data-zone-id="shared-unassigned"><div class="detail-group-title">Shared / unassigned electrical infrastructure</div>${renderNodes(sharedNodes)}</div>`
+    : '';
+  return zoneGroups + sharedGroup;
+}
+
+function installationDetailsHtml(
+  report: InstallHubCanonicalReport,
+  detailMode: InstallHubReportDetailMode,
+  electricalMapImages?: InstallHubElectricalMapImages,
+): string {
+  const canonicalVersionMeta = report.reportSource === 'canonical-version'
+    ? `Record version ${report.recordVersionNumber} &middot; Snapshot ${escapeHtml(report.snapshotPayloadHash)} &middot; Mapping ${escapeHtml(report.mappingContentHash)}`
+    : 'Live diagnostic projection &middot; Not pinned to a canonical record version or payload hash';
+  const authorityLabel = report.authoritative ? 'AUTHORITATIVE' : 'NON-AUTHORITATIVE';
+  const detailPagesCapped = Boolean(electricalMapImages?.omittedDetailWindows);
+  const detailMapPages = electricalMapImages?.detailTiles.map((tile, index, tiles) => (
+    `<div class="electrical-map-detail" data-map-detail-segment="${index + 1}">
+      <div class="section-bar">Electrical map detail - row ${tile.row} of ${tile.rowCount}, column ${tile.column} of ${tile.columnCount}</div>
+      <div class="electrical-map-frame"><img src="${escapeHtml(tile.dataUri)}" alt="Electrical map detail row ${tile.row} of ${tile.rowCount}, column ${tile.column} of ${tile.columnCount}" /></div>
+      <p class="electrical-map-caption"><span class="electrical-map-segment-label">Detail page ${index + 1} of ${tiles.length} - source window ${tile.windowIndex} of ${tile.windowCount}, row ${tile.row}, column ${tile.column}.</span> Source window left ${tile.left + 1}-${tile.left + tile.width}, top ${tile.top + 1}-${tile.top + tile.height} of ${electricalMapImages.sourceWidth} x ${electricalMapImages.sourceHeight}. ${detailPagesCapped ? 'Window edges retain source overlap; capped sets may omit intermediate windows.' : 'Adjacent rows and columns overlap to preserve connector continuity.'} Refer to the complete overview for the full topology and legend.</p>
+    </div>`
+  )).join('') ?? '';
+  const map = electricalMapImages
+    ? `<div class="electrical-map">
+        <div class="section-bar">Installation electrical map</div>
+        <div class="electrical-map-frame"><img src="${escapeHtml(electricalMapImages.overviewDataUri)}" alt="Complete electrical supply, metering and connected load overview" /></div>
+        <p class="electrical-map-caption">Solid copper lines show electrical supply. Blue dashed lines show measurements. Grey dotted lines show calculated residual relationships. Device names and active channel numbers are shown on their installed switchboards.${detailPagesCapped ? ` This complete overview is retained; visual detail pages are capped at ${electricalMapImages.detailTiles.length} representative windows from ${electricalMapImages.totalDetailWindows}.` : ''}</p>
+      </div>${detailMapPages}`
+    : '';
+  const cappedFallbackNotice = detailPagesCapped
+    ? `<div class="canonical-meta" data-map-detail-fallback="indexed-hierarchy"><strong>Visual detail page limit reached.</strong> ${electricalMapImages!.omittedDetailWindows} additional map windows are represented by the complete overview and ${detailMode === 'by-zone' ? 'the indexed electrical hierarchy table below' : 'the complete electrical hierarchy details below'}. Every electrical node and resolved parent remains listed.</div>`
+    : '';
+  const zoneModeHierarchyFallback = detailPagesCapped && detailMode === 'by-zone'
+    ? `<h3>Indexed electrical hierarchy fallback</h3>${indexedHierarchyFallbackTable(report)}`
+    : '';
+  const detailTitle = detailMode === 'by-zone'
+    ? 'Details by physical zone'
+    : 'Details by electrical hierarchy';
+  const details = detailMode === 'by-zone'
+    ? zoneDetailsHtml(report)
+    : `<div class="detail-group"><div class="detail-group-title">Incoming supply to connected loads</div>${hierarchyRows(report) || '<div class="canonical-meta">No resolved electrical hierarchy recorded.</div>'}</div>`;
+  return `<div class="canonical-section">
+    <div class="section-bar">${report.reportSource === 'canonical-version' ? 'Pinned canonical installation' : 'Current installation diagnostic'}</div>
+    <div class="canonical-meta">Report source ${report.reportSource} &middot; ${authorityLabel} &middot; Tree revision ${report.treeRevision} &middot; Ready ${report.readyToComplete ? 'YES' : 'NO'} &middot; ${canonicalVersionMeta}</div>
+    ${map}
+    ${cappedFallbackNotice}
+    ${zoneModeHierarchyFallback}
+    <h3>${detailTitle}</h3>
+    ${details}
+    ${compactCanonicalAppendices(report)}
+  </div>`;
 }
 
 function canonicalReportHtml(report: InstallHubCanonicalReport): string {
@@ -760,6 +1062,7 @@ function canonicalReportHtml(report: InstallHubCanonicalReport): string {
 
 export function buildInstallHubReportHtml(input: {
   mode: 'form' | 'installation-pack';
+  detailMode?: InstallHubReportDetailMode;
   installation: InstallHubReportInstallation;
   forms: InstallHubReportForm[];
   slices: InstallHubFormReportSlice[];
@@ -770,6 +1073,9 @@ export function buildInstallHubReportHtml(input: {
   generatedLabel: string;
   summaryPhotoCount?: number;
   canonicalReport?: InstallHubCanonicalReport;
+  electricalMapImages?: InstallHubElectricalMapImages;
+  /** Compatibility for callers that still provide one overview-only map. */
+  electricalMapDataUri?: string;
 }): string {
   const formsById = new Map(input.forms.map((form) => [form.id, form]));
   const firstForm = input.forms[0];
@@ -830,7 +1136,26 @@ export function buildInstallHubReportHtml(input: {
   <template data-pdf-footer data-left="SUSTAINABILITY WISE" data-right="${escapeHtml(input.generatedLabel)}" data-page-numbers="true"></template>
   <main class="content">
     ${intro}
-    ${input.includeIntro && input.canonicalReport ? canonicalReportHtml(input.canonicalReport) : ''}
+    ${input.includeIntro && input.canonicalReport
+      ? input.mode === 'installation-pack'
+        ? installationDetailsHtml(
+            input.canonicalReport,
+            input.detailMode ?? 'by-electrical-hierarchy',
+            input.electricalMapImages ?? (input.electricalMapDataUri
+              ? {
+                  overviewDataUri: input.electricalMapDataUri,
+                  sourceWidth: 0,
+                  sourceHeight: 0,
+                  overviewWidth: 0,
+                  overviewHeight: 0,
+                  totalDetailWindows: 0,
+                  omittedDetailWindows: 0,
+                  detailTiles: [],
+                }
+              : undefined),
+          )
+        : canonicalReportHtml(input.canonicalReport)
+      : ''}
     ${formBlocks}
     ${input.includeEnd ? `<div class="end-block">Prepared by Sustainability Wise &middot; Field App Complete report manifest v${INSTALLHUB_REPORT_MANIFEST_VERSION}</div>` : ''}
   </main>

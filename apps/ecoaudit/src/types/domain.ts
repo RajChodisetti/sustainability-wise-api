@@ -71,6 +71,8 @@ export type ExportJobStatus = {
   recordVersionNumber: number | null;
   recordVersionPayloadHash: string | null;
   reportSource: 'canonical-version' | 'diagnostic-live' | null;
+  detailMode: 'by-zone' | 'by-electrical-hierarchy' | null;
+  reportVariantKey: string | null;
   createdAt: string;
   updatedAt: string;
 };

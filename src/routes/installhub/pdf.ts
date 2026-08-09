@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
@@ -52,9 +52,11 @@ import {
   type InstallHubReportForm,
   type InstallHubReportInstallation,
   type InstallHubReportPhoto,
+  type InstallHubReportDetailMode,
   type InstallHubCanonicalReport,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
+import { renderElectricalMapImages } from './electricalMapImage.js';
 import {
   INSTALLHUB_REPORT_DEFINITION_BY_TYPE,
   INSTALLHUB_REPORT_MANIFEST_VERSION,
@@ -86,6 +88,31 @@ type InstallationRow = typeof ihInstallations.$inferSelect;
 type FormRow = typeof ihFormSubmissions.$inferSelect;
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type ReportMode = 'form' | 'installation-pack';
+
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 3;
+export const DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE: InstallHubReportDetailMode =
+  'by-electrical-hierarchy';
+
+export function requestedReportDetailMode(value: unknown): InstallHubReportDetailMode {
+  if (value === undefined || value === null || value === '') {
+    return DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE;
+  }
+  if (value === 'by-zone' || value === 'by-electrical-hierarchy') return value;
+  throw badRequest('detailMode must be by-zone or by-electrical-hierarchy');
+}
+
+export function installHubReportVariantKey(input: {
+  detailMode: InstallHubReportDetailMode;
+  formIds: string[];
+  sourceKey: string;
+}): string {
+  const formIds = [...new Set(input.formIds.filter(Boolean))].sort();
+  const formSelectionDigest = createHash('sha256')
+    .update(JSON.stringify(formIds))
+    .digest('hex')
+    .slice(0, 24);
+  return `installation-pack:v${INSTALLHUB_REPORT_RENDERER_VERSION}:${input.detailMode}:map:${input.sourceKey}:forms-${formSelectionDigest}`;
+}
 
 export function pinnedPhotoMatchesManifest(
   photo: Pick<PhotoRow, 'id' | 'checksum'>,
@@ -172,9 +199,14 @@ function canonicalReportProjection(input: {
       kind: node.kind,
       name: node.name,
       ...('displayCode' in node ? { displayCode: node.displayCode } : {}),
+      ...('typeLabel' in node ? { typeLabel: node.typeLabel } : {}),
       ...('physicalLocationId' in node
         ? { physicalLocationId: node.physicalLocationId }
         : {}),
+      ...('coverageState' in node && node.coverageState
+        ? { coverageState: node.coverageState }
+        : {}),
+      ...('parentNodeId' in node ? { parentNodeId: node.parentNodeId } : {}),
     })),
     supplyEdges: input.electricalTree.edges
       .filter((edge) => edge.relationship === 'FED_FROM')
@@ -183,6 +215,29 @@ function canonicalReportProjection(input: {
         targetNodeId: edge.targetNodeId,
         relationship: edge.relationship,
       })),
+    measurementEdges: input.electricalTree.edges
+      .filter((edge) => edge.relationship === 'MEASURES')
+      .map((edge) => ({
+        sourceNodeId: edge.sourceNodeId,
+        targetNodeId: edge.targetNodeId,
+        relationship: edge.relationship,
+      })),
+    meters: input.tree.meterDevices.map((meter) => ({
+      id: meter.id,
+      installedOnBoardId: meter.installedOnBoardId,
+      name: meter.displayName.value || meter.customName || meter.deviceModel,
+      model: meter.deviceModel === 'OTHER'
+        ? meter.customModelName || 'Other'
+        : meter.deviceModel,
+      ...(meter.deviceNumber ? { deviceNumber: meter.deviceNumber } : {}),
+      ...(meter.serialNumber ? { serialNumber: meter.serialNumber } : {}),
+      channels: meter.channels.map((channel) => ({
+        ordinal: channel.ordinal,
+        purpose: channel.purpose,
+        load: channel.customLoadTypeName || channel.loadTypeCode || '',
+        ...(channel.description ? { description: channel.description } : {}),
+      })),
+    })),
     unresolvedRelationships: input.electricalTree.unresolved.map((item) => ({
       id: item.id,
       subjectType: item.subjectType,
@@ -508,6 +563,7 @@ async function renderInstallHubReport(args: {
   pinnedFormIds?: string[];
   pinnedCreatedAt?: string;
   mode: ReportMode;
+  detailMode: InstallHubReportDetailMode;
   onPhase?: (phase: string) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void | Promise<void>;
 }): Promise<Buffer> {
@@ -521,7 +577,9 @@ async function renderInstallHubReport(args: {
         .filter((form) => !args.pinnedFormIds || args.pinnedFormIds.includes(form.id))
         .map(canonicalReportForm)
     : args.liveDiagnosticTree && args.mode === 'installation-pack'
-      ? args.liveDiagnosticTree.formSubmissions.map(canonicalReportForm)
+      ? args.liveDiagnosticTree.formSubmissions
+          .filter((form) => !args.pinnedFormIds || args.pinnedFormIds.includes(form.id))
+          .map(canonicalReportForm)
       : args.formRows.map(reportForm);
   const formsById = new Map(forms.map((form) => [form.id, form]));
   const formIds = new Set(forms.map((form) => form.id));
@@ -591,6 +649,9 @@ async function renderInstallHubReport(args: {
           args.liveDiagnosticReadiness,
         )
       : undefined;
+  const electricalMapImages = args.mode === 'installation-pack' && canonicalReport
+    ? await renderElectricalMapImages(canonicalReport, installation.siteName)
+    : undefined;
   const parts: Buffer[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
     const slices = chunks[index];
@@ -602,6 +663,7 @@ async function renderInstallHubReport(args: {
     const compressed = await compressResolvedPhotos(selected, scopedPhotoRows);
     const html = buildInstallHubReportHtml({
       mode: args.mode,
+      detailMode: args.detailMode,
       installation,
       forms,
       slices,
@@ -612,6 +674,7 @@ async function renderInstallHubReport(args: {
       generatedLabel: reportGeneratedLabel,
       summaryPhotoCount: totals.count,
       ...(canonicalReport ? { canonicalReport } : {}),
+      ...(index === 0 && electricalMapImages ? { electricalMapImages } : {}),
     });
     parts.push(await renderPdf(html));
     await args.onProgress?.(index + 1, chunks.length);
@@ -640,6 +703,7 @@ async function saveInstallHubReport(args: {
   pinnedFormIds?: string[];
   pinnedCreatedAt?: string;
   mode: ReportMode;
+  detailMode: InstallHubReportDetailMode;
   onPhase?: (phase: string) => void | Promise<void>;
   onProgress?: (current: number, total: number) => void | Promise<void>;
 }): Promise<{ storageKey: string; remoteUrl: string }> {
@@ -688,9 +752,11 @@ async function runInstallHubPdfJob(args: {
   installationId: string;
   formIds: string[];
   mode: ReportMode;
+  detailMode: InstallHubReportDetailMode;
   recordVersionNumber?: number;
   recordVersionPayloadHash?: string;
   reportSource: 'canonical-version' | 'diagnostic-live';
+  liveTreeRevision?: number;
 }): Promise<void> {
   try {
     await markJobRunning(args.jobId, 'Starting');
@@ -713,6 +779,13 @@ async function runInstallHubPdfJob(args: {
     const liveDiagnosticTree = args.reportSource === 'diagnostic-live'
       ? await loadCanonicalInstallationTree(installation.id)
       : undefined;
+    if (
+      liveDiagnosticTree
+      && args.liveTreeRevision !== undefined
+      && liveDiagnosticTree.installation.treeRevision !== args.liveTreeRevision
+    ) {
+      throw new Error('diagnostic_report_source_changed');
+    }
     const liveDiagnosticReadiness = liveDiagnosticTree
       ? await canonicalCompletionReadiness({ tree: liveDiagnosticTree, executor: db })
       : undefined;
@@ -735,12 +808,13 @@ async function runInstallHubPdfJob(args: {
       formRows: forms,
       ...(pinned ? {
         pinnedSnapshot: pinned.snapshot,
-        pinnedFormIds: args.formIds,
         pinnedCreatedAt: pinned.createdAt,
       } : {}),
+      pinnedFormIds: args.formIds,
       ...(liveDiagnosticTree ? { liveDiagnosticTree } : {}),
       ...(liveDiagnosticReadiness ? { liveDiagnosticReadiness } : {}),
       mode: args.mode,
+      detailMode: args.detailMode,
       onPhase: (phase) => updateJobPhase(args.jobId, phase),
       onProgress: (current, total) =>
         updateJobProgress(
@@ -779,6 +853,7 @@ async function queueInstallHubPdfJob(args: {
   installation: InstallationRow;
   forms: Array<FormRow | CanonicalFormSubmission>;
   mode: ReportMode;
+  detailMode: InstallHubReportDetailMode;
   recordVersionNumber?: number;
   recordVersionPayloadHash?: string;
   recordVersionSnapshot?: CanonicalRecordVersionSnapshot;
@@ -797,6 +872,16 @@ async function queueInstallHubPdfJob(args: {
       : args.installation.id;
   if (!entityId) throw badRequest('A form is required for form PDF generation');
   const formIds = args.forms.map((form) => form.id);
+  const liveTreeRevision = args.liveMode ? args.installation.treeRevision : undefined;
+  const reportVariantKey = args.mode === 'installation-pack'
+    ? installHubReportVariantKey({
+        detailMode: args.detailMode,
+        formIds,
+        sourceKey: liveTreeRevision === undefined
+          ? 'canonical'
+          : `tree-revision-${liveTreeRevision}`,
+      })
+    : null;
   const params: ExportJobParams = {
     artifactType: 'pdf',
     filename: reportFilename(
@@ -805,13 +890,17 @@ async function queueInstallHubPdfJob(args: {
     ),
     contentType: 'application/pdf',
     reportMode: args.mode,
+    detailMode: args.detailMode,
+    includeElectricalMap: args.mode === 'installation-pack',
     reportSource: args.liveMode
       ? 'diagnostic-live'
       : 'canonical-version',
-    rendererVersion: INSTALLHUB_REPORT_MANIFEST_VERSION,
+    rendererVersion: INSTALLHUB_REPORT_RENDERER_VERSION,
     formIds,
+    ...(reportVariantKey ? { reportVariantKey } : {}),
     sourceUpdatedAt: args.recordVersionPayloadHash
       ?? sourceUpdatedAt(args.installation, args.forms as FormRow[]),
+    ...(liveTreeRevision === undefined ? {} : { liveTreeRevision }),
     ...(args.recordVersionNumber === undefined
       ? {}
       : {
@@ -847,6 +936,8 @@ async function queueInstallHubPdfJob(args: {
       recordVersionNumber: args.recordVersionNumber ?? null,
       recordVersionPayloadHash: args.recordVersionPayloadHash ?? null,
       reportSource: args.liveMode ? 'diagnostic-live' as const : 'canonical-version' as const,
+      detailMode: args.detailMode,
+      reportVariantKey,
     };
     await tx.insert(pdfJobs).values({
       id: jobId,
@@ -867,6 +958,8 @@ async function queueInstallHubPdfJob(args: {
       recordVersionNumber: args.recordVersionNumber ?? null,
       recordVersionPayloadHash: args.recordVersionPayloadHash ?? null,
       reportSource: args.liveMode ? 'diagnostic-live' as const : 'canonical-version' as const,
+      detailMode: args.detailMode,
+      reportVariantKey,
     };
   });
   if (queued.reused) return queued;
@@ -877,9 +970,11 @@ async function queueInstallHubPdfJob(args: {
       installationId: args.installation.id,
       formIds,
       mode: args.mode,
+      detailMode: args.detailMode,
       recordVersionNumber: args.recordVersionNumber,
       recordVersionPayloadHash: args.recordVersionPayloadHash,
       reportSource: args.liveMode ? 'diagnostic-live' : 'canonical-version',
+      liveTreeRevision,
     }),
   ).catch((error) => {
     const failure = safeInstallHubReportFailure(error);
@@ -931,6 +1026,8 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
             recordVersionNumber: { type: ['integer', 'null'] },
             recordVersionPayloadHash: { type: ['string', 'null'] },
             reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
+            detailMode: { type: 'string', enum: ['by-zone', 'by-electrical-hierarchy'] },
+            reportVariantKey: { type: ['string', 'null'] },
           },
         },
       },
@@ -972,6 +1069,7 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
       installation,
       forms,
       mode: 'form',
+      detailMode: DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE,
       recordVersionNumber,
       recordVersionPayloadHash: pinned?.snapshot.payloadHash,
       recordVersionSnapshot: pinned?.snapshot,
@@ -1003,6 +1101,11 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
           },
           recordVersionNumber: { type: 'integer', minimum: 1 },
           liveMode: { type: 'boolean' },
+          detailMode: {
+            type: 'string',
+            enum: ['by-zone', 'by-electrical-hierarchy'],
+            default: 'by-electrical-hierarchy',
+          },
         },
       },
       response: {
@@ -1014,6 +1117,8 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
             recordVersionNumber: { type: ['integer', 'null'] },
             recordVersionPayloadHash: { type: ['string', 'null'] },
             reportSource: { type: 'string', enum: ['canonical-version', 'diagnostic-live'] },
+            detailMode: { type: 'string', enum: ['by-zone', 'by-electrical-hierarchy'] },
+            reportVariantKey: { type: ['string', 'null'] },
           },
         },
       },
@@ -1025,6 +1130,7 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
       formSubmissionIds?: unknown;
       recordVersionNumber?: unknown;
       liveMode?: unknown;
+      detailMode?: unknown;
     };
     const selectedIds = Array.isArray(body.formSubmissionIds)
       ? [...new Set(
@@ -1039,6 +1145,7 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
     const recordVersionNumber = requestedRecordVersion(body.recordVersionNumber);
     const liveMode = requestedLiveMode(body.liveMode);
     assertPinnedOrExplicitLive({ recordVersionNumber, liveMode });
+    const detailMode = requestedReportDetailMode(body.detailMode);
     const pinned = recordVersionNumber === undefined
       ? null
       : await loadCanonicalRecordVersion({ installationId, versionNumber: recordVersionNumber });
@@ -1063,6 +1170,7 @@ export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
       installation,
       forms,
       mode: 'installation-pack',
+      detailMode,
       recordVersionNumber,
       recordVersionPayloadHash: pinned?.snapshot.payloadHash,
       recordVersionSnapshot: pinned?.snapshot,

@@ -620,11 +620,36 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
       name: 'Main board',
       displayCode: 'SITE-MSB-001',
       physicalLocationId: 'zone-plant',
+    }, {
+      id: 'asset-1',
+      kind: 'SITE_ASSET',
+      name: 'Air conditioner',
+      displayCode: 'SITE-HVAC-001',
+      typeLabel: 'AC / HVAC',
+      physicalLocationId: 'zone-plant',
     }],
     supplyEdges: [{
       sourceNodeId: 'grid-1',
       targetNodeId: 'board-1',
       relationship: 'FED_FROM',
+    }],
+    measurementEdges: [{
+      sourceNodeId: 'board-1',
+      targetNodeId: 'asset-1',
+      relationship: 'MEASURES',
+    }],
+    meters: [{
+      id: 'meter-1',
+      installedOnBoardId: 'board-1',
+      name: 'SITE-A3RM-001',
+      model: 'A3RM',
+      serialNumber: 'SERIAL-1',
+      channels: [{
+        ordinal: 1,
+        purpose: 'SUB_CIRCUIT',
+        load: 'HVAC',
+        description: 'Main refrigeration feed',
+      }],
     }],
     unresolvedRelationships: [],
     assets: [{
@@ -678,15 +703,14 @@ test('pinned canonical report HTML is deterministic and includes authoritative s
   assert.match(first, /Pinned canonical installation/);
   assert.match(first, /Report source canonical-version/);
   assert.doesNotMatch(first, /NON-AUTHORITATIVE/);
-  assert.match(first, /Physical-zone summary/);
+  assert.match(first, /Details by electrical hierarchy/);
   assert.match(first, /Plant room/);
-  assert.match(first, /Electrical hierarchy/);
-  assert.match(first, /All-assets coverage/);
-  assert.match(first, /Metering assignments/);
-  assert.match(first, /Virtual-meter definitions/);
+  assert.match(first, /Incoming supply to connected loads/);
+  assert.match(first, /Installed device: SITE-A3RM-001 - A3RM - channels 1 \(HVAC - Main refrigeration feed\)/);
+  assert.match(first, /Measured by: SITE-A3RM-001 channel 1 \(HVAC - Main refrigeration feed\)/);
+  assert.match(first, /Calculated residuals/);
   assert.match(first, /TOTAL\(assignment-total\) - SUM\(assignment-1\)/);
-  assert.match(first, /UNALLOCATED_RESIDUAL caveat/);
-  assert.match(first, /calculated remainder, not a direct meter reading/);
+  assert.match(first, /calculated residual, not a direct meter reading/);
   assert.match(first, /Readiness/);
   assert.match(first, /snapshot-hash-7/);
   assert.match(first, /mapping-hash-7/);
@@ -712,6 +736,8 @@ test('live diagnostic HTML labels mutable data and shows draft forms, blockers, 
       physicalLocationId: 'zone-1',
     }],
     supplyEdges: [],
+    measurementEdges: [],
+    meters: [],
     unresolvedRelationships: [{
       id: 'unresolved-board-tbc',
       subjectType: 'BOARD',
@@ -753,9 +779,215 @@ test('live diagnostic HTML labels mutable data and shows draft forms, blockers, 
   assert.match(html, /NON-AUTHORITATIVE/);
   assert.match(html, /Not pinned to a canonical record version or payload hash/);
   assert.match(html, /SUPPLY_TBC/);
-  assert.match(html, /Unresolved electrical relationships/);
-  assert.match(html, />TBC</);
+  assert.match(html, /Unresolved relationships/);
+  assert.match(html, /SUPPLY TBC/);
   assert.match(html, /Submission draft-form .* Draft/);
   assert.doesNotMatch(html, /snapshot-hash/);
   assert.doesNotMatch(html, /Pinned canonical installation/);
+});
+
+test('installation packs embed the electrical map once and render only the selected detail grouping', () => {
+  const canonicalReport: InstallHubCanonicalReport = {
+    reportSource: 'canonical-version',
+    treeRevision: 3,
+    recordVersionNumber: 2,
+    snapshotPayloadHash: 'snapshot-2',
+    mappingContentHash: 'mapping-2',
+    authoritative: true,
+    readyToComplete: true,
+    physicalLocations: [{ id: 'zone-1', name: 'Workshop' }],
+    electricalNodes: [{
+      id: 'asset-1',
+      kind: 'SITE_ASSET',
+      name: 'Workshop lighting',
+      displayCode: 'SITE-LX-001',
+      typeLabel: 'Lighting',
+      physicalLocationId: 'zone-1',
+      coverageState: 'DIRECT',
+    }],
+    supplyEdges: [],
+    measurementEdges: [],
+    meters: [],
+    unresolvedRelationships: [],
+    assets: [],
+    meteringRows: [],
+    virtualMeterDefinitions: [],
+    readinessIssues: [],
+  };
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    detailMode: 'by-zone',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    electricalMapDataUri: 'data:image/png;base64,bWFw',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport,
+  });
+  assert.equal(html.match(/src="data:image\/png;base64,bWFw"/g)?.length, 1);
+  assert.doesNotMatch(html, /\.electrical-map\{page-break-before:always/);
+  assert.match(html, /Details by physical zone/);
+  assert.match(html, /Workshop lighting/);
+  assert.match(html, /data-pdf-icon="lighting"/);
+  assert.doesNotMatch(html, /Details by electrical hierarchy/);
+
+  const continuation = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    detailMode: 'by-zone',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    electricalMapDataUri: 'data:image/png;base64,bWFw',
+    includeIntro: false,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport,
+  });
+  assert.doesNotMatch(continuation, /src="data:image\/png;base64,bWFw"/);
+  assert.doesNotMatch(continuation, /Details by physical zone/);
+});
+
+test('capped electrical maps keep the complete overview and add an indexed hierarchy fallback', () => {
+  const canonicalReport: InstallHubCanonicalReport = {
+    reportSource: 'canonical-version',
+    treeRevision: 8,
+    recordVersionNumber: 5,
+    snapshotPayloadHash: 'snapshot-5',
+    mappingContentHash: 'mapping-5',
+    authoritative: true,
+    readyToComplete: true,
+    physicalLocations: [],
+    electricalNodes: [],
+    supplyEdges: [],
+    measurementEdges: [],
+    meters: [],
+    unresolvedRelationships: [],
+    assets: [],
+    meteringRows: [],
+    virtualMeterDefinitions: [],
+    readinessIssues: [],
+  };
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    detailMode: 'by-zone',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    electricalMapImages: {
+      overviewDataUri: 'data:image/png;base64,b3ZlcnZpZXc=',
+      sourceWidth: 2_000,
+      sourceHeight: 400,
+      overviewWidth: 2_000,
+      overviewHeight: 400,
+      totalDetailWindows: 30,
+      omittedDetailWindows: 28,
+      detailTiles: [
+        {
+          dataUri: 'data:image/png;base64,c2VnbWVudDE=',
+          left: 0,
+          top: 68,
+          width: 1_080,
+          height: 300,
+          row: 1,
+          column: 1,
+          rowCount: 1,
+          columnCount: 2,
+          windowIndex: 1,
+          windowCount: 30,
+        },
+        {
+          dataUri: 'data:image/png;base64,c2VnbWVudDI=',
+          left: 920,
+          top: 68,
+          width: 1_080,
+          height: 300,
+          row: 1,
+          column: 2,
+          rowCount: 1,
+          columnCount: 2,
+          windowIndex: 30,
+          windowCount: 30,
+        },
+      ],
+    },
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport,
+  });
+
+  assert.equal(html.match(/data:image\/png;base64,b3ZlcnZpZXc=/g)?.length, 1);
+  assert.equal(html.match(/data-map-detail-segment=/g)?.length, 2);
+  assert.match(html, /Electrical map detail - row 1 of 1, column 1 of 2/);
+  assert.match(html, /Electrical map detail - row 1 of 1, column 2 of 2/);
+  assert.match(html, /Source window left 1-1080, top 69-368 of 2000 x 400/);
+  assert.match(html, /Source window left 921-2000, top 69-368 of 2000 x 400/);
+  assert.match(html, /Window edges retain source overlap; capped sets may omit intermediate windows/);
+  assert.doesNotMatch(html, /Adjacent rows and columns overlap/);
+  assert.match(html, /Refer to the complete overview for the full topology and legend/);
+  assert.match(html, /visual detail pages are capped at 2 representative windows from 30/);
+  assert.match(html, /Visual detail page limit reached/);
+  assert.match(html, /28 additional map windows/);
+  assert.match(html, /data-map-detail-fallback="indexed-hierarchy"/);
+  assert.match(html, /Supplied from \/ parent/);
+  assert.match(html, /\.electrical-map-detail\{page-break-before:always/);
+  assert.match(html, /Solid copper lines show electrical supply/);
+});
+
+test('zone details render every electrical node exactly once and retain shared or unknown-zone infrastructure', () => {
+  const report: InstallHubCanonicalReport = {
+    reportSource: 'canonical-version',
+    treeRevision: 4,
+    recordVersionNumber: 3,
+    snapshotPayloadHash: 'snapshot-3',
+    mappingContentHash: 'mapping-3',
+    authoritative: true,
+    readyToComplete: true,
+    physicalLocations: [
+      { id: 'zone-a', name: 'Plant room' },
+      { id: 'zone-b', name: 'Workshop' },
+    ],
+    electricalNodes: [
+      { id: 'grid', kind: 'GRID', name: 'Incoming grid' },
+      { id: 'board-a', kind: 'BOARD', name: 'Main board', physicalLocationId: 'zone-a' },
+      { id: 'asset-b', kind: 'SITE_ASSET', name: 'Workshop load', physicalLocationId: 'zone-b' },
+      { id: 'unknown-zone-board', kind: 'BOARD', name: 'Unmapped board', physicalLocationId: 'missing-zone' },
+    ],
+    supplyEdges: [],
+    measurementEdges: [],
+    meters: [],
+    unresolvedRelationships: [],
+    assets: [],
+    meteringRows: [],
+    virtualMeterDefinitions: [],
+    readinessIssues: [],
+  };
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    detailMode: 'by-zone',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 01/08/2026',
+    canonicalReport: report,
+  });
+
+  assert.match(html, /Shared \/ unassigned electrical infrastructure/);
+  for (const node of report.electricalNodes) {
+    const marker = `data-electrical-node-id="${node.id}"`;
+    assert.equal(html.split(marker).length - 1, 1, `${node.id} should appear in exactly one zone group`);
+  }
+  assert.equal(html.match(/data-electrical-node-id=/g)?.length, report.electricalNodes.length);
 });

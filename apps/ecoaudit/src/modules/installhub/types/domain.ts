@@ -665,6 +665,10 @@ export type MeterHistoryRollbackResult = {
 
 export type InstallHubExportJob = ExportJobStatus;
 
+export type InstallHubReportDetailMode =
+  | 'by-zone'
+  | 'by-electrical-hierarchy';
+
 export type InstallHubReportProvenance = {
   recordVersionNumber: number;
   recordVersionPayloadHash: string;
