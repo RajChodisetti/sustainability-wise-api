@@ -64,7 +64,7 @@ test('installation-pack detail mode and durable variant normalize deterministica
   }));
   assert.match(
     normalized,
-    /^installation-pack:v6:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
+    /^installation-pack:v7:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
   );
   assert.notEqual(
     installHubReportVariantKey({

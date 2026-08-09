@@ -35,12 +35,12 @@ import {
   zoomElectricalTreeViewport,
 } from './electricalTreeLayout';
 
-test('map pictograms are exactly doubled and remain inside interaction-safe footprints', () => {
+test('map pictograms are exactly 75 percent larger and remain inside interaction-safe footprints', () => {
   const expected = {
-    GRID: { width: 208, height: 252, haloSize: 192, iconSize: 160, previousIconSize: 80 },
-    BOARD: { width: 192, height: 246, haloSize: 176, iconSize: 144, previousIconSize: 72 },
-    SITE_ASSET: { width: 160, height: 206, haloSize: 144, iconSize: 112, previousIconSize: 56 },
-    VIRTUAL_RESIDUAL: { width: 160, height: 190, haloSize: 144, iconSize: 112, previousIconSize: 56 },
+    GRID: { width: 328, height: 380, haloSize: 312, iconSize: 280, previousIconSize: 160 },
+    BOARD: { width: 296, height: 358, haloSize: 280, iconSize: 252, previousIconSize: 144 },
+    SITE_ASSET: { width: 232, height: 282, haloSize: 216, iconSize: 196, previousIconSize: 112 },
+    VIRTUAL_RESIDUAL: { width: 232, height: 266, haloSize: 216, iconSize: 196, previousIconSize: 112 },
   } as const;
 
   for (const [kind, dimensions] of Object.entries(expected)) {
@@ -55,7 +55,7 @@ test('map pictograms are exactly doubled and remain inside interaction-safe foot
       width: dimensions.width,
       height: dimensions.height,
     });
-    assert.equal(visual.iconSize, dimensions.previousIconSize * 2);
+    assert.equal(visual.iconSize, dimensions.previousIconSize * 1.75);
     assert.ok(visual.iconSize / visual.haloSize >= 0.7, `${kind} icon must read prominently`);
     assert.ok(visual.iconSize * 1.08 <= visual.haloSize, `${kind} scaled artwork must stay inside its halo`);
     assert.ok(visual.haloSize >= 44, `${kind} halo must remain touch-sized`);
@@ -157,6 +157,10 @@ function nodeCenter(node: LayoutNode): { x: number; y: number } {
   return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
 }
 
+function cleanTestCoordinate(value: number): number {
+  return Number(value.toFixed(2));
+}
+
 function nodesOverlap(left: LayoutNode, right: LayoutNode): boolean {
   return left.x < right.x + right.width
     && left.x + left.width > right.x
@@ -185,7 +189,31 @@ function pointIsOnNodePerimeter(node: LayoutNode, x: number, y: number): boolean
   return withinX && withinY && (onVertical || onHorizontal);
 }
 
-test('electrical constellation centres the grid and lays out FED_FROM branches deterministically', () => {
+function connectorLength(source: LayoutNode, target: LayoutNode): number {
+  const coordinates = (electricalTreeStraightPath(source, target).match(/-?\d+(?:\.\d+)?/g) || [])
+    .map(Number);
+  assert.equal(coordinates.length, 4);
+  return Math.hypot(coordinates[2] - coordinates[0], coordinates[3] - coordinates[1]);
+}
+
+function assertSharedDepthLevels(nodes: LayoutNode[]) {
+  const centerYByDepth = new Map<number, number>();
+  for (const node of nodes) {
+    const centerY = nodeCenter(node).y;
+    const expected = centerYByDepth.get(node.depth);
+    if (expected === undefined) centerYByDepth.set(node.depth, centerY);
+    else assert.equal(centerY, expected, `depth ${node.depth} should share one vertical level`);
+  }
+  const orderedLevels = [...centerYByDepth.entries()].sort(([left], [right]) => left - right);
+  for (let index = 1; index < orderedLevels.length; index += 1) {
+    assert.ok(
+      orderedLevels[index][1] > orderedLevels[index - 1][1],
+      `depth ${orderedLevels[index][0]} should appear below depth ${orderedLevels[index - 1][0]}`,
+    );
+  }
+}
+
+test('electrical hierarchy centres the grid above deterministic shared depth levels', () => {
   const layout = buildElectricalTreeLayout(topology());
   const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
   const grid = byId.get('grid-1')!;
@@ -193,41 +221,63 @@ test('electrical constellation centres the grid and lays out FED_FROM branches d
   const gridCenter = nodeCenter(grid);
 
   assert.ok(Math.abs(gridCenter.x - layout.width / 2) <= 0.02);
-  assert.ok(Math.abs(gridCenter.y - layout.height / 2) <= 0.02);
+  assert.ok(gridCenter.y < layout.height / 2);
   assert.equal(grid.presentationRing, 0);
   assert.equal(board.presentationRing, 1);
-  assert.ok((board.radialDistance || 0) > 0);
-  assert.ok((byId.get('asset-1')!.radialDistance || 0) > (board.radialDistance || 0));
+  assert.equal(byId.get('board-2')?.depth, 2);
+  assert.equal(byId.get('asset-1')?.depth, 2);
+  assert.equal(byId.get('virtual-1')?.depth, 2);
+  assert.equal(byId.get('asset-2')?.depth, 3);
+  assertSharedDepthLevels(layout.nodes);
+
+  const children = ['board-2', 'asset-1', 'virtual-1'].map((id) => byId.get(id)!);
+  const childSpanCenter = (
+    Math.min(...children.map((child) => child.x))
+    + Math.max(...children.map((child) => child.x + child.width))
+  ) / 2;
+  assert.ok(Math.abs(nodeCenter(board).x - childSpanCenter) <= 0.02);
+  assert.ok(children.every((child) => nodeCenter(child).y > nodeCenter(board).y));
   assert.equal(byId.get('virtual-1')?.parentId, 'board-1');
   assert.equal(layout.edges.some((edge) => (
     edge.derived
     && edge.sourceNodeId === 'board-1'
     && edge.targetNodeId === 'virtual-1'
   )), true);
-
-  const branchAngles = ['board-2', 'asset-1', 'virtual-1'].map((id) => byId.get(id)!.angle!);
-  assert.ok(Math.max(...branchAngles) - Math.min(...branchAngles) > Math.PI * 0.65);
   assertNoNodeOverlap(layout.nodes);
   assert.deepEqual(buildElectricalTreeLayout(topology()), layout);
 });
 
-test('balanced primary branches occupy all four quadrants around the incoming grid', () => {
+test('balanced primary branches form symmetric top-to-bottom levels', () => {
   const layout = buildElectricalTreeLayout(balancedBranchTopology());
   const grid = layout.nodes.find((item) => item.node.id === 'grid-1')!;
   const gridCenter = nodeCenter(grid);
-  const boards = layout.nodes.filter((item) => item.node.kind === 'BOARD');
-  const quadrants = new Set(boards.map((board) => {
-    const center = nodeCenter(board);
-    return `${Math.sign(center.x - gridCenter.x)},${Math.sign(center.y - gridCenter.y)}`;
-  }));
+  const boards = layout.nodes
+    .filter((item) => item.node.kind === 'BOARD')
+    .sort((left, right) => nodeCenter(left).x - nodeCenter(right).x);
+  const assets = layout.nodes
+    .filter((item) => item.node.kind === 'SITE_ASSET')
+    .sort((left, right) => nodeCenter(left).x - nodeCenter(right).x);
 
-  assert.equal(quadrants.size, 4);
+  assertSharedDepthLevels(layout.nodes);
   assert.deepEqual([...new Set(boards.map((board) => board.presentationRing))], [1]);
   assert.equal(new Set(boards.map((board) => board.branchId)).size, 4);
+  assert.ok(boards.every((board) => nodeCenter(board).y > gridCenter.y));
+  assert.ok(assets.every((asset) => nodeCenter(asset).y > nodeCenter(boards[0]).y));
+  for (let index = 0; index < boards.length; index += 1) {
+    assert.equal(nodeCenter(boards[index]).x, nodeCenter(assets[index]).x);
+  }
+  assert.equal(
+    cleanTestCoordinate(gridCenter.x - nodeCenter(boards[0]).x),
+    cleanTestCoordinate(nodeCenter(boards[boards.length - 1]).x - gridCenter.x),
+  );
+  assert.equal(
+    cleanTestCoordinate(gridCenter.x - nodeCenter(boards[1]).x),
+    cleanTestCoordinate(nodeCenter(boards[2]).x - gridCenter.x),
+  );
   assertNoNodeOverlap(layout.nodes);
 });
 
-test('constellation uses compact equipment footprints and straight perimeter connectors', () => {
+test('hierarchy uses enlarged equipment footprints and straight perimeter connectors', () => {
   const layout = buildElectricalTreeLayout(topology());
   const byId = new Map(layout.nodes.map((item) => [item.node.id, item]));
   const grid = byId.get('grid-1')!;
@@ -243,7 +293,10 @@ test('constellation uses compact equipment footprints and straight perimeter con
   assert.ok(board.height > asset.height);
   assert.ok(residual.height < asset.height);
   assert.equal(grid.radialDistance, 0);
-  assert.ok((board.radialDistance || 0) < (asset.radialDistance || 0));
+  assert.equal(board.depth, grid.depth + 1);
+  assert.equal(asset.depth, board.depth + 1);
+  assert.ok(nodeCenter(grid).y < nodeCenter(board).y);
+  assert.ok(nodeCenter(board).y < nodeCenter(asset).y);
 
   const supplyPath = electricalTreeStraightPath(grid, board);
   assert.match(supplyPath, /^M -?\d+(?:\.\d+)? -?\d+(?:\.\d+)? L -?\d+(?:\.\d+)? -?\d+(?:\.\d+)?$/);
@@ -274,7 +327,7 @@ test('constellation uses compact equipment footprints and straight perimeter con
   assertNoNodeOverlap(layout.nodes);
 });
 
-test('variable-height sibling boards reserve enough branch space to avoid overlap', () => {
+test('variable-height sibling branches share levels and remain centred over their descendants', () => {
   const model: ElectricalTreeReadModel = {
     installationId: 'installation-1',
     treeRevision: 1,
@@ -300,14 +353,17 @@ test('variable-height sibling boards reserve enough branch space to avoid overla
 
   assert.equal(firstBoard.depth, secondBoard.depth);
   assert.equal(firstBoard.presentationRing, secondBoard.presentationRing);
-  assert.equal(firstBoard.angle, firstResidual.angle);
-  assert.equal(secondBoard.angle, secondResidual.angle);
-  assert.ok((firstResidual.radialDistance || 0) > (firstBoard.radialDistance || 0));
-  assert.ok((secondResidual.radialDistance || 0) > (secondBoard.radialDistance || 0));
+  assert.equal(nodeCenter(firstBoard).y, nodeCenter(secondBoard).y);
+  assert.equal(nodeCenter(firstResidual).y, nodeCenter(secondResidual).y);
+  assert.equal(nodeCenter(firstBoard).x, nodeCenter(firstResidual).x);
+  assert.equal(nodeCenter(secondBoard).x, nodeCenter(secondResidual).x);
+  assert.ok(nodeCenter(firstResidual).y > nodeCenter(firstBoard).y);
+  assert.ok(nodeCenter(secondResidual).y > nodeCenter(secondBoard).y);
+  assertSharedDepthLevels(layout.nodes);
   assertNoNodeOverlap(layout.nodes);
 });
 
-test('large terminal fan-outs form a non-overlapping local branch cluster without changing semantic depth', () => {
+test('large terminal fan-outs form one symmetric level with bounded adjacent-level connectors', () => {
   const model = largeTerminalFanoutTopology();
   const layout = buildElectricalTreeLayout(model);
   const assets = layout.nodes.filter((item) => item.node.kind === 'SITE_ASSET');
@@ -318,31 +374,38 @@ test('large terminal fan-outs form a non-overlapping local branch cluster withou
   assert.deepEqual([...new Set(assets.map((item) => item.presentationRing))], [2]);
   assert.deepEqual([...new Set(assets.map((item) => item.clusterParentId))], ['board-1']);
   assert.deepEqual([...new Set(assets.map((item) => item.branchId))], ['board-1']);
+  assert.equal(new Set(assets.map((item) => nodeCenter(item).y)).size, 1);
   const assetVisual = electricalTreeNodeVisualSize('SITE_ASSET');
   const renderedAssetIcon = assetVisual.iconSize * 1.08 * fitted.scale;
   assert.ok(
     renderedAssetIcon >= 40,
-    `doubled asset pictograms should remain prominent in the fitted overview, received ${renderedAssetIcon}px`,
+    `enlarged asset pictograms should remain prominent in the fitted overview, received ${renderedAssetIcon}px`,
   );
 
-  const grid = layout.nodes.find((item) => item.node.id === 'grid-1')!;
-  const gridCenter = nodeCenter(grid);
-  const quadrants = new Set(assets.map((asset) => {
-    const center = nodeCenter(asset);
-    return `${Math.sign(center.x - gridCenter.x)},${Math.sign(center.y - gridCenter.y)}`;
-  }));
-  assert.ok(quadrants.size >= 3);
+  const board = layout.nodes.find((item) => item.node.id === 'board-1')!;
+  const sortedAssets = [...assets].sort((left, right) => nodeCenter(left).x - nodeCenter(right).x);
+  const assetSpanCenter = (
+    sortedAssets[0].x
+    + sortedAssets[sortedAssets.length - 1].x
+    + sortedAssets[sortedAssets.length - 1].width
+  ) / 2;
+  assert.equal(nodeCenter(board).x, assetSpanCenter);
+  assert.ok(assets.every((asset) => nodeCenter(asset).y > nodeCenter(board).y));
+  assert.ok(
+    Math.max(...assets.map((asset) => connectorLength(board, asset))) <= 1_020,
+    'dense adjacent-level supply connectors should stay locally bounded',
+  );
+  assertSharedDepthLevels(layout.nodes);
   assertNoNodeOverlap(layout.nodes);
 
-  const branchAsset = assets[assets.length - 1];
-  const board = layout.nodes.find((item) => item.node.id === 'board-1')!;
+  const branchAsset = sortedAssets[sortedAssets.length - 1];
   const branchPath = electricalTreeStraightPath(board, branchAsset);
   assert.match(branchPath, /^M .+ L .+$/);
   assert.equal((branchPath.match(/-?\d+(?:\.\d+)?/g) || []).length, 4);
   assert.deepEqual(buildElectricalTreeLayout(structuredClone(model)), layout);
 });
 
-test('multiple incoming grids are packed into separate centred constellation islands', () => {
+test('multiple incoming grids form separate symmetric hierarchy islands on shared levels', () => {
   const model: ElectricalTreeReadModel = {
     installationId: 'installation-1',
     treeRevision: 1,
@@ -368,6 +431,8 @@ test('multiple incoming grids are packed into separate centred constellation isl
 
   assert.notEqual(nodeCenter(gridA).x, nodeCenter(gridB).x);
   assert.equal(nodeCenter(gridA).y, nodeCenter(gridB).y);
+  assert.equal((nodeCenter(gridA).x + nodeCenter(gridB).x) / 2, layout.width / 2);
+  assertSharedDepthLevels(layout.nodes);
   assertNoNodeOverlap(layout.nodes);
 });
 

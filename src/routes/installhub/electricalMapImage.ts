@@ -21,29 +21,25 @@ const HEADER_HEIGHT = 76;
 const LEGEND_HEIGHT = 86;
 const BODY_BOTTOM_PADDING = 24;
 const MIN_DIAGRAM_WIDTH = 1_120;
-const MIN_BODY_HALF_WIDTH = 520;
 const MIN_BODY_HALF_HEIGHT = 300;
-const RADIAL_INNER_RADIUS = 180;
-const RADIAL_RING_GAP = 160;
-const RADIAL_X_SCALE = 1.32;
-const RADIAL_Y_SCALE = 0.68;
-const RADIAL_USABLE_SPAN = Math.PI * (5 / 3);
-const RADIAL_BRANCH_GAP = Math.PI / 24;
-const RADIAL_COLLISION_STEP = 22;
-const RADIAL_COLLISION_MARGIN = 18;
-const RADIAL_MAX_COLLISION_STEPS = 180;
-const GRID_MARKER_WIDTH = 184;
-const GRID_MARKER_HEIGHT = 234;
-const BOARD_MARKER_WIDTH = 190;
-const BOARD_MARKER_BASE_HEIGHT = 210;
-const ASSET_MARKER_WIDTH = 164;
-const ASSET_MARKER_HEIGHT = 208;
-const RESIDUAL_MARKER_WIDTH = 160;
-const RESIDUAL_MARKER_HEIGHT = 196;
-const GRID_MEDALLION_RADIUS = 90;
-const BOARD_MEDALLION_RADIUS = 72;
-const ASSET_MEDALLION_RADIUS = 60;
-const RESIDUAL_MEDALLION_RADIUS = 60;
+const HIERARCHY_TOP_PADDING = 28;
+const HIERARCHY_BOTTOM_PADDING = 34;
+const HIERARCHY_LEVEL_GAP = 68;
+const HIERARCHY_SIBLING_GAP = 34;
+const HIERARCHY_ROOT_GAP = 58;
+const CONNECTOR_CLEARANCE = 14;
+const GRID_MARKER_WIDTH = 326;
+const GRID_MARKER_HEIGHT = 384;
+const BOARD_MARKER_WIDTH = 286;
+const BOARD_MARKER_BASE_HEIGHT = 336;
+const ASSET_MARKER_WIDTH = 262;
+const ASSET_MARKER_HEIGHT = 292;
+const RESIDUAL_MARKER_WIDTH = 262;
+const RESIDUAL_MARKER_HEIGHT = 278;
+const GRID_MEDALLION_RADIUS = 154;
+const BOARD_MEDALLION_RADIUS = 124;
+const ASSET_MEDALLION_RADIUS = 101;
+const RESIDUAL_MEDALLION_RADIUS = 101;
 const METER_SATELLITE_ROW_HEIGHT = 34;
 const METER_SATELLITE_COLUMNS = 2;
 export const ELECTRICAL_MAP_DETAIL_THRESHOLD_PX = 1_400;
@@ -448,35 +444,22 @@ type VisualMarker = {
   meters: MeterSatellite[];
 };
 
-type RadialSector = {
-  branchId: string;
-  start: number;
-  end: number;
-  maxRadius: number;
-  index: number;
+type HierarchyLevel = {
+  depth: number;
+  top: number;
+  height: number;
 };
 
 type LayoutResult = {
   source: 'auto' | 'saved';
   positions: Map<string, DiagramPosition>;
   parentById: Map<string, string>;
-  sectors: RadialSector[];
+  levels: HierarchyLevel[];
   bodyHeight: number;
   bodyTop: number;
   centerX: number;
   centerY: number;
   width: number;
-};
-
-type PlannedMarker = {
-  nodeId: string;
-  parentId?: string;
-  branchId: string;
-  depth: number;
-  angle: number;
-  minimumRadius: number;
-  sectorStart: number;
-  sectorEnd: number;
 };
 
 function markerDimensions(node: DiagramNode, meterCount: number): { width: number; height: number } {
@@ -619,7 +602,7 @@ function stableNodeOrder(left: DiagramNode, right: DiagramNode): number {
     || left.id.localeCompare(right.id);
 }
 
-function radialHierarchy(
+function hierarchyTree(
   report: InstallHubCanonicalReport,
   depths: Map<string, number>,
 ): { parentById: Map<string, string>; childrenById: Map<string, string[]> } {
@@ -660,274 +643,173 @@ function radialHierarchy(
   return { parentById, childrenById };
 }
 
-function partitionRadialSector(
-  nodeIds: string[],
-  start: number,
-  end: number,
-  weightOf: (nodeId: string) => number,
-): Array<{ nodeId: string; start: number; end: number }> {
-  if (!nodeIds.length) return [];
-  if (nodeIds.length === 1) return [{ nodeId: nodeIds[0], start, end }];
-  const span = Math.max(0.01, end - start);
-  const gap = Math.min(RADIAL_BRANCH_GAP, span / (nodeIds.length * 5));
-  const usable = Math.max(span * 0.55, span - gap * (nodeIds.length - 1));
-  const totalWeight = nodeIds.reduce((total, nodeId) => total + weightOf(nodeId), 0);
-  let cursor = start;
-  return nodeIds.map((nodeId, index) => {
-    const itemSpan = index === nodeIds.length - 1
-      ? end - cursor
-      : usable * (weightOf(nodeId) / Math.max(0.001, totalWeight));
-    const sector = { nodeId, start: cursor, end: Math.min(end, cursor + itemSpan) };
-    cursor = sector.end + gap;
-    return sector;
-  });
-}
-
-function markerBoxAt(
-  marker: VisualMarker,
-  radius: number,
-  angle: number,
-): DiagramPosition {
-  const cx = radius * Math.cos(angle) * RADIAL_X_SCALE;
-  const cy = radius * Math.sin(angle) * RADIAL_Y_SCALE;
-  return {
-    cx,
-    cy,
-    x: cx - marker.width / 2,
-    y: cy - marker.height / 2,
-    width: marker.width,
-    height: marker.height,
-    depth: 0,
-    radius,
-    angle,
-    branchId: '',
-  };
-}
-
-function markerBoxesOverlap(left: DiagramPosition, right: DiagramPosition): boolean {
-  return left.x - RADIAL_COLLISION_MARGIN < right.x + right.width
-    && left.x + left.width + RADIAL_COLLISION_MARGIN > right.x
-    && left.y - RADIAL_COLLISION_MARGIN < right.y + right.height
-    && left.y + left.height + RADIAL_COLLISION_MARGIN > right.y;
-}
-
-function buildRadialLayout(
+function buildHierarchicalLayout(
   report: InstallHubCanonicalReport,
   markers: Map<string, VisualMarker>,
   depths: Map<string, number>,
 ): LayoutResult {
   const nodeById = new Map(report.electricalNodes.map((node) => [node.id, node]));
-  const { parentById, childrenById } = radialHierarchy(report, depths);
-  const subtreeWeightCache = new Map<string, number>();
-  const subtreeWeight = (nodeId: string): number => {
-    const cached = subtreeWeightCache.get(nodeId);
+  const { parentById, childrenById } = hierarchyTree(report, depths);
+  const roots = report.electricalNodes
+    .filter((node) => !parentById.has(node.id))
+    .sort(stableNodeOrder);
+
+  // Parent candidates always come from a shallower semantic depth, so this is
+  // normally already a forest. Retain a deterministic escape hatch for a
+  // malformed Draft graph rather than allowing a cycle to drop every node.
+  if (!roots.length && report.electricalNodes.length) {
+    const promoted = report.electricalNodes.slice().sort(stableNodeOrder)[0];
+    const previousParentId = parentById.get(promoted.id);
+    if (previousParentId) {
+      childrenById.set(
+        previousParentId,
+        (childrenById.get(previousParentId) ?? []).filter((nodeId) => nodeId !== promoted.id),
+      );
+    }
+    parentById.delete(promoted.id);
+    roots.push(promoted);
+  }
+
+  const depthById = new Map<string, number>();
+  const assignDepth = (
+    nodeId: string,
+    depth: number,
+    path = new Set<string>(),
+  ) => {
+    if (depthById.has(nodeId) || path.has(nodeId)) return;
+    depthById.set(nodeId, depth);
+    const nextPath = new Set(path).add(nodeId);
+    for (const childId of childrenById.get(nodeId) ?? []) {
+      assignDepth(childId, depth + 1, nextPath);
+    }
+  };
+  for (const root of roots) assignDepth(root.id, 0);
+  for (const node of report.electricalNodes.slice().sort(stableNodeOrder)) {
+    if (depthById.has(node.id)) continue;
+    const previousParentId = parentById.get(node.id);
+    if (previousParentId) {
+      childrenById.set(
+        previousParentId,
+        (childrenById.get(previousParentId) ?? []).filter((nodeId) => nodeId !== node.id),
+      );
+    }
+    parentById.delete(node.id);
+    roots.push(node);
+    assignDepth(node.id, 0);
+  }
+  roots.sort(stableNodeOrder);
+
+  const subtreeWidthCache = new Map<string, number>();
+  const subtreeWidth = (nodeId: string, path = new Set<string>()): number => {
+    const cached = subtreeWidthCache.get(nodeId);
     if (cached !== undefined) return cached;
     const marker = markers.get(nodeId)!;
-    const ownWeight = Math.max(1, marker.width / 150) + marker.meters.length * 0.42;
-    subtreeWeightCache.set(nodeId, ownWeight);
-    const value = ownWeight + (childrenById.get(nodeId) ?? [])
-      .reduce((total, childId) => total + subtreeWeight(childId), 0);
-    subtreeWeightCache.set(nodeId, value);
+    if (path.has(nodeId)) return marker.width;
+    const nextPath = new Set(path).add(nodeId);
+    const childWidths = (childrenById.get(nodeId) ?? [])
+      .map((childId) => subtreeWidth(childId, nextPath));
+    const childrenWidth = childWidths.reduce((total, width) => total + width, 0)
+      + Math.max(0, childWidths.length - 1) * HIERARCHY_SIBLING_GAP;
+    const width = Math.max(marker.width, childrenWidth);
+    subtreeWidthCache.set(nodeId, width);
+    return width;
+  };
+
+  const orderedChildrenCache = new Map<string, string[]>();
+  const orderedChildren = (nodeId: string): string[] => {
+    const cached = orderedChildrenCache.get(nodeId);
+    if (cached) return cached;
+    const ranked = (childrenById.get(nodeId) ?? []).slice().sort((left, right) => (
+      subtreeWidth(right) - subtreeWidth(left)
+        || stableNodeOrder(nodeById.get(left)!, nodeById.get(right)!)
+    ));
+    const left: string[] = [];
+    const right: string[] = [];
+    ranked.forEach((childId, index) => (index % 2 === 0 ? left : right).push(childId));
+    const value = [...left.reverse(), ...right];
+    orderedChildrenCache.set(nodeId, value);
     return value;
   };
 
-  const grids = report.electricalNodes
-    .filter((node) => node.kind === 'GRID')
-    .sort(stableNodeOrder);
-  const roots = report.electricalNodes
-    .filter((node) => node.kind !== 'GRID' && (
-      !parentById.has(node.id)
-        || nodeById.get(parentById.get(node.id)!)?.kind === 'GRID'
-    ))
-    .sort((left, right) => subtreeWeight(right.id) - subtreeWeight(left.id) || stableNodeOrder(left, right));
-
-  const rootWeights = roots.map((root) => subtreeWeight(root.id));
-  const rootGap = roots.length > 1
-    ? Math.min(RADIAL_BRANCH_GAP, RADIAL_USABLE_SPAN / (roots.length * 5))
-    : 0;
-  const rootUsableSpan = Math.max(
-    RADIAL_USABLE_SPAN * 0.55,
-    RADIAL_USABLE_SPAN - rootGap * Math.max(0, roots.length - 1),
-  );
-  const rootWeightTotal = rootWeights.reduce((total, value) => total + value, 0);
-  const rootSpans = rootWeights.map((weight) => (
-    rootUsableSpan * (weight / Math.max(0.001, rootWeightTotal))
-  ));
-  const rootSectors = new Map<string, { start: number; end: number; index: number }>();
-  if (roots.length) {
-    let leftBoundary = -Math.PI / 2 - rootSpans[0] / 2;
-    let rightBoundary = -Math.PI / 2 + rootSpans[0] / 2;
-    rootSectors.set(roots[0].id, { start: leftBoundary, end: rightBoundary, index: 0 });
-    for (let index = 1; index < roots.length; index += 1) {
-      if (index % 2 === 1) {
-        const start = rightBoundary + rootGap;
-        const end = start + rootSpans[index];
-        rootSectors.set(roots[index].id, { start, end, index });
-        rightBoundary = end;
-      } else {
-        const end = leftBoundary - rootGap;
-        const start = end - rootSpans[index];
-        rootSectors.set(roots[index].id, { start, end, index });
-        leftBoundary = start;
-      }
-    }
+  const maxDepth = Math.max(0, ...depthById.values());
+  const levelHeights = new Map<number, number>();
+  for (const node of report.electricalNodes) {
+    const depth = depthById.get(node.id) ?? 0;
+    levelHeights.set(depth, Math.max(levelHeights.get(depth) ?? 0, markers.get(node.id)!.height));
   }
-
-  const plans: PlannedMarker[] = [];
-  const planned = new Set<string>();
-  const planSubtree = (
-    nodeId: string,
-    parentId: string | undefined,
-    branchId: string,
-    depth: number,
-    start: number,
-    end: number,
-    parentRadius: number,
-  ) => {
-    if (planned.has(nodeId)) return;
-    planned.add(nodeId);
-    const marker = markers.get(nodeId)!;
-    const span = Math.max(0.025, end - start);
-    const angleBias = parentId && (childrenById.get(parentId)?.length ?? 0) === 1
-      ? (depth % 2 === 0 ? -1 : 1) * Math.min(Math.PI / 18, span * 0.07)
-      : 0;
-    const angle = (start + end) / 2 + angleBias;
-    const arcRadius = (marker.width + RADIAL_COLLISION_MARGIN * 2) / span;
-    const minimumRadius = Math.max(
-      RADIAL_INNER_RADIUS + Math.max(0, depth - 1) * RADIAL_RING_GAP,
-      parentRadius + (parentId ? RADIAL_RING_GAP : 0),
-      arcRadius,
-    );
-    plans.push({
-      nodeId,
-      parentId,
-      branchId,
-      depth,
-      angle,
-      minimumRadius,
-      sectorStart: start,
-      sectorEnd: end,
-    });
-    const children = childrenById.get(nodeId) ?? [];
-    for (const childSector of partitionRadialSector(children, start, end, subtreeWeight)) {
-      planSubtree(
-        childSector.nodeId,
-        nodeId,
-        branchId,
-        depth + 1,
-        childSector.start,
-        childSector.end,
-        minimumRadius,
-      );
-    }
-  };
-
-  for (const root of roots) {
-    const sector = rootSectors.get(root.id)!;
-    planSubtree(root.id, parentById.get(root.id), root.id, 1, sector.start, sector.end, 0);
+  const levels: HierarchyLevel[] = [];
+  let levelTop = HEADER_HEIGHT + HIERARCHY_TOP_PADDING;
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const height = levelHeights.get(depth) ?? 0;
+    levels.push({ depth, top: levelTop, height });
+    levelTop += height + HIERARCHY_LEVEL_GAP;
   }
-  // A malformed Draft graph may leave a node outside the selected radial forest.
-  // Give every such node its own stable sector rather than dropping it.
-  const unplanned = report.electricalNodes
-    .filter((node) => node.kind !== 'GRID' && !planned.has(node.id))
-    .sort(stableNodeOrder);
-  unplanned.forEach((node, index) => {
-    const center = -Math.PI / 2 + ((index + 1) * Math.PI * 2) / Math.max(2, unplanned.length + 1);
-    planSubtree(node.id, undefined, node.id, 1, center - 0.18, center + 0.18, 0);
-  });
-
-  const relativePositions = new Map<string, DiagramPosition>();
-  grids.forEach((grid, index) => {
-    const marker = markers.get(grid.id)!;
-    const radius = index === 0 ? 0 : 150 + Math.floor((index - 1) / 6) * 110;
-    const angle = index === 0 ? 0 : -Math.PI / 2 + ((index - 1) * Math.PI * 2) / Math.max(1, grids.length - 1);
-    relativePositions.set(grid.id, {
-      ...markerBoxAt(marker, radius, angle),
-      depth: 0,
-      branchId: grid.id,
-    });
-  });
-
-  const placed: DiagramPosition[] = [...relativePositions.values()];
-  for (const plan of plans.slice().sort((left, right) => (
-    left.depth - right.depth
-      || left.branchId.localeCompare(right.branchId)
-      || left.angle - right.angle
-      || left.nodeId.localeCompare(right.nodeId)
-  ))) {
-    const marker = markers.get(plan.nodeId)!;
-    const parent = plan.parentId ? relativePositions.get(plan.parentId) : undefined;
-    let radius = Math.max(
-      plan.minimumRadius,
-      parent ? parent.radius + RADIAL_RING_GAP : 0,
-    );
-    let candidate = markerBoxAt(marker, radius, plan.angle);
-    let step = 0;
-    while (placed.some((position) => markerBoxesOverlap(candidate, position))
-      && step < RADIAL_MAX_COLLISION_STEPS) {
-      radius += RADIAL_COLLISION_STEP;
-      candidate = markerBoxAt(marker, radius, plan.angle);
-      step += 1;
-    }
-    const position = {
-      ...candidate,
-      depth: plan.depth,
-      radius,
-      angle: plan.angle,
-      branchId: plan.branchId,
-    };
-    relativePositions.set(plan.nodeId, position);
-    placed.push(position);
-  }
-
-  const horizontalExtent = Math.max(
-    MIN_BODY_HALF_WIDTH,
-    ...[...relativePositions.values()].map((position) => Math.max(
-      Math.abs(position.x),
-      Math.abs(position.x + position.width),
-    ) + MARGIN_X),
+  const levelTopByDepth = new Map(levels.map((level) => [level.depth, level.top]));
+  const compositionBottom = levels.length
+    ? levels.at(-1)!.top + levels.at(-1)!.height
+    : HEADER_HEIGHT + MIN_BODY_HALF_HEIGHT * 2;
+  const bodyHeight = Math.max(
+    MIN_BODY_HALF_HEIGHT * 2,
+    Math.ceil(compositionBottom + HIERARCHY_BOTTOM_PADDING - HEADER_HEIGHT),
   );
-  const verticalExtent = Math.max(
-    MIN_BODY_HALF_HEIGHT,
-    ...[...relativePositions.values()].map((position) => Math.max(
-      Math.abs(position.y),
-      Math.abs(position.y + position.height),
-    ) + 34),
-  );
-  const width = Math.max(MIN_DIAGRAM_WIDTH, Math.ceil(horizontalExtent * 2));
-  const bodyHeight = Math.ceil(verticalExtent * 2);
+
+  const rootWidths = roots.map((root) => subtreeWidth(root.id));
+  const forestWidth = rootWidths.reduce((total, value) => total + value, 0)
+    + Math.max(0, roots.length - 1) * HIERARCHY_ROOT_GAP;
+  const width = Math.max(MIN_DIAGRAM_WIDTH, Math.ceil(forestWidth + MARGIN_X * 2));
   const centerX = width / 2;
-  const centerY = HEADER_HEIGHT + verticalExtent;
+  const centerY = HEADER_HEIGHT + bodyHeight / 2;
   const positions = new Map<string, DiagramPosition>();
-  for (const [nodeId, position] of relativePositions) {
+  const placeSubtree = (
+    nodeId: string,
+    left: number,
+    branchId: string,
+    path = new Set<string>(),
+  ) => {
+    if (positions.has(nodeId) || path.has(nodeId)) return;
+    const marker = markers.get(nodeId)!;
+    const depth = depthById.get(nodeId) ?? 0;
+    const span = subtreeWidth(nodeId);
+    const x = left + (span - marker.width) / 2;
+    const y = levelTopByDepth.get(depth) ?? HEADER_HEIGHT + HIERARCHY_TOP_PADDING;
+    const cx = x + marker.width / 2;
+    const cy = y + marker.height / 2;
+    const dx = cx - centerX;
+    const dy = cy - centerY;
     positions.set(nodeId, {
-      ...position,
-      cx: position.cx + centerX,
-      cy: position.cy + centerY,
-      x: position.x + centerX,
-      y: position.y + centerY,
+      cx,
+      cy,
+      x,
+      y,
+      width: marker.width,
+      height: marker.height,
+      depth,
+      radius: Math.hypot(dx, dy),
+      angle: Math.atan2(dy, dx),
+      branchId,
     });
-  }
-  const sectors: RadialSector[] = roots.map((root) => {
-    const sector = rootSectors.get(root.id)!;
-    return {
-      branchId: root.id,
-      start: sector.start,
-      end: sector.end,
-      index: sector.index,
-      maxRadius: Math.max(
-        RADIAL_INNER_RADIUS,
-        ...[...positions.values()]
-          .filter((position) => position.branchId === root.id)
-          .map((position) => position.radius),
-      ),
-    };
+    const children = orderedChildren(nodeId);
+    const childWidths = children.map((childId) => subtreeWidth(childId));
+    const childrenWidth = childWidths.reduce((total, value) => total + value, 0)
+      + Math.max(0, children.length - 1) * HIERARCHY_SIBLING_GAP;
+    let childLeft = left + (span - childrenWidth) / 2;
+    const nextPath = new Set(path).add(nodeId);
+    children.forEach((childId, index) => {
+      placeSubtree(childId, childLeft, branchId, nextPath);
+      childLeft += childWidths[index] + HIERARCHY_SIBLING_GAP;
+    });
+  };
+  let rootLeft = (width - forestWidth) / 2;
+  roots.forEach((root, index) => {
+    placeSubtree(root.id, rootLeft, root.id);
+    rootLeft += rootWidths[index] + HIERARCHY_ROOT_GAP;
   });
+
   return {
     source: 'auto',
     positions,
     parentById,
-    sectors,
+    levels,
     bodyTop: HEADER_HEIGHT,
     bodyHeight,
     centerX,
@@ -1006,7 +888,7 @@ function applySavedElectricalMapLayout(
     source: 'saved',
     positions,
     parentById: automatic.parentById,
-    sectors: [],
+    levels: [],
     bodyTop: HEADER_HEIGHT,
     bodyHeight,
     centerX: translatedReference?.cx ?? width / 2,
@@ -1060,6 +942,165 @@ function routeStraightEdge(
     path: `M${start.x.toFixed(1)} ${start.y.toFixed(1)} L${end.x.toFixed(1)} ${end.y.toFixed(1)}`,
     samples: [start, end],
   };
+}
+
+function markerBoundaryToward(
+  position: DiagramPosition,
+  toward: RoutePoint,
+): RoutePoint {
+  const dx = toward.x - position.cx;
+  const dy = toward.y - position.cy;
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+    return { x: position.cx, y: position.cy };
+  }
+  const xScale = Math.abs(dx) < 0.001
+    ? Number.POSITIVE_INFINITY
+    : (position.width / 2) / Math.abs(dx);
+  const yScale = Math.abs(dy) < 0.001
+    ? Number.POSITIVE_INFINITY
+    : (position.height / 2) / Math.abs(dy);
+  const scale = Math.min(xScale, yScale);
+  return {
+    x: position.cx + dx * scale,
+    y: position.cy + dy * scale,
+  };
+}
+
+function segmentIntersectsMarkerInterior(
+  start: RoutePoint,
+  end: RoutePoint,
+  marker: DiagramPosition,
+): boolean {
+  const minimumX = marker.x + 0.5;
+  const maximumX = marker.x + marker.width - 0.5;
+  const minimumY = marker.y + 0.5;
+  const maximumY = marker.y + marker.height - 0.5;
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let minimumT = 0;
+  let maximumT = 1;
+  for (const [origin, delta, minimum, maximum] of [
+    [start.x, dx, minimumX, maximumX],
+    [start.y, dy, minimumY, maximumY],
+  ] as const) {
+    if (Math.abs(delta) < 0.001) {
+      if (origin <= minimum || origin >= maximum) return false;
+      continue;
+    }
+    const first = (minimum - origin) / delta;
+    const second = (maximum - origin) / delta;
+    minimumT = Math.max(minimumT, Math.min(first, second));
+    maximumT = Math.min(maximumT, Math.max(first, second));
+    if (minimumT > maximumT) return false;
+  }
+  return maximumT > 0.0001 && minimumT < 0.9999;
+}
+
+function compactRoutePoints(points: RoutePoint[]): RoutePoint[] {
+  const compact: RoutePoint[] = [];
+  for (const point of points) {
+    const previous = compact.at(-1);
+    if (previous && Math.abs(previous.x - point.x) < 0.01 && Math.abs(previous.y - point.y) < 0.01) {
+      continue;
+    }
+    compact.push(point);
+    while (compact.length >= 3) {
+      const first = compact.at(-3)!;
+      const middle = compact.at(-2)!;
+      const last = compact.at(-1)!;
+      const collinear = Math.abs(
+        (middle.x - first.x) * (last.y - middle.y)
+          - (middle.y - first.y) * (last.x - middle.x),
+      ) < 0.01;
+      if (!collinear) break;
+      compact.splice(compact.length - 2, 1);
+    }
+  }
+  return compact;
+}
+
+function routeFromPoints(points: RoutePoint[]): { path: string; samples: RoutePoint[] } {
+  const samples = compactRoutePoints(points);
+  return {
+    path: samples.map((point, index) => (
+      `${index === 0 ? 'M' : 'L'}${point.x.toFixed(1)} ${point.y.toFixed(1)}`
+    )).join(' '),
+    samples,
+  };
+}
+
+function routeLength(points: RoutePoint[]): number {
+  return points.slice(1).reduce((total, point, index) => (
+    total + Math.hypot(point.x - points[index].x, point.y - points[index].y)
+  ), 0);
+}
+
+function routeAutomaticEdge(
+  sourceNodeId: string,
+  targetNodeId: string,
+  positions: Map<string, DiagramPosition>,
+): { path: string; samples: RoutePoint[] } {
+  const source = positions.get(sourceNodeId)!;
+  const target = positions.get(targetNodeId)!;
+  const targetCenter = { x: target.cx, y: target.cy };
+  const sourceCenter = { x: source.cx, y: source.cy };
+  const direct = routeFromPoints([
+    markerBoundaryToward(source, targetCenter),
+    markerBoundaryToward(target, sourceCenter),
+  ]);
+  const obstacles = [...positions.entries()]
+    .filter(([nodeId]) => nodeId !== sourceNodeId && nodeId !== targetNodeId)
+    .map(([, position]) => position);
+  const routeIsClear = (route: { samples: RoutePoint[] }) => route.samples
+    .slice(1)
+    .every((point, index) => obstacles.every((obstacle) => (
+      !segmentIntersectsMarkerInterior(route.samples[index], point, obstacle)
+    )));
+  if (routeIsClear(direct)) return direct;
+
+  const horizontalLanes = new Set<number>();
+  const verticalLanes = new Set<number>();
+  for (const position of positions.values()) {
+    horizontalLanes.add(position.y - CONNECTOR_CLEARANCE);
+    horizontalLanes.add(position.y + position.height + CONNECTOR_CLEARANCE);
+    verticalLanes.add(position.x - CONNECTOR_CLEARANCE);
+    verticalLanes.add(position.x + position.width + CONNECTOR_CLEARANCE);
+  }
+  const candidates: Array<{ path: string; samples: RoutePoint[] }> = [];
+  for (const laneY of horizontalLanes) {
+    if (
+      (laneY > source.y && laneY < source.y + source.height)
+      || (laneY > target.y && laneY < target.y + target.height)
+    ) continue;
+    const firstWaypoint = { x: source.cx, y: laneY };
+    const lastWaypoint = { x: target.cx, y: laneY };
+    const candidate = routeFromPoints([
+      markerBoundaryToward(source, firstWaypoint),
+      firstWaypoint,
+      lastWaypoint,
+      markerBoundaryToward(target, lastWaypoint),
+    ]);
+    if (routeIsClear(candidate)) candidates.push(candidate);
+  }
+  for (const laneX of verticalLanes) {
+    if (
+      (laneX > source.x && laneX < source.x + source.width)
+      || (laneX > target.x && laneX < target.x + target.width)
+    ) continue;
+    const firstWaypoint = { x: laneX, y: source.cy };
+    const lastWaypoint = { x: laneX, y: target.cy };
+    const candidate = routeFromPoints([
+      markerBoundaryToward(source, firstWaypoint),
+      firstWaypoint,
+      lastWaypoint,
+      markerBoundaryToward(target, lastWaypoint),
+    ]);
+    if (routeIsClear(candidate)) candidates.push(candidate);
+  }
+  return candidates.sort((left, right) => (
+    routeLength(left.samples) - routeLength(right.samples)
+      || left.path.localeCompare(right.path)
+  ))[0] ?? direct;
 }
 
 function svgText(
@@ -1132,7 +1173,7 @@ function renderVisualMarker(marker: VisualMarker, position: DiagramPosition): st
   const { node } = marker;
   const colors = nodeColors(node);
   const radius = medallionRadius(node);
-  const iconSize = node.kind === 'GRID' ? 156 : node.kind === 'BOARD' ? 124 : 100;
+  const iconSize = node.kind === 'GRID' ? 273 : node.kind === 'BOARD' ? 217 : 175;
   const centerX = position.x + position.width / 2;
   const centerY = position.y + radius + 5;
   const kindY = centerY + radius + 13;
@@ -1203,32 +1244,15 @@ function renderLegend(width: number, height: number): string {
   </g>`;
 }
 
-function ellipticalPoint(layout: LayoutResult, radius: number, angle: number): RoutePoint {
-  return {
-    x: layout.centerX + radius * Math.cos(angle) * RADIAL_X_SCALE,
-    y: layout.centerY + radius * Math.sin(angle) * RADIAL_Y_SCALE,
-  };
-}
-
-function renderBranchHalos(layout: LayoutResult): string {
+function renderLayoutBackdrop(layout: LayoutResult): string {
   if (layout.source === 'saved') {
     return `<rect data-saved-layout-backdrop="1" x="${MARGIN_X}" y="${layout.bodyTop}" width="${layout.width - MARGIN_X * 2}" height="${layout.bodyHeight}" rx="36" fill="#F8FAFC" opacity="0.58"/>`;
   }
-  if (layout.sectors.length === 1) {
-    const radius = layout.sectors[0].maxRadius + 48;
-    return `<ellipse data-radial-backdrop="1" cx="${layout.centerX}" cy="${layout.centerY}" rx="${(radius * RADIAL_X_SCALE).toFixed(1)}" ry="${(radius * RADIAL_Y_SCALE).toFixed(1)}" fill="#F8FAFC" opacity="0.58"/>`;
-  }
-  return layout.sectors.map((sector) => {
-    const innerRadius = 125;
-    const outerRadius = sector.maxRadius + 52;
-    const innerStart = ellipticalPoint(layout, innerRadius, sector.start);
-    const outerStart = ellipticalPoint(layout, outerRadius, sector.start);
-    const outerEnd = ellipticalPoint(layout, outerRadius, sector.end);
-    const innerEnd = ellipticalPoint(layout, innerRadius, sector.end);
-    const largeArc = sector.end - sector.start > Math.PI ? 1 : 0;
-    const fill = sector.index % 2 === 0 ? '#F8FAFC' : '#F3F8FF';
-    return `<path data-branch-halo="${escapeXml(sector.branchId)}" d="M${innerStart.x.toFixed(1)} ${innerStart.y.toFixed(1)} L${outerStart.x.toFixed(1)} ${outerStart.y.toFixed(1)} A${(outerRadius * RADIAL_X_SCALE).toFixed(1)} ${(outerRadius * RADIAL_Y_SCALE).toFixed(1)} 0 ${largeArc} 1 ${outerEnd.x.toFixed(1)} ${outerEnd.y.toFixed(1)} L${innerEnd.x.toFixed(1)} ${innerEnd.y.toFixed(1)} A${(innerRadius * RADIAL_X_SCALE).toFixed(1)} ${(innerRadius * RADIAL_Y_SCALE).toFixed(1)} 0 ${largeArc} 0 ${innerStart.x.toFixed(1)} ${innerStart.y.toFixed(1)} Z" fill="${fill}" opacity="0.52"/>`;
-  }).join('');
+  const backdrop = `<rect data-hierarchy-backdrop="1" x="${MARGIN_X}" y="${layout.bodyTop}" width="${layout.width - MARGIN_X * 2}" height="${layout.bodyHeight}" rx="36" fill="#F8FAFC" opacity="0.58"/>`;
+  const levelBands = layout.levels.map((level) => (
+    `<rect data-hierarchy-level="${level.depth}" x="${MARGIN_X + 10}" y="${level.top - 10}" width="${layout.width - (MARGIN_X + 10) * 2}" height="${level.height + 20}" rx="28" fill="${level.depth % 2 === 0 ? '#F8FAFC' : '#F3F8FF'}" opacity="0.5"/>`
+  )).join('');
+  return `${backdrop}${levelBands}`;
 }
 
 function headerSummary(report: InstallHubCanonicalReport): string {
@@ -1276,7 +1300,7 @@ export function buildElectricalMapSvg(
       ? [{ sourceNodeId: node.parentNodeId, targetNodeId: node.id }]
       : []
   ));
-  const automaticLayout = buildRadialLayout(report, markers, depths);
+  const automaticLayout = buildHierarchicalLayout(report, markers, depths);
   const layout = applySavedElectricalMapLayout(
     automaticLayout,
     report,
@@ -1296,11 +1320,14 @@ export function buildElectricalMapSvg(
     const sourceNode = nodeById.get(sourceNodeId);
     const targetNode = nodeById.get(targetNodeId);
     if (!source || !target || !sourceNode || !targetNode || sourceNodeId === targetNodeId) return '';
-    const route = routeStraightEdge(source, target, sourceNode, targetNode);
+    const route = layout.source === 'auto'
+      ? routeAutomaticEdge(sourceNodeId, targetNodeId, layout.positions)
+      : routeStraightEdge(source, target, sourceNode, targetNode);
+    const connectorStyle = route.samples.length === 2 ? 'straight' : 'obstacle-avoiding';
     const stroke = relationship === 'supply'
       ? ' stroke="#B87333" stroke-width="3.5"'
       : ' stroke="#64748B" stroke-width="2.3" stroke-dasharray="2 7"';
-    return `<path data-${relationship}-source="${escapeXml(sourceNodeId)}" data-${relationship}-target="${escapeXml(targetNodeId)}" data-connector-style="straight" data-route-points="${routePointsAttribute(route.samples)}" d="${route.path}" fill="none"${stroke} stroke-linecap="round"/>`;
+    return `<path data-${relationship}-source="${escapeXml(sourceNodeId)}" data-${relationship}-target="${escapeXml(targetNodeId)}" data-connector-style="${connectorStyle}" data-route-points="${routePointsAttribute(route.samples)}" d="${route.path}" fill="none"${stroke} stroke-linecap="round" stroke-linejoin="round"/>`;
   };
 
   const supplyLines = report.supplyEdges
@@ -1321,7 +1348,7 @@ export function buildElectricalMapSvg(
     ${svgText('Electrical site overview', MARGIN_X, 53, { size: 12, weight: 500, color: '#64748B' })}
     ${svgText(headerSummary(report), width - MARGIN_X, 31, { size: 10.5, weight: 700, color: '#1E3A8A', anchor: 'end' })}
     ${svgText('Confirmed infrastructure - every switchboard, meter and connected load is represented', width - MARGIN_X, 50, { size: 9, weight: 500, color: '#94A3B8', anchor: 'end' })}
-    ${renderBranchHalos(layout)}
+    ${renderLayoutBackdrop(layout)}
     ${supplyLines}${residualLines}${nodes}
     ${renderLegend(width, height)}
   </svg>`;

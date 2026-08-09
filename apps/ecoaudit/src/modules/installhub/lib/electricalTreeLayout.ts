@@ -8,21 +8,18 @@ import type {
 import { electricalHierarchyRows } from './electricalPresentation';
 import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
-export const ELECTRICAL_TREE_NODE_WIDTH = 160;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 206;
-const ELECTRICAL_TREE_BOARD_WIDTH = 192;
-const ELECTRICAL_TREE_BOARD_HEIGHT = 246;
-const ELECTRICAL_TREE_GRID_WIDTH = 208;
-const ELECTRICAL_TREE_GRID_HEIGHT = 252;
-const ELECTRICAL_TREE_RESIDUAL_WIDTH = 160;
-const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 190;
+export const ELECTRICAL_TREE_NODE_WIDTH = 232;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 282;
+const ELECTRICAL_TREE_BOARD_WIDTH = 296;
+const ELECTRICAL_TREE_BOARD_HEIGHT = 358;
+const ELECTRICAL_TREE_GRID_WIDTH = 328;
+const ELECTRICAL_TREE_GRID_HEIGHT = 380;
+const ELECTRICAL_TREE_RESIDUAL_WIDTH = 232;
+const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 266;
 const CANVAS_PADDING = 72;
 const ISLAND_GAP = 96;
-const NODE_CLEARANCE = 24;
-const RING_CLEARANCE = 64;
-const MIN_FIRST_RING_RADIUS = 210;
-const SINGLE_BRANCH_ARC = (220 * Math.PI) / 180;
-const FULL_CIRCLE = Math.PI * 2;
+const SIBLING_GAP = 24;
+const HIERARCHY_LEVEL_GAP = 64;
 
 export type ElectricalTreeNodeSize = {
   width: number;
@@ -35,9 +32,9 @@ export type ElectricalTreeNodeVisualSize = ElectricalTreeNodeSize & {
 };
 
 /**
- * Keeps the literal two-times artwork boxes coupled to the minimum halo and
- * footprint required for labels, drag bounds, connector clipping and collision
- * clearance. Persisted layout centres remain unchanged.
+ * Keeps the enlarged artwork boxes coupled to the minimum halo and footprint
+ * required for labels, drag bounds, connector clipping and collision clearance.
+ * Persisted layout centres remain unchanged.
  */
 const ELECTRICAL_TREE_NODE_VISUAL_SIZES: Readonly<Record<
   ElectricalTreeReadModel['nodes'][number]['kind'],
@@ -46,26 +43,26 @@ const ELECTRICAL_TREE_NODE_VISUAL_SIZES: Readonly<Record<
   GRID: {
     width: ELECTRICAL_TREE_GRID_WIDTH,
     height: ELECTRICAL_TREE_GRID_HEIGHT,
-    haloSize: 192,
-    iconSize: 160,
+    haloSize: 312,
+    iconSize: 280,
   },
   BOARD: {
     width: ELECTRICAL_TREE_BOARD_WIDTH,
     height: ELECTRICAL_TREE_BOARD_HEIGHT,
-    haloSize: 176,
-    iconSize: 144,
+    haloSize: 280,
+    iconSize: 252,
   },
   SITE_ASSET: {
     width: ELECTRICAL_TREE_NODE_WIDTH,
     height: ELECTRICAL_TREE_NODE_HEIGHT,
-    haloSize: 144,
-    iconSize: 112,
+    haloSize: 216,
+    iconSize: 196,
   },
   VIRTUAL_RESIDUAL: {
     width: ELECTRICAL_TREE_RESIDUAL_WIDTH,
     height: ELECTRICAL_TREE_RESIDUAL_HEIGHT,
-    haloSize: 144,
-    iconSize: 112,
+    haloSize: 216,
+    iconSize: 196,
   },
 };
 
@@ -90,7 +87,7 @@ export type ElectricalTreeLayoutNode = {
   height: number;
   depth: number;
   parentId?: string;
-  /** Stable presentation metadata for radial rendering; depth remains semantic. */
+  /** Legacy radial metadata retained for compatibility; depth remains semantic. */
   angle?: number;
   radialDistance?: number;
   presentationRing?: number;
@@ -166,10 +163,10 @@ function clamp(value: number, minimum: number, maximum: number): number {
 }
 
 /**
- * Produces a deterministic, grid-centred constellation from the confirmed
- * topology. FED_FROM controls placement; MEASURES remains a visual overlay.
- * Descendant sector size follows terminal-node weight so large branches receive
- * more circumference without changing the semantic hierarchy.
+ * Produces a deterministic top-to-bottom hierarchy from the confirmed topology.
+ * FED_FROM controls placement; MEASURES remains a visual overlay. Every semantic
+ * depth shares one vertical level, sibling subtrees stay contiguous, and each
+ * parent is centred over the complete span reserved for its children.
  */
 export function buildElectricalTreeLayout(
   model?: ElectricalTreeReadModel,
@@ -196,278 +193,158 @@ export function buildElectricalTreeLayout(
     children.sort((left, right) => (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0));
   }
 
+  // A malformed Draft can contain a supply cycle. Break one stable parent link
+  // per cycle so every node still appears in a deterministic forest.
+  for (const row of rows) {
+    const path: string[] = [];
+    const pathIndexById = new Map<string, number>();
+    let currentId: string | undefined = row.node.id;
+    while (currentId) {
+      const cycleIndex = pathIndexById.get(currentId);
+      if (cycleIndex !== undefined) {
+        const cycleRootId = path
+          .slice(cycleIndex)
+          .sort((left, right) => (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0))[0];
+        const formerParentId = parentById.get(cycleRootId);
+        parentById.delete(cycleRootId);
+        if (formerParentId) {
+          childrenById.set(
+            formerParentId,
+            (childrenById.get(formerParentId) || []).filter((nodeId) => nodeId !== cycleRootId),
+          );
+        }
+        break;
+      }
+      pathIndexById.set(currentId, path.length);
+      path.push(currentId);
+      currentId = parentById.get(currentId);
+    }
+  }
+
   const depthById = new Map<string, number>();
-  function selectedParentDepth(nodeId: string, path = new Set<string>()): number {
+  function selectedParentDepth(nodeId: string): number {
     const cached = depthById.get(nodeId);
     if (cached !== undefined) return cached;
     const parentId = parentById.get(nodeId);
-    if (!parentId || !rowById.has(parentId) || path.has(nodeId)) {
+    if (!parentId || !rowById.has(parentId)) {
       depthById.set(nodeId, 0);
       return 0;
     }
-    const parentDepth = selectedParentDepth(parentId, new Set(path).add(nodeId));
-    const cycleRootDepth = depthById.get(nodeId);
-    if (cycleRootDepth !== undefined) return cycleRootDepth;
-    const depth = parentDepth + 1;
+    const depth = selectedParentDepth(parentId) + 1;
     depthById.set(nodeId, depth);
     return depth;
   }
   for (const row of rows) selectedParentDepth(row.node.id);
 
   const sizeById = new Map(rows.map((row) => [row.node.id, electricalTreeNodeSize(row.node.kind)]));
-  const weightById = new Map<string, number>();
-  function subtreeWeight(nodeId: string, path = new Set<string>()): number {
-    const cached = weightById.get(nodeId);
+  const subtreeWidthById = new Map<string, number>();
+  function subtreeWidth(nodeId: string): number {
+    const cached = subtreeWidthById.get(nodeId);
     if (cached !== undefined) return cached;
-    if (path.has(nodeId)) return 1;
     const children = childrenById.get(nodeId) || [];
-    const node = rowById.get(nodeId)?.node;
-    const weight = children.length
-      ? Math.max(1, children.reduce((total, childId) => (
-        total + subtreeWeight(childId, new Set(path).add(nodeId))
-      ), 0))
-      : node?.kind === 'VIRTUAL_RESIDUAL' ? 0.72 : 1;
-    weightById.set(nodeId, weight);
-    return weight;
+    const childrenWidth = children.reduce((total, childId) => total + subtreeWidth(childId), 0)
+      + Math.max(0, children.length - 1) * SIBLING_GAP;
+    const width = Math.max(sizeById.get(nodeId)!.width, childrenWidth);
+    subtreeWidthById.set(nodeId, width);
+    return width;
   }
-  for (const row of rows) subtreeWeight(row.node.id);
-
-  type RadialPlacement = {
-    nodeId: string;
-    centerX: number;
-    centerY: number;
-    angle: number;
-    radialDistance: number;
-    presentationRing: number;
-    branchId: string;
-    clusterParentId?: string;
-  };
-  type RadialIsland = {
-    rootId: string;
-    width: number;
-    height: number;
-    placements: Map<string, RadialPlacement>;
-  };
-
-  function buildIsland(rootId: string): RadialIsland {
-    const islandIds: string[] = [];
-    const queued = [rootId];
-    const visited = new Set<string>();
-    while (queued.length) {
-      const nodeId = queued.shift();
-      if (!nodeId || visited.has(nodeId)) continue;
-      visited.add(nodeId);
-      islandIds.push(nodeId);
-      queued.push(...(childrenById.get(nodeId) || []));
-    }
-    islandIds.sort((left, right) => (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0));
-
-    const maximumDepth = Math.max(0, ...islandIds.map((nodeId) => depthById.get(nodeId) || 0));
-    const radiusByDepth = [0];
-    let previousHalfExtent = Math.max(
-      ...(islandIds.filter((nodeId) => (depthById.get(nodeId) || 0) === 0).map((nodeId) => {
-        const size = sizeById.get(nodeId) || electricalTreeNodeSize(rowById.get(nodeId)!.node.kind);
-        return Math.max(size.width, size.height) / 2;
-      })),
-      ELECTRICAL_TREE_GRID_WIDTH / 2,
-    );
-    const rootChildren = childrenById.get(rootId) || [];
-    for (let depth = 1; depth <= maximumDepth; depth += 1) {
-      const levelIds = islandIds.filter((nodeId) => (depthById.get(nodeId) || 0) === depth);
-      const halfExtent = Math.max(...levelIds.map((nodeId) => {
-        const size = sizeById.get(nodeId)!;
-        return Math.max(size.width, size.height) / 2;
-      }));
-      const circumferenceDemand = levelIds.reduce((total, nodeId) => {
-        const size = sizeById.get(nodeId)!;
-        return total + Math.max(size.width, size.height) + NODE_CLEARANCE;
-      }, 0);
-      const angularCoverage = rootChildren.length === 1 && depth > 1 ? SINGLE_BRANCH_ARC : FULL_CIRCLE;
-      const circumferenceRadius = circumferenceDemand / Math.max(0.001, angularCoverage * 0.94);
-      const separationRadius = radiusByDepth[depth - 1]
-        + previousHalfExtent
-        + halfExtent
-        + RING_CLEARANCE;
-      radiusByDepth[depth] = Math.max(
-        depth === 1 ? MIN_FIRST_RING_RADIUS : 0,
-        separationRadius,
-        circumferenceRadius,
-      );
-      previousHalfExtent = halfExtent;
-    }
-
-    const placements = new Map<string, RadialPlacement>();
-    placements.set(rootId, {
-      nodeId: rootId,
-      centerX: 0,
-      centerY: 0,
-      angle: 0,
-      radialDistance: 0,
-      presentationRing: 0,
-      branchId: rootId,
-    });
-
-    function placeChild(
-      nodeId: string,
-      angle: number,
-      sectorStart: number,
-      sectorSpan: number,
-      branchId: string,
-    ) {
-      const depth = depthById.get(nodeId) || 0;
-      const radialDistance = radiusByDepth[depth] || 0;
-      const node = rowById.get(nodeId)?.node;
-      const parentId = parentById.get(nodeId);
-      placements.set(nodeId, {
-        nodeId,
-        centerX: Math.cos(angle) * radialDistance,
-        centerY: Math.sin(angle) * radialDistance,
-        angle,
-        radialDistance,
-        presentationRing: depth,
-        branchId,
-        ...(node?.kind === 'SITE_ASSET' && parentId && !(childrenById.get(nodeId)?.length)
-          ? { clusterParentId: parentId }
-          : {}),
-      });
-      placeChildren(nodeId, sectorStart, sectorSpan, branchId);
-    }
-
-    function placeChildren(
-      parentId: string,
-      sectorStart: number,
-      sectorSpan: number,
-      inheritedBranchId: string,
-    ) {
-      const children = childrenById.get(parentId) || [];
-      if (!children.length) return;
-      const totalWeight = children.reduce((total, childId) => total + (weightById.get(childId) || 1), 0);
-      let cursor = sectorStart;
-      for (const childId of children) {
-        const rawSpan = sectorSpan * ((weightById.get(childId) || 1) / totalWeight);
-        const gutter = children.length > 1 ? Math.min(0.055, rawSpan * 0.1) : 0;
-        const childStart = cursor + gutter / 2;
-        const childSpan = Math.max(0.001, rawSpan - gutter);
-        const childAngle = childStart + childSpan / 2;
-        const branchId = parentId === rootId ? childId : inheritedBranchId;
-        placeChild(childId, childAngle, childStart, childSpan, branchId);
-        cursor += rawSpan;
-      }
-    }
-
-    if (rootChildren.length === 1) {
-      const childId = rootChildren[0];
-      const childAngle = Math.PI / 2;
-      const sectorStart = childAngle - SINGLE_BRANCH_ARC / 2;
-      placeChild(childId, childAngle, sectorStart, SINGLE_BRANCH_ARC, childId);
-    } else {
-      placeChildren(rootId, -Math.PI / 2, FULL_CIRCLE, rootId);
-    }
-
-    function overlaps(left: RadialPlacement, right: RadialPlacement): boolean {
-      const leftSize = sizeById.get(left.nodeId)!;
-      const rightSize = sizeById.get(right.nodeId)!;
-      return Math.abs(left.centerX - right.centerX)
-          < (leftSize.width + rightSize.width) / 2 + NODE_CLEARANCE
-        && Math.abs(left.centerY - right.centerY)
-          < (leftSize.height + rightSize.height) / 2 + NODE_CLEARANCE;
-    }
-
-    const collisionOrder = [...islandIds].sort((left, right) => (
-      (depthById.get(left) || 0) - (depthById.get(right) || 0)
-      || (orderById.get(left) ?? 0) - (orderById.get(right) ?? 0)
-    ));
-    const maximumCollisionPasses = Math.max(24, islandIds.length * 8);
-    for (let pass = 0; pass < maximumCollisionPasses; pass += 1) {
-      let moved = false;
-      for (let leftIndex = 0; leftIndex < collisionOrder.length; leftIndex += 1) {
-        for (let rightIndex = leftIndex + 1; rightIndex < collisionOrder.length; rightIndex += 1) {
-          const left = placements.get(collisionOrder[leftIndex])!;
-          const right = placements.get(collisionOrder[rightIndex])!;
-          if (!overlaps(left, right)) continue;
-          const leftDepth = depthById.get(left.nodeId) || 0;
-          const rightDepth = depthById.get(right.nodeId) || 0;
-          const candidate = rightDepth > leftDepth
-            ? right
-            : leftDepth > rightDepth
-              ? left
-              : (orderById.get(right.nodeId) ?? 0) >= (orderById.get(left.nodeId) ?? 0)
-                ? right
-                : left;
-          if (candidate.radialDistance === 0) continue;
-          candidate.radialDistance += NODE_CLEARANCE;
-          candidate.centerX = Math.cos(candidate.angle) * candidate.radialDistance;
-          candidate.centerY = Math.sin(candidate.angle) * candidate.radialDistance;
-          moved = true;
-        }
-      }
-      if (!moved) break;
-    }
-
-    let halfWidth = 0;
-    let halfHeight = 0;
-    for (const placement of placements.values()) {
-      const size = sizeById.get(placement.nodeId)!;
-      halfWidth = Math.max(
-        halfWidth,
-        Math.abs(placement.centerX - size.width / 2),
-        Math.abs(placement.centerX + size.width / 2),
-      );
-      halfHeight = Math.max(
-        halfHeight,
-        Math.abs(placement.centerY - size.height / 2),
-        Math.abs(placement.centerY + size.height / 2),
-      );
-    }
-    return {
-      rootId,
-      width: (halfWidth + CANVAS_PADDING) * 2,
-      height: (halfHeight + CANVAS_PADDING) * 2,
-      placements,
-    };
-  }
-
   const rootIds = rows
     .filter((row) => !parentById.has(row.node.id))
     .map((row) => row.node.id);
-  const islands = rootIds.map(buildIsland);
-  const islandByNodeId = new Map<string, RadialIsland>();
-  for (const island of islands) {
-    for (const nodeId of island.placements.keys()) islandByNodeId.set(nodeId, island);
+  for (const rootId of rootIds) subtreeWidth(rootId);
+
+  const forestWidth = rootIds.reduce((total, rootId) => total + subtreeWidth(rootId), 0)
+    + Math.max(0, rootIds.length - 1) * ISLAND_GAP;
+  const width = Math.max(ELECTRICAL_MAP_MIN_CANVAS_SIZE, forestWidth + CANVAS_PADDING * 2);
+  const centerXById = new Map<string, number>();
+  const rootById = new Map<string, string>();
+  const branchById = new Map<string, string>();
+
+  function placeSubtree(
+    nodeId: string,
+    left: number,
+    rootId: string,
+    branchId: string,
+  ) {
+    const reservedWidth = subtreeWidth(nodeId);
+    centerXById.set(nodeId, left + reservedWidth / 2);
+    rootById.set(nodeId, rootId);
+    branchById.set(nodeId, branchId);
+    const children = childrenById.get(nodeId) || [];
+    if (!children.length) return;
+    const childrenWidth = children.reduce((total, childId) => total + subtreeWidth(childId), 0)
+      + Math.max(0, children.length - 1) * SIBLING_GAP;
+    let childLeft = left + (reservedWidth - childrenWidth) / 2;
+    for (const childId of children) {
+      const childBranchId = nodeId === rootId ? childId : branchId;
+      placeSubtree(childId, childLeft, rootId, childBranchId);
+      childLeft += subtreeWidth(childId) + SIBLING_GAP;
+    }
   }
-  const cellWidth = Math.max(...islands.map((island) => island.width));
-  const cellHeight = Math.max(...islands.map((island) => island.height));
-  const columnCount = Math.max(1, Math.ceil(Math.sqrt(islands.length)));
-  const rowCount = Math.ceil(islands.length / columnCount);
-  const islandOriginByRootId = new Map<string, { x: number; y: number }>();
-  islands.forEach((island, index) => {
-    const column = index % columnCount;
-    const row = Math.floor(index / columnCount);
-    islandOriginByRootId.set(island.rootId, {
-      x: column * (cellWidth + ISLAND_GAP) + cellWidth / 2,
-      y: row * (cellHeight + ISLAND_GAP) + cellHeight / 2,
-    });
-  });
+
+  let islandLeft = (width - forestWidth) / 2;
+  for (const rootId of rootIds) {
+    placeSubtree(rootId, islandLeft, rootId, rootId);
+    islandLeft += subtreeWidth(rootId) + ISLAND_GAP;
+  }
+
+  const maximumDepth = Math.max(0, ...depthById.values());
+  const levelHeightByDepth = Array.from({ length: maximumDepth + 1 }, () => 0);
+  for (const row of rows) {
+    const depth = depthById.get(row.node.id) || 0;
+    levelHeightByDepth[depth] = Math.max(levelHeightByDepth[depth], sizeById.get(row.node.id)!.height);
+  }
+  const levelCenterYByDepth: number[] = [];
+  let levelTop = CANVAS_PADDING;
+  for (let depth = 0; depth <= maximumDepth; depth += 1) {
+    levelCenterYByDepth[depth] = levelTop + levelHeightByDepth[depth] / 2;
+    levelTop += levelHeightByDepth[depth] + HIERARCHY_LEVEL_GAP;
+  }
+  const height = Math.max(
+    ELECTRICAL_MAP_MIN_CANVAS_SIZE,
+    levelTop - HIERARCHY_LEVEL_GAP + CANVAS_PADDING,
+  );
+
+  const presentationLaneById = new Map<string, number>();
+  for (let depth = 0; depth <= maximumDepth; depth += 1) {
+    rows
+      .filter((row) => (depthById.get(row.node.id) || 0) === depth)
+      .sort((left, right) => (
+        (centerXById.get(left.node.id) || 0) - (centerXById.get(right.node.id) || 0)
+        || (orderById.get(left.node.id) ?? 0) - (orderById.get(right.node.id) ?? 0)
+      ))
+      .forEach((row, index) => presentationLaneById.set(row.node.id, index));
+  }
 
   const nodes = rows.map((row) => {
     const size = sizeById.get(row.node.id) || electricalTreeNodeSize(row.node.kind);
-    const island = islandByNodeId.get(row.node.id)!;
-    const origin = islandOriginByRootId.get(island.rootId)!;
-    const placement = island.placements.get(row.node.id)!;
     const depth = depthById.get(row.node.id) || 0;
+    const centerX = centerXById.get(row.node.id) || width / 2;
+    const centerY = levelCenterYByDepth[depth];
+    const rootId = rootById.get(row.node.id) || row.node.id;
+    const rootCenterX = centerXById.get(rootId) || centerX;
+    const rootCenterY = levelCenterYByDepth[0];
+    const deltaX = centerX - rootCenterX;
+    const deltaY = centerY - rootCenterY;
+    const parentId = parentById.get(row.node.id);
     return {
       node: row.node,
-      x: cleanCoordinate(origin.x + placement.centerX - size.width / 2),
-      y: cleanCoordinate(origin.y + placement.centerY - size.height / 2),
+      x: cleanCoordinate(centerX - size.width / 2),
+      y: cleanCoordinate(centerY - size.height / 2),
       width: size.width,
       height: size.height,
       depth,
-      angle: placement.angle,
-      radialDistance: placement.radialDistance,
-      presentationRing: placement.presentationRing,
-      branchId: placement.branchId,
-      ...(placement.clusterParentId ? { clusterParentId: placement.clusterParentId } : {}),
-      ...(parentById.has(row.node.id) ? { parentId: parentById.get(row.node.id) } : {}),
+      // Retained compatibility metadata now describes the top-to-bottom result.
+      angle: depth === 0 ? 0 : cleanCoordinate(Math.atan2(deltaY, deltaX)),
+      radialDistance: cleanCoordinate(Math.hypot(deltaX, deltaY)),
+      presentationRing: depth,
+      branchId: branchById.get(row.node.id) || rootId,
+      presentationLane: presentationLaneById.get(row.node.id) || 0,
+      presentationRow: depth,
+      ...(row.node.kind === 'SITE_ASSET' && parentId && !(childrenById.get(row.node.id)?.length)
+        ? { clusterParentId: parentId }
+        : {}),
+      ...(parentId ? { parentId } : {}),
     };
   });
   const nodeIds = new Set(nodes.map((item) => item.node.id));
@@ -503,8 +380,8 @@ export function buildElectricalTreeLayout(
   }
 
   return {
-    width: columnCount * cellWidth + Math.max(0, columnCount - 1) * ISLAND_GAP,
-    height: rowCount * cellHeight + Math.max(0, rowCount - 1) * ISLAND_GAP,
+    width: cleanCoordinate(width),
+    height: cleanCoordinate(height),
     nodes,
     edges,
   };

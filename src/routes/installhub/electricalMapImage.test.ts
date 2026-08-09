@@ -286,6 +286,96 @@ function assertMarkersDoNotOverlap(svg: string): void {
   }
 }
 
+type ConnectorPlacement = {
+  relationship: 'supply' | 'residual';
+  sourceId: string;
+  targetId: string;
+  points: Array<{ x: number; y: number }>;
+};
+
+function connectorPlacements(svg: string): ConnectorPlacement[] {
+  const connectors: ConnectorPlacement[] = [];
+  for (const relationship of ['supply', 'residual'] as const) {
+    const pattern = new RegExp(
+      `<path data-${relationship}-source="([^"]+)" data-${relationship}-target="([^"]+)"[^>]*data-route-points="([^"]+)"`,
+      'g',
+    );
+    for (const match of svg.matchAll(pattern)) {
+      connectors.push({
+        relationship,
+        sourceId: match[1],
+        targetId: match[2],
+        points: match[3].split(';').map((point) => {
+          const [x, y] = point.split(',').map(Number);
+          return { x, y };
+        }),
+      });
+    }
+  }
+  return connectors;
+}
+
+function segmentIntersectsMarkerInterior(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  marker: MarkerPlacement,
+): boolean {
+  const left = marker.x;
+  const right = marker.x + marker.width;
+  const top = marker.y;
+  const bottom = marker.y + marker.height;
+  let minimum = 0;
+  let maximum = 1;
+  for (const [origin, delta, lower, upper] of [
+    [start.x, end.x - start.x, left, right],
+    [start.y, end.y - start.y, top, bottom],
+  ] as const) {
+    if (Math.abs(delta) < 0.0001) {
+      if (origin <= lower || origin >= upper) return false;
+      continue;
+    }
+    const first = (lower - origin) / delta;
+    const second = (upper - origin) / delta;
+    minimum = Math.max(minimum, Math.min(first, second));
+    maximum = Math.min(maximum, Math.max(first, second));
+    if (minimum >= maximum) return false;
+  }
+  return maximum > 0.0001 && minimum < 0.9999;
+}
+
+function assertAutomaticConnectorsAreClearAndBounded(svg: string): void {
+  const markers = markerPlacements(svg);
+  const dimensions = /<svg[^>]* width="(\d+)" height="(\d+)"/.exec(svg);
+  assert.ok(dimensions);
+  const width = Number(dimensions[1]);
+  const height = Number(dimensions[2]);
+  const maximumRouteLength = Math.hypot(width, height) * 2;
+  const connectors = connectorPlacements(svg);
+  assert.ok(connectors.length > 0);
+
+  for (const connector of connectors) {
+    assert.ok(connector.points.length >= 2);
+    let routeLength = 0;
+    for (let index = 1; index < connector.points.length; index += 1) {
+      const start = connector.points[index - 1];
+      const end = connector.points[index];
+      routeLength += Math.hypot(end.x - start.x, end.y - start.y);
+      for (const marker of markers) {
+        if (marker.id === connector.sourceId || marker.id === connector.targetId) continue;
+        assert.equal(
+          segmentIntersectsMarkerInterior(start, end, marker),
+          false,
+          `${connector.sourceId} -> ${connector.targetId} crosses ${marker.id}`,
+        );
+      }
+    }
+    assert.ok(
+      routeLength <= maximumRouteLength,
+      `${connector.sourceId} -> ${connector.targetId} route is unexpectedly long`,
+    );
+  }
+}
+
 function crowdedBoardReport(): InstallHubCanonicalReport {
   const base = report();
   return {
@@ -339,7 +429,7 @@ test('switchboards present every installed meter as a concise visual satellite',
   assertMarkersDoNotOverlap(svg);
 });
 
-test('compact visual markers do not overlap across representative topologies', () => {
+test('hierarchical visual markers do not overlap across representative topologies', () => {
   for (const [label, input] of [
     ['essendon dense', denseAssetReport(10)],
     ['deep hierarchy', deepHierarchyReport()],
@@ -353,7 +443,7 @@ test('compact visual markers do not overlap across representative topologies', (
   }
 });
 
-test('electrical supply uses straight clipped copper paths and measurement stays local', () => {
+test('electrical supply uses short box-clipped copper paths and measurement stays local', () => {
   for (const input of [
     deepHierarchyReport(),
     tallMultiBoardReport(6),
@@ -363,11 +453,15 @@ test('electrical supply uses straight clipped copper paths and measurement stays
     const svg = buildElectricalMapSvg(input, 'Routing site');
     const supplyPaths = [...svg.matchAll(/<path data-supply-source="[^"]+"[^>]* d="([^"]+)"/g)];
     assert.ok(supplyPaths.length > 0);
-    assert.ok(supplyPaths.every((match) => /^M[\d.-]+ [\d.-]+ L[\d.-]+ [\d.-]+$/.test(match[1])));
+    assert.ok(supplyPaths.every((match) => (
+      /^M[\d.-]+ [\d.-]+(?: L[\d.-]+ [\d.-]+)+$/.test(match[1])
+    )));
     assert.match(svg, /data-connector-style="straight"/);
+    assert.doesNotMatch(svg, /data-connector-style="(?:curved|radial)"/);
     assert.doesNotMatch(svg, /data-supply-source="[^"]+"[^>]* d="[^"]+ C/);
     assert.doesNotMatch(svg, /data-measurement-source=|data-measurement-self-loop=/);
     assert.doesNotMatch(svg, /stroke="#2563EB"[^>]*stroke-dasharray/);
+    assertAutomaticConnectorsAreClearAndBounded(svg);
   }
 });
 
@@ -389,7 +483,7 @@ test('the compact key explains supply, local metering, residuals and coverage', 
   assert.match(svg, /data-node-kind="SITE_ASSET"[\s\S]{0,1500}?fill="#DCFCE7"/);
 });
 
-test('electrical map SVG is deterministic, centered and visually explains every item', () => {
+test('electrical map SVG is deterministic, levelled, centered and visually explains every item', () => {
   const first = buildElectricalMapSvg(report(), 'Example & Sons');
   assert.equal(buildElectricalMapSvg(report(), 'Example & Sons'), first);
   assert.match(first, /data-layout-source="auto"/);
@@ -402,17 +496,17 @@ test('electrical map SVG is deterministic, centered and visually explains every 
   assert.match(first, /data-electrical-map-icon="board-msb"/);
   assert.match(first, /data-electrical-map-icon="load-hvac"/);
   assert.match(first, /data-electrical-map-icon="node-residual"/);
-  assert.match(first, /data-node-kind="GRID"[\s\S]{0,1200}?data-electrical-map-icon="node-grid" data-icon-box-size="156" data-icon-scale="1.08"/);
-  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,1200}?data-electrical-map-icon="board-msb" data-icon-box-size="124" data-icon-scale="1.08"/);
-  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,1200}?data-electrical-map-icon="load-hvac" data-icon-box-size="100" data-icon-scale="1.08"/);
-  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,1200}?data-electrical-map-icon="node-residual" data-icon-box-size="100" data-icon-scale="1.08"/);
-  assert.match(first, /data-node-kind="GRID"[\s\S]{0,500}?data-marker-height="234"/);
-  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,500}?data-marker-height="244"/);
-  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,500}?data-marker-height="208"/);
-  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,500}?data-marker-height="196"/);
-  assert.match(first, /data-node-kind="GRID"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="90"/);
-  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="72"/);
-  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="60"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,1200}?data-electrical-map-icon="node-grid" data-icon-box-size="273" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,1200}?data-electrical-map-icon="board-msb" data-icon-box-size="217" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,1200}?data-electrical-map-icon="load-hvac" data-icon-box-size="175" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,1200}?data-electrical-map-icon="node-residual" data-icon-box-size="175" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,500}?data-marker-height="384"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,500}?data-marker-height="370"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,500}?data-marker-height="292"/);
+  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,500}?data-marker-height="278"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="154"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="124"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="101"/);
   assert.match(first, /<symbol id="electrical-map-icon-load-power-outlet"/);
   assert.doesNotMatch(first, /data-electrical-map-icon-frame/);
   assert.match(first, /data-visual-marker="1"/);
@@ -429,14 +523,32 @@ test('electrical map SVG is deterministic, centered and visually explains every 
   assert.match(first, /stroke="#64748B"[^>]*stroke-dasharray="2 7"/);
   assert.match(first, /Supplied from/);
   assert.match(first, /Calculated residual/);
+  assert.match(first, /data-hierarchy-backdrop="1"/);
+  assert.match(first, /data-hierarchy-level="0"/);
+  assert.match(first, /data-hierarchy-level="1"/);
+  assert.match(first, /data-hierarchy-level="2"/);
+  assert.doesNotMatch(first, /data-radial-/);
   const dimensions = /<svg[^>]* width="(\d+)" height="(\d+)"/.exec(first);
   assert.ok(dimensions);
-  const grid = markerPlacements(first).find((marker) => marker.id === 'grid-1');
+  const positions = new Map(markerPlacements(first).map((marker) => [marker.id, marker]));
+  const grid = positions.get('grid-1');
+  const board = positions.get('board-1');
+  const asset = positions.get('asset-1');
+  const residual = positions.get('virtual-1');
   assert.ok(grid);
+  assert.ok(board);
+  assert.ok(asset);
+  assert.ok(residual);
   assert.ok(Math.abs(grid.cx - Number(dimensions[1]) / 2) <= 1);
-  assert.ok(grid.cy > Number(dimensions[2]) * 0.4 && grid.cy < Number(dimensions[2]) * 0.6);
+  assert.equal(grid.depth, 0);
+  assert.equal(board.depth, 1);
+  assert.equal(asset.depth, 2);
+  assert.equal(residual.depth, 2);
+  assert.ok(grid.y < board.y && board.y < asset.y);
+  assert.equal(grid.cx, board.cx);
   assert.equal(markerPlacements(first).length, report().electricalNodes.length);
   assertMarkersDoNotOverlap(first);
+  assertAutomaticConnectorsAreClearAndBounded(first);
   assert.doesNotMatch(first, /<script/i);
 });
 
@@ -630,31 +742,64 @@ test('large supported maps cap pages and bound overview allocation before raster
   }
 });
 
-test('dense Essendon-scale loads occupy a balanced multi-quadrant radial composition', () => {
+test('dense Essendon-scale loads occupy symmetric top-to-bottom hierarchy levels', () => {
   for (const assetCount of [8, 10] as const) {
     const svg = buildElectricalMapSvg(denseAssetReport(assetCount), 'Essendon Electric Map');
     const dimensions = /<svg[^>]* width="(\d+)" height="(\d+)"/.exec(svg);
     assert.ok(dimensions);
     const width = Number(dimensions[1]);
-    const height = Number(dimensions[2]);
-    assert.ok(width > height, 'dense radial overview should retain a landscape footprint');
     const markers = markerPlacements(svg);
     const grid = markers.find((marker) => marker.kind === 'GRID');
+    const board = markers.find((marker) => marker.kind === 'BOARD');
     const assets = markers.filter((marker) => marker.kind === 'SITE_ASSET');
     assert.ok(grid);
+    assert.ok(board);
     assert.equal(assets.length, assetCount);
+    assert.equal(grid.depth, 0);
+    assert.equal(board.depth, 1);
     assert.deepEqual(new Set(assets.map((marker) => marker.depth)), new Set([2]));
-    const quadrants = new Set(assets.map((marker) => (
-      `${marker.cx < grid.cx ? 'L' : 'R'}${marker.cy < grid.cy ? 'T' : 'B'}`
-    )));
-    assert.ok(quadrants.size >= 3, `radial overview used only ${quadrants.size} quadrants`);
-    for (const asset of assets) assert.ok(asset.radius > grid.radius);
+    assert.deepEqual(new Set(assets.map((marker) => marker.y)), new Set([assets[0].y]));
+    assert.ok(grid.y < board.y && board.y < assets[0].y);
+    assert.ok(Math.abs(grid.cx - width / 2) <= 1);
+    assert.equal(grid.cx, board.cx);
+    const left = Math.min(...assets.map((marker) => marker.x));
+    const right = Math.max(...assets.map((marker) => marker.x + marker.width));
+    assert.ok(Math.abs((left + right) / 2 - board.cx) <= 1);
+    assert.equal(
+      assets.filter((marker) => marker.cx < board.cx).length,
+      assets.filter((marker) => marker.cx > board.cx).length,
+    );
     assert.equal(
       (svg.match(/stroke="#B87333" stroke-width="3.5"/g) ?? []).length,
       assetCount + 2,
     );
     assertMarkersDoNotOverlap(svg);
+    assertAutomaticConnectorsAreClearAndBounded(svg);
   }
+});
+
+test('each branch parent is centered over its tidy-tree subtree', () => {
+  const svg = buildElectricalMapSvg(tallMultiBoardReport(6), 'Branch hierarchy');
+  const markers = new Map(markerPlacements(svg).map((marker) => [marker.id, marker]));
+  const mainBoard = markers.get('main-board');
+  assert.ok(mainBoard);
+  const branchBoards = Array.from({ length: 6 }, (_, index) => (
+    markers.get(`branch-board-${index + 1}`)!
+  ));
+  const branchLoads = Array.from({ length: 6 }, (_, index) => (
+    markers.get(`branch-load-${index + 1}`)!
+  ));
+  assert.ok(branchBoards.every(Boolean));
+  assert.ok(branchLoads.every(Boolean));
+  const branchLeft = Math.min(...branchBoards.map((marker) => marker.x));
+  const branchRight = Math.max(...branchBoards.map((marker) => marker.x + marker.width));
+  assert.ok(Math.abs((branchLeft + branchRight) / 2 - mainBoard.cx) <= 1);
+  for (let index = 0; index < branchBoards.length; index += 1) {
+    assert.equal(branchBoards[index].cx, branchLoads[index].cx);
+    assert.ok(branchBoards[index].y < branchLoads[index].y);
+  }
+  assertMarkersDoNotOverlap(svg);
+  assertAutomaticConnectorsAreClearAndBounded(svg);
 });
 
 test('cycle-safe depths stay bounded for a reachable Draft supply cycle', () => {
