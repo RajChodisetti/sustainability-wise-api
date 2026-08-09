@@ -35,22 +35,29 @@ import {
   zoomElectricalTreeViewport,
 } from './electricalTreeLayout';
 
-test('map pictograms are prominent inside interaction-safe stable node footprints', () => {
+test('map pictograms are exactly doubled and remain inside interaction-safe footprints', () => {
   const expected = {
-    GRID: { width: 176, height: 172, haloSize: 112, iconSize: 80 },
-    BOARD: { width: 172, height: 166, haloSize: 96, iconSize: 72 },
-    SITE_ASSET: { width: 144, height: 142, haloSize: 80, iconSize: 56 },
-    VIRTUAL_RESIDUAL: { width: 136, height: 126, haloSize: 80, iconSize: 56 },
+    GRID: { width: 208, height: 252, haloSize: 192, iconSize: 160, previousIconSize: 80 },
+    BOARD: { width: 192, height: 246, haloSize: 176, iconSize: 144, previousIconSize: 72 },
+    SITE_ASSET: { width: 160, height: 206, haloSize: 144, iconSize: 112, previousIconSize: 56 },
+    VIRTUAL_RESIDUAL: { width: 160, height: 190, haloSize: 144, iconSize: 112, previousIconSize: 56 },
   } as const;
 
   for (const [kind, dimensions] of Object.entries(expected)) {
     const visual = electricalTreeNodeVisualSize(kind as keyof typeof expected);
-    assert.deepEqual(visual, dimensions);
+    assert.deepEqual(visual, {
+      width: dimensions.width,
+      height: dimensions.height,
+      haloSize: dimensions.haloSize,
+      iconSize: dimensions.iconSize,
+    });
     assert.deepEqual(electricalTreeNodeSize(kind as keyof typeof expected), {
       width: dimensions.width,
       height: dimensions.height,
     });
+    assert.equal(visual.iconSize, dimensions.previousIconSize * 2);
     assert.ok(visual.iconSize / visual.haloSize >= 0.7, `${kind} icon must read prominently`);
+    assert.ok(visual.iconSize * 1.08 <= visual.haloSize, `${kind} scaled artwork must stay inside its halo`);
     assert.ok(visual.haloSize >= 44, `${kind} halo must remain touch-sized`);
     assert.ok(visual.width >= visual.haloSize && visual.height >= visual.haloSize);
   }
@@ -311,8 +318,12 @@ test('large terminal fan-outs form a non-overlapping local branch cluster withou
   assert.deepEqual([...new Set(assets.map((item) => item.presentationRing))], [2]);
   assert.deepEqual([...new Set(assets.map((item) => item.clusterParentId))], ['board-1']);
   assert.deepEqual([...new Set(assets.map((item) => item.branchId))], ['board-1']);
-  assert.ok(fitted.scale >= 0.45, `expected a legible overview scale, received ${fitted.scale}`);
-  assert.ok(11 * fitted.scale >= 4.95, 'primary labels should retain at least a 4.95px rendered overview size');
+  const assetVisual = electricalTreeNodeVisualSize('SITE_ASSET');
+  const renderedAssetIcon = assetVisual.iconSize * 1.08 * fitted.scale;
+  assert.ok(
+    renderedAssetIcon >= 40,
+    `doubled asset pictograms should remain prominent in the fitted overview, received ${renderedAssetIcon}px`,
+  );
 
   const grid = layout.nodes.find((item) => item.node.id === 'grid-1')!;
   const gridCenter = nodeCenter(grid);

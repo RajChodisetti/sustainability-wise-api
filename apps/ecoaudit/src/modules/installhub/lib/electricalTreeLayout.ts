@@ -8,14 +8,14 @@ import type {
 import { electricalHierarchyRows } from './electricalPresentation';
 import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
-export const ELECTRICAL_TREE_NODE_WIDTH = 144;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 142;
-const ELECTRICAL_TREE_BOARD_WIDTH = 172;
-const ELECTRICAL_TREE_BOARD_HEIGHT = 166;
-const ELECTRICAL_TREE_GRID_WIDTH = 176;
-const ELECTRICAL_TREE_GRID_HEIGHT = 172;
-const ELECTRICAL_TREE_RESIDUAL_WIDTH = 136;
-const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 126;
+export const ELECTRICAL_TREE_NODE_WIDTH = 160;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 206;
+const ELECTRICAL_TREE_BOARD_WIDTH = 192;
+const ELECTRICAL_TREE_BOARD_HEIGHT = 246;
+const ELECTRICAL_TREE_GRID_WIDTH = 208;
+const ELECTRICAL_TREE_GRID_HEIGHT = 252;
+const ELECTRICAL_TREE_RESIDUAL_WIDTH = 160;
+const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 190;
 const CANVAS_PADDING = 72;
 const ISLAND_GAP = 96;
 const NODE_CLEARANCE = 24;
@@ -35,10 +35,9 @@ export type ElectricalTreeNodeVisualSize = ElectricalTreeNodeSize & {
 };
 
 /**
- * Keeps the artwork scale coupled to the footprint used for layout and drag
- * bounds. The card dimensions and halo stay unchanged so existing saved node
- * centres, connector clipping and collision clearance remain stable; only the
- * transparent pictogram is given more visual weight inside that safe area.
+ * Keeps the literal two-times artwork boxes coupled to the minimum halo and
+ * footprint required for labels, drag bounds, connector clipping and collision
+ * clearance. Persisted layout centres remain unchanged.
  */
 const ELECTRICAL_TREE_NODE_VISUAL_SIZES: Readonly<Record<
   ElectricalTreeReadModel['nodes'][number]['kind'],
@@ -47,26 +46,26 @@ const ELECTRICAL_TREE_NODE_VISUAL_SIZES: Readonly<Record<
   GRID: {
     width: ELECTRICAL_TREE_GRID_WIDTH,
     height: ELECTRICAL_TREE_GRID_HEIGHT,
-    haloSize: 112,
-    iconSize: 80,
+    haloSize: 192,
+    iconSize: 160,
   },
   BOARD: {
     width: ELECTRICAL_TREE_BOARD_WIDTH,
     height: ELECTRICAL_TREE_BOARD_HEIGHT,
-    haloSize: 96,
-    iconSize: 72,
+    haloSize: 176,
+    iconSize: 144,
   },
   SITE_ASSET: {
     width: ELECTRICAL_TREE_NODE_WIDTH,
     height: ELECTRICAL_TREE_NODE_HEIGHT,
-    haloSize: 80,
-    iconSize: 56,
+    haloSize: 144,
+    iconSize: 112,
   },
   VIRTUAL_RESIDUAL: {
     width: ELECTRICAL_TREE_RESIDUAL_WIDTH,
     height: ELECTRICAL_TREE_RESIDUAL_HEIGHT,
-    haloSize: 80,
-    iconSize: 56,
+    haloSize: 144,
+    iconSize: 112,
   },
 };
 
