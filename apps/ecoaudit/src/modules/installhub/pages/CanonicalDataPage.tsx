@@ -901,9 +901,14 @@ export function InstallHubCanonicalMeteringPage() {
                     <tbody>{meter.channels.map((channel, channelIndex) => {
                       const assignment = meterAssignments.find((item) => item.channelIds.includes(channel.id));
                       const target = assignment ? measurementTargetDetails(tree, assignment.target) : null;
+                      const description = channel.description?.trim();
                       return (
                         <tr key={channel.id} className="border-b border-[var(--border)]">
-                          <td className="px-2 py-2 font-bold">{meterHref ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channelIndex + 1}`}>Channel {channel.ordinal}</Link> : `Channel ${channel.ordinal}`} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span><span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span></td>
+                          <td className="px-2 py-2 font-bold">
+                            {meterHref ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channelIndex + 1}`}>Channel {channel.ordinal}</Link> : `Channel ${channel.ordinal}`} <span className="font-normal text-[var(--muted)]">{channel.phaseLabel || ''}</span>
+                            {description ? <span className="mt-1 block break-words text-xs font-normal leading-5 text-[var(--text-sub)]">{description}</span> : null}
+                            <span className="mt-1 block break-all font-mono text-xs font-normal text-[var(--muted)]">{channel.id}</span>
+                          </td>
                           <td className="px-2 py-2">{channel.purpose.replaceAll('_', ' ').toLowerCase()}</td>
                           <td className="px-2 py-2">{channel.customLoadTypeName || channel.loadTypeCode || '—'} · {channel.sensorRating || '—'}</td>
                           <td className="px-2 py-2">{assignment && target ? (
