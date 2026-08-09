@@ -131,6 +131,8 @@ the verified migration in `docs/SECURE_STORAGE_MIGRATION.md`.
     ├── GET files
     ├── GET versions
     ├── GET versions/:versionNumber
+    ├── GET meters/:meterId/history
+    ├── POST meters/:meterId/history/rollback
     ├── POST forms/:formId/report/pdf/jobs
     └── POST report/pdf/jobs
 
@@ -157,6 +159,19 @@ originals with completed Field App Complete form/pack report artifacts; it does 
 expose device-local paths. Canonical-v2.7 snapshots omit unresolved optional
 evidence; confirmed media included in a snapshot is resolved by exact registry
 identity and remains immutable.
+
+Completed communications replacements pin the exact pre-replacement device
+state and the accepted replacement as immutable installation versions.
+Append-only meter-history events record replacement and rollback provenance
+without duplicating snapshot data. Replacement completion is a device-only
+boundary: assignments and affected asset metering state must match the current
+server baseline, so A6M channel 4–6 mappings must be cleared or migrated in a
+prior metadata stage before an A3RM downgrade. Rollback is Draft-only, ownership-scoped,
+compare-and-swap revisioned, reasoned, and idempotent. It restores only the
+selected meter state, retains current switchboard/display-code identity and
+compatible live assignments, rejects incompatible channel topology, and pins
+the result as a new version so repeated replacements and rollbacks remain
+linear and auditable.
 
 The six current schema-v2 form families are WW Installation, Comms
 Fault, ACE Switchboard, Honeywell Q400, Captis Logger, and SUMS Logger.

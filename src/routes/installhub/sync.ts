@@ -9,6 +9,7 @@ import {
   ihFormSubmissions,
   ihInstallations,
   ihMeterDevices,
+  ihMeterHistoryEvents,
   ihSiteAssets,
   ihZones,
 } from '../../db/schema/installhub.js';
@@ -64,6 +65,14 @@ import {
   type InstallHubExecutor,
 } from './treeService.js';
 import { paginateReadiness } from './canonicalPagination.js';
+import {
+  CommsReplacementStateError,
+  ambiguousCommsReplacementMeterIds,
+  authorizeCommsReplacementTransitions,
+  completedCommsReplacementTransitions,
+  retainPendingCommsReplacementMeterState,
+  type CommsReplacementTransition,
+} from './meterHistory.js';
 
 type PushBody = {
   syncStage?: 'metadata' | 'complete';
@@ -1185,6 +1194,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       };
       try {
         transactionResult = await db.transaction(async (tx) => {
+          let replacementTransitions: CommsReplacementTransition[] = [];
+          let replacementFromVersionNumber: number | null = null;
+          let commissionedMeterIdentityChangeIds: ReadonlySet<string> = new Set();
           const [current] = await tx.select().from(ihInstallations)
             .where(and(
               eq(ihInstallations.id, installationId),
@@ -1217,9 +1229,16 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             const currentTree = await loadCanonicalInstallationTree(installationId, tx);
             if (!currentTree) throw notFound('Installation');
             if (syncStage === 'metadata') {
+              // Installed clients stage server-completed forms as Draft during
+              // metadata sync. Restore those first so only a genuinely pending
+              // replacement form defers its meter identity.
               incomingTree.formSubmissions = retainCompletedFormsDuringMetadata({
                 existing: currentTree.formSubmissions,
                 incoming: incomingTree.formSubmissions,
+              });
+              retainPendingCommsReplacementMeterState({
+                current: currentTree,
+                incoming: incomingTree,
               });
               const priorCompleted = new Set(currentTree.formSubmissions
                 .filter((form) => form.status === 'Completed')
@@ -1229,6 +1248,33 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               ))) {
                 throw badRequest('metadata_stage_cannot_complete_form');
               }
+            }
+            replacementTransitions = syncStage === 'metadata'
+              ? []
+              : completedCommsReplacementTransitions({
+                  current: currentTree,
+                  incoming: incomingTree,
+                });
+            if (ambiguousCommsReplacementMeterIds(replacementTransitions).length) {
+              throw badRequest('multiple_comms_replacements_per_meter');
+            }
+            commissionedMeterIdentityChangeIds = authorizeCommsReplacementTransitions({
+              current: currentTree,
+              incoming: incomingTree,
+              transitions: replacementTransitions,
+            });
+            replacementFromVersionNumber = replacementTransitions.length
+              ? await ensureCanonicalRecordVersion({
+                  executor: tx,
+                  tree: currentTree,
+                  userId: request.user.userId,
+                })
+              : null;
+            if (replacementFromVersionNumber !== null) {
+              // ensureCanonicalRecordVersion may pin metadata changes made
+              // while the replacement form was still a draft. Continue the
+              // accepted write from that exact immutable baseline.
+              incomingTree.installation.recordVersionNumber = replacementFromVersionNumber;
             }
             validateCanonicalFormContractsForSync({
               incoming: incomingTree.formSubmissions,
@@ -1287,7 +1333,8 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             )).returning();
             if (!updated) throw conflict('snapshot_conflict');
             incomingTree.installation.treeRevision = nextRevision;
-            incomingTree.installation.recordVersionNumber = current.recordVersionNumber;
+            incomingTree.installation.recordVersionNumber =
+              replacementFromVersionNumber ?? current.recordVersionNumber;
           } else {
             if (
               syncStage === 'metadata'
@@ -1329,7 +1376,12 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             if (!created) throw conflict('snapshot_conflict');
           }
 
-          await replaceCanonicalInstallationChildren({ executor: tx, tree: incomingTree, now });
+          await replaceCanonicalInstallationChildren({
+            executor: tx,
+            tree: incomingTree,
+            now,
+            commissionedMeterIdentityChangeIds,
+          });
           const persisted = await loadCanonicalInstallationTree(installationId, tx);
           if (!persisted) throw new Error('Canonical installation disappeared during transaction');
           let recordVersionNumber = persisted.installation.recordVersionNumber;
@@ -1339,6 +1391,29 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               tree: persisted,
               userId: request.user.userId,
             });
+          }
+          if (replacementTransitions.length) {
+            if (
+              replacementFromVersionNumber === null
+              || replacementFromVersionNumber < 1
+              || recordVersionNumber < 1
+            ) {
+              throw new Error('comms_replacement_version_missing');
+            }
+            await tx.insert(ihMeterHistoryEvents).values(
+              replacementTransitions.map((transition) => ({
+                id: randomUUID(),
+                installationId,
+                meterId: transition.meterId,
+                operation: 'REPLACEMENT',
+                sourceFormSubmissionId: transition.formSubmissionId,
+                fromRecordVersionNumber: replacementFromVersionNumber!,
+                toRecordVersionNumber: recordVersionNumber,
+                restoredFromRecordVersionNumber: null,
+                reason: null,
+                actorUserId: request.user.userId,
+              })),
+            );
           }
           return {
             treeRevision: persisted.installation.treeRevision,
@@ -1350,6 +1425,17 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         if (error instanceof CanonicalInputError) {
           if (error.code === 'display_code_conflict') throw conflict(error.code);
           throw badRequest(`${error.code}: ${error.detail}`);
+        }
+        if (error instanceof CommsReplacementStateError) {
+          const guidance = {
+            comms_replacement_meter_missing:
+              'Refresh the installation and reopen the replacement form before retrying.',
+            comms_replacement_mapping_changed:
+              'Save assignment or affected-asset mapping changes before completing the replacement. For an A6M-to-A3RM downgrade, clear or migrate channel 4–6 assignments first.',
+            comms_replacement_state_mismatch:
+              'Check the replacement model, Device ID / serial, sensor rating, and channel configuration before retrying.',
+          }[error.code];
+          throw badRequest(`${error.code}: ${guidance}`);
         }
         if (error instanceof Error && error.message.startsWith('COMPLETED_FORM_IMMUTABLE:')) {
           throw conflict(error.message);

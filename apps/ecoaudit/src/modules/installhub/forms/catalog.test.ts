@@ -378,6 +378,43 @@ test('form completion produces no mandatory-field issues', () => {
   assert.deepEqual(issues, []);
 });
 
+test('Comms replacement completion requires a valid model, serial, and sensor', () => {
+  const missing = formValidationIssues(
+    submission('comms-fault', {
+      'works.replace_device': 'yes',
+    }),
+  );
+  assert.deepEqual(
+    missing.map((issue) => issue.fieldKey),
+    [
+      'works.new_device_type',
+      'works.new_device_id',
+      'works.new_sensor_rating',
+    ],
+  );
+
+  assert.deepEqual(formValidationIssues(
+    submission('comms-fault', {
+      'works.replace_device': 'yes',
+      'works.new_device_type': 'A6M',
+      'works.new_device_id': 'NEW-ID',
+      'works.new_sensor_rating': 'CT-120A',
+    }),
+  ), []);
+
+  assert.deepEqual(
+    formValidationIssues(
+      submission('comms-fault', {
+        'works.replace_device': 'yes',
+        'works.new_device_type': 'A6M',
+        'works.new_device_id': 'NEW-ID',
+        'works.new_sensor_rating': '10cm-200A',
+      }),
+    ).map((issue) => issue.fieldKey),
+    ['works.new_sensor_rating'],
+  );
+});
+
 test('legacy draft records also have no mandatory-field completion gate', () => {
   assert.deepEqual(validateForm(submission('a3rm-installation', {
     'device.type': 'A3RM',
@@ -413,6 +450,43 @@ test('Comms replacement mirrors iOS meter reshaping', () => {
     '3000A - 20cm',
   );
   assert.equal(replacement.wwChannels?.[0].ctRatio, undefined);
+});
+
+test('Comms replacement marks newly added A6M channels as sub-circuits', () => {
+  const meter: Meter = {
+    id: 'meter-1',
+    deviceName: 'A3RM Meter',
+    deviceType: 'A3RM',
+    deviceId: 'OLD-ID',
+    wwChannels: Array.from({ length: 3 }, (_, index) => ({
+      id: `meter-1:${index + 1}`,
+      ordinal: index + 1,
+      purpose: 'MAIN_SUPPLY',
+      rogowskiSize: '10cm-200A',
+    })),
+  };
+
+  const replacement = meterAfterCommsReplacement(meter, {
+    'works.new_device_type': 'A6M',
+    'works.new_device_id': 'NEW-ID',
+    'works.new_sensor_rating': 'CT-120A',
+  });
+
+  assert.deepEqual(
+    replacement.wwChannels?.map((channel) => channel.purpose),
+    [
+      'MAIN_SUPPLY',
+      'MAIN_SUPPLY',
+      'MAIN_SUPPLY',
+      'SUB_CIRCUIT',
+      'SUB_CIRCUIT',
+      'SUB_CIRCUIT',
+    ],
+  );
+  assert.deepEqual(
+    replacement.wwChannels?.map((channel) => channel.ctRatio),
+    Array.from({ length: 6 }, () => 'CT-120A'),
+  );
 });
 
 test('scanner modes match iOS ingestion fields', () => {

@@ -470,6 +470,70 @@ export const ihFormSubmissions = pgTable('ih_form_submissions', {
 ]);
 
 /**
+ * Append-only provenance for meter state transitions. Full restorable state
+ * remains in the authoritative installation record_versions snapshots; these
+ * rows identify why a pair of immutable versions was created without storing
+ * a second copy of the device payload.
+ */
+export const ihMeterHistoryEvents = pgTable('ih_meter_history_events', {
+  id: text('id').primaryKey(),
+  installationId: text('installation_id').notNull(),
+  meterId: text('meter_id').notNull(),
+  operation: text('operation').notNull(),
+  sourceFormSubmissionId: text('source_form_submission_id'),
+  fromRecordVersionNumber: integer('from_record_version_number').notNull(),
+  toRecordVersionNumber: integer('to_record_version_number').notNull(),
+  restoredFromRecordVersionNumber: integer('restored_from_record_version_number'),
+  reason: text('reason'),
+  actorUserId: text('actor_user_id').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('ih_meter_history_events_meter_idx').on(
+    table.installationId,
+    table.meterId,
+    table.createdAt,
+  ),
+  index('ih_meter_history_events_version_idx').on(
+    table.installationId,
+    table.toRecordVersionNumber,
+  ),
+  uniqueIndex('ih_meter_history_events_source_form_unique')
+    .on(table.installationId, table.sourceFormSubmissionId)
+    .where(sql`${table.sourceFormSubmissionId} IS NOT NULL`),
+  foreignKey({
+    columns: [table.installationId],
+    foreignColumns: [ihInstallations.id],
+    name: 'ih_meter_history_events_installation_fk',
+  }).onDelete('cascade'),
+  check(
+    'ih_meter_history_events_operation_check',
+    sql`${table.operation} IN ('REPLACEMENT', 'ROLLBACK')`,
+  ),
+  check(
+    'ih_meter_history_events_versions_check',
+    sql`${table.fromRecordVersionNumber} > 0 AND ${table.toRecordVersionNumber} > 0`,
+  ),
+  check(
+    'ih_meter_history_events_restored_version_check',
+    sql`${table.restoredFromRecordVersionNumber} IS NULL OR ${table.restoredFromRecordVersionNumber} > 0`,
+  ),
+  check(
+    'ih_meter_history_events_shape_check',
+    sql`(
+      ${table.operation} = 'REPLACEMENT'
+      AND ${table.sourceFormSubmissionId} IS NOT NULL
+      AND ${table.restoredFromRecordVersionNumber} IS NULL
+      AND ${table.reason} IS NULL
+    ) OR (
+      ${table.operation} = 'ROLLBACK'
+      AND ${table.sourceFormSubmissionId} IS NULL
+      AND ${table.restoredFromRecordVersionNumber} IS NOT NULL
+      AND length(btrim(${table.reason})) >= 3
+    )`,
+  ),
+]);
+
+/**
  * Retained claims make generated/overridden display codes non-reusable after
  * soft deletion. Current display metadata remains on the owning entity.
  */

@@ -106,6 +106,8 @@ Field App Complete stored-artifact and snapshot reads are:
 GET /v1/installhub/installations/:installationId/files
 GET /v1/installhub/installations/:installationId/versions
 GET /v1/installhub/installations/:installationId/versions/:versionNumber
+GET /v1/installhub/installations/:installationId/meters/:meterId/history
+POST /v1/installhub/installations/:installationId/meters/:meterId/history/rollback
 ```
 
 Files include accessible confirmed originals and completed Field App Complete report
@@ -113,8 +115,25 @@ artifacts. Versions are immutable canonical-v2.7 full sync snapshots; unresolved
 optional evidence is omitted, while included confirmed media retains its exact
 registry identity. Versions are added
 only when a complete or legacy-unstaged push differs from the latest stable
-snapshot; metadata-stage pushes are excluded. All three routes use creator,
-assigned-inspector, or elevated access.
+snapshot; metadata-stage pushes are excluded. File, version, and meter-history
+reads use creator, assigned-inspector, or elevated access.
+
+Meter history is an additive projection over the same immutable installation
+versions. A completed comms replacement pins its preimage before changing
+device identity and appends provenance for the resulting version. The
+completion boundary requires an A3RM/A6M model, a non-empty replacement serial,
+and a model-valid sensor rating, and it may not change the meter's current
+assignments or the metering state of affected assets. Save intended mapping
+changes in a metadata stage first. In particular, an A6M-to-A3RM replacement
+must clear or migrate assignments on channels 4–6 before the replacement form
+can be completed; the server rejects the combined destructive transition with
+`comms_replacement_mapping_changed`. Rollback
+requires `targetRecordVersionNumber`, the current `baseTreeRevision`, a reason,
+and an `idempotencyKey`; it rejects Completed installations, stale revisions,
+wrong installation/meter scope, and channel layouts that cannot retain current
+live assignments. It never deletes completed forms or prior versions, never
+moves the meter between switchboards, and appends a new version/event even when
+restoring a state that was active earlier.
 
 ### Field App Complete portal
 

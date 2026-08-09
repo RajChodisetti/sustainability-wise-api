@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldError, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
@@ -20,7 +21,11 @@ import {
   requestTreeNavigation,
 } from '@/modules/installhub/components/WorkflowUi';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
-import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
+import {
+  getMeterHistory,
+  rollbackMeterHistory,
+  uploadInstallationPhoto,
+} from '@/modules/installhub/api/installhub';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createMeter, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
@@ -35,6 +40,7 @@ import type {
   InstallationTree,
   Meter,
   MeasurementAssignment,
+  MeterHistoryVersion,
   SiteAsset,
   WattwatcherCommissioning,
   WattwatcherPrestart,
@@ -221,6 +227,23 @@ export function InstallHubMeterPage({
   );
   const [quickAssetCustomType, setQuickAssetCustomType] = useState('');
   const [quickAssetErrors, setQuickAssetErrors] = useState<Array<{ id?: string; message: string }>>([]);
+  const [rollbackTarget, setRollbackTarget] = useState<{
+    version: MeterHistoryVersion;
+    idempotencyKey: string;
+  } | null>(null);
+  const [rollbackReason, setRollbackReason] = useState('');
+  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const historyQuery = useInfiniteQuery({
+    queryKey: ['installhub', 'meter-history', installationId, meterId ?? 'new'],
+    queryFn: ({ pageParam }) => getMeterHistory(
+      installationId,
+      meterId!,
+      { offset: pageParam, limit: 20 },
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.page.nextOffset ?? undefined,
+    enabled: mode === 'edit' && Boolean(meterId),
+  });
 
   useEffect(() => {
     if (mode !== 'new') return;
@@ -344,6 +367,17 @@ export function InstallHubMeterPage({
     editorBaseline?.assignments ?? [],
     mode,
   ) || stagedAssets.length > 0 || (mode === 'edit' && !source && Boolean(editorBaseline?.meter));
+  const meterHistory = historyQuery.data?.pages.flatMap((page) => page.versions)
+    .filter((version, index, versions) => (
+      versions.findIndex((candidate) => (
+        candidate.recordVersionNumber === version.recordVersionNumber
+      )) === index
+      && (
+        index === 0
+        || version.operation !== 'SNAPSHOT'
+        || version.stateHash !== versions[index - 1]?.stateHash
+      )
+    )) ?? [];
 
   function adoptConfirmedMeterEditor(confirmed: InstallationTree): boolean {
     const confirmedMeter = confirmed.electricalAssets
@@ -373,6 +407,60 @@ export function InstallHubMeterPage({
       assignments: structuredClone(confirmedAssignments),
     });
     return true;
+  }
+
+  function requestMeterRollback(version: MeterHistoryVersion) {
+    if (hasLocalChanges || writer.hasPendingTree) {
+      toast.error('Save or discard the current device edits before rolling back.');
+      return;
+    }
+    setRollbackReason('');
+    setRollbackTarget({
+      version,
+      idempotencyKey: createInstallHubId('meter-rollback'),
+    });
+  }
+
+  async function confirmMeterRollback() {
+    if (!rollbackTarget) return;
+    const reason = rollbackReason.trim();
+    if (reason.length < 3) {
+      toast.error('Enter a rollback reason with at least 3 characters.');
+      return;
+    }
+    setRollbackBusy(true);
+    try {
+      const result = await rollbackMeterHistory(
+        installationId,
+        currentDraft.id,
+        {
+          targetRecordVersionNumber:
+            rollbackTarget.version.recordVersionNumber,
+          baseTreeRevision: tree.treeRevision ?? tree.installation.treeRevision ?? 0,
+          reason,
+          idempotencyKey: rollbackTarget.idempotencyKey,
+        },
+      );
+      const refreshed = await query.refetch();
+      if (!refreshed.data || !adoptConfirmedMeterEditor(refreshed.data)) {
+        throw new Error('The restored device could not be reloaded.');
+      }
+      await Promise.all([
+        historyQuery.refetch(),
+        writer.refresh(),
+      ]);
+      setRollbackTarget(null);
+      setRollbackReason('');
+      toast.success(
+        `Device restored from version ${result.meterHistory.restoredFromRecordVersionNumber}. New version ${result.meterHistory.recordVersionNumber} preserves the rollback.`,
+      );
+    } catch (error) {
+      // Keep the dialog and idempotency key so retry is safe after an
+      // ambiguous connection failure.
+      toast.error(installHubConnectionErrorMessage(error));
+    } finally {
+      setRollbackBusy(false);
+    }
   }
 
   async function retryTreeWrite() {
@@ -1453,6 +1541,13 @@ export function InstallHubMeterPage({
               description: 'Exact measurement targets',
               meta: assignmentDrafts.length,
             },
+            {
+              href: '#meter-history',
+              icon: 'refresh',
+              label: 'Device history',
+              description: 'Replacement versions and rollback',
+              meta: meterHistory.length,
+            },
             ...(showWattwatchersSections ? [{
               href: '#meter-verification',
               icon: 'check' as const,
@@ -1461,6 +1556,117 @@ export function InstallHubMeterPage({
             }] : []),
           ]}
         />
+      ) : null}
+      {saved ? (
+        <Card id="meter-history" tabIndex={-1} className="mb-5 scroll-mt-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="font-extrabold text-[var(--text)]">Device version history</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--text-sub)]">
+                Every completed replacement keeps immutable before-and-after cloud versions. Rolling back restores only this device while retaining current forms, switchboard placement, display ID, and compatible assignments.
+              </p>
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={historyQuery.isFetching}
+              onClick={() => void historyQuery.refetch()}
+            >
+              <Icon name="refresh" size={17} />
+              {historyQuery.isFetching ? 'Refreshing…' : 'Refresh history'}
+            </Button>
+          </div>
+
+          {historyQuery.isLoading ? (
+            <p className="mt-5 text-sm text-[var(--text-sub)]">Loading device versions…</p>
+          ) : historyQuery.error ? (
+            <div className="mt-5">
+              <ErrorBanner message={installHubConnectionErrorMessage(historyQuery.error)} />
+            </div>
+          ) : meterHistory.length === 0 ? (
+            <p className="mt-5 rounded-xl border border-dashed border-[var(--border-strong)] px-4 py-5 text-sm text-[var(--text-sub)]">
+              No finalized device version exists yet. Completing a cloud save or replacement will create one.
+            </p>
+          ) : (
+            <div className="mt-5 space-y-3">
+              {meterHistory.map((version) => {
+                const statusLabel = version.isCurrentState
+                  ? 'Current device state'
+                  : version.operation === 'REPLACEMENT'
+                    ? 'Replacement'
+                    : version.operation === 'ROLLBACK'
+                      ? 'Rollback'
+                      : 'Saved device state';
+                return (
+                  <div
+                    key={version.id}
+                    className="rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)] p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="break-words font-extrabold text-[var(--text)]">
+                            {version.device.name || `${version.device.model} device`}
+                          </p>
+                          <span className={`rounded-full border px-2.5 py-1 text-xs font-bold ${
+                            version.isCurrentState
+                              ? 'border-[var(--green)]/30 bg-[var(--green-soft)] text-[var(--green)]'
+                              : 'border-[var(--primary)]/25 bg-[var(--primary-soft)] text-[var(--primary)]'
+                          }`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <p className="mt-1 break-words text-sm leading-6 text-[var(--text-sub)]">
+                          Version {version.recordVersionNumber} · {version.device.model} · Serial {version.device.serialNumber || 'not recorded'}
+                          {version.device.deviceNumber ? ` · Asset tag ${version.device.deviceNumber}` : ''}
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-[var(--muted)]">
+                          {version.device.switchboardName} · {version.device.channelCount} channel{version.device.channelCount === 1 ? '' : 's'} · {new Date(version.createdAt).toLocaleString()}
+                        </p>
+                        {version.operation === 'ROLLBACK' && version.reason ? (
+                          <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
+                            Reason: {version.reason}
+                          </p>
+                        ) : null}
+                        {!version.canRollback && version.rollbackBlockedReason ? (
+                          <p className="mt-2 text-xs font-semibold leading-5 text-[var(--amber)]">
+                            {version.rollbackBlockedReason}
+                          </p>
+                        ) : null}
+                      </div>
+                      {!version.isCurrentState ? (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          disabled={
+                            !version.canRollback
+                            || hasLocalChanges
+                            || writer.hasPendingTree
+                            || rollbackBusy
+                          }
+                          onClick={() => requestMeterRollback(version)}
+                        >
+                          <Icon name="refresh" size={17} />
+                          Roll back to this version
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+              {historyQuery.hasNextPage ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={historyQuery.isFetchingNextPage}
+                  onClick={() => void historyQuery.fetchNextPage()}
+                >
+                  {historyQuery.isFetchingNextPage ? 'Loading older versions…' : 'Load older versions'}
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </Card>
       ) : null}
       {assetReturn ? (
         <div className="mb-5">
@@ -2335,6 +2541,50 @@ export function InstallHubMeterPage({
         onConfirm={approveDraftChannelMove}
         onCancel={() => setPendingDraftChannelMove(null)}
       />
+
+      <ConfirmDialog
+        open={Boolean(rollbackTarget)}
+        title={`Roll back to device version ${rollbackTarget?.version.recordVersionNumber ?? ''}?`}
+        description={rollbackTarget
+          ? `Restore ${rollbackTarget.version.device.name || rollbackTarget.version.device.model} (${rollbackTarget.version.device.serialNumber || 'serial not recorded'}) as the active device state.`
+          : ''}
+        consequences={[
+          'The current device state remains available as an immutable version',
+          'Completed forms and unrelated installation edits are not changed',
+          'Current compatible channel assignments remain attached; incompatible rollback is blocked',
+          'A new immutable version and audit event record this rollback',
+        ]}
+        confirmLabel="Confirm rollback"
+        danger={false}
+        busy={rollbackBusy}
+        blockedMessage={hasLocalChanges || writer.hasPendingTree
+          ? 'Save or discard the current device edits before rolling back.'
+          : rollbackTarget && !rollbackTarget.version.canRollback
+            ? rollbackTarget.version.rollbackBlockedReason || 'This device version cannot be restored safely.'
+            : rollbackReason.trim().length < 3
+              ? 'Enter a rollback reason with at least 3 characters.'
+              : undefined}
+        onConfirm={confirmMeterRollback}
+        onCancel={() => {
+          if (rollbackBusy) return;
+          setRollbackTarget(null);
+          setRollbackReason('');
+        }}
+      >
+        <div>
+          <FieldLabel htmlFor="meter-rollback-reason">Reason for rollback</FieldLabel>
+          <Textarea
+            id="meter-rollback-reason"
+            value={rollbackReason}
+            minLength={3}
+            maxLength={1000}
+            disabled={rollbackBusy}
+            placeholder="Explain why this earlier device state is being restored"
+            onChange={(event) => setRollbackReason(event.target.value)}
+          />
+          <FieldHint>This reason is retained with the immutable rollback event.</FieldHint>
+        </div>
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={confirmDelete}

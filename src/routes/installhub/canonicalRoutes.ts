@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
 import {
   ihCompletionIdempotency,
   ihInstallations,
+  ihMeterHistoryEvents,
 } from '../../db/schema/installhub.js';
 import { recordVersions } from '../../db/schema/shared.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
@@ -31,12 +32,18 @@ import { assertInstallationAccess } from './helpers.js';
 import {
   type CanonicalRecordVersionSnapshot,
   canonicalCompletionReadiness,
+  ensureCanonicalRecordVersion,
   insertCanonicalRecordVersion,
   loadCanonicalInstallationTree,
   loadCanonicalRecordVersion,
   projectLegacyInstallationTree,
   replaceCanonicalInstallationChildren,
 } from './treeService.js';
+import {
+  MeterHistoryRestoreError,
+  meterHistoryStateHash,
+  restoreMeterFromHistory,
+} from './meterHistory.js';
 
 function positiveVersion(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -51,6 +58,21 @@ function nonNegativeRevision(value: unknown): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0) {
     throw badRequest('baseTreeRevision must be a non-negative integer');
+  }
+  return parsed;
+}
+
+function pageNumber(
+  value: unknown,
+  fallback: number,
+  minimum: number,
+  maximum: number,
+  label: string,
+): number {
+  if (value === undefined || value === null || value === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw badRequest(`${label} must be an integer from ${minimum} to ${maximum}`);
   }
   return parsed;
 }
@@ -121,6 +143,307 @@ const protectedRoute = {
 };
 
 export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<void> {
+  app.get('/:installationId/meters/:meterId/history', protectedRoute, async (request, reply) => {
+    const { installationId, meterId } = request.params as {
+      installationId: string;
+      meterId: string;
+    };
+    const installation = await accessibleInstallation(installationId, request.user);
+    const query = request.query as { offset?: unknown; limit?: unknown };
+    const offset = pageNumber(query.offset, 0, 0, Number.MAX_SAFE_INTEGER, 'offset');
+    const limit = pageNumber(query.limit, 25, 1, 100, 'limit');
+    const currentTree = await loadCanonicalInstallationTree(installationId);
+    if (!currentTree) throw notFound('Installation');
+    if (!currentTree.meterDevices.some((meter) => meter.id === meterId)) {
+      throw notFound('Meter');
+    }
+    const currentStateHash = meterHistoryStateHash(currentTree, meterId);
+    const meterSnapshotCondition = sql<boolean>`jsonb_path_exists(
+      ${recordVersions.snapshot},
+      '$.installationTree.meterDevices[*] ? (@.id == $meterId)',
+      jsonb_build_object('meterId', ${meterId}::text)
+    )`;
+    const conditions = and(
+      eq(recordVersions.app, 'installhub'),
+      eq(recordVersions.entityType, 'installation'),
+      eq(recordVersions.entityId, installationId),
+      meterSnapshotCondition,
+    );
+    const [[totalRow], rows] = await Promise.all([
+      db.select({ total: count() }).from(recordVersions).where(conditions),
+      db.select({
+        id: recordVersions.id,
+        versionNumber: recordVersions.versionNumber,
+        createdByUserId: recordVersions.createdByUserId,
+        createdAt: recordVersions.createdAt,
+        snapshot: recordVersions.snapshot,
+      }).from(recordVersions)
+        .where(conditions)
+        .orderBy(desc(recordVersions.versionNumber))
+        .offset(offset)
+        .limit(limit),
+    ]);
+    const versionNumbers = rows.map((row) => row.versionNumber);
+    const events = versionNumbers.length
+      ? await db.select().from(ihMeterHistoryEvents).where(and(
+          eq(ihMeterHistoryEvents.installationId, installationId),
+          eq(ihMeterHistoryEvents.meterId, meterId),
+          inArray(ihMeterHistoryEvents.toRecordVersionNumber, versionNumbers),
+        ))
+      : [];
+    const eventByVersion = new Map(
+      events.map((event) => [event.toRecordVersionNumber, event]),
+    );
+    const projectedVersions = rows.map((row) => {
+      const snapshot = row.snapshot as CanonicalRecordVersionSnapshot;
+      const tree = snapshot.installationTree;
+      const meter = tree.meterDevices.find((item) => item.id === meterId);
+      if (!meter) throw new Error('meter_history_snapshot_invalid');
+      const stateHash = meterHistoryStateHash(tree, meterId);
+      const event = eventByVersion.get(row.versionNumber);
+      let rollbackBlockedReason: string | null = null;
+      let canRollback = installation.status === 'Draft' && stateHash !== currentStateHash;
+      if (installation.status !== 'Draft') {
+        rollbackBlockedReason = 'Reopen this completed installation before rolling back a device.';
+      }
+      if (canRollback) {
+        try {
+          restoreMeterFromHistory({ current: currentTree, target: tree, meterId });
+        } catch (error) {
+          if (!(error instanceof MeterHistoryRestoreError)) throw error;
+          canRollback = false;
+          rollbackBlockedReason =
+            'Current switchboard placement or channel assignments are incompatible with this device version.';
+        }
+      }
+      return {
+        id: row.id,
+        recordVersionNumber: row.versionNumber,
+        createdAt: row.createdAt.toISOString(),
+        createdByUserId: row.createdByUserId,
+        operation: event?.operation ?? 'SNAPSHOT',
+        sourceFormSubmissionId: event?.sourceFormSubmissionId ?? null,
+        restoredFromRecordVersionNumber:
+          event?.restoredFromRecordVersionNumber ?? null,
+        reason: event?.reason ?? null,
+        device: {
+          name: meter.customName,
+          model: meter.deviceModel,
+          deviceNumber: meter.deviceNumber ?? null,
+          serialNumber: meter.serialNumber,
+          channelCount: meter.channels.length,
+          switchboardName: tree.electricalAssets.find(
+            (board) => board.id === meter.installedOnBoardId,
+          )?.assetName ?? meter.installedOnBoardId,
+        },
+        isCurrentState: stateHash === currentStateHash,
+        canRollback,
+        rollbackBlockedReason,
+        stateHash,
+      };
+    });
+    // Pagination counts exact retained snapshots. The portal collapses
+    // adjacent identical state hashes for display without making this API's
+    // total/offset metadata dishonest.
+    const versions = projectedVersions;
+    const total = totalRow?.total ?? 0;
+    return reply.send({
+      installationId,
+      meterId,
+      versions,
+      page: {
+        offset,
+        limit,
+        total,
+        nextOffset: offset + rows.length < total
+          ? offset + rows.length
+          : null,
+      },
+    });
+  });
+
+  app.post('/:installationId/meters/:meterId/history/rollback', {
+    ...protectedRoute,
+    schema: {
+      ...protectedRoute.schema,
+      summary: 'Restore one meter from an immutable installation version',
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'targetRecordVersionNumber',
+          'baseTreeRevision',
+          'reason',
+          'idempotencyKey',
+        ],
+        properties: {
+          targetRecordVersionNumber: { type: 'integer', minimum: 1 },
+          baseTreeRevision: { type: 'integer', minimum: 0 },
+          reason: { type: 'string', minLength: 3, maxLength: 1000 },
+          idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { installationId, meterId } = request.params as {
+      installationId: string;
+      meterId: string;
+    };
+    const body = request.body as {
+      targetRecordVersionNumber: unknown;
+      baseTreeRevision: unknown;
+      reason: unknown;
+      idempotencyKey: unknown;
+    };
+    const targetRecordVersionNumber = positiveVersion(body.targetRecordVersionNumber);
+    if (targetRecordVersionNumber === undefined) {
+      throw badRequest('targetRecordVersionNumber is required');
+    }
+    const baseTreeRevision = nonNegativeRevision(body.baseTreeRevision);
+    if (typeof body.reason !== 'string' || body.reason.trim().length < 3) {
+      throw badRequest('reason must contain at least 3 characters');
+    }
+    const reason = body.reason.trim();
+    if (typeof body.idempotencyKey !== 'string' || !body.idempotencyKey.trim()) {
+      throw badRequest('idempotencyKey is required');
+    }
+    const idempotencyKey = body.idempotencyKey.trim();
+    const operation = `meter_history_rollback:${meterId}`;
+    const requestFingerprint = canonicalPayloadHash({
+      operation,
+      installationId,
+      meterId,
+      targetRecordVersionNumber,
+      baseTreeRevision,
+      reason,
+    });
+    const result = await db.transaction(async (tx) => {
+      const [installation] = await tx.select().from(ihInstallations).where(and(
+        eq(ihInstallations.id, installationId),
+        isNull(ihInstallations.deletedAt),
+      )).for('update');
+      if (!installation) throw notFound('Installation');
+      assertInstallationAccess(installation, request.user);
+      const [prior] = await tx.select().from(ihCompletionIdempotency).where(and(
+        eq(ihCompletionIdempotency.installationId, installationId),
+        eq(ihCompletionIdempotency.operation, operation),
+        eq(ihCompletionIdempotency.actorUserId, request.user.userId),
+        eq(ihCompletionIdempotency.idempotencyKey, idempotencyKey),
+      ));
+      if (prior) {
+        if (prior.requestFingerprint !== requestFingerprint) {
+          throw conflict('idempotency_key_reused');
+        }
+        return prior.result;
+      }
+      if (installation.treeSchemaVersion < 2) throw conflict('upgrade_required');
+      if (installation.status === 'Completed') {
+        throw conflict('installation_completed_reopen_required');
+      }
+      if (installation.treeRevision !== baseTreeRevision) {
+        throw conflict('snapshot_conflict');
+      }
+      const currentTree = await loadCanonicalInstallationTree(installationId, tx);
+      if (!currentTree) throw notFound('Installation');
+      if (!currentTree.meterDevices.some((meter) => meter.id === meterId)) {
+        throw notFound('Meter');
+      }
+      const target = await loadCanonicalRecordVersion({
+        installationId,
+        versionNumber: targetRecordVersionNumber,
+        executor: tx,
+      });
+      if (!target) throw notFound('Installation record version');
+      if (meterHistoryStateHash(currentTree, meterId) === meterHistoryStateHash(
+        target.snapshot.installationTree,
+        meterId,
+      )) {
+        throw conflict('meter_history_already_current');
+      }
+      let restored;
+      try {
+        restored = restoreMeterFromHistory({
+          current: currentTree,
+          target: target.snapshot.installationTree,
+          meterId,
+        });
+      } catch (error) {
+        if (error instanceof MeterHistoryRestoreError) throw conflict(error.code);
+        throw error;
+      }
+      const fromRecordVersionNumber = await ensureCanonicalRecordVersion({
+        executor: tx,
+        tree: currentTree,
+        userId: request.user.userId,
+      });
+      restored.installation.recordVersionNumber = fromRecordVersionNumber;
+      const changedAt = new Date();
+      const nextRevision = installation.treeRevision + 1;
+      restored.installation.treeRevision = nextRevision;
+      restored.installation.updatedAt = changedAt.toISOString();
+      await replaceCanonicalInstallationChildren({
+        executor: tx,
+        tree: restored,
+        now: changedAt,
+        commissionedMeterIdentityChangeIds: new Set([meterId]),
+      });
+      const [updated] = await tx.update(ihInstallations).set({
+        treeRevision: nextRevision,
+        updatedAt: changedAt,
+        syncStatus: 'synced',
+      }).where(and(
+        eq(ihInstallations.id, installationId),
+        eq(ihInstallations.treeRevision, baseTreeRevision),
+        eq(ihInstallations.status, 'Draft'),
+      )).returning();
+      if (!updated) throw conflict('snapshot_conflict');
+      const persisted = await loadCanonicalInstallationTree(installationId, tx);
+      if (!persisted) throw notFound('Installation');
+      const recordVersionNumber = await ensureCanonicalRecordVersion({
+        executor: tx,
+        tree: persisted,
+        userId: request.user.userId,
+      });
+      await tx.insert(ihMeterHistoryEvents).values({
+        id: randomUUID(),
+        installationId,
+        meterId,
+        operation: 'ROLLBACK',
+        sourceFormSubmissionId: null,
+        fromRecordVersionNumber,
+        toRecordVersionNumber: recordVersionNumber,
+        restoredFromRecordVersionNumber: targetRecordVersionNumber,
+        reason,
+        actorUserId: request.user.userId,
+      });
+      const response = {
+        installationId,
+        meterHistory: {
+          operation: 'ROLLBACK' as const,
+          meterId,
+          restoredFromRecordVersionNumber: targetRecordVersionNumber,
+          recordVersionNumber,
+          treeRevision: nextRevision,
+          reason,
+        },
+      };
+      await tx.insert(ihCompletionIdempotency).values({
+        id: randomUUID(),
+        installationId,
+        operation,
+        actorUserId: request.user.userId,
+        idempotencyKey,
+        requestFingerprint,
+        completedFromRevision: baseTreeRevision,
+        resultingTreeRevision: nextRevision,
+        recordVersionNumber,
+        result: response,
+      });
+      return response;
+    });
+    return reply.send(result);
+  });
+
   app.delete('/:installationId/meters/:meterId', {
     ...protectedRoute,
     schema: {

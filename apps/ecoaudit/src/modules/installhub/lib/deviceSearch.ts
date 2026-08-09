@@ -20,6 +20,8 @@ export type DeviceSearchRecord = {
   boardType: string;
   meterId: string;
   deviceName: string;
+  deviceDisplayName: string;
+  deviceCustomName: string;
   deviceModel: string;
   supportsCommsReplacement: boolean;
   serialNumber: string;
@@ -28,9 +30,6 @@ export type DeviceSearchRecord = {
 };
 
 export function humanDeviceName(meter: MeterDevice): string {
-  if (meter.displayName.isOverridden && meter.displayName.value.trim()) {
-    return meter.displayName.value.trim();
-  }
   const manufacturer = meter.deviceFamily === 'OTHER'
     ? meter.customManufacturerName?.trim()
     : 'Wattwatchers';
@@ -38,6 +37,15 @@ export function humanDeviceName(meter: MeterDevice): string {
     ? meter.customModelName?.trim() || 'metering device'
     : meter.deviceModel;
   return [manufacturer, model].filter(Boolean).join(' ');
+}
+
+function distinctDeviceDisplayName(meter: MeterDevice, deviceName: string): string {
+  const displayName = meter.displayName.value.trim();
+  if (!displayName) return '';
+  const normalize = (value: string) => value
+    .replace(/\s+/g, ' ')
+    .toLocaleLowerCase('en-AU');
+  return normalize(displayName) === normalize(deviceName) ? '' : displayName;
 }
 
 export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchRecord[] {
@@ -48,6 +56,8 @@ export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchReco
       if (!board) return [];
       const zone = tree.zones.find((item) => item.id === board.zoneId);
       const deviceName = humanDeviceName(meter);
+      const deviceDisplayName = distinctDeviceDisplayName(meter, deviceName);
+      const deviceCustomName = meter.customName?.trim() || '';
       const boardType = boardTypeLabel(board);
       const record: DeviceSearchRecord = {
         installationId: tree.installation.id,
@@ -59,6 +69,8 @@ export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchReco
         boardType,
         meterId: meter.id,
         deviceName,
+        deviceDisplayName,
+        deviceCustomName,
         deviceModel: meter.deviceModel === 'OTHER'
           ? meter.customModelName?.trim() || 'Other device'
           : meter.deviceModel,
@@ -74,6 +86,8 @@ export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchReco
         record.boardName,
         record.boardType,
         record.deviceName,
+        record.deviceDisplayName,
+        record.deviceCustomName,
         record.deviceModel,
         record.serialNumber,
         record.deviceNumber,

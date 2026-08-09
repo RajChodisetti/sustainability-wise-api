@@ -1301,8 +1301,50 @@ export type FormValidationIssue = {
 export function formValidationIssues(
   form: Pick<FormSubmission, 'formType' | 'answers' | 'attachments'>,
 ): FormValidationIssue[] {
-  void form;
-  return [];
+  if (
+    form.formType !== 'comms-fault'
+    || form.answers['works.replace_device'] !== 'yes'
+  ) {
+    return [];
+  }
+
+  const issues: FormValidationIssue[] = [];
+  const deviceType = String(
+    form.answers['works.new_device_type'] ?? '',
+  ).trim();
+  if (!DEVICE_TYPES.includes(deviceType as (typeof DEVICE_TYPES)[number])) {
+    issues.push({
+      fieldKey: 'works.new_device_type',
+      message: 'Choose the replacement meter / device type.',
+    });
+  }
+
+  if (!String(form.answers['works.new_device_id'] ?? '').trim()) {
+    issues.push({
+      fieldKey: 'works.new_device_id',
+      message: 'Enter or scan the replacement Device ID / serial.',
+    });
+  }
+
+  const sensorRating = String(
+    form.answers['works.new_sensor_rating'] ?? '',
+  ).trim();
+  const acceptedSensorRatings = DEVICE_TYPES.includes(
+    deviceType as (typeof DEVICE_TYPES)[number],
+  )
+    ? [
+        ...SENSOR_OPTIONS_BY_DEVICE[deviceType as (typeof DEVICE_TYPES)[number]],
+        ...LEGACY_SENSOR_OPTIONS_BY_DEVICE[deviceType as (typeof DEVICE_TYPES)[number]],
+      ]
+    : [];
+  if (!sensorRating || !acceptedSensorRatings.includes(sensorRating)) {
+    issues.push({
+      fieldKey: 'works.new_sensor_rating',
+      message: 'Choose a valid CT / Rogowski coil rating for the replacement device.',
+    });
+  }
+
+  return issues;
 }
 
 export function validateForm(
@@ -1381,7 +1423,10 @@ export function meterAfterCommsReplacement(
       || '',
     ),
     wwChannels: Array.from({ length: channelCount }, (_, index) => {
-      const current = meter.wwChannels?.[index] ?? {};
+      const existingChannel = meter.wwChannels?.[index];
+      const current = existingChannel ?? {
+        purpose: 'SUB_CIRCUIT',
+      };
       return {
         ...current,
         ...(typedDevice === 'A3RM'

@@ -277,6 +277,22 @@ thumbnail cache. Every persisted web edit saves the current complete tree, and
 web diagnostics explain this distinction. This preserves the iOS offline-first
 workflow without creating a competing browser source of truth.
 
+The portal also exposes additive per-meter history and rollback over immutable
+server record versions. Comms completion pins the pre-replacement state before
+the replacement version; metadata-stage writes remain unversioned and cannot
+complete a form. A replacement completion cannot also alter assignments or
+affected asset metering state. For an A6M-to-A3RM downgrade, clear or migrate
+channel 4–6 assignments in a prior metadata sync; otherwise completion returns
+`comms_replacement_mapping_changed` and leaves the current device and mappings
+unchanged. Rollback is a server-owned Draft-only operation with access,
+revision, reason, and idempotency checks, and creates a new version rather than
+rewriting history. Existing mobile push/pull payloads and endpoints are
+unchanged, so this server/portal release does not require a coordinated mobile
+release. The installed client does not yet preflight the channel 4–6 mapping
+guard before locally completing an A6M-to-A3RM form; field teams must clear or
+migrate those assignments first. A later mobile release should surface that
+specific restriction before local completion.
+
 ---
 
 ## SolarSense Mobile — Changes Summary

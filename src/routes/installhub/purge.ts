@@ -12,6 +12,7 @@ import {
   ihMeasurementAssignments,
   ihMeterChannels,
   ihMeterDevices,
+  ihMeterHistoryEvents,
   ihSiteAssets,
   ihZones,
 } from '../../db/schema/installhub.js';
@@ -203,6 +204,10 @@ export async function purgeInstallHubInstallationTree(
       await tx.delete(pdfJobs).where(inArray(pdfJobs.id, jobs.map((job) => job.id)));
     }
 
+    await tx.delete(ihMeterHistoryEvents).where(eq(
+      ihMeterHistoryEvents.installationId,
+      installation.id,
+    ));
     await tx.delete(ihFormSubmissions).where(eq(ihFormSubmissions.installationId, installation.id));
     await tx.delete(ihMeasurementAssignmentChannels).where(eq(ihMeasurementAssignmentChannels.installationId, installation.id));
     await tx.delete(ihMeasurementAssignments).where(eq(ihMeasurementAssignments.installationId, installation.id));

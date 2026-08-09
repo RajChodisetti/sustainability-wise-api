@@ -663,6 +663,40 @@ test('InstallHub completion keeps metadata staging immutable while answers and e
   assert.doesNotThrow(() => formValues(completed, 'installation-1', values, 'metadata'));
 });
 
+test('a metadata-stage comms replacement cannot persist completed replacement identity', () => {
+  const completedReplacement = {
+    ...completedHoneywellForm,
+    id: 'comms-replacement-1',
+    formType: 'comms-fault',
+    meterId: 'meter-1',
+    boardId: 'board-1',
+    answers: {
+      'works.replace_device': 'yes',
+      'works.new_device_type': 'A6M',
+      'works.new_device_id': 'replacement-serial',
+    },
+  };
+  assert.throws(
+    () => formValues(
+      completedReplacement,
+      'installation-1',
+      undefined,
+      'metadata',
+    ),
+    (error: unknown) => (
+      error instanceof Error
+      && 'detail' in error
+      && error.detail === 'metadata_stage_cannot_complete_form'
+    ),
+  );
+  assert.doesNotThrow(() => formValues(
+    completedReplacement,
+    'installation-1',
+    undefined,
+    'complete',
+  ));
+});
+
 function loadOnlyWwForm(status: 'Draft' | 'Completed') {
   const answers: Record<string, string> = {
     'site.date_time': '2026-07-23T12:00:00.000Z',

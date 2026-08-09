@@ -15,6 +15,7 @@ import {
 import {
   ELECTRICAL_TREE_NODE_HEIGHT,
   buildElectricalTreeLayout,
+  electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
   fitElectricalTreeViewport,
   resolvedElectricalMeasurementDetails,
@@ -29,7 +30,7 @@ function topology(): ElectricalTreeReadModel {
       { id: 'grid-1', kind: 'GRID', name: 'Grid' },
       { id: 'board-1', kind: 'BOARD', name: 'Main board' },
       { id: 'board-2', kind: 'BOARD', name: 'Distribution board' },
-      { id: 'asset-1', kind: 'SITE_ASSET', name: 'Chiller' },
+      { id: 'asset-1', kind: 'SITE_ASSET', name: 'Chiller', typeLabel: 'AC / HVAC' },
       { id: 'asset-2', kind: 'SITE_ASSET', name: 'Lighting' },
       { id: 'virtual-1', kind: 'VIRTUAL_RESIDUAL', name: 'Residual', parentNodeId: 'board-1' },
     ],
@@ -137,8 +138,8 @@ function measurementTree(): InstallationTree {
     displayName: { value: 'Plant meter', generatedValue: 'Plant meter', isOverridden: false, ruleVersion: 4 },
     serialNumber: 'SERIAL-1',
     channels: [
-      { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT' },
-      { id: 'channel-2', ordinal: 2, purpose: 'SUB_CIRCUIT' },
+      { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', loadTypeCode: 'HVAC' },
+      { id: 'channel-2', ordinal: 2, purpose: 'SUB_CIRCUIT', loadTypeCode: 'OTHER', customLoadTypeName: 'PAC 1' },
     ],
   }];
   tree.measurementAssignments = [
@@ -196,6 +197,57 @@ test('node details expose exact meter channels only through canonical MEASURES e
     relationship: 'MEASURES',
   };
   assert.deepEqual(resolvedElectricalMeasurementDetails(tree, model, 'asset-1').map((detail) => detail.assignment.id), ['assignment-valid']);
+});
+
+test('map card summaries expose installed device identity, channel loads, and confirmed assigned assets', () => {
+  const tree = measurementTree();
+  const model = topology();
+  model.edges = [
+    ...model.edges.filter((edge) => edge.relationship !== 'MEASURES'),
+    { id: 'measures:assignment-valid', sourceNodeId: 'board-1', targetNodeId: 'asset-1', relationship: 'MEASURES' },
+  ];
+
+  const board = electricalTreeNodeCardSummary(tree, model, 'board-1');
+  assert.deepEqual(board.devices, [{
+    id: 'meter-1',
+    name: 'Plant meter',
+    serialNumber: 'SERIAL-1',
+    channelOrdinals: [1, 2],
+  }]);
+  assert.deepEqual(board.loadLabels, ['HVAC', 'PAC 1']);
+  assert.deepEqual(board.assignedAssets, [{ id: 'asset-1', name: 'Chiller' }]);
+
+  const asset = electricalTreeNodeCardSummary(tree, model, 'asset-1');
+  assert.deepEqual(asset.devices, board.devices);
+  assert.deepEqual(asset.loadLabels, ['AC / HVAC', 'PAC 1']);
+  assert.deepEqual(asset.assignedAssets, []);
+
+  const withoutCanonicalMeasurement = structuredClone(model);
+  withoutCanonicalMeasurement.edges[withoutCanonicalMeasurement.edges.length - 1] = {
+    id: 'unrecognised-measurement-edge',
+    sourceNodeId: 'board-1',
+    targetNodeId: 'asset-1',
+    relationship: 'MEASURES',
+  };
+  assert.deepEqual(electricalTreeNodeCardSummary(tree, withoutCanonicalMeasurement, 'asset-1'), {
+    devices: [],
+    loadLabels: ['AC / HVAC'],
+    assignedAssets: [],
+  });
+  assert.deepEqual(electricalTreeNodeCardSummary(tree, withoutCanonicalMeasurement, 'board-1').devices, [{
+    id: 'meter-1',
+    name: 'Plant meter',
+    serialNumber: 'SERIAL-1',
+    channelOrdinals: [],
+  }]);
+
+  const descriptionFallbackTree = structuredClone(tree);
+  delete descriptionFallbackTree.meterDevices![0].channels[0].loadTypeCode;
+  descriptionFallbackTree.meterDevices![0].channels[0].description = 'Chiller feeder';
+  assert.deepEqual(
+    electricalTreeNodeCardSummary(descriptionFallbackTree, model, 'board-1').loadLabels,
+    ['Chiller feeder', 'PAC 1'],
+  );
 });
 
 test('interactive electrical tree fits and zooms around the requested anchor', () => {

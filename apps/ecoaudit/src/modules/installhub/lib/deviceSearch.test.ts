@@ -12,6 +12,7 @@ import {
   filterDeviceSearchRecords,
 } from '@/modules/installhub/lib/deviceSearch';
 import { suggestedDeviceDisplayName } from '@/modules/installhub/lib/meterPresentation';
+import { meterDevices } from '@/modules/installhub/lib/workflow';
 import type { InstallHubUser } from '@/modules/installhub/types/domain';
 
 const user: InstallHubUser = {
@@ -56,6 +57,9 @@ test('device search covers human site, zone, board, type, serial and compatibili
   const records = deviceSearchRecords([tree]);
 
   assert.equal(records[0].deviceName, 'Wattwatchers A3RM');
+  assert.ok(records[0].deviceDisplayName.length > 0);
+  assert.notEqual(records[0].deviceDisplayName, records[0].deviceName);
+  assert.equal(records[0].deviceCustomName, 'A3RM Meter');
   for (const query of [
     'SERIAL-42',
     'COMPAT-42',
@@ -64,9 +68,37 @@ test('device search covers human site, zone, board, type, serial and compatibili
     'Main switchboard',
     'distribution board',
     'A3RM',
+    'A3RM Meter',
+    records[0].deviceDisplayName,
   ]) {
     assert.equal(filterDeviceSearchRecords(records, query).length, 1, query);
   }
+});
+
+test('device search retains the exact editable device name', () => {
+  const { tree, board } = fixture();
+  board.meters[0].customName = 'Main incomer meter';
+  assert.equal(deviceSearchRecords([tree])[0].deviceCustomName, 'Main incomer meter');
+
+  board.meters[0].customName = 'A3RM';
+  assert.equal(deviceSearchRecords([tree])[0].deviceCustomName, 'A3RM');
+
+  board.meters[0].customName = ' serial-42 ';
+  assert.equal(deviceSearchRecords([tree])[0].deviceCustomName, 'serial-42');
+
+  const canonicalMeter = structuredClone(
+    meterDevices(tree).find((meter) => meter.id === 'meter-1'),
+  );
+  assert.ok(canonicalMeter);
+  canonicalMeter.displayName = {
+    ...canonicalMeter.displayName,
+    isOverridden: true,
+    value: 'MANUAL-ASSET-ID',
+  };
+  tree.meterDevices = [canonicalMeter];
+  const record = deviceSearchRecords([tree])[0];
+  assert.equal(record.deviceName, 'Wattwatchers A3RM');
+  assert.equal(record.deviceDisplayName, 'MANUAL-ASSET-ID');
 });
 
 test('replace creates a preselected comms form with stable device context', () => {

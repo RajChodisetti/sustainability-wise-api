@@ -664,9 +664,7 @@ export function wwCommissioningFormMatchesMeter(
       && actualLoadType === 'OTHER'
       && actualCustom === customLoadLabel;
     if (!matchesCurrentTaxonomy && !matchesHistoricalOther) return false;
-    const expectedRating = expectedPurpose === 'SPARE'
-      ? null
-      : form.answers[`channel.${ordinal}.rating`] || null;
+    const expectedRating = form.answers[`channel.${ordinal}.rating`] || null;
     if ((channel.sensorRating ?? null) !== expectedRating) return false;
   }
   return true;
@@ -681,6 +679,7 @@ export function assertCommissionedMetersRequireAmendment(input: {
   existing: CanonicalInstallationTree;
   incoming: CanonicalInstallationTree;
   allowRemovedMeterIds?: ReadonlySet<string>;
+  allowIdentityChangeMeterIds?: ReadonlySet<string>;
 }): void {
   const incomingMeters = new Map(input.incoming.meterDevices.map((meter) => [meter.id, meter]));
   const completedByMeter = new Map<string, CanonicalFormSubmission[]>();
@@ -697,6 +696,7 @@ export function assertCommissionedMetersRequireAmendment(input: {
       === commissionedMeterFingerprint(incomingMeters.get(meterId))
     ) continue;
     if (!incomingMeters.has(meterId) && input.allowRemovedMeterIds?.has(meterId)) continue;
+    if (incomingMeters.has(meterId) && input.allowIdentityChangeMeterIds?.has(meterId)) continue;
     const latest = [...forms].sort((left, right) => (
       `${left.completedAt ?? left.createdAt ?? ''}:${left.id}`
         .localeCompare(`${right.completedAt ?? right.createdAt ?? ''}:${right.id}`)
@@ -909,6 +909,12 @@ export type ReplaceCanonicalInstallationChildrenInput = {
   tree: CanonicalInstallationTree;
   now?: Date;
   commissionedMeterRemovalIds?: ReadonlySet<string>;
+  /**
+   * Caller-proven identity changes only. Sync supplies ids after exact comms
+   * form-to-meter transition validation; rollback supplies its one meter only
+   * after an immutable snapshot has passed restore compatibility checks.
+   */
+  commissionedMeterIdentityChangeIds?: ReadonlySet<string>;
 };
 
 async function replaceCanonicalInstallationChildrenUnchecked(
@@ -975,6 +981,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       existing: existingTree,
       incoming: tree,
       allowRemovedMeterIds: removal.meterIds,
+      allowIdentityChangeMeterIds: input.commissionedMeterIdentityChangeIds,
     });
   }
 
@@ -1714,8 +1721,10 @@ export function buildCanonicalSnapshotPayload(input: {
       .localeCompare(`${right.entityType}:${right.entityId}:${right.fieldName}:${right.id}`)
   ));
   // Snapshot hashes must be computed over the exact JSON shape PostgreSQL
-  // stores. An enumerable `undefined` hashes as null in stableStringify but is
-  // dropped by JSON/JSONB, making the immutable version unreadable on reload.
+  // stores. Enumerable `undefined` values hash as null in stableStringify but
+  // are dropped by JSON/JSONB, making the immutable version unreadable after
+  // reload. Normalize the complete payload—not only the known top-level
+  // compatibility field—through the same JSON representation before hashing.
   delete canonicalTree.baseTreeRevision;
   canonicalTree.serverDerived.virtualMeterDefinitions = deriveVirtualMeterDefinitions(canonicalTree);
   const recordVersionNumber = canonicalTree.installation.recordVersionNumber;
@@ -1737,7 +1746,11 @@ export function buildCanonicalSnapshotPayload(input: {
       mapping: buildInstallationMappingExport(canonicalTree, recordVersionNumber),
     },
   };
-  return { ...withoutHash, payloadHash: canonicalPayloadHash(withoutHash) };
+  const persistedWithoutHash = JSON.parse(JSON.stringify(withoutHash)) as typeof withoutHash;
+  return {
+    ...persistedWithoutHash,
+    payloadHash: canonicalPayloadHash(persistedWithoutHash),
+  };
 }
 
 function canonicalSnapshotWithoutPayloadHash(

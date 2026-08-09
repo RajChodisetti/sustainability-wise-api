@@ -76,6 +76,14 @@ function DeviceResultGroup({
             <div className="flex h-full flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="font-extrabold text-[var(--text)]">{record.deviceName}</p>
+                <p className="mt-1 break-words text-sm font-semibold leading-5 text-[var(--text-sub)]">
+                  Device name: <span className="text-[var(--text)]">{record.deviceCustomName || 'Not recorded'}</span>
+                </p>
+                {record.deviceDisplayName ? (
+                  <p className="mt-1 break-words text-sm font-semibold leading-5 text-[var(--text-sub)]">
+                    Asset ID: <span className="text-[var(--text)]">{record.deviceDisplayName}</span>
+                  </p>
+                ) : null}
                 <p className="mt-1 text-sm font-semibold text-[var(--text-sub)]">
                   Device ID / serial: <span className="text-[var(--text)]">{record.serialNumber || 'Not recorded'}</span>
                 </p>

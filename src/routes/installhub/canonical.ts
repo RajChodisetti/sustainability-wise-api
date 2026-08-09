@@ -1707,7 +1707,7 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
       }
       if (
         channel.purpose === 'SPARE'
-        && (channel.loadTypeCode || channel.customLoadTypeName || channel.sensorRating || channel.description)
+        && (channel.loadTypeCode || channel.customLoadTypeName || channel.description)
       ) {
         issues.push({
           code: 'CHANNEL_PURPOSE_CONFLICT',
@@ -1715,7 +1715,7 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
           entityType: 'channel',
           entityId: channel.id,
           field: 'purpose',
-          message: 'A spare channel cannot carry load, sensor, or description metadata.',
+          message: 'A spare channel cannot carry load or description metadata.',
         });
       }
       if (channel.loadTypeCode === 'OTHER' && !channel.customLoadTypeName) {

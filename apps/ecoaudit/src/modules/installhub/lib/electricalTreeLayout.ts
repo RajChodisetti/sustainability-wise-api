@@ -6,12 +6,12 @@ import type {
   MeterDeviceChannel,
 } from '@/modules/installhub/types/domain';
 import { electricalHierarchyRows } from './electricalPresentation';
-import { measurementAssignments, meterDevices } from './workflow';
+import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
-export const ELECTRICAL_TREE_NODE_WIDTH = 232;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 108;
-const HORIZONTAL_GAP = 88;
-const VERTICAL_GAP = 32;
+export const ELECTRICAL_TREE_NODE_WIDTH = 280;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 156;
+const HORIZONTAL_GAP = 104;
+const VERTICAL_GAP = 36;
 const CANVAS_PADDING = 48;
 
 export type ElectricalTreeLayoutNode = {
@@ -48,6 +48,21 @@ export type ResolvedElectricalMeasurementDetail = {
   assignment: MeasurementAssignment;
   meter: MeterDevice;
   channels: MeterDeviceChannel[];
+};
+
+export type ElectricalTreeNodeCardSummary = {
+  devices: Array<{
+    id: string;
+    name: string;
+    serialNumber?: string;
+    channelOrdinals: number[];
+  }>;
+  loadLabels: string[];
+  assignedAssets: Array<{
+    id: string;
+    name: string;
+    displayCode?: string;
+  }>;
 };
 
 export type ElectricalTreeViewport = {
@@ -293,6 +308,124 @@ export function resolvedElectricalMeasurementDetails(
     });
   }
   return details;
+}
+
+function readableElectricalCode(value?: string | null): string | null {
+  const normalized = value?.trim();
+  if (!normalized) return null;
+  return normalized
+    .replaceAll('_', ' ')
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map((word) => /^(AC|CT|DB|EV|HVAC|PV)$/i.test(word)
+      ? word.toUpperCase()
+      : `${word.charAt(0).toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(' ');
+}
+
+function comparableElectricalLabel(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/**
+ * Builds the compact, human-readable metadata shown on each map card from the
+ * same canonical MEASURES edges used by the graph. Installed-but-unassigned
+ * devices are included on their switchboard, but never presented as measuring
+ * a load or asset until a confirmed assignment exists.
+ */
+export function electricalTreeNodeCardSummary(
+  tree: InstallationTree,
+  model: ElectricalTreeReadModel,
+  nodeId: string,
+): ElectricalTreeNodeCardSummary {
+  const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+  const node = nodeById.get(nodeId);
+  if (!node) return { devices: [], loadLabels: [], assignedAssets: [] };
+
+  const measurementTargetIds = new Set<string>([nodeId]);
+  if (node.kind === 'BOARD') {
+    for (const edge of model.edges) {
+      if (edge.relationship === 'MEASURES' && edge.sourceNodeId === nodeId) {
+        measurementTargetIds.add(edge.targetNodeId);
+      }
+    }
+  }
+
+  const details = [...measurementTargetIds].flatMap((targetNodeId) => (
+    resolvedElectricalMeasurementDetails(tree, model, targetNodeId)
+      .filter((detail) => node.kind !== 'BOARD' || detail.meter.installedOnBoardId === nodeId)
+  ));
+  const detailsByMeterId = new Map<string, ResolvedElectricalMeasurementDetail[]>();
+  for (const detail of details) {
+    const meterDetails = detailsByMeterId.get(detail.meter.id) || [];
+    meterDetails.push(detail);
+    detailsByMeterId.set(detail.meter.id, meterDetails);
+  }
+
+  if (node.kind === 'BOARD') {
+    for (const meter of meterDevices(tree)) {
+      if (meter.installedOnBoardId !== nodeId || (meter.lifecycleState ?? 'ACTIVE') !== 'ACTIVE') continue;
+      if (!detailsByMeterId.has(meter.id)) detailsByMeterId.set(meter.id, []);
+    }
+  }
+
+  const devices = [...detailsByMeterId.entries()]
+    .map(([id, meterDetails]) => {
+      const meter = meterDetails[0]?.meter || meterDevices(tree).find((candidate) => candidate.id === id);
+      if (!meter) return null;
+      return {
+        id,
+        name: meterDeviceName(meter),
+        ...(meter.serialNumber.trim() ? { serialNumber: meter.serialNumber.trim() } : {}),
+        channelOrdinals: [...new Set(meterDetails.flatMap((detail) => (
+          detail.channels.map((channel) => channel.ordinal)
+        )))].sort((left, right) => left - right),
+      };
+    })
+    .filter((device): device is NonNullable<typeof device> => Boolean(device))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+
+  const loadLabels = [...new Set(details.flatMap((detail) => detail.channels.flatMap((channel) => {
+    const label = channel.customLoadTypeName?.trim()
+      || readableElectricalCode(channel.loadTypeCode)
+      || channel.description?.trim()
+      || (channel.purpose === 'MAIN_SUPPLY'
+        ? 'Main supply'
+        : channel.purpose === 'SUB_CIRCUIT'
+          ? 'Sub-circuit'
+          : null);
+    return label ? [label] : [];
+  })))].sort((left, right) => left.localeCompare(right));
+  if (node.kind === 'SITE_ASSET' && node.typeLabel?.trim()) {
+    const typeLabel = node.typeLabel.trim();
+    const comparableType = comparableElectricalLabel(typeLabel);
+    const channelLoads = loadLabels.filter((label) => {
+      const comparableLoad = comparableElectricalLabel(label);
+      return !comparableType.includes(comparableLoad) && !comparableLoad.includes(comparableType);
+    });
+    loadLabels.splice(0, loadLabels.length, typeLabel, ...channelLoads);
+  }
+
+  const assignedAssets = [...new Map(model.edges.flatMap((edge) => {
+    if (edge.relationship !== 'MEASURES' || edge.sourceNodeId !== nodeId) return [];
+    const target = nodeById.get(edge.targetNodeId);
+    if (
+      target?.kind !== 'SITE_ASSET'
+      || !resolvedElectricalMeasurementDetails(tree, model, target.id).some(
+        (detail) => detail.meter.installedOnBoardId === nodeId,
+      )
+    ) return [];
+    return [[target.id, {
+      id: target.id,
+      name: target.name,
+      ...(target.displayCode ? { displayCode: target.displayCode } : {}),
+    }] as const];
+  })).values()].sort((left, right) => (
+    (left.displayCode || left.name).localeCompare(right.displayCode || right.name)
+    || left.id.localeCompare(right.id)
+  ));
+
+  return { devices, loadLabels, assignedAssets };
 }
 
 export function fitElectricalTreeViewport(

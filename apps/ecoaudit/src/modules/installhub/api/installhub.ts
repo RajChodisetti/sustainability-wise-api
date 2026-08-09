@@ -14,6 +14,8 @@ import type {
   InstallHubPullResponse,
   InstallHubReportProvenance,
   ManagedInstallHubUser,
+  MeterHistoryResponse,
+  MeterHistoryRollbackResult,
   UnifiedPortalUsersResponse,
 } from '@/modules/installhub/types/domain';
 import {
@@ -172,6 +174,38 @@ export async function deleteInstallationMeter(
     readiness: response.readiness,
     meterRemoval: response.meterRemoval,
   };
+}
+
+export function getMeterHistory(
+  installationId: string,
+  meterId: string,
+  options: { offset?: number; limit?: number } = {},
+): Promise<MeterHistoryResponse> {
+  const query = new URLSearchParams();
+  if (options.offset !== undefined) query.set('offset', String(options.offset));
+  if (options.limit !== undefined) query.set('limit', String(options.limit));
+  const suffix = query.size ? `?${query}` : '';
+  return installHubRequest(
+    'GET',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/meters/${encodeURIComponent(meterId)}/history${suffix}`,
+  );
+}
+
+export function rollbackMeterHistory(
+  installationId: string,
+  meterId: string,
+  input: {
+    targetRecordVersionNumber: number;
+    baseTreeRevision: number;
+    reason: string;
+    idempotencyKey: string;
+  },
+): Promise<MeterHistoryRollbackResult> {
+  return installHubRequest(
+    'POST',
+    `/v1/installhub/installations/${encodeURIComponent(installationId)}/meters/${encodeURIComponent(meterId)}/history/rollback`,
+    input,
+  );
 }
 
 export function getInstallationMapping(

@@ -1792,12 +1792,22 @@ test('standard A3RM spare channels use model-defined capabilities', () => {
   const tree = baseTree();
   const meter = a3Meter();
   meter.channels = [channel(1, 'SPARE'), channel(2, 'SPARE'), channel(3, 'SPARE')];
+  meter.channels.forEach((item) => {
+    item.sensorRating = '3000A - 20cm';
+  });
   tree.electricalAssets[0].meterPresent = true;
   tree.meterDevices = [meter];
   tree.formSubmissions = [completedWwForm('form-1', meter)];
   assert.equal(installationReadiness(tree).issues.some((issue) => (
     issue.code === 'METER_CAPABILITY_REQUIRED'
   )), false);
+  assert.equal(installationReadiness(tree).issues.some((issue) => (
+    issue.code === 'CHANNEL_PURPOSE_CONFLICT'
+  )), false);
+  assert.equal(
+    buildInstallationMappingExport(tree, 1).channels[0].sensorRating,
+    '3000A - 20cm',
+  );
 });
 
 test('assignment quality stays optional while explicit TBC remains the only readiness issue', () => {
@@ -2026,6 +2036,11 @@ test('commissioned meter identity changes require an equivalent completed amendm
     () => assertCommissionedMetersRequireAmendment({ existing, incoming }),
     /WW_METER_AMENDMENT_REQUIRED:meter-1/,
   );
+  assert.doesNotThrow(() => assertCommissionedMetersRequireAmendment({
+    existing,
+    incoming,
+    allowIdentityChangeMeterIds: new Set(['meter-1']),
+  }));
 
   const amendment = completedWwForm('form-2', incoming.meterDevices[0], 'form-1');
   assert.equal(wwCommissioningFormMatchesMeter(amendment, incoming.meterDevices[0]), true);
