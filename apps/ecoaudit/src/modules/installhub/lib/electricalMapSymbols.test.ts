@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES,
   ELECTRICAL_MAP_LOAD_SYMBOLS,
   ELECTRICAL_MAP_NODE_SYMBOLS,
   ELECTRICAL_MAP_SYMBOL_LABELS,
@@ -94,14 +95,19 @@ test('every pictogram has a clear client label and presentation scale', () => {
     const label = electricalMapSymbolLabel(symbol);
     const scale = electricalMapSymbolScale(symbol);
     assert.ok(label.trim().length >= 4, `${symbol} needs a meaningful visible label`);
-    assert.ok(scale >= 1 && scale <= 1.4, `${symbol} presentation scale must remain bounded`);
+    assert.equal(scale, 1.08, `${symbol} presentation scale must stay normalized`);
   }
 
   assert.equal(electricalMapSymbolLabel('load-hvac-indoor'), 'AC indoor unit');
   assert.equal(electricalMapSymbolLabel('load-hvac-condenser'), 'HVAC condenser');
   assert.equal(electricalMapSymbolLabel('board-msb'), 'Main switchboard');
-  assert.ok(electricalMapSymbolScale('load-hvac') > 1);
-  assert.ok(electricalMapSymbolScale('node-residual') > 1);
-  assert.equal(electricalMapSymbolScale('board-pv-db'), 1);
-  assert.equal(electricalMapSymbolScale('load-pv'), 1);
+  assert.equal(electricalMapSymbolScale('board-pv-db'), 1.08);
+  assert.equal(electricalMapSymbolScale('load-pv'), 1.08);
+  assert.equal(electricalMapSymbolScale('load-hvac'), electricalMapSymbolScale('load-pv'));
+  assert.equal(electricalMapSymbolScale('node-residual'), electricalMapSymbolScale('node-meter'));
+  assert.deepEqual(ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES, {
+    system: 30,
+    load: 28,
+    meterBadge: 17,
+  });
 });

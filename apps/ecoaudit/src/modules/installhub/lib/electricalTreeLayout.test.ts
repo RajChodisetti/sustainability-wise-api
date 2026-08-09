@@ -22,6 +22,7 @@ import {
   electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
   electricalTreeNodeSize,
+  electricalTreeNodeVisualSize,
   electricalTreeOrthogonalPath,
   electricalTreePointerDelta,
   electricalTreePointerDragStarted,
@@ -32,6 +33,27 @@ import {
   resolvedElectricalMeasurementDetails,
   zoomElectricalTreeViewport,
 } from './electricalTreeLayout';
+
+test('map pictograms are prominent inside interaction-safe stable node footprints', () => {
+  const expected = {
+    GRID: { width: 176, height: 172, haloSize: 112, iconSize: 80 },
+    BOARD: { width: 172, height: 166, haloSize: 96, iconSize: 72 },
+    SITE_ASSET: { width: 144, height: 142, haloSize: 80, iconSize: 56 },
+    VIRTUAL_RESIDUAL: { width: 136, height: 126, haloSize: 80, iconSize: 56 },
+  } as const;
+
+  for (const [kind, dimensions] of Object.entries(expected)) {
+    const visual = electricalTreeNodeVisualSize(kind as keyof typeof expected);
+    assert.deepEqual(visual, dimensions);
+    assert.deepEqual(electricalTreeNodeSize(kind as keyof typeof expected), {
+      width: dimensions.width,
+      height: dimensions.height,
+    });
+    assert.ok(visual.iconSize / visual.haloSize >= 0.7, `${kind} icon must read prominently`);
+    assert.ok(visual.haloSize >= 44, `${kind} halo must remain touch-sized`);
+    assert.ok(visual.width >= visual.haloSize && visual.height >= visual.haloSize);
+  }
+});
 
 function topology(): ElectricalTreeReadModel {
   return {

@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 
 /**
- * Transparent pictograms generated with fal.ai Recraft V4.1 Text to Vector and
- * normalized to 256 px PNGs for deterministic browser and Sharp rendering.
+ * Transparent semi-realistic equipment portraits generated for the client map
+ * and normalized to 256 px PNGs for deterministic browser and Sharp rendering.
  */
 export const ELECTRICAL_MAP_ICON_NAMES = [
   'node-grid',
@@ -33,6 +33,14 @@ export const ELECTRICAL_MAP_ICON_NAMES = [
 ] as const;
 
 export type ElectricalMapIconName = (typeof ELECTRICAL_MAP_ICON_NAMES)[number];
+
+/** The portal uses the same normalized optical lift for its PNG copies. */
+const ELECTRICAL_MAP_ICON_SCALE = 1.08;
+
+export function electricalMapIconScale(name: ElectricalMapIconName): number {
+  void name;
+  return ELECTRICAL_MAP_ICON_SCALE;
+}
 
 const BOARD_ICON_BY_CODE: Readonly<Record<string, ElectricalMapIconName>> = {
   MSB: 'board-msb',

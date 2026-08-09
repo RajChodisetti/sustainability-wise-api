@@ -29,19 +29,58 @@ export type ElectricalTreeNodeSize = {
   height: number;
 };
 
+export type ElectricalTreeNodeVisualSize = ElectricalTreeNodeSize & {
+  haloSize: number;
+  iconSize: number;
+};
+
+/**
+ * Keeps the artwork scale coupled to the footprint used for layout and drag
+ * bounds. The card dimensions and halo stay unchanged so existing saved node
+ * centres, connector clipping and collision clearance remain stable; only the
+ * transparent pictogram is given more visual weight inside that safe area.
+ */
+const ELECTRICAL_TREE_NODE_VISUAL_SIZES: Readonly<Record<
+  ElectricalTreeReadModel['nodes'][number]['kind'],
+  ElectricalTreeNodeVisualSize
+>> = {
+  GRID: {
+    width: ELECTRICAL_TREE_GRID_WIDTH,
+    height: ELECTRICAL_TREE_GRID_HEIGHT,
+    haloSize: 112,
+    iconSize: 80,
+  },
+  BOARD: {
+    width: ELECTRICAL_TREE_BOARD_WIDTH,
+    height: ELECTRICAL_TREE_BOARD_HEIGHT,
+    haloSize: 96,
+    iconSize: 72,
+  },
+  SITE_ASSET: {
+    width: ELECTRICAL_TREE_NODE_WIDTH,
+    height: ELECTRICAL_TREE_NODE_HEIGHT,
+    haloSize: 80,
+    iconSize: 56,
+  },
+  VIRTUAL_RESIDUAL: {
+    width: ELECTRICAL_TREE_RESIDUAL_WIDTH,
+    height: ELECTRICAL_TREE_RESIDUAL_HEIGHT,
+    haloSize: 80,
+    iconSize: 56,
+  },
+};
+
+export function electricalTreeNodeVisualSize(
+  kind: ElectricalTreeReadModel['nodes'][number]['kind'],
+): ElectricalTreeNodeVisualSize {
+  return { ...ELECTRICAL_TREE_NODE_VISUAL_SIZES[kind] };
+}
+
 export function electricalTreeNodeSize(
   kind: ElectricalTreeReadModel['nodes'][number]['kind'],
 ): ElectricalTreeNodeSize {
-  if (kind === 'BOARD') {
-    return { width: ELECTRICAL_TREE_BOARD_WIDTH, height: ELECTRICAL_TREE_BOARD_HEIGHT };
-  }
-  if (kind === 'GRID') {
-    return { width: ELECTRICAL_TREE_GRID_WIDTH, height: ELECTRICAL_TREE_GRID_HEIGHT };
-  }
-  if (kind === 'VIRTUAL_RESIDUAL') {
-    return { width: ELECTRICAL_TREE_RESIDUAL_WIDTH, height: ELECTRICAL_TREE_RESIDUAL_HEIGHT };
-  }
-  return { width: ELECTRICAL_TREE_NODE_WIDTH, height: ELECTRICAL_TREE_NODE_HEIGHT };
+  const { width, height } = electricalTreeNodeVisualSize(kind);
+  return { width, height };
 }
 
 export type ElectricalTreeLayoutNode = {

@@ -3,6 +3,7 @@ import {
   ELECTRICAL_MAP_ICON_NAMES,
   electricalMapIconDataUri,
   electricalMapIconForNode,
+  electricalMapIconScale,
   type ElectricalMapIconName,
 } from '../../pdf/electricalMapIcons.js';
 import type {
@@ -1084,7 +1085,12 @@ function electricalMapIconDefs(): string {
 }
 
 function svgIcon(name: ElectricalMapIconName, x: number, y: number, size: number): string {
-  return `<use data-electrical-map-icon="${name}" href="#electrical-map-icon-${name}" x="${x}" y="${y}" width="${size}" height="${size}"/>`;
+  const scale = electricalMapIconScale(name);
+  const renderedSize = Number((size * scale).toFixed(2));
+  const offset = Number(((renderedSize - size) / 2).toFixed(2));
+  const renderedX = Number((x - offset).toFixed(2));
+  const renderedY = Number((y - offset).toFixed(2));
+  return `<use data-electrical-map-icon="${name}" data-icon-box-size="${size}" data-icon-scale="${scale}" href="#electrical-map-icon-${name}" x="${renderedX}" y="${renderedY}" width="${renderedSize}" height="${renderedSize}"/>`;
 }
 
 function wrapText(value: string, maxWidth: number, fontSize: number, weight: number): string[] {
@@ -1126,7 +1132,7 @@ function renderVisualMarker(marker: VisualMarker, position: DiagramPosition): st
   const { node } = marker;
   const colors = nodeColors(node);
   const radius = medallionRadius(node);
-  const iconSize = node.kind === 'GRID' ? 66 : node.kind === 'BOARD' ? 52 : 44;
+  const iconSize = node.kind === 'GRID' ? 78 : node.kind === 'BOARD' ? 62 : 50;
   const centerX = position.x + position.width / 2;
   const centerY = position.y + radius + 5;
   const kindY = centerY + radius + 13;

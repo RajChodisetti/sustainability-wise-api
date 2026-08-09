@@ -24,6 +24,7 @@ import {
   meterDevices,
 } from '@/modules/installhub/lib/workflow';
 import {
+  ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES,
   ELECTRICAL_MAP_LOAD_SYMBOLS,
   ELECTRICAL_MAP_NODE_SYMBOLS,
   electricalMapSymbolForNode,
@@ -39,6 +40,7 @@ import {
   electricalTreeNodeCardSummary,
   electricalTreeNodeContext,
   electricalTreeNodeContexts,
+  electricalTreeNodeVisualSize,
   electricalTreePointerDelta,
   electricalTreePointerDragStarted,
   electricalTreeStraightPath,
@@ -1044,6 +1046,7 @@ export function ElectricalTreeCanvas({
             </svg>
             {layout.nodes.map((item, index) => {
               const presentation = NODE_PRESENTATION[item.node.kind];
+              const visualSize = electricalTreeNodeVisualSize(item.node.kind);
               const symbol = electricalMapSymbolForNode(item.node);
               const symbolLabel = electricalMapSymbolLabel(symbol);
               const summary = cardSummaryById.get(item.node.id) || { devices: [], loadLabels: [], assignedAssets: [] };
@@ -1152,16 +1155,17 @@ export function ElectricalTreeCanvas({
                       <span className={`absolute right-0 top-0 z-10 rounded-full border border-white px-2 py-0.5 text-[7px] font-extrabold uppercase tracking-wide shadow-sm ${coverage.className}`} title={`Coverage: ${coverage.label}`}>{coverage.label}</span>
                     ) : null}
                     <span
-                      className={`relative flex shrink-0 items-center justify-center rounded-full border-2 shadow-[0_10px_30px_rgba(15,23,42,0.10)] transition-[box-shadow,border-color,background-color] duration-200 group-hover:shadow-[0_14px_34px_rgba(30,64,175,0.16)] ${presentation.haloClassName} ${item.node.kind === 'GRID' ? 'h-28 w-28' : item.node.kind === 'BOARD' ? 'h-24 w-24' : 'h-20 w-20'} ${item.node.kind === 'VIRTUAL_RESIDUAL' ? 'border-dashed' : ''} ${selected ? 'ring-4 ring-[var(--primary)]/20 ring-offset-4 ring-offset-[#F8FBFF]' : ''}`}
+                      className={`relative flex shrink-0 items-center justify-center rounded-full border-2 shadow-[0_10px_30px_rgba(15,23,42,0.10)] transition-[box-shadow,border-color,background-color] duration-200 group-hover:shadow-[0_14px_34px_rgba(30,64,175,0.16)] ${presentation.haloClassName} ${item.node.kind === 'VIRTUAL_RESIDUAL' ? 'border-dashed' : ''} ${selected ? 'ring-4 ring-[var(--primary)]/20 ring-offset-4 ring-offset-[#F8FBFF]' : ''}`}
+                      style={{ width: visualSize.haloSize, height: visualSize.haloSize }}
                       aria-hidden="true"
                     >
                       <ElectricalMapSymbol
                         name={symbol}
-                        size={item.node.kind === 'GRID' ? 72 : item.node.kind === 'BOARD' ? 62 : item.node.kind === 'VIRTUAL_RESIDUAL' ? 48 : 54}
+                        size={visualSize.iconSize}
                       />
                       {item.node.kind === 'BOARD' && interaction.meterCount ? (
                         <span className="absolute -bottom-2 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-[var(--green)]/25 bg-white px-2 py-1 text-[8px] font-extrabold text-[var(--green)] shadow-sm">
-                          <ElectricalMapSymbol name="node-meter" size={14} />
+                          <ElectricalMapSymbol name="node-meter" size={ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES.meterBadge} />
                           {interaction.meterCount} meter{interaction.meterCount === 1 ? '' : 's'}
                         </span>
                       ) : null}
@@ -1227,7 +1231,7 @@ export function ElectricalTreeCanvas({
               <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-2 text-[11px] text-[var(--text-sub)]">
                 {ELECTRICAL_MAP_NODE_SYMBOLS.map((item) => (
                   <li key={item.label} className="flex items-center gap-2">
-                    <ElectricalMapSymbol name={item.symbol} size={25} className="shrink-0" />
+                    <ElectricalMapSymbol name={item.symbol} size={ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES.system} className="shrink-0" />
                     <span className="font-bold text-[var(--text)]">{item.label}</span>
                   </li>
                 ))}
@@ -1239,7 +1243,7 @@ export function ElectricalTreeCanvas({
               <ul className="mt-2 flex flex-wrap gap-x-3 gap-y-2 text-[10px] leading-4 text-[var(--text-sub)]">
                 {ELECTRICAL_MAP_LOAD_SYMBOLS.map((item) => (
                   <li key={item.label} className="flex items-center gap-1.5">
-                    <ElectricalMapSymbol name={item.symbol} size={22} className="shrink-0" />
+                    <ElectricalMapSymbol name={item.symbol} size={ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES.load} className="shrink-0" />
                     <span>{item.label}</span>
                   </li>
                 ))}

@@ -402,6 +402,10 @@ test('electrical map SVG is deterministic, centered and visually explains every 
   assert.match(first, /data-electrical-map-icon="board-msb"/);
   assert.match(first, /data-electrical-map-icon="load-hvac"/);
   assert.match(first, /data-electrical-map-icon="node-residual"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,1200}?data-electrical-map-icon="node-grid" data-icon-box-size="78" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,1200}?data-electrical-map-icon="board-msb" data-icon-box-size="62" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,1200}?data-electrical-map-icon="load-hvac" data-icon-box-size="50" data-icon-scale="1.08"/);
+  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,1200}?data-electrical-map-icon="node-residual" data-icon-box-size="50" data-icon-scale="1.08"/);
   assert.match(first, /<symbol id="electrical-map-icon-load-power-outlet"/);
   assert.doesNotMatch(first, /data-electrical-map-icon-frame/);
   assert.match(first, /data-visual-marker="1"/);

@@ -61,24 +61,25 @@ export const ELECTRICAL_MAP_SYMBOL_LABELS: Readonly<Record<ElectricalMapSymbolNa
 };
 
 /**
- * A few transparent source images have deliberately generous internal
- * whitespace. Presentation-only scaling makes their visible artwork read at
- * the same weight as the fuller pictograms without changing the source PNGs.
+ * The transparent equipment portraits are normalized to the same optical
+ * canvas. A small shared lift keeps them prominent without letting any one
+ * asset type escape its halo or overlap its label.
  */
-const ELECTRICAL_MAP_SYMBOL_SCALE: Partial<Record<ElectricalMapSymbolName, number>> = {
-  'load-exhaust-fan': 1.12,
-  'load-hvac': 1.4,
-  'load-power-outlet': 1.08,
-  'node-grid': 1.08,
-  'node-residual': 1.4,
-};
+const ELECTRICAL_MAP_SYMBOL_SCALE = 1.08;
+
+export const ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES = {
+  system: 30,
+  load: 28,
+  meterBadge: 17,
+} as const;
 
 export function electricalMapSymbolLabel(symbol: ElectricalMapSymbolName): string {
   return ELECTRICAL_MAP_SYMBOL_LABELS[symbol];
 }
 
 export function electricalMapSymbolScale(symbol: ElectricalMapSymbolName): number {
-  return ELECTRICAL_MAP_SYMBOL_SCALE[symbol] ?? 1;
+  void symbol;
+  return ELECTRICAL_MAP_SYMBOL_SCALE;
 }
 
 const BOARD_SYMBOL_BY_CODE: Readonly<Record<string, ElectricalMapSymbolName>> = {
