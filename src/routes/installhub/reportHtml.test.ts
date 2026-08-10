@@ -973,7 +973,8 @@ test('capped electrical maps keep the complete overview and add an indexed hiera
   assert.match(html, /data-map-detail-fallback="indexed-hierarchy"/);
   assert.match(html, /Supplied from \/ parent/);
   assert.match(html, /\.electrical-map-detail\{page:electricalmap;page-break-before:always/);
-  assert.match(html, /Straight copper lines show where power comes from/);
+  assert.match(html, /automatic top-down hierarchy/);
+  assert.match(html, /Straight copper lines follow confirmed supply paths from the incoming grid through each level/);
   assert.match(html, /installed meters close by with active channel and load labels/);
 });
 

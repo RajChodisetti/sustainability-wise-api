@@ -398,7 +398,7 @@ export function matchesInstallHubReportProvenance(
   );
 }
 
-export const INSTALLHUB_REPORT_RENDERER_VERSION = 7;
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 8;
 
 export function installHubReportVariantKey(input: {
   detailMode: InstallHubReportDetailMode;

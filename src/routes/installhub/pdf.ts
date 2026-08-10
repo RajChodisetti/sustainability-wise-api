@@ -89,7 +89,7 @@ type FormRow = typeof ihFormSubmissions.$inferSelect;
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type ReportMode = 'form' | 'installation-pack';
 
-export const INSTALLHUB_REPORT_RENDERER_VERSION = 7;
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 8;
 export const DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE: InstallHubReportDetailMode =
   'by-electrical-hierarchy';
 
