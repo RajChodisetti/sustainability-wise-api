@@ -65,7 +65,12 @@ import type { CloudUser as SolarCloudUser } from '@solar/types/domain';
 import type { FleetUser } from '@/modules/fleet/types/domain';
 import type { InstallHubUser } from '@/modules/installhub/types/domain';
 import type { PortalApp } from '@/lib/portalNavigation';
-import { authQueryRetryDelayMs, shouldRetryAuthQuery } from '@/lib/authQuery';
+import {
+  authQueryRetryDelayMs,
+  isDefinitiveAuthError,
+  isSessionCheckLoading,
+  shouldRetryAuthQuery,
+} from '@/lib/authQuery';
 import {
   applyPortalLoginSessions,
   isPortalLoginUnavailable,
@@ -141,6 +146,13 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     getClientSnapshot,
     getServerClientSnapshot,
   );
+  // Hard client mount flag — some browsers keep server snapshot briefly and
+  // would otherwise show "Preparing…" without resolving isClient.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+  const clientReady = isClient || mounted;
   const hasEa = Boolean(eaToken);
   const hasSs = Boolean(ssToken);
   const hasIh = Boolean(ihToken);
@@ -194,8 +206,8 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     queryKey: EA_AUTH_QUERY_KEY,
     queryFn: eaMe,
     enabled: hasEa,
-    retry: (_failureCount, error) =>
-      shouldRetryAuthQuery(error, Boolean(getEaJwt())),
+    retry: (failureCount, error) =>
+      shouldRetryAuthQuery(error, Boolean(getEaJwt()), failureCount),
     retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
   });
 
@@ -203,8 +215,8 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     queryKey: SS_AUTH_QUERY_KEY,
     queryFn: ssMe,
     enabled: hasSs,
-    retry: (_failureCount, error) =>
-      shouldRetryAuthQuery(error, Boolean(getSsJwt())),
+    retry: (failureCount, error) =>
+      shouldRetryAuthQuery(error, Boolean(getSsJwt()), failureCount),
     retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
   });
 
@@ -212,8 +224,8 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     queryKey: IH_AUTH_QUERY_KEY,
     queryFn: ihMe,
     enabled: hasIh,
-    retry: (_failureCount, error) =>
-      shouldRetryAuthQuery(error, Boolean(getIhJwt())),
+    retry: (failureCount, error) =>
+      shouldRetryAuthQuery(error, Boolean(getIhJwt()), failureCount),
     retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
   });
 
@@ -221,10 +233,36 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     queryKey: WW_AUTH_QUERY_KEY,
     queryFn: wwMe,
     enabled: hasWw,
-    retry: (_failureCount, error) =>
-      shouldRetryAuthQuery(error, Boolean(getWwJwt())),
+    retry: (failureCount, error) =>
+      shouldRetryAuthQuery(error, Boolean(getWwJwt()), failureCount),
     retryDelay: (failureCount) => authQueryRetryDelayMs(failureCount),
   });
+
+  // Dead / foreign sessions (prod JWT vs local API) must not pin the login UI.
+  useEffect(() => {
+    if (hasEa && eaQuery.isError && isDefinitiveAuthError(eaQuery.error)) {
+      clearEaTokens();
+      queryClient.removeQueries({ queryKey: EA_AUTH_QUERY_KEY, exact: true });
+    }
+  }, [hasEa, eaQuery.isError, eaQuery.error, queryClient]);
+  useEffect(() => {
+    if (hasSs && ssQuery.isError && isDefinitiveAuthError(ssQuery.error)) {
+      clearSsTokens();
+      queryClient.removeQueries({ queryKey: SS_AUTH_QUERY_KEY, exact: true });
+    }
+  }, [hasSs, ssQuery.isError, ssQuery.error, queryClient]);
+  useEffect(() => {
+    if (hasIh && ihQuery.isError && isDefinitiveAuthError(ihQuery.error)) {
+      clearIhTokens();
+      queryClient.removeQueries({ queryKey: IH_AUTH_QUERY_KEY, exact: true });
+    }
+  }, [hasIh, ihQuery.isError, ihQuery.error, queryClient]);
+  useEffect(() => {
+    if (hasWw && wwQuery.isError && isDefinitiveAuthError(wwQuery.error)) {
+      clearWwTokens();
+      queryClient.removeQueries({ queryKey: WW_AUTH_QUERY_KEY, exact: true });
+    }
+  }, [hasWw, wwQuery.isError, wwQuery.error, queryClient]);
 
   const login = useCallback(async (username: string, password: string, target?: PortalApp | null) => {
     const existingSessions: Record<PortalApp, boolean> = {
@@ -555,12 +593,41 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
       || fieldSessionExchange.status === 'pending'
     ),
   );
+  const isEcoSessionLoading = isSessionCheckLoading({
+    isClient: clientReady,
+    hasToken: hasEa,
+    hasUser: Boolean(eaUser),
+    isPending: eaQuery.isPending,
+    isFetching: eaQuery.isFetching,
+    isError: eaQuery.isError,
+  });
+  const isSolarSessionLoading = isSessionCheckLoading({
+    isClient: clientReady,
+    hasToken: hasSs,
+    hasUser: Boolean(ssUser),
+    isPending: ssQuery.isPending,
+    isFetching: ssQuery.isFetching,
+    isError: ssQuery.isError,
+  });
+  const isInstallHubSessionLoading = isSessionCheckLoading({
+    isClient: clientReady,
+    hasToken: hasIh,
+    hasUser: Boolean(ihUser),
+    isPending: ihQuery.isPending,
+    isFetching: ihQuery.isFetching,
+    isError: ihQuery.isError,
+  });
+  const isWattwatchersSessionLoading = isSessionCheckLoading({
+    isClient: clientReady,
+    hasToken: hasWw,
+    hasUser: Boolean(wwUser),
+    isPending: wwQuery.isPending,
+    isFetching: wwQuery.isFetching,
+    isError: wwQuery.isError,
+  });
   const hasPendingSourceAuthentication = Boolean(
     !hasIh
-    && (
-      (hasEa && !eaUser)
-      || (hasSs && !ssUser)
-    ),
+    && (isEcoSessionLoading || isSolarSessionLoading),
   );
   const hasInstallHubSourceSession = fieldSessionSources.length > 0;
   const installHubSessionError = (
@@ -569,27 +636,27 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
   )
     ? fieldSessionExchange.error
     : null;
-  // A stored token with no verified user is a pending session, including while
-  // React Query is paused offline or retrying a transient failure. Only a
-  // definitive 401/403 clears the token and allows a login redirect.
-  const isEcoLoading = !isClient || (hasEa && !eaUser);
-  const isSolarLoading = !isClient || (hasSs && !ssUser);
+  // Only block UI while a session check is in-flight — never forever on
+  // "has token but no user" after the query has failed or finished retries.
+  const isEcoLoading = isEcoSessionLoading;
+  const isSolarLoading = isSolarSessionLoading;
   const isInstallHubLoading =
-    !isClient
-    || (hasIh && !ihUser)
+    isInstallHubSessionLoading
     || isFieldSessionProvisioning
     || hasPendingSourceAuthentication;
-  const isWattwatchersLoading = !isClient || (hasWw && !wwUser);
+  const isWattwatchersLoading = isWattwatchersSessionLoading;
   const isAuthenticated =
     isEcoAuthenticated ||
     isSolarAuthenticated ||
     isInstallHubAuthenticated ||
     isWattwatchersAuthenticated;
-  const isLoading = !isClient || (
+  // Portal/login blockers must not wait on InstallHub Field-session exchange —
+  // that only affects /installhub/* routes (see PortalAuthGate).
+  const isLoading = !clientReady || (
     !isAuthenticated && (
       isEcoLoading ||
       isSolarLoading ||
-      isInstallHubLoading ||
+      isInstallHubSessionLoading ||
       isWattwatchersLoading
     )
   );

@@ -101,6 +101,13 @@ function ProfileMenu({
     };
   }, []);
 
+  const roleSummary =
+    appRoles.length === 0
+      ? null
+      : appRoles.length === 1
+        ? `${appRoles[0].appName} · ${formatRole(appRoles[0].role)}`
+        : `${appRoles.length} workspaces signed in`;
+
   return (
     <div className="relative" ref={ref}>
       <button
@@ -114,23 +121,26 @@ function ProfileMenu({
         }`}
         aria-haspopup="true"
         aria-expanded={open}
-        className="flex min-h-11 items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2 text-sm shadow-[var(--shadow-xs)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)]"
+        className="flex min-h-11 max-w-[min(100%,16rem)] items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1.5 text-sm shadow-[var(--shadow-xs)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)] sm:max-w-[18rem]"
       >
-        <span className="hidden h-8 w-8 items-center justify-center rounded-lg bg-[var(--primary)] text-xs font-extrabold text-[var(--primary-fg)] sm:flex">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--primary)] text-xs font-extrabold text-[var(--primary-fg)]">
           {initial}
         </span>
-        {appRoles.length > 0 ? (
-          <span className="flex max-w-[118px] flex-col items-start text-left sm:max-w-[240px] xl:max-w-[320px]">
-            {appRoles.map(({ app, appName, role }) => (
-              <span key={app} className="block max-w-full truncate text-[9px] font-bold leading-3 text-[var(--text)] sm:text-[11px] sm:leading-4">
-                {appName} — {formatRole(role)}
-              </span>
-            ))}
+        <span className="hidden min-w-0 flex-1 flex-col items-start text-left sm:flex">
+          <span className="w-full truncate text-sm font-extrabold leading-tight text-[var(--text)]">
+            {displayName}
           </span>
-        ) : (
-          <span className="hidden max-w-[150px] truncate font-bold text-[var(--text)] sm:inline">{displayName}</span>
-        )}
-        <Icon name="chevron-down" size={16} className="hidden text-[var(--muted)] sm:block" />
+          {roleSummary ? (
+            <span className="w-full truncate text-[11px] font-semibold leading-tight text-[var(--text-sub)]">
+              {roleSummary}
+            </span>
+          ) : null}
+        </span>
+        <Icon
+          name="chevron-down"
+          size={16}
+          className={`hidden shrink-0 text-[var(--muted)] sm:block ${open ? 'rotate-180' : ''}`}
+        />
       </button>
       {open ? (
         <div

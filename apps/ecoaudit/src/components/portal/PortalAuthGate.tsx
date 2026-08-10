@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { Button } from '@/components/ui/Button';
@@ -66,13 +66,28 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
   const isRouteAuthenticated = requiresInstallHub
     ? isInstallHubAuthenticated
     : isAuthenticated;
-  const isRouteLoading = requiresInstallHub
-    ? isInstallHubLoading
-    : isLoading;
+
+  // Cap gate wait so a hung /me never freezes the whole shell forever.
+  const [gateTimedOut, setGateTimedOut] = useState(false);
+  useEffect(() => {
+    if (isPublic || isRouteAuthenticated) {
+      setGateTimedOut(false);
+      return;
+    }
+    const id = window.setTimeout(() => setGateTimedOut(true), 1_500);
+    return () => window.clearTimeout(id);
+  }, [isPublic, isRouteAuthenticated, pathname]);
+
+  const isRouteLoading = (
+    requiresInstallHub
+      ? isInstallHubLoading
+      : isLoading
+  ) && !gateTimedOut;
+
   const canRetryInstallHubSession = (
     requiresInstallHub
     && !isInstallHubAuthenticated
-    && !isInstallHubLoading
+    && !isRouteLoading
     && hasInstallHubSourceSession
   );
 
