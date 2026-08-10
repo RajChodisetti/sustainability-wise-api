@@ -29,7 +29,8 @@ import {
 } from '@/modules/installhub/lib/electricalMapSymbols';
 import { electricalMapNodeInteractionSummary } from '@/modules/installhub/lib/electricalMapInteraction';
 import {
-  electricalMapBoardChannelLayout,
+  electricalMapBoardChannelConnectorSlots,
+  electricalMapChannelConnectorNodeId,
   type ElectricalMapBoardChannel,
 } from '@/modules/installhub/lib/electricalMapBoardChannels';
 import {
@@ -166,8 +167,7 @@ function boardChannelConnectorPoint(
   channels: readonly ElectricalMapBoardChannel[],
   channelId: string,
 ): { x: number; y: number } | null {
-  const slot = electricalMapBoardChannelLayout(channels)
-    .find((item) => item.channel.id === channelId);
+  const slot = electricalMapBoardChannelConnectorSlots(channels, [channelId])[0];
   if (!slot) return null;
   const visual = electricalTreeNodeVisualSize('BOARD');
   const iconLeft = node.x + (node.width - visual.iconSize) / 2;
@@ -651,6 +651,7 @@ export function ElectricalTreeCanvas({
     nodeId: string,
   ) {
     if (!pointerDraggingAvailable || !event.isPrimary || event.button !== 0) return false;
+    if (event.pointerType !== 'mouse' && !arranging) return false;
     if (nodeDragRef.current && nodeDragRef.current.pointerId !== event.pointerId) {
       event.preventDefault();
       event.stopPropagation();
@@ -1101,11 +1102,11 @@ export function ElectricalTreeCanvas({
               <span>{workspace.phase === 'error' ? workspace.error : workspace.phase === 'saving' ? 'Saving layout…' : layoutDirty ? 'Layout changes not saved' : model.mapLayout ? 'Layout saved for reports' : 'Automatic layout'}</span>
             </div>
             {visibleNodeIds ? <p className="w-full text-xs font-semibold text-[var(--amber)]">Clear the map search to arrange the complete electrical system.</p> : null}
-            {!visibleNodeIds && onSaveLayout ? <p className="w-full text-xs font-semibold text-[var(--text-sub)]">Press and hold a symbol, then drag to move it. A quick click only opens its compact summary. On touch, Arrange items enables full two-axis movement; it also enables keyboard controls.</p> : null}
+            {!visibleNodeIds && onSaveLayout ? <p className="w-full text-xs font-semibold text-[var(--text-sub)]">With a mouse, press and hold a symbol before dragging it. A quick click only opens its compact summary. For touch or pen dragging, turn on Arrange items first; it also enables keyboard controls.</p> : null}
           </div>
         ) : null}
         <p id="electrical-arrange-instructions" className="sr-only">In Arrange mode, press and hold a symbol before dragging it. With a keyboard, focus a symbol and press Enter or Space to pick it up, use arrow keys to move it, then press Enter or Space to finish. Press Escape to cancel.</p>
-        <p id="electrical-pointer-drag-instructions" className="sr-only">Press and hold this symbol before dragging it. A quick click or tap opens one compact summary.</p>
+        <p id="electrical-pointer-drag-instructions" className="sr-only">With a mouse, press and hold this symbol before dragging it. On touch or pen, turn on Arrange items first. A quick click or tap opens one compact summary.</p>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{layoutAnnouncement}</p>
         <div className="relative">
           <div
@@ -1148,29 +1149,6 @@ export function ElectricalTreeCanvas({
                 if (!source || !target) return null;
                 return <path key={edge.id} data-connector-geometry="straight" d={electricalTreeStraightPath(source, target)} fill="none" stroke="var(--text-sub)" strokeWidth="2.25" strokeDasharray="2 7" strokeLinecap="round" opacity="0.62" />;
               })}
-              {layout.edges.filter((edge) => edge.relationship === 'MEASURES' && (
-                edge.sourceNodeId === selectedNode?.id || edge.targetNodeId === selectedNode?.id
-              )).map((edge) => {
-                const source = layoutById.get(edge.sourceNodeId);
-                const target = layoutById.get(edge.targetNodeId);
-                if (!source || !target) return null;
-                const channelIds = measurementChannelsByEdgeId.get(edge.id) || [];
-                const boardChannels = boardChannelsById.get(edge.sourceNodeId) || [];
-                const channelPoint = channelIds.flatMap((channelId) => {
-                  const point = boardChannelConnectorPoint(source, boardChannels, channelId);
-                  return point ? [{ channelId, point }] : [];
-                })[0];
-                const connectorSource: ElectricalTreeLayoutNode = channelPoint
-                  ? {
-                    ...source,
-                    x: channelPoint.point.x - 0.5,
-                    y: channelPoint.point.y - 0.5,
-                    width: 1,
-                    height: 1,
-                  }
-                  : source;
-                return <path key={edge.id} data-channel-map={channelIds.join(',') || undefined} data-channel-port-id={channelPoint?.channelId} data-connector-origin={channelPoint ? 'channel-port' : 'board'} data-connector-geometry="straight" d={electricalTreeStraightPath(connectorSource, target, { targetYOffset: 13 })} fill="none" stroke="var(--primary)" strokeWidth="2.25" strokeDasharray="6 7" strokeLinecap="round" opacity="0.7" />;
-              })}
             </svg>
             {layout.nodes.map((item, index) => {
               const presentation = NODE_PRESENTATION[item.node.kind];
@@ -1208,7 +1186,7 @@ export function ElectricalTreeCanvas({
               const nodeActionLabel = arranging
                 ? `Arrange ${symbolLabel}`
                 : pointerDraggingAvailable
-                  ? `Open a summary for ${symbolLabel}, or press and hold before dragging it`
+                  ? `Open a summary for ${symbolLabel}; mouse users can press and hold before dragging it`
                   : `Open a summary for ${symbolLabel}`;
               return (
                 <button
@@ -1228,7 +1206,7 @@ export function ElectricalTreeCanvas({
                     height: `${item.height}px`,
                     touchAction: arranging ? 'none' : 'pan-y pinch-zoom',
                   }}
-                  aria-label={`${nodeActionLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : pointerDraggingAvailable ? '. Press and hold before dragging, or click or press Enter for a compact summary.' : '. Click or press Enter for a compact summary.'}`}
+                  aria-label={`${nodeActionLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : pointerDraggingAvailable ? '. With a mouse, press and hold before dragging. On touch or pen, turn on Arrange items first. Click or press Enter for a compact summary.' : '. Click or press Enter for a compact summary.'}`}
                   aria-controls={infoCardNodeId === item.node.id ? 'electrical-map-info-card' : undefined}
                   aria-haspopup="dialog"
                   aria-describedby={arranging ? 'electrical-arrange-instructions' : pointerDraggingAvailable ? 'electrical-pointer-drag-instructions' : undefined}
@@ -1320,6 +1298,82 @@ export function ElectricalTreeCanvas({
                 </button>
               );
             })}
+            <svg
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 z-30 overflow-visible"
+              data-channel-connector-layer="foreground"
+              width={layout.width}
+              height={layout.height}
+            >
+              {layout.edges.filter((edge) => edge.relationship === 'MEASURES' && (
+                edge.sourceNodeId === selectedNode?.id || edge.targetNodeId === selectedNode?.id
+              )).map((edge) => {
+                const source = layoutById.get(edge.sourceNodeId);
+                const target = layoutById.get(edge.targetNodeId);
+                if (!source || !target) return null;
+                const channelIds = measurementChannelsByEdgeId.get(edge.id) || [];
+                const boardChannels = boardChannelsById.get(edge.sourceNodeId) || [];
+                const channelPoints = electricalMapBoardChannelConnectorSlots(
+                  boardChannels,
+                  channelIds,
+                ).flatMap((slot) => {
+                  const point = boardChannelConnectorPoint(source, boardChannels, slot.channelId);
+                  return point ? [{ channelId: slot.channelId, point }] : [];
+                });
+                const routes = channelPoints.length
+                  ? channelPoints.map((channelPoint) => ({
+                    channelId: channelPoint.channelId,
+                    connectorSource: {
+                      ...source,
+                      node: {
+                        ...source.node,
+                        id: electricalMapChannelConnectorNodeId(
+                          source.node.id,
+                          channelPoint.channelId,
+                        ),
+                      },
+                      x: channelPoint.point.x - 0.5,
+                      y: channelPoint.point.y - 0.5,
+                      width: 1,
+                      height: 1,
+                    } satisfies ElectricalTreeLayoutNode,
+                  }))
+                  : [{ channelId: null, connectorSource: source }];
+                return (
+                  <g
+                    key={edge.id}
+                    data-channel-map={channelIds.join(',') || undefined}
+                    data-connector-overlay="foreground"
+                  >
+                    {routes.map(({ channelId, connectorSource }) => {
+                      const path = electricalTreeStraightPath(
+                        connectorSource,
+                        target,
+                        { targetYOffset: 13 },
+                      );
+                      const key = `${edge.id}:${channelId || 'board'}`;
+                      return (
+                        <g key={key}>
+                          <path d={path} fill="none" stroke="#F8FBFF" strokeWidth="5.5" strokeLinecap="round" opacity="0.9" />
+                          <path
+                            data-channel-port-id={channelId || undefined}
+                            data-connector-origin={channelId ? 'channel-port' : 'board'}
+                            data-connector-geometry="straight"
+                            d={path}
+                            fill="none"
+                            stroke="var(--primary)"
+                            strokeWidth="2.25"
+                            strokeDasharray="6 7"
+                            strokeLinecap="round"
+                            opacity="0.82"
+                          />
+                        </g>
+                      );
+                    })}
+                  </g>
+                );
+              })}
+            </svg>
           </div>
             {viewport.scale < 0.28 ? <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/95 px-3 py-2 text-xs font-bold text-[var(--text-sub)] shadow-[var(--shadow-sm)]">Overview mode · zoom in to read and select nodes</p> : null}
           </div>

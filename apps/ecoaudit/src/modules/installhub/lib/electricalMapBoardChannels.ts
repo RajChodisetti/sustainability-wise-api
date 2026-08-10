@@ -22,6 +22,12 @@ export type ElectricalMapBoardChannelLayoutItem = {
 
 export const ELECTRICAL_MAP_MAX_VISIBLE_BOARD_CHANNELS = 12;
 
+export type ElectricalMapBoardChannelConnectorSlot = {
+  channelId: string;
+  portX: number;
+  portY: number;
+};
+
 function channelState(
   channel: ElectricalMapBoardChannel,
 ): ElectricalMapBoardChannelLayoutItem['state'] {
@@ -74,3 +80,31 @@ export function electricalMapBoardChannelLayout(
   });
 }
 
+/**
+ * Returns one connector origin for every mapped channel that is actually
+ * visible in the cabinet. Input order is preserved so multi-phase assignments
+ * remain deterministic while duplicate channel ids collapse to one line.
+ */
+export function electricalMapBoardChannelConnectorSlots(
+  channels: readonly ElectricalMapBoardChannel[],
+  mappedChannelIds: readonly string[],
+): ElectricalMapBoardChannelConnectorSlot[] {
+  const layoutByChannelId = new Map(
+    electricalMapBoardChannelLayout(channels).map((item) => [item.channel.id, item] as const),
+  );
+  const seen = new Set<string>();
+  return mappedChannelIds.flatMap((channelId) => {
+    if (seen.has(channelId)) return [];
+    seen.add(channelId);
+    const slot = layoutByChannelId.get(channelId);
+    return slot ? [{ channelId, portX: slot.portX, portY: slot.portY }] : [];
+  });
+}
+
+/** A synthetic id prevents same-board channel stubs from becoming self-loops. */
+export function electricalMapChannelConnectorNodeId(
+  boardNodeId: string,
+  channelId: string,
+): string {
+  return `${boardNodeId}:channel-port:${channelId}`;
+}
