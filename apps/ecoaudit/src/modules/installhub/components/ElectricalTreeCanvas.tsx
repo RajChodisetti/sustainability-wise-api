@@ -45,6 +45,7 @@ import {
   electricalTreeMapLayoutDocument,
   electricalTreeMapLayoutDraft,
   electricalTreeMapLayoutsEqual,
+  ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY,
   electricalTreeDirectPointerDragEnabled,
   electricalTreeNodeCardSummary,
   electricalTreeNodeContexts,
@@ -121,22 +122,22 @@ const NODE_PRESENTATION: Record<ElectricalNode['kind'], {
   GRID: {
     label: 'Incoming grid',
     haloClassName: 'border-[#D7A06A] bg-[#FFF9F2]',
-    labelClassName: 'text-[#9A551D]',
+    labelClassName: 'text-[#6E3510]',
   },
   BOARD: {
     label: 'Switchboard',
     haloClassName: 'border-[var(--primary)]/45 bg-[#F7FAFF]',
-    labelClassName: 'text-[var(--primary)]',
+    labelClassName: 'text-[#163A73]',
   },
   SITE_ASSET: {
     label: 'Site asset',
     haloClassName: 'border-[var(--green)]/35 bg-[#FAFFFC]',
-    labelClassName: 'text-[var(--green)]',
+    labelClassName: 'text-[#14532D]',
   },
   VIRTUAL_RESIDUAL: {
     label: 'Virtual residual',
     haloClassName: 'border-[var(--border-strong)] bg-[#F8FAFC]',
-    labelClassName: 'text-[var(--text-sub)]',
+    labelClassName: 'text-[#334155]',
   },
 };
 
@@ -194,9 +195,12 @@ function layoutWorkspace(
   automaticLayout: ReturnType<typeof buildElectricalTreeLayout>,
   savedLayout?: SavedElectricalMapLayout,
 ): LayoutWorkspace {
-  const saved = savedLayout
+  const candidate = savedLayout
     ? electricalTreeMapLayoutDraft(savedLayout)
     : electricalTreeMapLayoutDocument(automaticLayout);
+  const saved = savedLayout
+    ? electricalTreeMapLayoutDocument(applyElectricalTreeMapLayout(automaticLayout, candidate))
+    : candidate;
   return { sourceKey, saved, draft: saved, phase: 'saved', error: '' };
 }
 
@@ -1112,9 +1116,10 @@ export function ElectricalTreeCanvas({
           <div
             ref={viewportRef}
             role="tree"
+            data-electrical-map-viewport
             aria-label="Interactive electrical system map"
             aria-describedby="electrical-tree-instructions"
-            className={`relative h-[34rem] select-none overflow-hidden bg-[#F8FBFF] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] sm:h-[40rem] xl:h-[46rem] ${panning ? 'cursor-grabbing' : 'cursor-grab'}`}
+            className={`relative h-[50rem] select-none overflow-hidden bg-[#F8FBFF] outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--primary)] sm:h-[60rem] xl:h-[69rem] ${panning ? 'cursor-grabbing' : 'cursor-grab'}`}
             style={{
               touchAction: touchPanEnabled ? 'none' : 'pan-y pinch-zoom',
               backgroundImage: 'radial-gradient(circle at 50% 48%, rgba(37, 99, 235, 0.10) 0, rgba(37, 99, 235, 0.045) 18%, transparent 45%), radial-gradient(circle at 18% 16%, rgba(20, 184, 166, 0.07), transparent 27%), radial-gradient(circle at 84% 82%, rgba(245, 158, 11, 0.06), transparent 25%)',
@@ -1271,28 +1276,66 @@ export function ElectricalTreeCanvas({
                         channels={boardChannels}
                       />
                       {item.node.kind === 'BOARD' && interaction.meterCount ? (
-                        <span className="absolute -bottom-2 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-[var(--green)]/25 bg-white px-2 py-1 text-[8px] font-extrabold text-[var(--green)] shadow-sm">
+                        <span
+                          data-electrical-node-detail="meter-count"
+                          className="absolute -bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-xl border border-[#166534]/30 bg-white px-3 py-1.5 font-extrabold leading-8 text-[#14532D] shadow-sm"
+                          style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.secondaryDetail.fontSize }}
+                        >
                           <ElectricalMapSymbol name="node-meter" size={ELECTRICAL_MAP_LEGEND_SYMBOL_SIZES.meterBadge} />
                           {interaction.meterCount} meter{interaction.meterCount === 1 ? '' : 's'}
                         </span>
                       ) : null}
                     </span>
-                    <span className={`mt-3 line-clamp-2 max-w-full px-1 text-[9px] font-extrabold uppercase leading-3 tracking-[0.08em] ${presentation.labelClassName}`}>{symbolLabel}</span>
-                    <span className="mt-1 line-clamp-2 max-w-full text-[11px] font-extrabold leading-[0.9rem] text-[var(--text)]">
+                    <span
+                      data-electrical-node-symbol-label
+                      className={`mt-3 line-clamp-2 w-full max-w-full break-words rounded-xl border border-slate-300 bg-white/95 px-2 py-1 font-extrabold leading-8 tracking-[0.01em] shadow-sm ${presentation.labelClassName}`}
+                      style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.symbolLabel.fontSize }}
+                    >
+                      {symbolLabel}
+                    </span>
+                    <span
+                      data-electrical-node-name
+                      className="mt-1 line-clamp-2 w-full max-w-full break-words rounded-xl bg-white/95 px-2 py-1 font-black leading-10 text-[#020617] shadow-sm"
+                      style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.nodeName.fontSize }}
+                    >
                       {item.node.kind === 'GRID' ? item.node.name : item.node.name || item.node.displayCode}
                     </span>
                     {item.node.kind === 'SITE_ASSET' ? (
-                      <span className="mt-1.5 flex max-w-full flex-wrap justify-center gap-1 text-[7px] font-extrabold leading-3">
-                        <span className="max-w-full truncate rounded-full border border-[var(--green)]/25 bg-[var(--green-soft)] px-1.5 py-0.5 text-[var(--green)]">Load · {interaction.loadLabels.length ? compactList(interaction.loadLabels, 1) : item.node.typeLabel || symbolLabel}</span>
-                        {interaction.assignedChannelCount ? <span className="rounded-full border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-1.5 py-0.5 text-[var(--primary)]">{interaction.meterCount}m · {interaction.assignedChannelCount}ch</span> : null}
+                      <span
+                        data-electrical-node-detail="asset"
+                        className="mt-1.5 flex w-full max-w-full flex-wrap justify-center gap-1 font-extrabold leading-7"
+                        style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.compactDetail.fontSize }}
+                      >
+                        <span className="max-w-full truncate rounded-xl border border-[#166534]/30 bg-[#DCFCE7] px-2 py-0.5 text-[#14532D]">Load · {interaction.loadLabels.length ? compactList(interaction.loadLabels, 1) : item.node.typeLabel || symbolLabel}</span>
+                        {interaction.assignedChannelCount ? <span className="max-w-full truncate rounded-xl border border-[#1D4ED8]/25 bg-[#DBEAFE] px-2 py-0.5 text-[#1E3A8A]">{interaction.meterCount}m · {interaction.assignedChannelCount}ch</span> : null}
                       </span>
                     ) : item.node.kind === 'GRID' || item.node.kind === 'BOARD' ? (
                       <>
-                        {item.node.kind === 'BOARD' ? <span className="mt-1 max-w-full truncate text-[8px] font-semibold text-[var(--text-sub)]">{nodeZone(tree, item.node)}</span> : null}
-                        <span className="mt-1 rounded-full border border-[var(--primary)]/15 bg-white/90 px-1.5 py-0.5 text-[7px] font-extrabold text-[var(--primary)]">{interaction.downstreamLoadCount} load{interaction.downstreamLoadCount === 1 ? '' : 's'} · {interaction.activeChannelCount} active ch</span>
+                        {item.node.kind === 'BOARD' ? (
+                          <span
+                            data-electrical-node-detail="zone"
+                            className="mt-1 w-full max-w-full truncate font-bold leading-8 text-[#334155]"
+                            style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.secondaryDetail.fontSize }}
+                          >
+                            {nodeZone(tree, item.node)}
+                          </span>
+                        ) : null}
+                        <span
+                          data-electrical-node-detail="load-count"
+                          className="mt-1 max-w-full truncate rounded-xl border border-[#1D4ED8]/25 bg-white/95 px-2 py-0.5 font-extrabold leading-7 text-[#1E3A8A] shadow-sm"
+                          style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.compactDetail.fontSize }}
+                        >
+                          {interaction.downstreamLoadCount} load{interaction.downstreamLoadCount === 1 ? '' : 's'} · {interaction.activeChannelCount} active ch
+                        </span>
                       </>
                     ) : item.node.kind === 'VIRTUAL_RESIDUAL' ? (
-                      <span className="mt-1 text-[8px] font-semibold text-[var(--text-sub)]">Formula v{item.node.formulaVersion || '—'}</span>
+                      <span
+                        data-electrical-node-detail="formula"
+                        className="mt-1 font-bold leading-8 text-[#334155]"
+                        style={{ fontSize: ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY.secondaryDetail.fontSize }}
+                      >
+                        Formula v{item.node.formulaVersion || '—'}
+                      </span>
                     ) : null}
                   </span>
                 </button>

@@ -9,13 +9,13 @@ import { electricalHierarchyRows } from './electricalPresentation';
 import { measurementAssignments, meterDeviceName, meterDevices } from './workflow';
 
 export const ELECTRICAL_TREE_NODE_WIDTH = 232;
-export const ELECTRICAL_TREE_NODE_HEIGHT = 282;
+export const ELECTRICAL_TREE_NODE_HEIGHT = 470;
 const ELECTRICAL_TREE_BOARD_WIDTH = 296;
-const ELECTRICAL_TREE_BOARD_HEIGHT = 358;
+const ELECTRICAL_TREE_BOARD_HEIGHT = 548;
 const ELECTRICAL_TREE_GRID_WIDTH = 328;
-const ELECTRICAL_TREE_GRID_HEIGHT = 380;
+const ELECTRICAL_TREE_GRID_HEIGHT = 540;
 const ELECTRICAL_TREE_RESIDUAL_WIDTH = 232;
-const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 266;
+const ELECTRICAL_TREE_RESIDUAL_HEIGHT = 432;
 const CANVAS_PADDING = 72;
 const ISLAND_GAP = 96;
 const SIBLING_GAP = 24;
@@ -30,6 +30,13 @@ export type ElectricalTreeNodeVisualSize = ElectricalTreeNodeSize & {
   haloSize: number;
   iconSize: number;
 };
+
+export const ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY = {
+  symbolLabel: { previousFontSize: 9, fontSize: 27 },
+  nodeName: { previousFontSize: 11, fontSize: 33 },
+  compactDetail: { previousFontSize: 7, fontSize: 21 },
+  secondaryDetail: { previousFontSize: 8, fontSize: 24 },
+} as const;
 
 /**
  * Keeps the enlarged artwork boxes coupled to the minimum halo and footprint
@@ -461,7 +468,7 @@ export function applyElectricalTreeMapLayout(
       ? [[item.nodeId, item] as const]
       : []
   )));
-  return {
+  const arranged = {
     ...automaticLayout,
     width,
     height,
@@ -477,6 +484,23 @@ export function applyElectricalTreeMapLayout(
       };
     }),
   };
+  // Renderer-v9 layouts persisted centres sized for substantially shorter
+  // markers. Reusing those centres with the enlarged descriptions can stack
+  // adjacent hierarchy levels on top of each other. Preserve safe manual
+  // arrangements, but deterministically reflow any geometry that no longer
+  // clears the current marker footprints.
+  for (let leftIndex = 0; leftIndex < arranged.nodes.length; leftIndex += 1) {
+    const left = arranged.nodes[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < arranged.nodes.length; rightIndex += 1) {
+      const right = arranged.nodes[rightIndex];
+      const overlaps = left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y;
+      if (overlaps) return automaticLayout;
+    }
+  }
+  return arranged;
 }
 
 /** Filters visibility without recomputing or rebasing saved coordinates. */

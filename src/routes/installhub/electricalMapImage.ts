@@ -28,20 +28,31 @@ const HIERARCHY_LEVEL_GAP = 68;
 const HIERARCHY_SIBLING_GAP = 34;
 const HIERARCHY_ROOT_GAP = 58;
 const CONNECTOR_CLEARANCE = 14;
-const GRID_MARKER_WIDTH = 326;
-const GRID_MARKER_HEIGHT = 384;
-const BOARD_MARKER_WIDTH = 286;
-const BOARD_MARKER_BASE_HEIGHT = 336;
-const ASSET_MARKER_WIDTH = 262;
-const ASSET_MARKER_HEIGHT = 292;
-const RESIDUAL_MARKER_WIDTH = 262;
-const RESIDUAL_MARKER_HEIGHT = 278;
+const GRID_MARKER_WIDTH = 328;
+const GRID_MARKER_HEIGHT = 510;
+const BOARD_MARKER_WIDTH = 296;
+const BOARD_MARKER_BASE_HEIGHT = 450;
+const ASSET_MARKER_WIDTH = 232;
+const ASSET_MARKER_HEIGHT = 404;
+const RESIDUAL_MARKER_WIDTH = 232;
+const RESIDUAL_MARKER_HEIGHT = 372;
 const GRID_MEDALLION_RADIUS = 154;
 const BOARD_MEDALLION_RADIUS = 124;
 const ASSET_MEDALLION_RADIUS = 101;
 const RESIDUAL_MEDALLION_RADIUS = 101;
-const METER_SATELLITE_ROW_HEIGHT = 34;
-const METER_SATELLITE_COLUMNS = 2;
+const METER_SATELLITE_ROW_HEIGHT = 70;
+const METER_SATELLITE_COLUMNS = 1;
+/**
+ * Client feedback called out the labels beneath schematic symbols as too
+ * small. Keep the exact 3x scale explicit so future renderer changes cannot
+ * silently regress these primary map descriptions.
+ */
+export const ELECTRICAL_MAP_DESCRIPTION_TEXT_SCALE = 3;
+const NODE_KIND_FONT_SIZE = 20.4;
+const NODE_TITLE_FONT_SIZE = 31.8;
+const NODE_SUBTITLE_FONT_SIZE = 21.9;
+const NODE_MEASUREMENT_FONT_SIZE = 21.3;
+const NODE_TITLE_LINE_HEIGHT = 36;
 export const ELECTRICAL_MAP_DETAIL_THRESHOLD_PX = 1_400;
 export const ELECTRICAL_MAP_DETAIL_TILE_MAX_WIDTH_PX = 1_080;
 export const ELECTRICAL_MAP_DETAIL_TILE_OVERLAP_PX = 140;
@@ -856,6 +867,23 @@ function applySavedElectricalMapLayout(
     });
   }
 
+  // Saved centres come from the portal footprint contract. Older renderer-v9
+  // layouts, and boards whose printable meter satellites exceed the base
+  // footprint, can no longer be represented without collisions. Retain safe
+  // manual arrangements and reflow only incompatible geometry.
+  const rawPositionList = [...rawPositions.values()];
+  for (let leftIndex = 0; leftIndex < rawPositionList.length; leftIndex += 1) {
+    const left = rawPositionList[leftIndex];
+    for (let rightIndex = leftIndex + 1; rightIndex < rawPositionList.length; rightIndex += 1) {
+      const right = rawPositionList[rightIndex];
+      const overlaps = left.x < right.x + right.width
+        && left.x + left.width > right.x
+        && left.y < right.y + right.height
+        && left.y + left.height > right.y;
+      if (overlaps) return null;
+    }
+  }
+
   // The design canvas is an editing boundary, not printable content. Crop the
   // report image to the arranged markers so unused workspace does not shrink
   // the client-facing overview, while preserving every relative coordinate.
@@ -1159,13 +1187,13 @@ function renderMeterSatellites(marker: VisualMarker, position: DiagramPosition):
   return marker.meters.map((satellite, index) => {
     const column = index % METER_SATELLITE_COLUMNS;
     const row = Math.floor(index / METER_SATELLITE_COLUMNS);
-    const x = position.x + column * columnWidth + 4;
-    const y = position.y + BOARD_MARKER_BASE_HEIGHT + row * METER_SATELLITE_ROW_HEIGHT + 3;
+    const x = position.x + column * columnWidth + 8;
+    const y = position.y + BOARD_MARKER_BASE_HEIGHT + row * METER_SATELLITE_ROW_HEIGHT + 6;
     return `<g data-meter-satellite="${escapeXml(satellite.meter.id)}" data-meter-alias="${escapeXml(satellite.alias)}" data-meter-channel-summary="${escapeXml(satellite.channelSummary)}" data-meter-load-summary="${escapeXml(satellite.loadSummary)}">
-      <circle cx="${x + 12}" cy="${y + 12}" r="11" fill="#FFFFFF" stroke="#4D9B68" stroke-width="1.3"/>
-      ${svgIcon('node-meter', x + 3, y + 3, 18)}
-      ${svgText(fitText(`${satellite.alias} ${satellite.meter.model}`, columnWidth - 31, 6.8, 800), x + 27, y + 10, { size: 6.8, weight: 800, color: '#14532D' })}
-      ${svgText(fitText(satellite.channelSummary, columnWidth - 31, 6.2, 600), x + 27, y + 20, { size: 6.2, weight: 600, color: '#475569' })}
+      <circle cx="${x + 23}" cy="${y + 23}" r="22" fill="#FFFFFF" stroke="#4D9B68" stroke-width="2"/>
+      ${svgIcon('node-meter', x + 8, y + 8, 30)}
+      ${svgText(fitText(`${satellite.alias} ${satellite.meter.model}`, columnWidth - 70, 20.4, 800), x + 54, y + 21, { size: 20.4, weight: 800, color: '#14532D' })}
+      ${svgText(fitText(satellite.channelSummary, columnWidth - 70, 18.6, 700), x + 54, y + 47, { size: 18.6, weight: 700, color: '#334155' })}
     </g>`;
   }).join('');
 }
@@ -1177,28 +1205,51 @@ function renderVisualMarker(marker: VisualMarker, position: DiagramPosition): st
   const iconSize = node.kind === 'GRID' ? 273 : node.kind === 'BOARD' ? 217 : 175;
   const centerX = position.x + position.width / 2;
   const centerY = position.y + radius + 5;
-  const kindY = centerY + radius + 13;
-  const titleLines = wrapText(marker.title, position.width - 10, 10.6, 800).slice(0, 2);
+  const kindY = centerY + radius + 25;
+  const titleLines = wrapText(
+    marker.title,
+    position.width - 10,
+    NODE_TITLE_FONT_SIZE,
+    800,
+  ).slice(0, 2);
   const titleMarkup = titleLines.map((line, index) => svgText(
     line,
     centerX,
-    kindY + 15 + index * 12,
-    { size: 10.6, weight: 800, color: '#0F172A', anchor: 'middle' },
+    kindY + 38 + index * NODE_TITLE_LINE_HEIGHT,
+    { size: NODE_TITLE_FONT_SIZE, weight: 800, color: '#020617', anchor: 'middle' },
   )).join('');
-  const titleBottom = kindY + 15 + Math.max(0, titleLines.length - 1) * 12;
-  const subtitleY = titleBottom + 13;
+  const titleBottom = kindY + 38
+    + Math.max(0, titleLines.length - 1) * NODE_TITLE_LINE_HEIGHT;
+  const subtitleY = titleBottom + 32;
   const coverage = coveragePresentation(node.coverageState);
   const pillWidth = coverage ? Math.max(42, Math.round(textWidth(coverage.label, 6.6, 800) + 14)) : 0;
   const coverageMarkup = coverage
     ? `<rect x="${centerX + radius - pillWidth * 0.6}" y="${position.y + 2}" width="${pillWidth}" height="15" rx="7.5" fill="${coverage.fill}" stroke="#FFFFFF" stroke-width="1"/>${svgText(coverage.label, centerX + radius - pillWidth * 0.1, position.y + 12.5, { size: 6.6, weight: 800, color: coverage.text, anchor: 'middle' })}`
     : '';
-  const measurementLabel = fitText(marker.measurement, position.width - 26, 7.1, 600);
-  const measurementWidth = textWidth(measurementLabel, 7.1, 600);
-  const measurementX = centerX - Math.min(position.width - 12, measurementWidth + 16) / 2;
+  const missingMeasurement = marker.measurement === 'No confirmed meter';
+  const measurementLabel = fitText(
+    marker.measurement,
+    position.width - (missingMeasurement ? 14 : 42),
+    NODE_MEASUREMENT_FONT_SIZE,
+    700,
+  );
+  const measurementWidth = textWidth(measurementLabel, NODE_MEASUREMENT_FONT_SIZE, 700);
+  const measurementX = centerX - Math.min(position.width - 12, measurementWidth + 34) / 2;
+  const measurementY = subtitleY + 34;
   const measurementMarkup = measurementLabel
     ? `<g data-measurement-chip="${escapeXml(node.id)}">
-        ${svgIcon('node-meter', measurementX, subtitleY + 3, 12)}
-        ${svgText(measurementLabel, measurementX + 16, subtitleY + 13, { size: 7.1, weight: 600, color: marker.measurement === 'No confirmed meter' ? '#92400E' : '#166534' })}
+        ${missingMeasurement ? '' : svgIcon('node-meter', measurementX, measurementY - 22, 26)}
+        ${svgText(
+          measurementLabel,
+          missingMeasurement ? centerX : measurementX + 34,
+          measurementY,
+          {
+            size: NODE_MEASUREMENT_FONT_SIZE,
+            weight: 700,
+            color: missingMeasurement ? '#78350F' : '#14532D',
+            ...(missingMeasurement ? { anchor: 'middle' as const } : {}),
+          },
+        )}
       </g>`
     : '';
   return `<g data-visual-marker="1" data-node-kind="${escapeXml(node.kind)}" data-node-id="${escapeXml(node.id)}" data-layout-depth="${position.depth}" data-layout-x="${position.x.toFixed(1)}" data-layout-y="${position.y.toFixed(1)}" data-layout-cx="${position.cx.toFixed(1)}" data-layout-cy="${position.cy.toFixed(1)}" data-layout-radius="${position.radius.toFixed(1)}" data-layout-angle="${position.angle.toFixed(5)}" data-branch-id="${escapeXml(position.branchId)}" data-marker-width="${position.width}" data-marker-height="${position.height}">
@@ -1206,10 +1257,12 @@ function renderVisualMarker(marker: VisualMarker, position: DiagramPosition): st
       <circle cx="${centerX}" cy="${centerY}" r="${Math.max(10, radius - 5)}" fill="${colors.fill}" opacity="0.82"/>
       ${svgIcon(marker.icon, centerX - iconSize / 2, centerY - iconSize / 2, iconSize)}
       ${coverageMarkup}
-      ${svgText(nodeKindLabel(node.kind), centerX, kindY, { size: 6.8, weight: 800, color: colors.accent, letterSpacing: 0.65, anchor: 'middle' })}
-      ${titleMarkup}
-      ${svgText(fitText(marker.subtitle, position.width - 14, 7.3, 500), centerX, subtitleY, { size: 7.3, weight: 500, color: '#64748B', anchor: 'middle' })}
-      ${measurementMarkup}
+      <g data-icon-description="${escapeXml(node.id)}" data-description-text-scale="${ELECTRICAL_MAP_DESCRIPTION_TEXT_SCALE}">
+        ${svgText(nodeKindLabel(node.kind), centerX, kindY, { size: NODE_KIND_FONT_SIZE, weight: 800, color: colors.accent, letterSpacing: 0.65, anchor: 'middle' })}
+        ${titleMarkup}
+        ${svgText(fitText(marker.subtitle, position.width - 14, NODE_SUBTITLE_FONT_SIZE, 700), centerX, subtitleY, { size: NODE_SUBTITLE_FONT_SIZE, weight: 700, color: '#334155', anchor: 'middle' })}
+        ${measurementMarkup}
+      </g>
       ${renderMeterSatellites(marker, position)}
     </g>`;
 }

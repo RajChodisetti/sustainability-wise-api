@@ -3,6 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import {
   buildElectricalMapSvg,
+  ELECTRICAL_MAP_DESCRIPTION_TEXT_SCALE,
   ELECTRICAL_MAP_MAX_DETAIL_PAGES,
   ELECTRICAL_MAP_OVERVIEW_MAX_AREA_PX,
   ELECTRICAL_MAP_OVERVIEW_MAX_HEIGHT_PX,
@@ -488,7 +489,7 @@ test('electrical map SVG is deterministic, levelled, centered and visually expla
   assert.equal(buildElectricalMapSvg(report(), 'Example & Sons'), first);
   assert.match(first, /data-layout-source="auto"/);
   assert.match(first, /Example &amp; Sons/);
-  assert.match(first, /Main &lt;switchboard&gt;/);
+  assert.match(first, /Main[\s\S]{0,200}?&lt;switchboard&gt;/);
   assert.match(first, /data-node-kind="GRID"/);
   assert.match(first, /data-node-kind="BOARD"/);
   assert.match(first, /data-node-kind="SITE_ASSET"/);
@@ -500,10 +501,14 @@ test('electrical map SVG is deterministic, levelled, centered and visually expla
   assert.match(first, /data-node-kind="BOARD"[\s\S]{0,1200}?data-electrical-map-icon="board-msb" data-icon-box-size="217" data-icon-scale="1.08"/);
   assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,1200}?data-electrical-map-icon="load-hvac" data-icon-box-size="175" data-icon-scale="1.08"/);
   assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,1200}?data-electrical-map-icon="node-residual" data-icon-box-size="175" data-icon-scale="1.08"/);
-  assert.match(first, /data-node-kind="GRID"[\s\S]{0,500}?data-marker-height="384"/);
-  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,500}?data-marker-height="370"/);
-  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,500}?data-marker-height="292"/);
-  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,500}?data-marker-height="278"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,500}?data-marker-height="510"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,500}?data-marker-height="520"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,500}?data-marker-height="404"/);
+  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,500}?data-marker-height="372"/);
+  assert.match(first, /data-node-kind="GRID"[\s\S]{0,500}?data-marker-width="328"/);
+  assert.match(first, /data-node-kind="BOARD"[\s\S]{0,500}?data-marker-width="296"/);
+  assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,500}?data-marker-width="232"/);
+  assert.match(first, /data-node-kind="VIRTUAL_RESIDUAL"[\s\S]{0,500}?data-marker-width="232"/);
   assert.match(first, /data-node-kind="GRID"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="154"/);
   assert.match(first, /data-node-kind="BOARD"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="124"/);
   assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="101"/);
@@ -554,6 +559,25 @@ test('electrical map SVG is deterministic, levelled, centered and visually expla
   assert.doesNotMatch(first, /<script/i);
 });
 
+test('descriptions below symbols render at least three times larger with high contrast', () => {
+  const svg = buildElectricalMapSvg(report(), 'Readable map labels');
+  assert.equal(ELECTRICAL_MAP_DESCRIPTION_TEXT_SCALE, 3);
+  const assetDescription = /<g data-icon-description="asset-1" data-description-text-scale="3">([\s\S]*?)<\/g>\s*<\/g>/.exec(svg)?.[1];
+  assert.ok(assetDescription);
+  for (const fontSize of [20.4, 31.8, 21.9, 21.3]) {
+    assert.match(assetDescription, new RegExp(`font-size="${fontSize}"`));
+  }
+  assert.match(assetDescription, /fill="#020617" font-size="31\.8" font-weight="800"/);
+  assert.match(assetDescription, /fill="#334155" font-size="21\.9" font-weight="700"/);
+  assert.match(assetDescription, /fill="#14532D" font-size="21\.3" font-weight="700"/);
+  assert.doesNotMatch(assetDescription, /fill="#64748B"/);
+
+  const meterSatellite = /<g data-meter-satellite="meter-1"[\s\S]*?<\/g>/.exec(svg)?.[0];
+  assert.ok(meterSatellite);
+  assert.match(meterSatellite, /fill="#14532D" font-size="20\.4" font-weight="800"/);
+  assert.match(meterSatellite, /fill="#334155" font-size="18\.6" font-weight="700"/);
+});
+
 test('TBC assignments are not presented as confirmed map allocations', () => {
   const pending = report();
   pending.meteringRows[0].status = 'TBC';
@@ -590,6 +614,60 @@ test('saved client coordinates drive the exact PDF map arrangement', () => {
   assert.ok(dimensions);
   assert.ok(Number(dimensions[1]) < saved.electricalMapLayout.canvas.width + 120);
   assert.ok(Number(dimensions[2]) < saved.electricalMapLayout.canvas.height + 350);
+});
+
+test('renderer-v9 saved centres reflow instead of overlapping enlarged PDF markers', () => {
+  const legacy = report();
+  legacy.electricalMapLayout = {
+    version: 1,
+    canvas: { width: 1_200, height: 1_714 },
+    nodes: [
+      { nodeId: 'grid-1', centerX: 600, centerY: 262 },
+      { nodeId: 'board-1', centerX: 600, centerY: 695 },
+      { nodeId: 'asset-1', centerX: 450, centerY: 1_079 },
+      { nodeId: 'virtual-1', centerX: 750, centerY: 1_079 },
+    ],
+  };
+
+  const svg = buildElectricalMapSvg(legacy, 'Legacy arrangement');
+
+  assert.match(svg, /data-layout-source="auto"/);
+  assert.doesNotMatch(svg, /data-saved-layout-backdrop/);
+  assertMarkersDoNotOverlap(svg);
+});
+
+test('portal-sized sibling spacing remains collision-free in a saved PDF arrangement', () => {
+  const aligned = report();
+  aligned.electricalNodes.push({
+    id: 'board-2',
+    kind: 'BOARD',
+    name: 'Distribution board',
+    displayCode: 'SITE-DB-002',
+    physicalLocationId: 'zone-1',
+  });
+  aligned.supplyEdges.push({
+    sourceNodeId: 'grid-1',
+    targetNodeId: 'board-2',
+    relationship: 'FED_FROM',
+  });
+  aligned.electricalMapLayout = {
+    version: 1,
+    canvas: { width: 1_200, height: 1_800 },
+    nodes: [
+      { nodeId: 'grid-1', centerX: 600, centerY: 300 },
+      { nodeId: 'board-1', centerX: 440, centerY: 900 },
+      { nodeId: 'board-2', centerX: 760, centerY: 900 },
+      { nodeId: 'asset-1', centerX: 340, centerY: 1_500 },
+      { nodeId: 'virtual-1', centerX: 596, centerY: 1_500 },
+    ],
+  };
+
+  const svg = buildElectricalMapSvg(aligned, 'Aligned arrangement');
+  const positions = new Map(markerPlacements(svg).map((marker) => [marker.id, marker]));
+
+  assert.match(svg, /data-layout-source="saved"/);
+  assert.equal(positions.get('board-2')!.cx - positions.get('board-1')!.cx, 320);
+  assertMarkersDoNotOverlap(svg);
 });
 
 test('an incomplete saved layout falls back wholly to deterministic auto-arrangement', () => {
@@ -818,7 +896,7 @@ test('cycle-safe depths stay bounded for a reachable Draft supply cycle', () => 
   const dimensions = /<svg[^>]* width="(\d+)" height="(\d+)"/.exec(svg);
   assert.ok(dimensions);
   assert.ok(Number(dimensions[1]) < 2_000);
-  assert.ok(Number(dimensions[2]) < 1_500);
+  assert.ok(Number(dimensions[2]) < 2_000);
 });
 
 test('main-supply self measurement stays local without a diagram loop', () => {

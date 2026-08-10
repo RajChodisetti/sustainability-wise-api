@@ -23,6 +23,7 @@ import {
   electricalTreeNodeContext,
   electricalTreeNodeSize,
   electricalTreeNodeVisualSize,
+  ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY,
   electricalTreeOrthogonalPath,
   electricalTreeDirectPointerDragEnabled,
   electricalTreePointerDelta,
@@ -35,12 +36,22 @@ import {
   zoomElectricalTreeViewport,
 } from './electricalTreeLayout';
 
+test('every below-symbol description size is exactly tripled', () => {
+  for (const [name, typography] of Object.entries(ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY)) {
+    assert.equal(
+      typography.fontSize,
+      typography.previousFontSize * 3,
+      `${name} must remain at least three times its previous size`,
+    );
+  }
+});
+
 test('map pictograms are exactly 75 percent larger and remain inside interaction-safe footprints', () => {
   const expected = {
-    GRID: { width: 328, height: 380, haloSize: 312, iconSize: 280, previousIconSize: 160 },
-    BOARD: { width: 296, height: 358, haloSize: 280, iconSize: 252, previousIconSize: 144 },
-    SITE_ASSET: { width: 232, height: 282, haloSize: 216, iconSize: 196, previousIconSize: 112 },
-    VIRTUAL_RESIDUAL: { width: 232, height: 266, haloSize: 216, iconSize: 196, previousIconSize: 112 },
+    GRID: { width: 328, height: 540, haloSize: 312, iconSize: 280, previousIconSize: 160 },
+    BOARD: { width: 296, height: 548, haloSize: 280, iconSize: 252, previousIconSize: 144 },
+    SITE_ASSET: { width: 232, height: 470, haloSize: 216, iconSize: 196, previousIconSize: 112 },
+    VIRTUAL_RESIDUAL: { width: 232, height: 432, haloSize: 216, iconSize: 196, previousIconSize: 112 },
   } as const;
 
   for (const [kind, dimensions] of Object.entries(expected)) {
@@ -60,6 +71,46 @@ test('map pictograms are exactly 75 percent larger and remain inside interaction
     assert.ok(visual.iconSize * 1.08 <= visual.haloSize, `${kind} scaled artwork must stay inside its halo`);
     assert.ok(visual.haloSize >= 44, `${kind} halo must remain touch-sized`);
     assert.ok(visual.width >= visual.haloSize && visual.height >= visual.haloSize);
+    assert.ok(
+      visual.height - visual.haloSize >= 188,
+      `${kind} footprint must reserve room for the tripled description typography`,
+    );
+  }
+});
+
+test('responsive map heights preserve the tripled description size in a fitted hierarchy', () => {
+  const layout = buildElectricalTreeLayout(topology());
+  const legacyLayoutHeight = 1_714;
+  const responsiveHeights = [
+    { width: 375, previousHeight: 544, height: 800 },
+    { width: 768, previousHeight: 640, height: 960 },
+    { width: 1_440, previousHeight: 736, height: 1_104 },
+  ];
+
+  for (const viewport of responsiveHeights) {
+    const previousFit = fitElectricalTreeViewport(
+      viewport.width,
+      viewport.previousHeight,
+      layout.width,
+      legacyLayoutHeight,
+    );
+    const currentFit = fitElectricalTreeViewport(
+      viewport.width,
+      viewport.height,
+      layout.width,
+      layout.height,
+    );
+    assert.ok(
+      currentFit.scale >= previousFit.scale,
+      `${viewport.width}px viewport must not shrink the fitted hierarchy after labels grow`,
+    );
+    for (const typography of Object.values(ELECTRICAL_TREE_NODE_DESCRIPTION_TYPOGRAPHY)) {
+      assert.ok(
+        typography.fontSize * currentFit.scale
+          >= typography.previousFontSize * previousFit.scale * 3,
+        `${typography.fontSize}px description must retain a 3x rendered gain at ${viewport.width}px`,
+      );
+    }
   }
 });
 
@@ -465,6 +516,38 @@ test('saved electrical map centres override automatic positions in a stable desi
     electricalTreeMapLayoutDocument(arranged),
     movedDocument,
   ), true);
+});
+
+test('renderer-v9 saved centres reflow when enlarged descriptions would overlap', () => {
+  const model: ElectricalTreeReadModel = {
+    installationId: 'installation-1',
+    treeRevision: 1,
+    nodes: [
+      { id: 'grid-1', kind: 'GRID', name: 'Grid' },
+      { id: 'board-1', kind: 'BOARD', name: 'Main board' },
+      { id: 'asset-1', kind: 'SITE_ASSET', name: 'Chiller' },
+    ],
+    edges: [
+      { id: 'fed-1', sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+      { id: 'fed-2', sourceNodeId: 'board-1', targetNodeId: 'asset-1', relationship: 'FED_FROM' },
+    ],
+    unresolved: [],
+  };
+  const automatic = buildElectricalTreeLayout(model);
+  const legacy = {
+    version: 1 as const,
+    canvas: { width: 500, height: 1_300 },
+    nodes: [
+      { nodeId: 'grid-1', centerX: 250, centerY: 262 },
+      { nodeId: 'board-1', centerX: 250, centerY: 695 },
+      { nodeId: 'asset-1', centerX: 250, centerY: 1_079 },
+    ],
+  };
+
+  const arranged = applyElectricalTreeMapLayout(automatic, legacy);
+
+  assert.strictEqual(arranged, automatic);
+  assertNoNodeOverlap(arranged.nodes);
 });
 
 test('saved map application ignores removed IDs and leaves new topology nodes automatically placed', () => {
