@@ -1,6 +1,5 @@
 'use client';
 
-import Link from 'next/link';
 import {
   useCallback,
   useEffect,
@@ -17,10 +16,8 @@ import { TreeDraftNavigationGuard } from '@/modules/installhub/components/Workfl
 import type {
   ElectricalTreeReadModel,
   InstallationTree,
-  MeterDevice,
 } from '@/modules/installhub/types/domain';
 import {
-  meterDeviceName,
   meterDevices,
 } from '@/modules/installhub/lib/workflow';
 import {
@@ -32,6 +29,16 @@ import {
 } from '@/modules/installhub/lib/electricalMapSymbols';
 import { electricalMapNodeInteractionSummary } from '@/modules/installhub/lib/electricalMapInteraction';
 import {
+  electricalMapBoardChannelLayout,
+  type ElectricalMapBoardChannel,
+} from '@/modules/installhub/lib/electricalMapBoardChannels';
+import {
+  CLOSED_ELECTRICAL_MAP_INFO_CARD,
+  electricalMapInfoCardNodeId,
+  reduceElectricalMapInfoCard,
+  type ElectricalMapInfoCardState,
+} from '@/modules/installhub/lib/electricalMapInfoCard';
+import {
   applyElectricalTreeMapLayout,
   buildElectricalTreeLayout,
   electricalTreeMapLayoutDocument,
@@ -39,11 +46,9 @@ import {
   electricalTreeMapLayoutsEqual,
   electricalTreeDirectPointerDragEnabled,
   electricalTreeNodeCardSummary,
-  electricalTreeNodeContext,
   electricalTreeNodeContexts,
   electricalTreeNodeVisualSize,
   electricalTreePointerDelta,
-  electricalTreePointerDragStarted,
   electricalTreeStraightPath,
   filterElectricalTreeLayout,
   fitElectricalTreeViewport,
@@ -52,8 +57,14 @@ import {
   zoomElectricalTreeViewport,
   type ElectricalMapLayoutDocument,
   type SavedElectricalMapLayout,
+  type ElectricalTreeLayoutNode,
   type ElectricalTreeViewport,
 } from '@/modules/installhub/lib/electricalTreeLayout';
+import {
+  ELECTRICAL_TREE_HOLD_DELAY_MS,
+  electricalTreePointerGestureTransition,
+  type ElectricalTreePointerGesturePhase,
+} from '@/modules/installhub/lib/electricalTreePointerGesture';
 
 type ElectricalNode = ElectricalTreeReadModel['nodes'][number];
 
@@ -83,7 +94,12 @@ type NodePointerDrag = {
   originCenterX: number;
   originCenterY: number;
   scale: number;
-  started: boolean;
+  phase: ElectricalTreePointerGesturePhase;
+  holdTimer: number | null;
+  lastClientX: number;
+  lastClientY: number;
+  dragStartClientX: number;
+  dragStartClientY: number;
   element: HTMLButtonElement;
 };
 
@@ -93,7 +109,6 @@ type KeyboardNodeDrag = {
   originCenterY: number;
 };
 
-const NODE_DRAG_THRESHOLD_PX = 6;
 const KEYBOARD_MOVE_STEP = 16;
 const KEYBOARD_FINE_MOVE_STEP = 4;
 
@@ -141,24 +156,27 @@ function nodeZone(tree: InstallationTree, node: ElectricalNode): string {
   return tree.zones.find((zone) => zone.id === node.physicalLocationId)?.zoneName || 'Site-wide / derived';
 }
 
-function meterRecordHref(tree: InstallationTree, meter: MeterDevice): string | null {
-  const board = tree.electricalAssets.find((candidate) => candidate.id === meter.installedOnBoardId);
-  if (!board) return null;
-  const base = `/installhub/installations/${encodeURIComponent(tree.installation.id)}`;
-  return `${base}/zones/${encodeURIComponent(board.zoneId)}/boards/${encodeURIComponent(board.id)}/meters/${encodeURIComponent(meter.id)}`;
-}
-
-function meterIdentity(meter: MeterDevice): string {
-  const identifiers = [
-    meter.deviceNumber ? `Device ${meter.deviceNumber}` : '',
-    meter.serialNumber ? `Serial ${meter.serialNumber}` : '',
-  ].filter(Boolean);
-  return [meter.deviceModel, ...identifiers].join(' · ');
-}
-
 function compactList(values: string[], limit = 2): string {
   if (values.length <= limit) return values.join(', ');
   return `${values.slice(0, limit).join(', ')} +${values.length - limit}`;
+}
+
+function boardChannelConnectorPoint(
+  node: ElectricalTreeLayoutNode,
+  channels: readonly ElectricalMapBoardChannel[],
+  channelId: string,
+): { x: number; y: number } | null {
+  const slot = electricalMapBoardChannelLayout(channels)
+    .find((item) => item.channel.id === channelId);
+  if (!slot) return null;
+  const visual = electricalTreeNodeVisualSize('BOARD');
+  const iconLeft = node.x + (node.width - visual.iconSize) / 2;
+  const iconTop = node.y + 4 + (visual.haloSize - visual.iconSize) / 2;
+  const scale = visual.iconSize / 64;
+  return {
+    x: iconLeft + slot.portX * scale,
+    y: iconTop + slot.portY * scale,
+  };
 }
 
 function electricalLayoutSourceKey(model: ElectricalTreeReadModel): string {
@@ -252,67 +270,74 @@ export function ElectricalTreeCanvas({
     item.node.id,
     electricalMapNodeInteractionSummary(tree, model, item.node.id),
   ])), [layout.nodes, model, tree]);
+  const boardChannelsById = useMemo(() => new Map(layout.nodes.flatMap((item) => {
+    if (item.node.kind !== 'BOARD') return [];
+    const interaction = interactionSummaryById.get(item.node.id);
+    const assignedChannelIds = new Set(interaction?.meters.flatMap((meter) => (
+      meter.assignedChannels.map((channel) => channel.id)
+    )) || []);
+    const channels = allMeters
+      .filter((meter) => (
+        meter.installedOnBoardId === item.node.id
+        && (meter.lifecycleState ?? 'ACTIVE') === 'ACTIVE'
+      ))
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .flatMap((meter, meterIndex) => meter.channels.map((channel) => ({
+        id: channel.id,
+        meterLabel: `M${meterIndex + 1}`,
+        ordinal: channel.ordinal,
+        phaseLabel: channel.phaseLabel,
+        purpose: channel.purpose,
+        assigned: assignedChannelIds.has(channel.id),
+      })));
+    return [[item.node.id, channels] as const];
+  })), [allMeters, interactionSummaryById, layout.nodes]);
+  const measurementChannelsByEdgeId = useMemo(() => new Map(layout.edges.flatMap((edge) => {
+    if (edge.relationship !== 'MEASURES') return [];
+    const assignmentId = edge.id.startsWith('measures:')
+      ? edge.id.slice('measures:'.length)
+      : edge.id.startsWith('measure_')
+        ? edge.id.slice('measure_'.length)
+        : null;
+    const boardDetails = resolvedElectricalMeasurementDetails(tree, model, edge.targetNodeId)
+      .filter((detail) => (
+        detail.meter.installedOnBoardId === edge.sourceNodeId
+        && (!assignmentId || detail.assignment.id === assignmentId)
+      ));
+    const channelIds = [...new Set(boardDetails.flatMap((detail) => (
+      detail.channels.map((channel) => channel.id)
+    )))];
+    return channelIds.length
+      ? [[edge.id, channelIds] as const]
+      : [];
+  })), [layout.edges, model, tree]);
   const [selectedNodeId, setSelectedNodeId] = useState(layout.nodes[0]?.node.id || '');
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
-  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [infoCardState, setInfoCardState] = useState<ElectricalMapInfoCardState>(
+    CLOSED_ELECTRICAL_MAP_INFO_CARD,
+  );
   const selectedLayoutNode = layoutById.get(selectedNodeId) || layout.nodes[0];
   const selectedNode = selectedLayoutNode?.node;
-  const selectedContext = selectedNode
-    ? contextById.get(selectedNode.id) || electricalTreeNodeContext(completeLayout, selectedNode.id)
+  const infoCardNodeId = electricalMapInfoCardNodeId(infoCardState);
+  const infoCardNode = infoCardNodeId ? layoutById.get(infoCardNodeId)?.node : undefined;
+  const infoCardContext = infoCardNodeId ? contextById.get(infoCardNodeId) : undefined;
+  const infoCardParent = infoCardContext
+    ? completeLayoutById.get(infoCardContext.derivedParentId || infoCardContext.parentId || '')?.node
+    : undefined;
+  const infoCardInteraction = infoCardNodeId
+    ? interactionSummaryById.get(infoCardNodeId)
+      || electricalMapNodeInteractionSummary(tree, model, infoCardNodeId)
     : null;
-  const selectedInteraction = useMemo(() => (
-    selectedNode
-      ? interactionSummaryById.get(selectedNode.id)
-        || electricalMapNodeInteractionSummary(tree, model, selectedNode.id)
-      : electricalMapNodeInteractionSummary(tree, model, '')
-  ), [interactionSummaryById, model, selectedNode, tree]);
-  const tooltipNodeId = hoveredNodeId || focusedNodeId;
-  const tooltipLayoutNode = tooltipNodeId ? layoutById.get(tooltipNodeId) : undefined;
-  const tooltipInteraction = useMemo(() => (
-    tooltipNodeId
-      ? interactionSummaryById.get(tooltipNodeId)
-        || electricalMapNodeInteractionSummary(tree, model, tooltipNodeId)
-      : null
-  ), [interactionSummaryById, model, tooltipNodeId, tree]);
-  const {
-    downstreamAssets,
-    measuredByNodes,
-    selectedChildren,
-    selectedDerivedChildren,
-    selectedDerivedParent,
-    selectedMeasurementDetails,
-    selectedParent,
-  } = useMemo(() => {
-    const measurementDetails = selectedNode
-      ? resolvedElectricalMeasurementDetails(tree, model, selectedNode.id)
-      : [];
-    const downstreamNodes = selectedContext?.descendantIds
-      .map((nodeId) => completeLayoutById.get(nodeId)?.node)
-      .filter((node): node is ElectricalNode => Boolean(node)) || [];
-    const assets = selectedNode?.kind === 'SITE_ASSET'
-      ? [selectedNode]
-      : downstreamNodes.filter((node) => node.kind === 'SITE_ASSET');
-    return {
-      downstreamAssets: assets,
-      measuredByNodes: selectedContext?.measuredByIds
-        .map((nodeId) => completeLayoutById.get(nodeId)?.node)
-        .filter((node): node is ElectricalNode => Boolean(node)) || [],
-      selectedChildren: selectedContext?.childIds
-        .map((nodeId) => completeLayoutById.get(nodeId)?.node)
-        .filter((node): node is ElectricalNode => Boolean(node)) || [],
-      selectedDerivedChildren: selectedContext?.derivedChildIds
-        .map((nodeId) => completeLayoutById.get(nodeId)?.node)
-        .filter((node): node is ElectricalNode => Boolean(node)) || [],
-      selectedDerivedParent: selectedContext?.derivedParentId ? completeLayoutById.get(selectedContext.derivedParentId)?.node : undefined,
-      selectedMeasurementDetails: measurementDetails,
-      selectedParent: selectedContext?.parentId ? completeLayoutById.get(selectedContext.parentId)?.node : undefined,
-    };
-  }, [completeLayoutById, model, selectedContext, selectedNode, tree]);
+  const infoCardChannels = infoCardInteraction?.meters.flatMap((meter) => (
+    meter.assignedChannels.map((channel) => ({
+      ...channel,
+      meterId: meter.id,
+      meterName: meter.name,
+    }))
+  )) || [];
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const detailsPanelRef = useRef<HTMLElement>(null);
+  const infoCardRef = useRef<HTMLElement>(null);
   const nodeButtonRefs = useRef(new Map<string, HTMLButtonElement>());
   const pointerFocusRef = useRef(false);
   const didPanRef = useRef(false);
@@ -340,7 +365,6 @@ export function ElectricalTreeCanvas({
   const [layoutAnnouncement, setLayoutAnnouncement] = useState('');
   const [touchPanEnabled, setTouchPanEnabled] = useState(false);
   const [viewport, setViewport] = useState<ElectricalTreeViewport>({ x: 32, y: 32, scale: 0.8 });
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const updateWorkspace = useCallback((
     updater: (current: LayoutWorkspace) => LayoutWorkspace,
   ) => {
@@ -362,7 +386,6 @@ export function ElectricalTreeCanvas({
     const element = viewportRef.current;
     if (!element) return;
     const bounds = element.getBoundingClientRect();
-    setViewportSize({ width: bounds.width, height: bounds.height });
     setViewport(fitElectricalTreeViewport(bounds.width, bounds.height, layout.width, layout.height));
     userAdjustedRef.current = false;
   }, [layout.height, layout.width]);
@@ -409,6 +432,15 @@ export function ElectricalTreeCanvas({
   useEffect(() => () => {
     if (panFrameRef.current !== null) window.cancelAnimationFrame(panFrameRef.current);
     if (nodeDragFrameRef.current !== null) window.cancelAnimationFrame(nodeDragFrameRef.current);
+    const drag = nodeDragRef.current;
+    if (drag) {
+      clearNodeHoldTimer(drag);
+      if (drag.element.isConnected && drag.element.hasPointerCapture(drag.pointerId)) {
+        drag.element.releasePointerCapture(drag.pointerId);
+      }
+    }
+    nodeDragRef.current = null;
+    pendingNodeCenterRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -462,6 +494,7 @@ export function ElectricalTreeCanvas({
   }
 
   function revealNode(nodeId: string) {
+    setInfoCardState({ status: 'pinned', nodeId });
     if (layoutById.has(nodeId)) {
       centerNode(nodeId);
       return;
@@ -489,38 +522,66 @@ export function ElectricalTreeCanvas({
     if (moveFocus) window.requestAnimationFrame(() => nodeButtonRefs.current.get(nodeId)?.focus());
   }, [layoutById]);
 
-  function openNodeDetails(nodeId: string) {
+  function toggleNodeInfo(nodeId: string) {
+    const opening = infoCardState.status !== 'pinned' || infoCardState.nodeId !== nodeId;
     setSelectedNodeId(nodeId);
-    setDetailsOpen(true);
-    setHoveredNodeId(null);
-    setFocusedNodeId(null);
+    setInfoCardState((current) => reduceElectricalMapInfoCard(current, {
+      type: 'node-clicked',
+      nodeId,
+    }));
     const item = completeLayoutById.get(nodeId);
-    if (item) setLayoutAnnouncement(`Opened item details for ${nodeTitle(item.node)}.`);
-    window.requestAnimationFrame(() => detailsPanelRef.current?.focus({ preventScroll: true }));
+    if (item) {
+      setLayoutAnnouncement(opening
+        ? `Showing a compact summary for ${nodeTitle(item.node)}.`
+        : `Closed the summary for ${nodeTitle(item.node)}.`);
+    }
+    if (opening) window.requestAnimationFrame(() => infoCardRef.current?.focus({ preventScroll: true }));
   }
 
-  function closeNodeDetails() {
-    setDetailsOpen(false);
-    const nodeId = selectedNode?.id;
-    if (nodeId) {
+  function dismissInfoCard(
+    reason: 'close-button' | 'escape' | 'outside',
+    returnFocus = false,
+  ) {
+    const nodeId = electricalMapInfoCardNodeId(infoCardState);
+    setInfoCardState((current) => reduceElectricalMapInfoCard(current, {
+      type: 'dismissed',
+      reason,
+    }));
+    if (returnFocus && nodeId) {
       window.requestAnimationFrame(() => nodeButtonRefs.current.get(nodeId)?.focus({ preventScroll: true }));
     }
   }
 
   useEffect(() => {
-    if (!detailsOpen) return;
-    const returnNodeId = selectedNode?.id;
+    if (!infoCardNodeId) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
-      setDetailsOpen(false);
-      if (returnNodeId) {
-        window.requestAnimationFrame(() => nodeButtonRefs.current.get(returnNodeId)?.focus({ preventScroll: true }));
-      }
+      setInfoCardState((current) => reduceElectricalMapInfoCard(current, {
+        type: 'dismissed',
+        reason: 'escape',
+      }));
+      window.requestAnimationFrame(() => nodeButtonRefs.current.get(infoCardNodeId)?.focus({ preventScroll: true }));
     };
     window.addEventListener('keydown', handleEscape);
     return () => window.removeEventListener('keydown', handleEscape);
-  }, [detailsOpen, selectedNode?.id]);
+  }, [infoCardNodeId]);
+
+  useEffect(() => {
+    if (!infoCardNodeId) return;
+    const handleOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (infoCardRef.current?.contains(target)) return;
+      if ([...nodeButtonRefs.current.values()].some((button) => button.contains(target))) return;
+      setInfoCardState((current) => reduceElectricalMapInfoCard(current, {
+        type: 'dismissed',
+        reason: 'outside',
+      }));
+    };
+    window.addEventListener('pointerdown', handleOutsidePointer, true);
+    return () => window.removeEventListener('pointerdown', handleOutsidePointer, true);
+  }, [infoCardNodeId]);
 
   useEffect(() => {
     const nodeId = pendingRevealNodeIdRef.current;
@@ -579,6 +640,12 @@ export function ElectricalTreeCanvas({
     });
   }
 
+  function clearNodeHoldTimer(drag: NodePointerDrag) {
+    if (drag.holdTimer === null) return;
+    window.clearTimeout(drag.holdTimer);
+    drag.holdTimer = null;
+  }
+
   function beginNodePointerDrag(
     event: ReactPointerEvent<HTMLButtonElement>,
     nodeId: string,
@@ -591,12 +658,11 @@ export function ElectricalTreeCanvas({
     }
     const centre = workspace.draft.nodes.find((item) => item.nodeId === nodeId);
     if (!centre) return false;
-    event.preventDefault();
     event.stopPropagation();
     pointerFocusRef.current = true;
     event.currentTarget.focus({ preventScroll: true });
     event.currentTarget.setPointerCapture(event.pointerId);
-    nodeDragRef.current = {
+    const drag: NodePointerDrag = {
       pointerId: event.pointerId,
       nodeId,
       startClientX: event.clientX,
@@ -604,9 +670,36 @@ export function ElectricalTreeCanvas({
       originCenterX: centre.centerX,
       originCenterY: centre.centerY,
       scale: viewport.scale,
-      started: false,
+      phase: 'pressing',
+      holdTimer: null,
+      lastClientX: event.clientX,
+      lastClientY: event.clientY,
+      dragStartClientX: event.clientX,
+      dragStartClientY: event.clientY,
       element: event.currentTarget,
     };
+    nodeDragRef.current = drag;
+    drag.holdTimer = window.setTimeout(() => {
+      const current = nodeDragRef.current;
+      if (
+        !current
+        || current.pointerId !== drag.pointerId
+        || current.nodeId !== drag.nodeId
+        || current.phase !== 'pressing'
+      ) return;
+      const item = completeLayoutById.get(current.nodeId);
+      if (!item) {
+        cancelNodePointerDrag(current.nodeId);
+        return;
+      }
+      current.holdTimer = null;
+      current.phase = electricalTreePointerGestureTransition(current.phase, { type: 'hold' });
+      current.dragStartClientX = current.lastClientX;
+      current.dragStartClientY = current.lastClientY;
+      setInfoCardState(CLOSED_ELECTRICAL_MAP_INFO_CARD);
+      setDraggedNodeId(current.nodeId);
+      setLayoutAnnouncement(`Selected ${nodeTitle(item.node)}. Drag to move it, or release to keep it selected. Escape cancels.`);
+    }, ELECTRICAL_TREE_HOLD_DELAY_MS);
     setSelectedNodeId(nodeId);
     return true;
   }
@@ -614,21 +707,46 @@ export function ElectricalTreeCanvas({
   function moveNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>) {
     const drag = nodeDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const clientDeltaX = event.clientX - drag.startClientX;
-    const clientDeltaY = event.clientY - drag.startClientY;
-    if (!drag.started && !electricalTreePointerDragStarted(
-      clientDeltaX,
-      clientDeltaY,
-      NODE_DRAG_THRESHOLD_PX,
-    )) return;
+    drag.lastClientX = event.clientX;
+    drag.lastClientY = event.clientY;
+
+    if (drag.phase === 'pressing') {
+      const phase = electricalTreePointerGestureTransition(drag.phase, {
+        type: 'move',
+        deltaX: event.clientX - drag.startClientX,
+        deltaY: event.clientY - drag.startClientY,
+      });
+      if (phase === 'pressing') return;
+      drag.phase = phase;
+      clearNodeHoldTimer(drag);
+      suppressNextNodeClick(drag.nodeId);
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (drag.phase === 'cancelled') {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    const clientDeltaX = event.clientX - drag.dragStartClientX;
+    const clientDeltaY = event.clientY - drag.dragStartClientY;
+    if (drag.phase === 'held') {
+      const nextPhase = electricalTreePointerGestureTransition(drag.phase, {
+        type: 'move',
+        deltaX: clientDeltaX,
+        deltaY: clientDeltaY,
+      });
+      if (nextPhase === 'held') return;
+      drag.phase = nextPhase;
+      const item = completeLayoutById.get(drag.nodeId);
+      if (item) setLayoutAnnouncement(`Moving ${nodeTitle(item.node)}. Use Escape to cancel.`);
+    }
+
     event.preventDefault();
     event.stopPropagation();
-    if (!drag.started) {
-      drag.started = true;
-      setDetailsOpen(false);
-      setDraggedNodeId(drag.nodeId);
-      setLayoutAnnouncement(`Moving ${nodeTitle(completeLayoutById.get(drag.nodeId)!.node)}. Use Escape to cancel.`);
-    }
     const delta = electricalTreePointerDelta(clientDeltaX, clientDeltaY, drag.scale);
     queueNodeCenter(
       drag.nodeId,
@@ -640,13 +758,24 @@ export function ElectricalTreeCanvas({
   function finishNodePointerDrag(event: ReactPointerEvent<HTMLButtonElement>) {
     const drag = nodeDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    clearNodeHoldTimer(drag);
     nodeDragRef.current = null;
-    if (drag.started) {
+    const item = completeLayoutById.get(drag.nodeId);
+    if (drag.phase === 'dragging') {
       event.preventDefault();
       event.stopPropagation();
       flushPendingNodeCenter();
       suppressNextNodeClick(drag.nodeId);
-      setLayoutAnnouncement(`${nodeTitle(completeLayoutById.get(drag.nodeId)!.node)} moved. Save the layout to use it in reports.`);
+      if (item) setLayoutAnnouncement(`${nodeTitle(item.node)} moved. Save the layout to use it in reports.`);
+    } else if (drag.phase === 'held') {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextNodeClick(drag.nodeId);
+      if (item) setLayoutAnnouncement(`${nodeTitle(item.node)} selected. Press and hold again to move it.`);
+    } else if (drag.phase === 'cancelled') {
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextNodeClick(drag.nodeId);
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -658,15 +787,18 @@ export function ElectricalTreeCanvas({
   function cancelNodePointerDrag(nodeId?: string) {
     const drag = nodeDragRef.current;
     if (!drag || (nodeId && drag.nodeId !== nodeId)) return;
+    clearNodeHoldTimer(drag);
+    suppressNextNodeClick(drag.nodeId);
     nodeDragRef.current = null;
     pendingNodeCenterRef.current = null;
     if (nodeDragFrameRef.current !== null) {
       window.cancelAnimationFrame(nodeDragFrameRef.current);
       nodeDragFrameRef.current = null;
     }
-    if (drag.started) {
+    const item = completeLayoutById.get(drag.nodeId);
+    if (drag.phase === 'dragging') {
       applyNodeCenter(drag.nodeId, drag.originCenterX, drag.originCenterY);
-      setLayoutAnnouncement(`Move cancelled for ${nodeTitle(completeLayoutById.get(drag.nodeId)!.node)}.`);
+      if (item) setLayoutAnnouncement(`Move cancelled for ${nodeTitle(item.node)}.`);
     }
     if (drag.element.hasPointerCapture(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId);
     pointerFocusRef.current = false;
@@ -740,9 +872,9 @@ export function ElectricalTreeCanvas({
       setArrangeMode(false);
       setLayoutAnnouncement('Arrange mode off. Symbols select their records normally.');
     } else {
-      setDetailsOpen(false);
+      setInfoCardState(CLOSED_ELECTRICAL_MAP_INFO_CARD);
       setArrangeMode(true);
-      setLayoutAnnouncement('Arrange mode on. Drag any symbol, or focus it and press Enter or Space to move it with the keyboard.');
+      setLayoutAnnouncement('Arrange mode on. Press and hold a symbol before dragging, or focus it and press Enter or Space to move it with the keyboard.');
     }
   }
 
@@ -897,34 +1029,6 @@ export function ElectricalTreeCanvas({
     window.setTimeout(() => { didPanRef.current = false; }, 0);
   }
 
-  const tooltipNode = tooltipLayoutNode?.node;
-  const tooltipScreenTop = tooltipLayoutNode
-    ? viewport.y + tooltipLayoutNode.y * viewport.scale
-    : 0;
-  const tooltipScreenBottom = tooltipLayoutNode
-    ? viewport.y + (tooltipLayoutNode.y + tooltipLayoutNode.height) * viewport.scale
-    : 0;
-  const tooltipSpaceAbove = tooltipScreenTop;
-  const tooltipSpaceBelow = viewportSize.height - tooltipScreenBottom;
-  const tooltipBelow = tooltipSpaceBelow >= 220 || tooltipSpaceBelow >= tooltipSpaceAbove;
-  const tooltipHalfWidth = Math.min(144, Math.max(100, viewportSize.width / 2 - 12));
-  const tooltipScreenLeft = tooltipLayoutNode && viewportSize.width
-    ? Math.min(
-      viewportSize.width - tooltipHalfWidth,
-      Math.max(
-        tooltipHalfWidth,
-        viewport.x + (tooltipLayoutNode.x + tooltipLayoutNode.width / 2) * viewport.scale,
-      ),
-    )
-    : 0;
-  const tooltipStyle = tooltipNode && viewportSize.width && tooltipInteraction && !detailsOpen && !arranging && !panning && !draggedNodeId
-    ? {
-      left: tooltipScreenLeft,
-      top: tooltipBelow ? tooltipScreenBottom + 12 : tooltipScreenTop - 12,
-      transform: tooltipBelow ? 'translateX(-50%)' : 'translate(-50%, -100%)',
-    }
-    : null;
-
   if (!layout.nodes.length) {
     return <p className="mt-4 text-sm text-[var(--text-sub)]">No confirmed electrical items are available for the visual map.</p>;
   }
@@ -937,7 +1041,7 @@ export function ElectricalTreeCanvas({
           <div className="min-w-0">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--primary)]">Electrical system overview</p>
             <h3 id="electrical-tree-heading" className="mt-1 text-base font-extrabold text-[var(--text)]">{tree.installation.siteName}</h3>
-            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the top · switchboards and equipment aligned by supply level · hover or focus for a summary, click or tap for full details{onSaveLayout ? ' · drag any symbol to reposition it' : ''}</p>
+            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the top · switchboards and equipment aligned by supply level · click or tap one symbol for a compact summary{onSaveLayout ? ' · press and hold before dragging it' : ''}</p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-bold text-[var(--text-sub)]" aria-label="Electrical map summary">
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.boards} switchboard{mapSummary.boards === 1 ? '' : 's'}</span>
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.meters} meter{mapSummary.meters === 1 ? '' : 's'}</span>
@@ -997,11 +1101,11 @@ export function ElectricalTreeCanvas({
               <span>{workspace.phase === 'error' ? workspace.error : workspace.phase === 'saving' ? 'Saving layout…' : layoutDirty ? 'Layout changes not saved' : model.mapLayout ? 'Layout saved for reports' : 'Automatic layout'}</span>
             </div>
             {visibleNodeIds ? <p className="w-full text-xs font-semibold text-[var(--amber)]">Clear the map search to arrange the complete electrical system.</p> : null}
-            {!visibleNodeIds && onSaveLayout ? <p className="w-full text-xs font-semibold text-[var(--text-sub)]">Drag any symbol to move it; click without moving to open its details. Choose Arrange items for keyboard controls.</p> : null}
+            {!visibleNodeIds && onSaveLayout ? <p className="w-full text-xs font-semibold text-[var(--text-sub)]">Press and hold a symbol, then drag to move it. A quick click only opens its compact summary. On touch, Arrange items enables full two-axis movement; it also enables keyboard controls.</p> : null}
           </div>
         ) : null}
-        <p id="electrical-arrange-instructions" className="sr-only">In Arrange mode, drag a symbol with a pointer. With a keyboard, focus a symbol and press Enter or Space to pick it up, use arrow keys to move it, then press Enter or Space to finish. Press Escape to cancel.</p>
-        <p id="electrical-pointer-drag-instructions" className="sr-only">Drag this symbol to reposition it. A click or tap without movement opens its details.</p>
+        <p id="electrical-arrange-instructions" className="sr-only">In Arrange mode, press and hold a symbol before dragging it. With a keyboard, focus a symbol and press Enter or Space to pick it up, use arrow keys to move it, then press Enter or Space to finish. Press Escape to cancel.</p>
+        <p id="electrical-pointer-drag-instructions" className="sr-only">Press and hold this symbol before dragging it. A quick click or tap opens one compact summary.</p>
         <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{layoutAnnouncement}</p>
         <div className="relative">
           <div
@@ -1050,7 +1154,22 @@ export function ElectricalTreeCanvas({
                 const source = layoutById.get(edge.sourceNodeId);
                 const target = layoutById.get(edge.targetNodeId);
                 if (!source || !target) return null;
-                return <path key={edge.id} data-connector-geometry="straight" d={electricalTreeStraightPath(source, target, { sourceYOffset: 13, targetYOffset: 13 })} fill="none" stroke="var(--primary)" strokeWidth="2.25" strokeDasharray="6 7" strokeLinecap="round" opacity="0.62" />;
+                const channelIds = measurementChannelsByEdgeId.get(edge.id) || [];
+                const boardChannels = boardChannelsById.get(edge.sourceNodeId) || [];
+                const channelPoint = channelIds.flatMap((channelId) => {
+                  const point = boardChannelConnectorPoint(source, boardChannels, channelId);
+                  return point ? [{ channelId, point }] : [];
+                })[0];
+                const connectorSource: ElectricalTreeLayoutNode = channelPoint
+                  ? {
+                    ...source,
+                    x: channelPoint.point.x - 0.5,
+                    y: channelPoint.point.y - 0.5,
+                    width: 1,
+                    height: 1,
+                  }
+                  : source;
+                return <path key={edge.id} data-channel-map={channelIds.join(',') || undefined} data-channel-port-id={channelPoint?.channelId} data-connector-origin={channelPoint ? 'channel-port' : 'board'} data-connector-geometry="straight" d={electricalTreeStraightPath(connectorSource, target, { targetYOffset: 13 })} fill="none" stroke="var(--primary)" strokeWidth="2.25" strokeDasharray="6 7" strokeLinecap="round" opacity="0.7" />;
               })}
             </svg>
             {layout.nodes.map((item, index) => {
@@ -1061,6 +1180,7 @@ export function ElectricalTreeCanvas({
               const summary = cardSummaryById.get(item.node.id) || { devices: [], loadLabels: [], assignedAssets: [] };
               const interaction = interactionSummaryById.get(item.node.id)
                 || electricalMapNodeInteractionSummary(tree, model, item.node.id);
+              const boardChannels = boardChannelsById.get(item.node.id);
               const coverage = item.node.coverageState ? COVERAGE_PRESENTATION[item.node.coverageState] : undefined;
               const primaryLabel = item.node.kind === 'SITE_ASSET' || item.node.kind === 'BOARD'
                 ? 'Symbol'
@@ -1088,8 +1208,8 @@ export function ElectricalTreeCanvas({
               const nodeActionLabel = arranging
                 ? `Arrange ${symbolLabel}`
                 : pointerDraggingAvailable
-                  ? `Open details for ${symbolLabel} or drag it to move`
-                  : `Open details for ${symbolLabel}`;
+                  ? `Open a summary for ${symbolLabel}, or press and hold before dragging it`
+                  : `Open a summary for ${symbolLabel}`;
               return (
                 <button
                   key={item.node.id}
@@ -1099,23 +1219,22 @@ export function ElectricalTreeCanvas({
                   }}
                   type="button"
                   data-electrical-node-id={item.node.id}
-                  className={`group absolute overflow-visible rounded-[2rem] border border-transparent bg-transparent p-1 text-center transition-[filter] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-4 focus-visible:ring-offset-[#F8FBFF] ${moving ? 'cursor-grabbing' : pointerDraggingAvailable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'} hover:brightness-[0.97] ${moving ? 'z-20 drop-shadow-[0_14px_24px_rgba(30,64,175,0.24)]' : selected ? 'z-10' : ''}`}
+                  data-pointer-gesture={moving ? 'held-or-dragging' : 'idle'}
+                  className={`group absolute overflow-visible rounded-[2rem] border border-transparent bg-transparent p-1 text-center transition-[filter] duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-4 focus-visible:ring-offset-[#F8FBFF] ${moving ? 'cursor-grabbing' : 'cursor-pointer'} hover:brightness-[0.97] ${moving ? 'z-20 drop-shadow-[0_14px_24px_rgba(30,64,175,0.24)]' : selected ? 'z-10' : ''}`}
                   style={{
                     left: `${item.x}px`,
                     top: `${item.y}px`,
                     width: `${item.width}px`,
                     height: `${item.height}px`,
-                    touchAction: pointerDraggingAvailable ? 'none' : undefined,
+                    touchAction: arranging ? 'none' : 'pan-y pinch-zoom',
                   }}
-                  aria-label={`${nodeActionLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : pointerDraggingAvailable ? '. Drag to reposition, or click or press Enter to open item details.' : '. Click or press Enter to open item details.'}`}
-                  aria-controls="electrical-node-details-panel"
-                  aria-describedby={[
-                    arranging ? 'electrical-arrange-instructions' : pointerDraggingAvailable ? 'electrical-pointer-drag-instructions' : '',
-                    tooltipNodeId === item.node.id ? 'electrical-map-node-tooltip' : '',
-                  ].filter(Boolean).join(' ') || undefined}
+                  aria-label={`${nodeActionLabel}: ${nodeTitle(item.node)}. ${ariaDetails}${arranging ? '. Press Enter or Space to move with the keyboard.' : pointerDraggingAvailable ? '. Press and hold before dragging, or click or press Enter for a compact summary.' : '. Click or press Enter for a compact summary.'}`}
+                  aria-controls={infoCardNodeId === item.node.id ? 'electrical-map-info-card' : undefined}
+                  aria-haspopup="dialog"
+                  aria-describedby={arranging ? 'electrical-arrange-instructions' : pointerDraggingAvailable ? 'electrical-pointer-drag-instructions' : undefined}
                   aria-keyshortcuts={arranging ? 'Enter Space ArrowUp ArrowDown ArrowLeft ArrowRight Escape' : undefined}
                   aria-level={item.depth + 1}
-                  aria-roledescription={arranging ? 'draggable electrical map item' : undefined}
+                  aria-roledescription={arranging || pointerDraggingAvailable ? 'hold-draggable electrical map item' : undefined}
                   aria-selected={selected}
                   role="treeitem"
                   tabIndex={item.node.id === focusableNodeId ? 0 : -1}
@@ -1132,23 +1251,18 @@ export function ElectricalTreeCanvas({
                       setSelectedNodeId(item.node.id);
                       return;
                     }
-                    openNodeDetails(item.node.id);
+                    toggleNodeInfo(item.node.id);
+                  }}
+                  onContextMenu={(event) => {
+                    if (pointerDraggingAvailable) event.preventDefault();
                   }}
                   onDoubleClick={(event) => event.stopPropagation()}
                   onFocus={() => {
                     setSelectedNodeId(item.node.id);
-                    setFocusedNodeId(item.node.id);
                     if (!pointerFocusRef.current) centerNode(item.node.id);
                   }}
                   onBlur={() => {
-                    setFocusedNodeId((current) => current === item.node.id ? null : current);
                     if (keyboardDrag?.nodeId === item.node.id) cancelKeyboardNodeDrag();
-                  }}
-                  onPointerEnter={(event) => {
-                    if (event.pointerType !== 'touch') setHoveredNodeId(item.node.id);
-                  }}
-                  onPointerLeave={() => {
-                    setHoveredNodeId((current) => current === item.node.id ? null : current);
                   }}
                   onKeyDown={(event) => handleNodeKeyDown(event, item.node.id, index)}
                   onLostPointerCapture={() => cancelNodePointerDrag(item.node.id)}
@@ -1164,9 +1278,9 @@ export function ElectricalTreeCanvas({
                     else pointerFocusRef.current = false;
                   }}
                 >
-                  <span className="flex h-full w-full flex-col items-center justify-center text-center">
+                  <span className="flex h-full w-full flex-col items-center justify-start pt-1 text-center">
                     {coverage && item.node.kind === 'SITE_ASSET' ? (
-                      <span className={`absolute right-0 top-0 z-10 rounded-full border border-white px-2 py-0.5 text-[7px] font-extrabold uppercase tracking-wide shadow-sm ${coverage.className}`} title={`Coverage: ${coverage.label}`}>{coverage.label}</span>
+                      <span className={`absolute right-0 top-0 z-10 rounded-full border border-white px-2 py-0.5 text-[7px] font-extrabold uppercase tracking-wide shadow-sm ${coverage.className}`}>{coverage.label}</span>
                     ) : null}
                     <span
                       className={`relative flex shrink-0 items-center justify-center rounded-full border-2 shadow-[0_10px_30px_rgba(15,23,42,0.10)] transition-[box-shadow,border-color,background-color] duration-200 group-hover:shadow-[0_14px_34px_rgba(30,64,175,0.16)] ${presentation.haloClassName} ${item.node.kind === 'VIRTUAL_RESIDUAL' ? 'border-dashed' : ''} ${selected ? 'ring-4 ring-[var(--primary)]/20 ring-offset-4 ring-offset-[#F8FBFF]' : ''}`}
@@ -1176,6 +1290,7 @@ export function ElectricalTreeCanvas({
                       <ElectricalMapSymbol
                         name={symbol}
                         size={visualSize.iconSize}
+                        channels={boardChannels}
                       />
                       {item.node.kind === 'BOARD' && interaction.meterCount ? (
                         <span className="absolute -bottom-2 left-1/2 inline-flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-[var(--green)]/25 bg-white px-2 py-1 text-[8px] font-extrabold text-[var(--green)] shadow-sm">
@@ -1190,8 +1305,8 @@ export function ElectricalTreeCanvas({
                     </span>
                     {item.node.kind === 'SITE_ASSET' ? (
                       <span className="mt-1.5 flex max-w-full flex-wrap justify-center gap-1 text-[7px] font-extrabold leading-3">
-                        <span className="max-w-full truncate rounded-full border border-[var(--green)]/25 bg-[var(--green-soft)] px-1.5 py-0.5 text-[var(--green)]" title={`Load type: ${interaction.loadLabels.join(', ') || item.node.typeLabel || symbolLabel}`}>Load · {interaction.loadLabels.length ? compactList(interaction.loadLabels, 1) : item.node.typeLabel || symbolLabel}</span>
-                        {interaction.assignedChannelCount ? <span className="rounded-full border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-1.5 py-0.5 text-[var(--primary)]" title={`${interaction.meterCount} assigned meter${interaction.meterCount === 1 ? '' : 's'}, ${interaction.assignedChannelCount} assigned channel${interaction.assignedChannelCount === 1 ? '' : 's'}`}>{interaction.meterCount}m · {interaction.assignedChannelCount}ch</span> : null}
+                        <span className="max-w-full truncate rounded-full border border-[var(--green)]/25 bg-[var(--green-soft)] px-1.5 py-0.5 text-[var(--green)]">Load · {interaction.loadLabels.length ? compactList(interaction.loadLabels, 1) : item.node.typeLabel || symbolLabel}</span>
+                        {interaction.assignedChannelCount ? <span className="rounded-full border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-1.5 py-0.5 text-[var(--primary)]">{interaction.meterCount}m · {interaction.assignedChannelCount}ch</span> : null}
                       </span>
                     ) : item.node.kind === 'GRID' || item.node.kind === 'BOARD' ? (
                       <>
@@ -1208,36 +1323,59 @@ export function ElectricalTreeCanvas({
           </div>
             {viewport.scale < 0.28 ? <p className="pointer-events-none absolute bottom-3 left-3 rounded-lg border border-[var(--border)] bg-[var(--surface)]/95 px-3 py-2 text-xs font-bold text-[var(--text-sub)] shadow-[var(--shadow-sm)]">Overview mode · zoom in to read and select nodes</p> : null}
           </div>
-          {tooltipStyle && tooltipNode && tooltipInteraction ? (
-            <div
-              id="electrical-map-node-tooltip"
-              role="tooltip"
-              className="pointer-events-none absolute z-[70] w-[min(18rem,calc(100vw-1.5rem))] rounded-xl border border-slate-200 bg-slate-950 px-3 py-2.5 text-left text-white shadow-2xl"
-              style={tooltipStyle}
+          {infoCardNode && infoCardInteraction && !arranging && !draggedNodeId ? (
+            <aside
+              ref={infoCardRef}
+              id="electrical-map-info-card"
+              data-electrical-info-card={infoCardNode.id}
+              aria-labelledby="electrical-map-info-card-heading"
+              role="dialog"
+              tabIndex={-1}
+              className="fixed bottom-3 left-3 right-3 z-[70] flex w-auto max-w-[20rem] flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] sm:left-auto sm:right-3 sm:w-[20rem]"
+              style={{
+                bottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+                maxHeight: 'min(18rem, calc(100dvh - 1.5rem))',
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
             >
-              <p className="text-[9px] font-extrabold uppercase tracking-[0.12em] text-cyan-200">{electricalMapSymbolLabel(electricalMapSymbolForNode(tooltipNode))}</p>
-              <p className="mt-1 text-sm font-extrabold leading-5">{nodeTitle(tooltipNode)}</p>
-              <dl className="mt-2 space-y-1 text-[11px] leading-4 text-slate-200">
-                <div><dt className="inline font-extrabold text-white">Load: </dt><dd className="inline">{tooltipInteraction.loadLabels.length ? compactList(tooltipInteraction.loadLabels, 2) : 'No confirmed load label'}</dd></div>
-                {(tooltipNode.kind === 'GRID' || tooltipNode.kind === 'BOARD') ? (
-                  <div><dt className="inline font-extrabold text-white">Scope: </dt><dd className="inline">{tooltipInteraction.downstreamLoadCount} downstream load{tooltipInteraction.downstreamLoadCount === 1 ? '' : 's'} · {tooltipInteraction.activeChannelCount} active channel{tooltipInteraction.activeChannelCount === 1 ? '' : 's'}</dd></div>
-                ) : null}
-                <div><dt className="inline font-extrabold text-white">Metering: </dt><dd className="inline">{tooltipInteraction.meterCount} meter{tooltipInteraction.meterCount === 1 ? '' : 's'} · {tooltipInteraction.assignedChannelCount} assigned channel{tooltipInteraction.assignedChannelCount === 1 ? '' : 's'}</dd></div>
-                {tooltipInteraction.meters.slice(0, 2).map((meter) => (
-                  <div key={meter.id} className="border-t border-white/10 pt-1">
-                    <dt className="font-extrabold text-white">{meter.name}{meter.serialNumber ? ` · ${meter.serialNumber}` : ''}</dt>
-                    <dd>{meter.assignedChannels.length ? compactList(meter.assignedChannels.map((channel) => channel.label), 2) : `${meter.installedChannelCount} installed channels · no confirmed assignment`}</dd>
+              <p className="sr-only" aria-live="polite" aria-atomic="true">Selected {NODE_PRESENTATION[infoCardNode.kind].label}: {nodeTitle(infoCardNode)}.</p>
+              <div className="flex shrink-0 items-start justify-between gap-2 border-b border-[var(--border)] bg-[var(--surface2)] px-3 py-2.5">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <ElectricalMapSymbol name={electricalMapSymbolForNode(infoCardNode)} size={36} className="shrink-0" />
+                  <div className="min-w-0">
+                    <p className="text-[9px] font-extrabold uppercase tracking-[0.1em] text-[var(--primary)]">{NODE_PRESENTATION[infoCardNode.kind].label}</p>
+                    <h3 id="electrical-map-info-card-heading" className="truncate text-sm font-extrabold leading-5 text-[var(--text)]">{nodeTitle(infoCardNode)}</h3>
                   </div>
-                ))}
-              </dl>
-              <p className="mt-2 border-t border-white/15 pt-2 text-[10px] font-bold text-cyan-100">Click or press Enter for item details</p>
-            </div>
+                </div>
+                <Button variant="ghost" className="min-h-10 w-10 shrink-0 px-0 text-lg" aria-label="Close item summary" onClick={() => dismissInfoCard('close-button', true)}>×</Button>
+              </div>
+              <div className="min-h-0 overflow-y-auto px-3 py-2.5 text-xs leading-4 text-[var(--text-sub)]">
+                <dl className="space-y-1.5">
+                  <div><dt className="inline font-extrabold text-[var(--text)]">Location: </dt><dd className="inline">{nodeZone(tree, infoCardNode)}</dd></div>
+                  <div><dt className="inline font-extrabold text-[var(--text)]">{infoCardNode.kind === 'VIRTUAL_RESIDUAL' ? 'Calculated from' : 'Supplied from'}: </dt><dd className="inline">{infoCardParent ? <button type="button" className="font-bold text-[var(--primary)] underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(infoCardParent.id)}>{nodeTitle(infoCardParent)}</button> : 'Grid root'}</dd></div>
+                  <div><dt className="inline font-extrabold text-[var(--text)]">Load: </dt><dd className="inline">{infoCardInteraction.loadLabels.length ? compactList(infoCardInteraction.loadLabels, 2) : infoCardNode.typeLabel || 'No confirmed load label'}</dd></div>
+                </dl>
+                <p className="mt-2 border-y border-[var(--border)] py-2 font-bold text-[var(--text)]">{infoCardInteraction.downstreamLoadCount} load{infoCardInteraction.downstreamLoadCount === 1 ? '' : 's'} · {infoCardInteraction.meterCount} meter{infoCardInteraction.meterCount === 1 ? '' : 's'} · {infoCardInteraction.assignedChannelCount} mapped channel{infoCardInteraction.assignedChannelCount === 1 ? '' : 's'}</p>
+                {infoCardChannels.length ? (
+                  <div className="mt-2">
+                    <p className="text-[9px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Channel mapping</p>
+                    <ul className="mt-1 space-y-1">
+                      {infoCardChannels.slice(0, 2).map((channel) => (
+                        <li key={`${channel.meterId}:${channel.id}`} className="truncate"><strong className="text-[var(--primary)]">{channel.meterName}</strong> · {channel.label}</li>
+                      ))}
+                    </ul>
+                    {infoCardChannels.length > 2 ? <p className="mt-1 font-bold text-[var(--primary)]">+{infoCardChannels.length - 2} more mapped channels</p> : null}
+                  </div>
+                ) : null}
+                <LinkButton href={getNodeHref(infoCardNode)} className="mt-2.5 w-full">Open full record<Icon name="arrow-right" size={15} /></LinkButton>
+              </div>
+            </aside>
           ) : null}
         </div>
         <div id="electrical-tree-key" className="border-t border-[var(--border)] bg-white px-4 py-4" aria-labelledby="electrical-tree-key-heading">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h4 id="electrical-tree-key-heading" className="text-sm font-extrabold text-[var(--text)]">How to read this map</h4>
-            <p className="text-[11px] text-[var(--text-sub)]">Every transparent symbol represents a real confirmed item · select one for the complete record</p>
+            <p className="text-[11px] text-[var(--text-sub)]">Every schematic symbol represents one confirmed item · select one for a compact summary</p>
           </div>
           <div className="mt-3 grid gap-4 lg:grid-cols-[0.8fr_1.5fr_1.2fr]">
             <section aria-labelledby="electrical-node-symbols-heading">
@@ -1277,184 +1415,15 @@ export function ElectricalTreeCanvas({
                 <h5 id="electrical-status-heading" className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">Coverage</h5>
                 <ul className="mt-2 flex flex-wrap gap-1.5 text-[9px]">
                 {Object.entries(COVERAGE_PRESENTATION).map(([state, status]) => (
-                  <li key={state}><span className={`inline-flex rounded-full px-2 py-0.5 font-extrabold uppercase tracking-wide ${status.className}`} title={state === 'DIRECT' ? 'Confirmed direct meter assignment' : state === 'VIRTUAL' ? 'Covered through a calculated residual' : state === 'UNMETERED' ? 'Confirmed without direct metering' : 'Residual load not assigned to an asset'}>{status.label}</span></li>
+                  <li key={state}><span className={`inline-flex rounded-full px-2 py-0.5 font-extrabold uppercase tracking-wide ${status.className}`}>{status.label}</span></li>
                 ))}
                 </ul>
               </div>
             </section>
           </div>
-          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> hover or focus a symbol for a summary, then click or tap it for the item detail panel; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Drag any symbol to reposition it, then save the layout for reports; Arrange items also enables keyboard movement.' : ''} Items still to be confirmed stay outside this client view.</p>
+          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> click or tap a symbol to show the one compact summary card; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Press and hold a symbol before dragging it, then save the layout for reports; Arrange items also enables keyboard movement.' : ''} Items still to be confirmed stay outside this client view.</p>
         </div>
       </section>
-
-      {detailsOpen && selectedNode && selectedContext ? (
-        <aside
-          ref={detailsPanelRef}
-          id="electrical-node-details-panel"
-          aria-labelledby="electrical-node-details-heading"
-          tabIndex={-1}
-          className="fixed inset-x-0 bottom-0 z-[65] flex max-h-[min(80vh,42rem)] flex-col overflow-hidden rounded-t-2xl border border-[var(--border)] bg-[var(--surface)] shadow-2xl focus:outline-none sm:inset-x-auto sm:bottom-4 sm:right-4 sm:top-4 sm:max-h-none sm:w-[min(28rem,calc(100vw-2rem))] sm:rounded-2xl"
-          onKeyDown={(event) => {
-            if (event.key !== 'Escape') return;
-            event.preventDefault();
-            event.stopPropagation();
-            closeNodeDetails();
-          }}
-        >
-          <p className="sr-only" aria-live="polite" aria-atomic="true">Selected {NODE_PRESENTATION[selectedNode.kind].label}: {nodeTitle(selectedNode)}.</p>
-          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-[var(--border)] bg-[var(--surface2)] p-4">
-            <div className="min-w-0">
-              <span className="inline-flex items-center gap-2 text-xs font-extrabold uppercase tracking-[0.08em] text-[var(--text-sub)]">
-                <ElectricalMapSymbol name={electricalMapSymbolForNode(selectedNode)} size={24} />
-                {NODE_PRESENTATION[selectedNode.kind].label}
-              </span>
-              <h3 id="electrical-node-details-heading" className="mt-2 break-words text-lg font-extrabold leading-6 text-[var(--text)]">{nodeTitle(selectedNode)}</h3>
-              {selectedNode.typeLabel ? <p className="mt-1 text-xs font-semibold text-[var(--text-sub)]">{selectedNode.typeLabel}</p> : null}
-            </div>
-            <Button variant="ghost" className="min-h-11 w-11 shrink-0 px-0 text-xl" aria-label="Close item details" onClick={closeNodeDetails}>×</Button>
-          </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-            <dl className="grid grid-cols-2 gap-2">
-              {[
-                ['Child branches', selectedChildren.length + selectedDerivedChildren.length],
-                [selectedNode.kind === 'SITE_ASSET' ? 'Load' : 'Downstream loads', selectedInteraction.downstreamLoadCount],
-                ['Meters', selectedInteraction.meterCount],
-                ['Assigned channels', selectedInteraction.assignedChannelCount],
-              ].map(([label, value]) => (
-                <div key={label} className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-2.5">
-                  <dt className="text-[10px] font-bold uppercase tracking-wide text-[var(--muted)]">{label}</dt>
-                  <dd className="mt-1 text-xl font-extrabold text-[var(--text)]">{value}</dd>
-                </div>
-              ))}
-            </dl>
-
-            <div>
-              <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Load</p>
-              {selectedInteraction.loadLabels.length ? (
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {selectedInteraction.loadLabels.map((label) => <span key={label} className="rounded-full border border-[var(--green)]/25 bg-[var(--green-soft)] px-2.5 py-1 text-xs font-bold text-[var(--green)]">{label}</span>)}
-                </div>
-              ) : <p className="mt-1 text-xs text-[var(--text-sub)]">No confirmed load label</p>}
-            </div>
-
-            <div>
-              <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Location and coverage</p>
-              <p className="mt-1 text-sm font-bold text-[var(--text)]">{nodeZone(tree, selectedNode)}</p>
-              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">{selectedNode.coverageState ? selectedNode.coverageState.replaceAll('_', ' ').toLowerCase() : 'No coverage state on this node'}</p>
-            </div>
-
-            {selectedDerivedParent ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Calculated residual of</p>
-                <button type="button" className="mt-1 min-h-11 w-full cursor-pointer rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface2)] px-3 py-2 text-left text-xs font-bold text-[var(--primary)] transition-colors hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(selectedDerivedParent.id)}>{nodeTitle(selectedDerivedParent)}</button>
-                <p className="mt-1.5 text-xs leading-5 text-[var(--text-sub)]">Formula containment only · version {selectedNode.formulaVersion || 'not supplied'}</p>
-              </div>
-            ) : (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Supplied from</p>
-                {selectedParent ? (
-                  <button type="button" className="mt-1 min-h-11 w-full cursor-pointer rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-left text-xs font-bold text-[var(--primary)] transition-colors hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(selectedParent.id)}>{nodeTitle(selectedParent)}</button>
-                ) : <p className="mt-1 text-xs text-[var(--text-sub)]">Root of this confirmed tree</p>}
-              </div>
-            )}
-
-            {selectedChildren.length ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Direct children</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {selectedChildren.map((child) => <button key={child.id} type="button" className="min-h-11 cursor-pointer rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-2.5 py-2 text-left text-xs font-bold text-[var(--primary)] transition-colors hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(child.id)}>{nodeTitle(child)}</button>)}
-                </div>
-              </div>
-            ) : null}
-
-            {selectedDerivedChildren.length ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Calculated residuals</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  {selectedDerivedChildren.map((child) => <button key={child.id} type="button" className="min-h-11 cursor-pointer rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface2)] px-2.5 py-2 text-left text-xs font-bold text-[var(--primary)] transition-colors hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(child.id)}>{nodeTitle(child)}</button>)}
-                </div>
-              </div>
-            ) : null}
-
-            {downstreamAssets.length ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">{selectedNode.kind === 'SITE_ASSET' ? 'Asset' : 'Downstream assets'}</p>
-                <ul className="mt-1.5 space-y-1.5">
-                  {downstreamAssets.slice(0, 8).map((asset) => (
-                    <li key={asset.id}><button type="button" className="min-h-11 w-full cursor-pointer rounded-lg border border-[var(--border)] bg-[var(--green-soft)] px-3 py-2 text-left text-xs font-bold text-[var(--text)] transition-colors hover:border-[var(--green)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(asset.id)}>{nodeTitle(asset)}</button></li>
-                  ))}
-                </ul>
-                {downstreamAssets.length > 8 ? <p className="mt-2 text-xs font-semibold text-[var(--text-sub)]">+ {downstreamAssets.length - 8} more assets in this branch</p> : null}
-              </div>
-            ) : null}
-
-            <div>
-              <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">{selectedNode.kind === 'SITE_ASSET' ? 'Assigned meter and channels' : 'Meters and active channels'}</p>
-              {selectedInteraction.meters.length ? (
-                <ul className="mt-1.5 space-y-2">
-                  {selectedInteraction.meters.map((summaryMeter) => {
-                    const meter = allMeters.find((candidate) => candidate.id === summaryMeter.id);
-                    const href = meter ? meterRecordHref(tree, meter) : null;
-                    const content = <>
-                      <span className="block font-bold text-[var(--text)]">{summaryMeter.name}</span>
-                      <span className="mt-0.5 block text-[11px] text-[var(--text-sub)]">{summaryMeter.serialNumber ? `Serial ${summaryMeter.serialNumber} · ` : ''}{summaryMeter.installedChannelCount} installed channel{summaryMeter.installedChannelCount === 1 ? '' : 's'} · {summaryMeter.assignedChannels.length} assigned here</span>
-                      {summaryMeter.assignedChannels.length ? (
-                        <span className="mt-2 flex flex-col gap-1">
-                          {summaryMeter.assignedChannels.map((channel) => <span key={channel.id} className="rounded-md border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-2 py-1 font-semibold text-[var(--primary)]">{channel.label}</span>)}
-                        </span>
-                      ) : <span className="mt-1.5 block text-[11px] text-[var(--text-sub)]">No confirmed channel assignment for this item</span>}
-                      <span className="mt-1.5 block break-all font-mono text-[10px] text-[var(--muted)]">{summaryMeter.id}</span>
-                    </>;
-                    return <li key={summaryMeter.id}>{href ? <Link href={href} className="block min-h-11 rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-xs transition-colors hover:border-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]">{content}</Link> : <div className="rounded-lg border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-xs">{content}</div>}</li>;
-                  })}
-                </ul>
-              ) : <p className="mt-1 text-xs text-[var(--text-sub)]">No active meter or confirmed channel assignment for this item</p>}
-            </div>
-
-            {selectedMeasurementDetails.length ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Exact assigned channel rows</p>
-                <ul className="mt-1.5 space-y-2">
-                  {selectedMeasurementDetails.map(({ assignment, meter, channels }) => {
-                    const meterHref = meterRecordHref(tree, meter);
-                    return (
-                      <li key={assignment.id} className="rounded-lg border border-[var(--primary)]/25 bg-[var(--primary-soft)] p-2.5 text-xs">
-                        <p className="font-bold text-[var(--text)]">{meterDeviceName(meter)}</p>
-                        <p className="mt-0.5 text-[11px] text-[var(--text-sub)]">{meterIdentity(meter)}</p>
-                        <p className="mt-1 break-all font-mono text-[10px] text-[var(--muted)]">{meter.id}</p>
-                        <ul className="mt-2 space-y-1.5">
-                          {channels.map((channel) => {
-                            const channelIndex = meter.channels.findIndex((candidate) => candidate.id === channel.id);
-                            const channelLabel = `Channel ${channel.ordinal}${channel.phaseLabel ? ` · ${channel.phaseLabel}` : ''}`;
-                            return (
-                              <li key={channel.id} className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 py-1.5">
-                                <p className="font-bold text-[var(--text)]">{meterHref && channelIndex >= 0 ? <Link className="text-[var(--primary)] hover:underline" href={`${meterHref}#meter-channel-${channelIndex + 1}`}>{channelLabel}</Link> : channelLabel}</p>
-                                <p className="mt-0.5 text-[11px] text-[var(--text-sub)]">{channel.purpose.replaceAll('_', ' ').toLowerCase()} · {channel.customLoadTypeName || channel.loadTypeCode || 'No load type'} · {channel.sensorRating || 'No sensor rating'}{channel.description?.trim() ? ` · ${channel.description.trim()}` : ''}</p>
-                                <p className="mt-0.5 break-all font-mono text-[10px] text-[var(--muted)]">{channel.id}</p>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                        <p className="mt-2 text-[var(--text-sub)]">{assignment.phaseMode.replaceAll('_', ' ').toLowerCase()} · {assignment.direction.toLowerCase()}</p>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ) : measuredByNodes.length ? (
-              <div>
-                <p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">Measured from</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">{measuredByNodes.map((source) => <button key={source.id} type="button" className="min-h-11 cursor-pointer rounded-lg border border-[var(--primary)]/25 bg-[var(--primary-soft)] px-2.5 py-2 text-left text-xs font-bold text-[var(--primary)]" onClick={() => revealNode(source.id)}>{nodeTitle(source)}</button>)}</div>
-              </div>
-            ) : null}
-
-            <div className="border-t border-[var(--border)] pt-4">
-              <LinkButton href={getNodeHref(selectedNode)} className="w-full">Open full record<Icon name="arrow-right" size={16} /></LinkButton>
-              <p className="mt-3 break-all font-mono text-[10px] leading-4 text-[var(--muted)]">{selectedNode.kind} · {selectedNode.id}</p>
-            </div>
-          </div>
-        </aside>
-      ) : null}
     </div>
   );
 }

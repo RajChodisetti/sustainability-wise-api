@@ -508,6 +508,8 @@ test('electrical map SVG is deterministic, levelled, centered and visually expla
   assert.match(first, /data-node-kind="BOARD"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="124"/);
   assert.match(first, /data-node-kind="SITE_ASSET"[\s\S]{0,700}?<circle cx="[\d.]+" cy="[\d.]+" r="101"/);
   assert.match(first, /<symbol id="electrical-map-icon-load-power-outlet"/);
+  assert.match(first, /<symbol id="electrical-map-icon-board-msb" data-symbol-style="schematic"[^>]*>[\s\S]*?data-board-phase-rails="true"/);
+  assert.doesNotMatch(first, /<image\b|data:image\/(?:png|jpe?g|webp)/);
   assert.doesNotMatch(first, /data-electrical-map-icon-frame/);
   assert.match(first, /data-visual-marker="1"/);
   assert.match(first, /data-meter-satellite="meter-1"/);

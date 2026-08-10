@@ -523,7 +523,7 @@ test('pointer movement is converted from screen pixels to design coordinates at 
   assert.equal(electricalTreePointerDragStarted(Number.NaN, 10), false);
 });
 
-test('direct pointer dragging does not require Arrange mode on an editable full map', () => {
+test('hold-drag eligibility does not require Arrange mode on an editable full map', () => {
   assert.equal(electricalTreeDirectPointerDragEnabled({
     canSaveLayout: true,
     hasVisibleNodeFilter: false,

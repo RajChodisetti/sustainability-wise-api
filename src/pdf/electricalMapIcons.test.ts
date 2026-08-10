@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import {
   ELECTRICAL_MAP_ICON_NAMES,
+  ELECTRICAL_MAP_ICON_VIEW_BOX,
   ELECTRICAL_MAP_LOAD_LEGEND,
   ELECTRICAL_MAP_NODE_LEGEND,
   electricalMapIconDataUri,
   electricalMapIconForNode,
   electricalMapIconScale,
+  electricalMapIconSvg,
+  electricalMapIconSvgDefinition,
 } from './electricalMapIcons.js';
 
 test('canonical switchboard and site-asset codes select deterministic generated icons', () => {
@@ -54,55 +55,52 @@ test('canonical switchboard and site-asset codes select deterministic generated 
   assert.equal(electricalMapIconForNode({ kind: 'BOARD', name: 'MSSB1 Main Switchboard' }), 'board-mssb');
 });
 
-test('every generated icon is a transparent 256 px PNG without a square background', async () => {
+test('every icon is a unique deterministic inline SVG schematic', async () => {
   assert.equal(ELECTRICAL_MAP_ICON_NAMES.length, 25);
   const imageHashOwner = new Map<string, string>();
   for (const name of ELECTRICAL_MAP_ICON_NAMES) {
-    const fileUrl = new URL(`./electrical-map-icons/${name}.png`, import.meta.url);
-    const portalFileUrl = new URL(`../../apps/ecoaudit/public/installhub/electrical-map-icons/${name}.png`, import.meta.url);
-    const filePath = fileURLToPath(fileUrl);
-    const fileBuffer = readFileSync(fileUrl);
-    const imageHash = createHash('sha256').update(fileBuffer).digest('hex');
-    assert.equal(imageHashOwner.get(imageHash), undefined, `${name} must have its own meaningful image`);
+    const definition = electricalMapIconSvgDefinition(name);
+    assert.equal(definition.name, name);
+    assert.equal(definition.viewBox, ELECTRICAL_MAP_ICON_VIEW_BOX);
+    assert.match(definition.body, new RegExp(`data-schematic-icon="${name}"`));
+    assert.match(definition.body, /stroke-width="2\.4" stroke-linecap="round" stroke-linejoin="round"/);
+    assert.doesNotMatch(definition.body, /<image\b|data:image\/|<foreignObject\b|<filter\b|<linearGradient\b/);
+
+    const svg = electricalMapIconSvg(name);
+    const imageHash = createHash('sha256').update(svg).digest('hex');
+    assert.equal(imageHashOwner.get(imageHash), undefined, `${name} must have its own meaningful schematic`);
     imageHashOwner.set(imageHash, name);
-    const image = sharp(fileBuffer);
+    assert.equal(electricalMapIconSvg(name), svg, `${name} SVG must be deterministic`);
+
+    const image = sharp(Buffer.from(svg));
     const metadata = await image.metadata();
-    assert.equal(metadata.format, 'png', `${name} must remain a PNG`);
-    assert.equal(metadata.width, 256, `${name} width`);
-    assert.equal(metadata.height, 256, `${name} height`);
+    assert.equal(metadata.format, 'svg', `${name} must remain vector artwork`);
+    assert.equal(metadata.width, 64, `${name} width`);
+    assert.equal(metadata.height, 64, `${name} height`);
     assert.equal(metadata.hasAlpha, true, `${name} must retain alpha transparency`);
-    const { data, info } = await sharp(filePath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const cornerAlpha = [
-      [0, 0],
-      [info.width - 1, 0],
-      [0, info.height - 1],
-      [info.width - 1, info.height - 1],
-    ].map(([x, y]) => data[(y * info.width + x) * info.channels + 3]);
-    assert.deepEqual(cornerAlpha, [0, 0, 0, 0], `${name} must not contain a square background`);
-    let minX = info.width;
-    let minY = info.height;
-    let maxX = -1;
-    let maxY = -1;
-    for (let y = 0; y < info.height; y += 1) {
-      for (let x = 0; x < info.width; x += 1) {
-        if (data[(y * info.width + x) * info.channels + 3] <= 8) continue;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
-      }
-    }
-    assert.ok(maxX >= minX && maxY >= minY, `${name} must contain visible equipment artwork`);
-    assert.ok(
-      Math.max(maxX - minX + 1, maxY - minY + 1) >= 218,
-      `${name} artwork must substantially fill the transparent canvas`,
-    );
-    assert.deepEqual(readFileSync(portalFileUrl), fileBuffer, `${name} must match the portal copy`);
-    assert.match(electricalMapIconDataUri(name), /^data:image\/png;base64,iVBOR/);
+
+    const dataUri = electricalMapIconDataUri(name);
+    const prefix = 'data:image/svg+xml;charset=utf-8,';
+    assert.ok(dataUri.startsWith(prefix));
+    assert.equal(decodeURIComponent(dataUri.slice(prefix.length)), svg);
   }
 });
 
-test('normalized equipment portraits use the same bounded optical scale in PDF maps', () => {
+test('every switchboard schematic exposes visible L1, L2 and L3 rails and breakers', () => {
+  const boards = ELECTRICAL_MAP_ICON_NAMES.filter((name) => name.startsWith('board-'));
+  assert.equal(boards.length, 8);
+  for (const name of boards) {
+    const body = electricalMapIconSvgDefinition(name).body;
+    assert.match(body, /data-board-phase-rails="true"/);
+    for (const phase of ['L1', 'L2', 'L3']) {
+      assert.match(body, new RegExp(`data-phase-rail="${phase}"`), `${name} ${phase} rail`);
+      assert.match(body, new RegExp(`data-breaker-phase="${phase}"`), `${name} ${phase} breaker`);
+      assert.match(body, new RegExp(`data-phase-port="${phase}"`), `${name} ${phase} connection port`);
+    }
+  }
+});
+
+test('normalized schematic symbols use the same bounded optical scale in PDF maps', () => {
   for (const name of ELECTRICAL_MAP_ICON_NAMES) {
     const scale = electricalMapIconScale(name);
     assert.equal(scale, 1.08, `${name} optical scale must stay normalized`);

@@ -1,9 +1,9 @@
 import sharp from 'sharp';
 import {
   ELECTRICAL_MAP_ICON_NAMES,
-  electricalMapIconDataUri,
   electricalMapIconForNode,
   electricalMapIconScale,
+  electricalMapIconSvgDefinition,
   type ElectricalMapIconName,
 } from '../../pdf/electricalMapIcons.js';
 import type {
@@ -1120,9 +1120,10 @@ function svgText(
 }
 
 function electricalMapIconDefs(): string {
-  return `<defs>${ELECTRICAL_MAP_ICON_NAMES.map((name) => (
-    `<symbol id="electrical-map-icon-${name}" viewBox="0 0 256 256"><image width="256" height="256" href="${electricalMapIconDataUri(name)}" preserveAspectRatio="xMidYMid meet"/></symbol>`
-  )).join('')}</defs>`;
+  return `<defs>${ELECTRICAL_MAP_ICON_NAMES.map((name) => {
+    const definition = electricalMapIconSvgDefinition(name);
+    return `<symbol id="electrical-map-icon-${name}" data-symbol-style="schematic" viewBox="${definition.viewBox}">${definition.body}</symbol>`;
+  }).join('')}</defs>`;
 }
 
 function svgIcon(name: ElectricalMapIconName, x: number, y: number, size: number): string {
