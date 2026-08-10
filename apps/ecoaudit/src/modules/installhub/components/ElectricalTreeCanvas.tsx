@@ -937,7 +937,7 @@ export function ElectricalTreeCanvas({
           <div className="min-w-0">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--primary)]">Electrical system overview</p>
             <h3 id="electrical-tree-heading" className="mt-1 text-base font-extrabold text-[var(--text)]">{tree.installation.siteName}</h3>
-            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the centre · switchboards and equipment arranged around their supply · hover or focus for a summary, click or tap for full details{onSaveLayout ? ' · drag any symbol to reposition it' : ''}</p>
+            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the top · switchboards and equipment aligned by supply level · hover or focus for a summary, click or tap for full details{onSaveLayout ? ' · drag any symbol to reposition it' : ''}</p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-bold text-[var(--text-sub)]" aria-label="Electrical map summary">
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.boards} switchboard{mapSummary.boards === 1 ? '' : 's'}</span>
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.meters} meter{mapSummary.meters === 1 ? '' : 's'}</span>
