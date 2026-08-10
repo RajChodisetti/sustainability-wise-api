@@ -2,10 +2,19 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { cloudConnectionErrorMessage } from '@/api/client';
-import { cloudConnectionErrorMessage as solarConnectionErrorMessage } from '@solar/api/client';
-import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
-import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
+import { clearTokens as clearEaTokens, cloudConnectionErrorMessage } from '@/api/client';
+import {
+  clearTokens as clearSsTokens,
+  cloudConnectionErrorMessage as solarConnectionErrorMessage,
+} from '@solar/api/client';
+import {
+  clearTokens as clearWwTokens,
+  fleetConnectionErrorMessage,
+} from '@/modules/fleet/api/client';
+import {
+  clearTokens as clearIhTokens,
+  installHubConnectionErrorMessage,
+} from '@/modules/installhub/api/client';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { AuthForm } from '@/components/auth/AuthForm';
 import { Spinner } from '@/components/ui/Card';
@@ -14,13 +23,10 @@ import { portalAppForPath, safePortalLoginNext } from '@/lib/portalNavigation';
 function LoginForm() {
   const {
     login,
-    isAuthenticated,
     isEcoAuthenticated,
     isSolarAuthenticated,
     isInstallHubAuthenticated,
     isWattwatchersAuthenticated,
-    hasInstallHubSourceSession,
-    isLoading,
     isEcoLoading,
     isSolarLoading,
     isInstallHubLoading,
@@ -30,6 +36,7 @@ function LoginForm() {
   const searchParams = useSearchParams();
   const next = safePortalLoginNext(searchParams.get('next'));
   const target = portalAppForPath(next);
+
   const isTargetAuthenticated =
     target === 'ecoaudit'
       ? isEcoAuthenticated
@@ -39,14 +46,13 @@ function LoginForm() {
           ? isInstallHubAuthenticated
           : target === 'wattwatchers'
             ? isWattwatchersAuthenticated
-            : isAuthenticated;
-  const canEnterTargetWithoutCredentials = (
-    isTargetAuthenticated
-    || (
-      target === 'installhub'
-      && hasInstallHubSourceSession
-    )
-  );
+            : (
+              isEcoAuthenticated
+              || isSolarAuthenticated
+              || isInstallHubAuthenticated
+              || isWattwatchersAuthenticated
+            );
+
   const isTargetLoading =
     target === 'ecoaudit'
       ? isEcoLoading
@@ -56,18 +62,43 @@ function LoginForm() {
           ? isInstallHubLoading
           : target === 'wattwatchers'
             ? isWattwatchersLoading
-            : isLoading;
+            : (
+              (isEcoLoading && !isEcoAuthenticated)
+              || (isSolarLoading && !isSolarAuthenticated)
+              || (isInstallHubLoading && !isInstallHubAuthenticated)
+              || (isWattwatchersLoading && !isWattwatchersAuthenticated)
+            );
+
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    if (!isTargetLoading && canEnterTargetWithoutCredentials) {
+    setMounted(true);
+  }, []);
+
+  // Wipe broken tokens so /me cannot keep soft-blocking navigation.
+  useEffect(() => {
+    if (!mounted || isTargetAuthenticated) return;
+    const id = window.setTimeout(() => {
+      clearEaTokens();
+      clearSsTokens();
+      clearIhTokens();
+      clearWwTokens();
+    }, 1_200);
+    return () => window.clearTimeout(id);
+  }, [mounted, isTargetAuthenticated]);
+
+  useEffect(() => {
+    if (mounted && isTargetAuthenticated && !isTargetLoading) {
       router.replace(next);
     }
-  }, [isTargetLoading, canEnterTargetWithoutCredentials, router, next]);
+  }, [mounted, isTargetAuthenticated, isTargetLoading, router, next]);
 
-  if (isTargetLoading || canEnterTargetWithoutCredentials) {
-    return <Spinner fullPage label="Preparing your workspace…" />;
+  // Always render the sign-in form by default (including SSR). Only hide it
+  // when we positively know the user is signed in and are redirecting.
+  if (mounted && isTargetAuthenticated && !isTargetLoading) {
+    return <Spinner fullPage label="Opening your workspace…" />;
   }
 
   async function handleSubmit(username: string, password: string) {
@@ -102,7 +133,7 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<Spinner fullPage label="Preparing sign in…" />}>
+    <Suspense fallback={<AuthForm busy={false} error={null} onSubmit={() => undefined} />}>
       <LoginForm />
     </Suspense>
   );

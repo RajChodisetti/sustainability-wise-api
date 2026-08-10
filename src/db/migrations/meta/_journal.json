@@ -169,6 +169,13 @@
       "when": 1786273318655,
       "tag": "0023_confused_blade",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1786400000000,
+      "tag": "0024_portal_schedule_events",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,9 @@ const apiTarget = (
 ).replace(/\/$/, '');
 
 const nextConfig: NextConfig = {
+  // Browser may open 127.0.0.1 while the dev server cookie/HMR host is localhost.
+  // Without this, Next blocks /_next assets and React never hydrates → stuck spinner.
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   turbopack: {
     root: __dirname,
   },

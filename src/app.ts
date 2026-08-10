@@ -16,6 +16,7 @@ import { ecoauditRoutes } from './routes/ecoaudit/index.js';
 import { wattwatchersRoutes } from './routes/wattwatchers/index.js';
 import { installhubRoutes } from './routes/installhub/index.js';
 import { portalUserRoutes } from './routes/portal/users.js';
+import { portalSchedulerRoutes } from './routes/portal/scheduler.js';
 import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { thumbnailRoutes } from './routes/thumbnails.js';
@@ -52,6 +53,7 @@ const tagMap: Record<string, string> = {
   'Wattwatchers Reports': 'Wattwatchers / Reports',
   'Wattwatchers Ingest': 'Wattwatchers / Ingest',
   'Portal Users': 'Portal / Users',
+  'Portal Scheduler': 'Portal / Scheduler',
 };
 
 const orderedTags = [
@@ -82,6 +84,7 @@ const orderedTags = [
   { name: 'Wattwatchers / Reports', description: 'Daily Fleet reports and safe CSV exports.' },
   { name: 'Wattwatchers / Ingest', description: 'Idempotent service-account collector ingestion.' },
   { name: 'Portal / Users', description: 'Unified EcoAudit, SolarSense, and Field App Complete user directory.' },
+  { name: 'Portal / Scheduler', description: 'Portal work calendar: assignments, deadlines, and custom jobs.' },
   { name: 'PDF Jobs', description: 'Async PDF job status polling and download.' },
   { name: 'Files', description: 'Stored photo and generated PDF downloads.' },
   { name: 'System', description: 'Public operational checks.' },
@@ -363,6 +366,7 @@ export async function buildApp() {
   await app.register(wattwatchersRoutes, { prefix: '/v1/wattwatchers' });
   await app.register(installhubRoutes, { prefix: '/v1/installhub' });
   await app.register(portalUserRoutes, { prefix: '/v1/portal' });
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
   await app.register(pdfJobRoutes, { prefix: '/v1' });
 
   if (existsSync(webDistRoot)) {

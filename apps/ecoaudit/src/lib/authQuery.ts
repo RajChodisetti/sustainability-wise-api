@@ -21,22 +21,46 @@ export function isTransientAuthQueryError(error: unknown): boolean {
   );
 }
 
+/** Transient /me failures — keep small so login never sticks on "Preparing…". */
+export const AUTH_QUERY_MAX_RETRIES = 2;
+
 export function shouldRetryAuthQuery(
   error: unknown,
   hasStoredToken: boolean,
+  failureCount = 0,
 ): boolean {
-  return hasStoredToken && isTransientAuthQueryError(error);
+  if (!hasStoredToken) return false;
+  if (failureCount >= AUTH_QUERY_MAX_RETRIES) return false;
+  return isTransientAuthQueryError(error);
 }
 
-/** Retry indefinitely when allowed, while capping load and adding jitter. */
+/** Backoff while retrying, capped so workspace UI unblocks quickly. */
 export function authQueryRetryDelayMs(
   failureCount: number,
   random = Math.random(),
 ): number {
-  const exponent = Math.min(Math.max(0, Math.trunc(failureCount)), 16);
-  const exponential = Math.min(30_000, 1_000 * 2 ** exponent);
+  const exponent = Math.min(Math.max(0, Math.trunc(failureCount)), 4);
+  const exponential = Math.min(4_000, 500 * 2 ** exponent);
   return Math.min(
-    30_000,
+    4_000,
     Math.round(exponential * (0.75 + Math.min(1, Math.max(0, random)) * 0.5)),
   );
+}
+
+/**
+ * True only while a stored token session is still being verified.
+ * Settled errors / missing user must NOT keep "Preparing your workspace…" forever.
+ */
+export function isSessionCheckLoading(options: {
+  isClient: boolean;
+  hasToken: boolean;
+  hasUser: boolean;
+  isPending: boolean;
+  isFetching: boolean;
+  isError: boolean;
+}): boolean {
+  if (!options.isClient) return true;
+  if (!options.hasToken || options.hasUser) return false;
+  if (options.isError && !options.isFetching) return false;
+  return options.isPending || options.isFetching;
 }

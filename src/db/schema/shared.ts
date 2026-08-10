@@ -178,3 +178,47 @@ export const storageDeletionTasks = pgTable('storage_deletion_tasks', {
   uniqueIndex('storage_deletion_tasks_storage_key_unique').on(table.storageKey),
   index('storage_deletion_tasks_app_created_idx').on(table.app, table.createdAt),
 ]);
+
+/**
+ * Portal-scoped work calendar events (phase 1 scheduler).
+ * Soft-links to product jobs via source_app / source_type / source_id.
+ * Assignees use unified_users.field_user_id for stable cross-app identity.
+ */
+export const portalScheduleEvents = pgTable('portal_schedule_events', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  description: text('description'),
+  sourceApp: text('source_app').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id'),
+  assigneeFieldUserId: text('assignee_field_user_id').notNull(),
+  assigneeDisplayName: text('assignee_display_name'),
+  assigneeEmail: text('assignee_email'),
+  scheduledStartAt: timestamp('scheduled_start_at').notNull(),
+  scheduledEndAt: timestamp('scheduled_end_at'),
+  deadlineAt: timestamp('deadline_at').notNull(),
+  status: text('status').notNull().default('planned'),
+  createdByUserId: text('created_by_user_id').notNull(),
+  createdByApp: text('created_by_app').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  cancelledAt: timestamp('cancelled_at'),
+}, (table) => [
+  index('portal_schedule_events_assignee_start_idx').on(
+    table.assigneeFieldUserId,
+    table.scheduledStartAt,
+  ),
+  index('portal_schedule_events_deadline_idx').on(table.deadlineAt),
+  index('portal_schedule_events_source_idx').on(table.sourceApp, table.sourceId),
+  index('portal_schedule_events_start_idx').on(table.scheduledStartAt),
+  index('portal_schedule_events_status_idx').on(table.status),
+  check('portal_schedule_events_source_app_check', sql`
+    ${table.sourceApp} IN ('ecoaudit', 'solarsense', 'installhub', 'custom')
+  `),
+  check('portal_schedule_events_source_type_check', sql`
+    ${table.sourceType} IN ('audit', 'site', 'assessment', 'installation', 'custom')
+  `),
+  check('portal_schedule_events_status_check', sql`
+    ${table.status} IN ('planned', 'in_progress', 'done', 'cancelled')
+  `),
+]);
