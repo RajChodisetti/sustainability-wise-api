@@ -9,6 +9,7 @@ import {
   isNull,
   lte,
   ne,
+  notInArray,
   or,
   type SQL,
 } from 'drizzle-orm';
@@ -666,6 +667,187 @@ export async function searchJobOptions(
   }
 
   return results.slice(0, 40);
+}
+
+async function activeScheduledSourceKeys(
+  sourceApps: ReadonlyArray<Exclude<ScheduleSourceApp, 'custom'>>,
+): Promise<Set<string>> {
+  const rows = await db
+    .select({
+      sourceApp: portalScheduleEvents.sourceApp,
+      sourceType: portalScheduleEvents.sourceType,
+      sourceId: portalScheduleEvents.sourceId,
+    })
+    .from(portalScheduleEvents)
+    .where(and(
+      ne(portalScheduleEvents.status, 'cancelled'),
+    ));
+  const out = new Set<string>();
+  for (const row of rows) {
+    if (!row.sourceId) continue;
+    if (!sourceApps.includes(row.sourceApp as Exclude<ScheduleSourceApp, 'custom'>)) continue;
+    out.add(`${row.sourceApp}:${row.sourceType}:${row.sourceId}`);
+  }
+  return out;
+}
+
+function scheduleKey(
+  sourceApp: string,
+  sourceType: string,
+  sourceId: string,
+): string {
+  return `${sourceApp}:${sourceType}:${sourceId}`;
+}
+
+/**
+ * Product jobs (audits / sites / assessments / installations) that are not
+ * already linked to an active schedule event.
+ */
+export async function listUnscheduledJobs(
+  user: AuthUser,
+  opts: {
+    q?: string;
+    sourceApp?: ScheduleSourceApp;
+    limit?: number;
+  } = {},
+): Promise<JobOption[]> {
+  assertPortalSchedulerApp(user);
+  if (!isSchedulerAdmin(user)) {
+    throw forbidden('Only admins can list unscheduled jobs');
+  }
+
+  const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100);
+  const q = (opts.q ?? '').trim();
+  const pattern = q ? `%${q.replace(/%/g, '')}%` : '%';
+  const apps = opts.sourceApp && opts.sourceApp !== 'custom'
+    ? [opts.sourceApp as Exclude<ScheduleSourceApp, 'custom'>]
+    : (['ecoaudit', 'solarsense', 'installhub'] as const);
+
+  const scheduled = await activeScheduledSourceKeys(apps);
+  const results: JobOption[] = [];
+
+  if (apps.includes('ecoaudit')) {
+    const scheduledIds = [...scheduled]
+      .filter((k) => k.startsWith('ecoaudit:audit:'))
+      .map((k) => k.slice('ecoaudit:audit:'.length));
+    const rows = await db
+      .select({
+        id: eaAudits.id,
+        siteName: eaAudits.siteName,
+        siteAddress: eaAudits.siteAddress,
+        status: eaAudits.status,
+      })
+      .from(eaAudits)
+      .where(and(
+        or(
+          ilike(eaAudits.siteName, pattern),
+          ilike(eaAudits.siteAddress, pattern),
+          ilike(eaAudits.id, pattern),
+        ),
+        scheduledIds.length > 0 ? notInArray(eaAudits.id, scheduledIds) : undefined,
+      ))
+      .orderBy(desc(eaAudits.createdAt))
+      .limit(40);
+    for (const row of rows) {
+      if (scheduled.has(scheduleKey('ecoaudit', 'audit', row.id))) continue;
+      results.push({
+        id: row.id,
+        label: row.siteName,
+        subtitle: `${row.status} · ${row.siteAddress}`,
+        sourceApp: 'ecoaudit',
+        sourceType: 'audit',
+      });
+    }
+  }
+
+  if (apps.includes('solarsense')) {
+    const sites = await db
+      .select({
+        id: ssSites.id,
+        siteName: ssSites.siteName,
+        location: ssSites.location,
+        status: ssSites.status,
+      })
+      .from(ssSites)
+      .where(or(
+        ilike(ssSites.siteName, pattern),
+        ilike(ssSites.location, pattern),
+        ilike(ssSites.id, pattern),
+      ))
+      .orderBy(desc(ssSites.createdAt))
+      .limit(40);
+    for (const row of sites) {
+      if (scheduled.has(scheduleKey('solarsense', 'site', row.id))) continue;
+      results.push({
+        id: row.id,
+        label: row.siteName,
+        subtitle: `Site · ${row.status}${row.location ? ` · ${row.location}` : ''}`,
+        sourceApp: 'solarsense',
+        sourceType: 'site',
+      });
+    }
+
+    const assessments = await db
+      .select({
+        id: ssRooftopAssessments.id,
+        siteName: ssRooftopAssessments.siteName,
+        building: ssRooftopAssessments.buildingIdName,
+      })
+      .from(ssRooftopAssessments)
+      .where(or(
+        ilike(ssRooftopAssessments.siteName, pattern),
+        ilike(ssRooftopAssessments.buildingIdName, pattern),
+        ilike(ssRooftopAssessments.id, pattern),
+      ))
+      .orderBy(desc(ssRooftopAssessments.createdAt))
+      .limit(40);
+    for (const row of assessments) {
+      if (scheduled.has(scheduleKey('solarsense', 'assessment', row.id))) continue;
+      results.push({
+        id: row.id,
+        label: `${row.siteName} · ${row.building}`,
+        subtitle: 'Assessment',
+        sourceApp: 'solarsense',
+        sourceType: 'assessment',
+      });
+    }
+  }
+
+  if (apps.includes('installhub')) {
+    const scheduledIds = [...scheduled]
+      .filter((k) => k.startsWith('installhub:installation:'))
+      .map((k) => k.slice('installhub:installation:'.length));
+    const rows = await db
+      .select({
+        id: ihInstallations.id,
+        siteName: ihInstallations.siteName,
+        clientName: ihInstallations.clientName,
+        status: ihInstallations.status,
+      })
+      .from(ihInstallations)
+      .where(and(
+        or(
+          ilike(ihInstallations.siteName, pattern),
+          ilike(ihInstallations.clientName, pattern),
+          ilike(ihInstallations.id, pattern),
+        ),
+        scheduledIds.length > 0 ? notInArray(ihInstallations.id, scheduledIds) : undefined,
+      ))
+      .orderBy(desc(ihInstallations.createdAt))
+      .limit(40);
+    for (const row of rows) {
+      if (scheduled.has(scheduleKey('installhub', 'installation', row.id))) continue;
+      results.push({
+        id: row.id,
+        label: `${row.clientName} · ${row.siteName}`,
+        subtitle: `Installation · ${row.status}`,
+        sourceApp: 'installhub',
+        sourceType: 'installation',
+      });
+    }
+  }
+
+  return results.slice(0, limit);
 }
 
 /** Pure helper for unit tests: sort deadlines urgent-first (overdue before future). */

@@ -73,6 +73,23 @@ export async function searchJobOptions(q: string, sourceApp?: ScheduleSourceApp)
   return res.options ?? [];
 }
 
+export async function fetchUnscheduledJobs(params: {
+  q?: string;
+  sourceApp?: ScheduleSourceApp;
+  limit?: number;
+} = {}): Promise<JobOption[]> {
+  const qs = new URLSearchParams();
+  if (params.q) qs.set('q', params.q);
+  if (params.sourceApp && params.sourceApp !== 'custom') qs.set('sourceApp', params.sourceApp);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const suffix = qs.toString() ? `?${qs}` : '';
+  const res = await request<{ jobs: JobOption[] }>(
+    'GET',
+    `/v1/portal/scheduler/unscheduled-jobs${suffix}`,
+  );
+  return res.jobs ?? [];
+}
+
 export async function fetchPortalAssignees(): Promise<PortalDirectoryUser[]> {
   const res = await request<PortalUsersResponse>('GET', '/v1/portal/users');
   const out: PortalDirectoryUser[] = [];

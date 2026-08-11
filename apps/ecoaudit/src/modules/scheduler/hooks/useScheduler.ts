@@ -7,6 +7,7 @@ import {
   fetchPortalAssignees,
   fetchScheduleEvents,
   fetchScheduleSummary,
+  fetchUnscheduledJobs,
   searchJobOptions,
   updateScheduleEvent,
 } from '@/modules/scheduler/api/client';
@@ -24,6 +25,8 @@ export const schedulerKeys = {
   assignees: () => [...schedulerKeys.all, 'assignees'] as const,
   jobOptions: (q: string, app?: string) =>
     [...schedulerKeys.all, 'job-options', q, app ?? ''] as const,
+  unscheduled: (q: string, app?: string) =>
+    [...schedulerKeys.all, 'unscheduled', q, app ?? ''] as const,
 };
 
 export function useScheduleSummary() {
@@ -64,6 +67,20 @@ export function useJobOptions(q: string, sourceApp?: ScheduleSourceApp, enabled 
     queryKey: schedulerKeys.jobOptions(q, sourceApp),
     queryFn: () => searchJobOptions(q, sourceApp),
     enabled: enabled && q.trim().length >= 0,
+    staleTime: 15_000,
+  });
+}
+
+export function useUnscheduledJobs(
+  filters: { q?: string; sourceApp?: ScheduleSourceApp } = {},
+  enabled = true,
+) {
+  const q = filters.q ?? '';
+  const app = filters.sourceApp;
+  return useQuery({
+    queryKey: schedulerKeys.unscheduled(q, app),
+    queryFn: () => fetchUnscheduledJobs({ q, sourceApp: app, limit: 80 }),
+    enabled,
     staleTime: 15_000,
   });
 }

@@ -8,6 +8,7 @@ import {
   getScheduleSummary,
   isSchedulerAdmin,
   listScheduleEvents,
+  listUnscheduledJobs,
   searchJobOptions,
   updateScheduleEvent,
   type ScheduleSourceApp,
@@ -172,5 +173,31 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       q.sourceApp as ScheduleSourceApp | undefined,
     );
     return reply.send({ options });
+  });
+
+  app.get('/scheduler/unscheduled-jobs', {
+    schema: {
+      tags: ['Portal Scheduler'],
+      summary: 'List product jobs not yet on the work calendar',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          q: { type: 'string' },
+          sourceApp: { type: 'string' },
+          limit: { type: 'string' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const q = request.query as { q?: string; sourceApp?: string; limit?: string };
+    const limit = q.limit ? Number(q.limit) : undefined;
+    const jobs = await listUnscheduledJobs(request.user, {
+      q: q.q ?? '',
+      sourceApp: q.sourceApp as ScheduleSourceApp | undefined,
+      limit: Number.isFinite(limit) ? limit : undefined,
+    });
+    return reply.send({ jobs });
   });
 }
