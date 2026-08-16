@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, lte, ne, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { pdfJobs } from '../db/schema/shared.js';
 
@@ -17,11 +17,11 @@ export function exportJobParams(value: unknown): Partial<ExportJobParams> {
 }
 
 export async function markJobRunning(jobId: string, phase: string): Promise<void> {
-  await db.update(pdfJobs).set({ status: 'running', phase, updatedAt: new Date() }).where(eq(pdfJobs.id, jobId));
+  await db.update(pdfJobs).set({ status: 'running', phase, updatedAt: sql`LOCALTIMESTAMP` }).where(eq(pdfJobs.id, jobId));
 }
 
 export async function updateJobPhase(jobId: string, phase: string): Promise<void> {
-  await db.update(pdfJobs).set({ phase, updatedAt: new Date() }).where(eq(pdfJobs.id, jobId));
+  await db.update(pdfJobs).set({ phase, updatedAt: sql`LOCALTIMESTAMP` }).where(eq(pdfJobs.id, jobId));
 }
 
 export async function updateJobProgress(
@@ -34,18 +34,30 @@ export async function updateJobProgress(
     phase,
     progressCurrent: current,
     progressTotal: total,
-    updatedAt: new Date(),
+    updatedAt: sql`LOCALTIMESTAMP`,
   }).where(eq(pdfJobs.id, jobId));
 }
 
-export async function completeJob(jobId: string, pdfUrl: string, storageKey: string): Promise<void> {
-  await db.update(pdfJobs).set({
+type PdfJobUpdateExecutor = Pick<typeof db, 'update'>;
+export const EXPORT_JOB_INTERRUPTION_LEASE_MS = 60 * 60 * 1_000;
+
+export async function completeJob(
+  jobId: string,
+  pdfUrl: string,
+  storageKey: string,
+  executor: PdfJobUpdateExecutor = db,
+): Promise<void> {
+  const [completed] = await executor.update(pdfJobs).set({
     status: 'complete',
     phase: 'Ready to download',
     pdfUrl,
     storageKey,
-    updatedAt: new Date(),
-  }).where(eq(pdfJobs.id, jobId));
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(
+    eq(pdfJobs.id, jobId),
+    inArray(pdfJobs.status, ['queued', 'running']),
+  )).returning({ id: pdfJobs.id });
+  if (!completed) throw new Error('export_job_completion_failed');
 }
 
 export async function failJob(jobId: string, error: string): Promise<void> {
@@ -53,8 +65,8 @@ export async function failJob(jobId: string, error: string): Promise<void> {
     status: 'failed',
     phase: null,
     error,
-    updatedAt: new Date(),
-  }).where(eq(pdfJobs.id, jobId)).catch(() => {});
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(eq(pdfJobs.id, jobId), ne(pdfJobs.status, 'complete'))).catch(() => {});
 }
 
 export async function findActiveExportJob(args: {
@@ -80,11 +92,18 @@ export async function findActiveExportJob(args: {
   return job ?? null;
 }
 
-export async function failInterruptedExportJobs(): Promise<void> {
+export async function failInterruptedExportJobs(now = new Date()): Promise<void> {
+  // pdf_jobs timestamps are stored without a time zone, so keep the cutoff in
+  // the database session's local timestamp domain. A direct JS Date comparison
+  // uses its UTC wall clock and can fail a brand-new job on non-UTC databases.
+  const staleBefore = sql`(${now.toISOString()}::timestamptz AT TIME ZONE current_setting('TimeZone')) - (${EXPORT_JOB_INTERRUPTION_LEASE_MS} * INTERVAL '1 millisecond')`;
   await db.update(pdfJobs).set({
     status: 'failed',
     phase: null,
     error: 'Export was interrupted by a server restart. Please start it again.',
-    updatedAt: new Date(),
-  }).where(inArray(pdfJobs.status, ['queued', 'running']));
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(
+    inArray(pdfJobs.status, ['queued', 'running']),
+    lte(pdfJobs.updatedAt, staleBefore),
+  ));
 }

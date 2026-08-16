@@ -294,6 +294,10 @@ export const config = {
       const n = Number(raw);
       return Number.isFinite(n) && n >= 0 ? n : 150;
     })(),
+    billAttachmentMaxBytes: Math.max(1, Math.min(
+      25 * 1024 * 1024,
+      optionalInt('SCHEDULER_BILL_ATTACHMENT_MAX_BYTES', 10 * 1024 * 1024),
+    )),
   },
   schedulerInvoice: {
     sellerName: optional(

@@ -7,7 +7,6 @@ import {
   ihElectricalAssets,
   ihFormSubmissions,
   ihGridSupplies,
-  ihInstallationWorkSessions,
   ihInstallations,
   ihMeasurementAssignmentChannels,
   ihMeasurementAssignments,
@@ -22,12 +21,9 @@ import {
   photoCopyReferences,
   photoRegistry,
   recordVersions,
-  schedulerInvoices,
-  schedulerJobExpenses,
-  schedulerJobFinance,
-  schedulerJobHourOverrides,
   storageDeletionTasks,
 } from '../../db/schema/shared.js';
+import { assertNoSchedulerCommercialEvidenceBeforePurge as assertNoSharedCommercialEvidence } from '../../services/schedulerCommercialRetentionService.js';
 import { drainStorageDeletionTasks } from '../../services/storageDeletionService.js';
 import { badRequest, conflict } from '../../utils/errors.js';
 import type { InstallHubExecutor } from './treeService.js';
@@ -75,41 +71,21 @@ async function assertNoCommercialEvidenceBeforePurge(
   executor: InstallHubExecutor,
   installationId: string,
 ): Promise<void> {
-  const [session] = await executor.select({ id: ihInstallationWorkSessions.id })
-    .from(ihInstallationWorkSessions)
-    .where(eq(ihInstallationWorkSessions.installationId, installationId))
-    .limit(1);
-  if (session) throw conflict('installation_commercial_history_purge_blocked');
-
-  const [finance] = await executor.select({ id: schedulerJobFinance.id })
-    .from(schedulerJobFinance)
-    .where(and(
-      eq(schedulerJobFinance.sourceApp, 'installhub'),
-      eq(schedulerJobFinance.sourceType, 'installation'),
-      eq(schedulerJobFinance.sourceId, installationId),
-    ))
-    .for('update')
-    .limit(1);
-  if (!finance) return;
-
-  const [[hourOverride], [expense], [invoice]] = await Promise.all([
-    executor.select({ id: schedulerJobHourOverrides.id })
-      .from(schedulerJobHourOverrides)
-      .where(eq(schedulerJobHourOverrides.financeId, finance.id))
-      .limit(1),
-    executor.select({ id: schedulerJobExpenses.id })
-      .from(schedulerJobExpenses)
-      .where(eq(schedulerJobExpenses.financeId, finance.id))
-      .limit(1),
-    executor.select({ id: schedulerInvoices.id })
-      .from(schedulerInvoices)
-      .where(eq(schedulerInvoices.financeId, finance.id))
-      .limit(1),
-  ]);
-  if (hourOverride || expense || invoice) {
-    throw conflict('installation_commercial_history_purge_blocked');
+  try {
+    await assertNoSharedCommercialEvidence(executor, {
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: installationId,
+    });
+  } catch (error) {
+    if (
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'job_commercial_history_purge_blocked'
+    ) throw conflict('installation_commercial_history_purge_blocked');
+    throw error;
   }
-  await executor.delete(schedulerJobFinance).where(eq(schedulerJobFinance.id, finance.id));
 }
 
 /**

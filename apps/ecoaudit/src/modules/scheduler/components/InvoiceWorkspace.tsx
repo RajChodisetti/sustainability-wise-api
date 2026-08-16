@@ -25,16 +25,17 @@ import {
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
   availableInvoiceExpenses,
+  consolidatedInvoiceRecipientIssue,
+  financeAppLabel,
   invoiceDraftIsDirty,
   invoiceStatusLabel,
+  schedulerFinanceHref,
   schedulerInvoicePdfFallbackFilename,
   schedulerInvoicePdfReportVariantKey,
 } from '@/modules/scheduler/lib/finance';
 import type {
   SchedulerFinancialSummary,
   SchedulerInvoice,
-  SchedulerInvoiceLine,
-  SchedulerInvoiceLineKind,
   SchedulerInvoiceListItem,
 } from '@/modules/scheduler/types/domain';
 
@@ -222,32 +223,6 @@ export function InvoiceWorkspace({
   );
 }
 
-type EditableLine = {
-  id?: string;
-  description: string;
-  quantity: string;
-  unitAmountExGst: string;
-  expenseId?: string | null;
-  kind?: SchedulerInvoiceLineKind;
-};
-
-function editableLine(line?: SchedulerInvoiceLine): EditableLine {
-  return line ? {
-    id: line.id,
-    description: line.description,
-    quantity: line.quantity.toString(),
-    unitAmountExGst: line.unitAmountExGst.toString(),
-    expenseId: line.expenseId,
-    kind: line.kind ?? 'other',
-  } : {
-    description: '',
-    quantity: '1',
-    unitAmountExGst: '0',
-    expenseId: null,
-    kind: 'other',
-  };
-}
-
 function InvoiceDetail({
   financeId,
   invoiceId,
@@ -306,7 +281,7 @@ function InvoiceDetail({
       onMarkPaid={async () => {
         setError(null);
         try {
-          await markPaid.mutateAsync({ invoiceId });
+          await markPaid.mutateAsync({ invoiceId, expectedUpdatedAt: query.data.updatedAt });
           toast.success(`${query.data.invoiceNumber} marked paid.`);
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
@@ -316,7 +291,7 @@ function InvoiceDetail({
         if (!window.confirm(`Void ${query.data.invoiceNumber}? Reserved job charges will be released.`)) return;
         setError(null);
         try {
-          await voidInvoice.mutateAsync(invoiceId);
+          await voidInvoice.mutateAsync({ invoiceId, expectedUpdatedAt: query.data.updatedAt });
           toast.success(`${query.data.invoiceNumber} voided.`);
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
@@ -326,7 +301,7 @@ function InvoiceDetail({
   );
 }
 
-function InvoiceDocument({
+export function InvoiceDocument({
   financeId,
   invoice,
   busy,
@@ -337,6 +312,7 @@ function InvoiceDocument({
   onIssue,
   onMarkPaid,
   onVoid,
+  onStartPdf,
 }: {
   financeId: string;
   invoice: SchedulerInvoice;
@@ -350,12 +326,13 @@ function InvoiceDocument({
     billToName: string;
     billToAddress: string | null;
     billToEmail: string | null;
+    billToAbn: string | null;
     purchaseOrderReference: string | null;
-    lines: Array<{ id?: string; description: string; quantity: number; unitAmountExGst: number; expenseId?: string | null; kind?: SchedulerInvoiceLineKind }>;
   }) => Promise<void>;
   onIssue: () => Promise<void>;
   onMarkPaid: () => Promise<void>;
   onVoid: () => Promise<void>;
+  onStartPdf?: () => ReturnType<typeof startSchedulerInvoicePdfExport>;
 }) {
   const editable = invoice.status === 'draft';
   const [notes, setNotes] = useState(invoice.notes ?? '');
@@ -363,8 +340,8 @@ function InvoiceDocument({
   const [billToName, setBillToName] = useState(invoice.billToName ?? '');
   const [billToAddress, setBillToAddress] = useState(invoice.billToAddress ?? '');
   const [billToEmail, setBillToEmail] = useState(invoice.billToEmail ?? '');
+  const [billToAbn, setBillToAbn] = useState(invoice.billToAbn ?? '');
   const [purchaseOrderReference, setPurchaseOrderReference] = useState(invoice.purchaseOrderReference ?? '');
-  const [lines, setLines] = useState<EditableLine[]>(invoice.lines.map((line) => editableLine(line)));
   const [validation, setValidation] = useState<string | null>(null);
   const toast = useToast();
   const reportVariantKey = schedulerInvoicePdfReportVariantKey(invoice);
@@ -389,29 +366,13 @@ function InvoiceDocument({
     billToName: invoice.billToName ?? '',
     billToAddress: invoice.billToAddress ?? '',
     billToEmail: invoice.billToEmail ?? '',
+    billToAbn: invoice.billToAbn ?? '',
     purchaseOrderReference: invoice.purchaseOrderReference ?? '',
-    lines: invoice.lines.map((line) => editableLine(line)),
-  }, { notes, dueDate, billToName, billToAddress, billToEmail, purchaseOrderReference, lines });
+  }, { notes, dueDate, billToName, billToAddress, billToEmail, billToAbn, purchaseOrderReference });
 
   async function saveDraft() {
     if (!billToName.trim()) {
       setValidation('Billing name is required before this draft can be saved or issued.');
-      return;
-    }
-    const normalized = lines.map((line) => ({
-      id: line.id,
-      description: line.description.trim(),
-      quantity: Number(line.quantity),
-      unitAmountExGst: Number(line.unitAmountExGst),
-      expenseId: line.expenseId ?? null,
-      kind: line.kind ?? 'other',
-    }));
-    if (normalized.length === 0) {
-      setValidation('An invoice needs at least one line.');
-      return;
-    }
-    if (normalized.some((line) => !line.description || !Number.isFinite(line.quantity) || line.quantity <= 0 || !Number.isFinite(line.unitAmountExGst) || line.unitAmountExGst < 0)) {
-      setValidation('Every line needs a description, quantity above zero, and a valid non-negative unit amount.');
       return;
     }
     setValidation(null);
@@ -421,18 +382,16 @@ function InvoiceDocument({
       billToName: billToName.trim(),
       billToAddress: billToAddress.trim() || null,
       billToEmail: billToEmail.trim() || null,
+      billToAbn: billToAbn.trim() || null,
       purchaseOrderReference: purchaseOrderReference.trim() || null,
-      lines: normalized,
     });
   }
 
   async function preparePdf() {
     try {
-      await pdfExport.start(() => startSchedulerInvoicePdfExport(
-        financeId,
-        invoice.id,
-        invoice.updatedAt,
-      ));
+      await pdfExport.start(() => onStartPdf
+        ? onStartPdf()
+        : startSchedulerInvoicePdfExport(financeId, invoice.id, invoice.updatedAt));
       toast.success('Invoice PDF preparation started. You can leave this page while it finishes.');
     } catch (cause) {
       await onRefresh().catch(() => {});
@@ -449,6 +408,18 @@ function InvoiceDocument({
     }
   }
 
+  async function issueInvoice() {
+    const recipientIssue = consolidatedInvoiceRecipientIssue({
+      name: invoice.billToName,
+    });
+    if (recipientIssue) {
+      setValidation(recipientIssue);
+      return;
+    }
+    setValidation(null);
+    await onIssue();
+  }
+
   return (
     <article className="min-w-0 rounded-xl border border-[var(--border)] p-4" aria-labelledby={`invoice-${invoice.id}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -457,7 +428,7 @@ function InvoiceDocument({
             <h3 id={`invoice-${invoice.id}`} className="text-lg font-extrabold text-[var(--text)]">{invoice.invoiceNumber}</h3>
             <StatusBadge invoice={invoice} />
           </div>
-          <p className="mt-1 text-xs text-[var(--text-sub)]">{invoice.job.jobName} · {displayDate(invoice.job.jobDate)}</p>
+          <p className="mt-1 text-xs text-[var(--text-sub)]">{invoice.jobCount && invoice.jobCount > 1 ? `${invoice.jobCount} jobs · ${(invoice.jobNames ?? []).join(', ')}` : `${invoice.job.jobName} · ${displayDate(invoice.job.jobDate)}`}</p>
         </div>
         <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Close</Button>
       </div>
@@ -475,6 +446,7 @@ function InvoiceDocument({
         <InfoBlock label="Bill to">
           <strong>{invoice.billToName || invoice.job.clientName || 'Billing name not set'}</strong>
           <span>{invoice.billToEmail || 'No email'}</span>
+          {invoice.billToAbn ? <span>ABN: {invoice.billToAbn}</span> : null}
           <span className="whitespace-pre-line">{invoice.billToAddress || invoice.job.siteAddress || 'No billing address'}</span>
           {invoice.purchaseOrderReference ? <span>Reference: {invoice.purchaseOrderReference}</span> : null}
         </InfoBlock>
@@ -490,6 +462,34 @@ function InvoiceDocument({
         </InfoBlock>
       </div>
 
+      {invoice.jobs && invoice.jobs.length > 1 ? (
+        <section className="mt-4" aria-labelledby={`invoice-jobs-${invoice.id}`}>
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h4 id={`invoice-jobs-${invoice.id}`} className="font-extrabold text-[var(--text)]">Included jobs</h4>
+              <p className="mt-1 text-xs text-[var(--text-sub)]">Each line remains attributed to its source job for revenue and cost reporting.</p>
+            </div>
+            <span className="text-xs font-bold text-[var(--text-sub)]">{invoice.jobs.length} jobs</span>
+          </div>
+          <div className="mt-3 grid gap-3 xl:grid-cols-2">
+            {invoice.jobs.map((job) => (
+              <article key={job.financeId} className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h5 className="truncate text-sm font-extrabold text-[var(--text)]">{job.job.jobName}</h5>
+                    <p className="mt-0.5 text-xs text-[var(--text-sub)]">{financeAppLabel(job.source.sourceApp)} · {displayDate(job.job.jobDate)}</p>
+                  </div>
+                  <strong className="shrink-0 text-sm text-[var(--text)]">{money(job.subtotalExGst, invoice.currency)}</strong>
+                </div>
+                <ul className="mt-2 space-y-1 text-xs text-[var(--text-sub)]">
+                  {job.lines.map((line) => <li key={line.id} className="flex justify-between gap-3"><span className="truncate">{line.description}</span><span className="shrink-0">{money(line.lineTotalExGst, invoice.currency)}</span></li>)}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {editable ? (
         <>
           <div className="mt-4 grid gap-x-3 md:grid-cols-2">
@@ -500,6 +500,11 @@ function InvoiceDocument({
             <div>
               <FieldLabel htmlFor={`invoice-bill-email-${invoice.id}`}>Bill-to email</FieldLabel>
               <Input id={`invoice-bill-email-${invoice.id}`} type="email" value={billToEmail} onChange={(event) => setBillToEmail(event.target.value)} />
+            </div>
+            <div>
+              <FieldLabel htmlFor={`invoice-bill-abn-${invoice.id}`}>Recipient ABN</FieldLabel>
+              <Input id={`invoice-bill-abn-${invoice.id}`} value={billToAbn} inputMode="numeric" onChange={(event) => setBillToAbn(event.target.value)} />
+              <FieldHint>Optional. Use the recipient’s ABN when it helps identify the billed entity.</FieldHint>
             </div>
             <div className="md:col-span-2">
               <FieldLabel htmlFor={`invoice-bill-address-${invoice.id}`}>Bill-to address</FieldLabel>
@@ -515,33 +520,27 @@ function InvoiceDocument({
               <FieldHint>If blank, the default due date is applied when this draft is issued.</FieldHint>
             </div>
           </div>
-          <div className="mt-4 space-y-3">
-            {lines.map((line, index) => (
-              <div key={line.id ?? `new-${index}`} className="grid gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 md:grid-cols-[minmax(0,1fr)_7rem_10rem_auto] md:items-end">
-                <div>
-                  <FieldLabel className="!mt-0" htmlFor={`invoice-line-description-${invoice.id}-${index}`}>Description</FieldLabel>
-                  <Input id={`invoice-line-description-${invoice.id}-${index}`} value={line.description} onChange={(event) => setLines((current) => current.map((item, i) => i === index ? { ...item, description: event.target.value } : item))} />
-                </div>
-                <div>
-                  <FieldLabel className="!mt-0" htmlFor={`invoice-line-qty-${invoice.id}-${index}`}>Quantity</FieldLabel>
-                  <Input id={`invoice-line-qty-${invoice.id}-${index}`} type="number" min="0.01" step="0.01" value={line.quantity} onChange={(event) => setLines((current) => current.map((item, i) => i === index ? { ...item, quantity: event.target.value } : item))} />
-                </div>
-                <div>
-                  <FieldLabel className="!mt-0" htmlFor={`invoice-line-unit-${invoice.id}-${index}`}>Unit ex GST</FieldLabel>
-                  <Input id={`invoice-line-unit-${invoice.id}-${index}`} type="number" min="0" step="0.01" value={line.unitAmountExGst} onChange={(event) => setLines((current) => current.map((item, i) => i === index ? { ...item, unitAmountExGst: event.target.value } : item))} />
-                </div>
-                <Button type="button" variant="ghost" disabled={invoiceActionBusy} onClick={() => setLines((current) => current.filter((_, i) => i !== index))}>Remove</Button>
-              </div>
-            ))}
-          </div>
-          <Button type="button" variant="secondary" className="mt-3" disabled={invoiceActionBusy} onClick={() => setLines((current) => [...current, editableLine()])}>+ Add manual line</Button>
-          <FieldLabel htmlFor={`invoice-notes-${invoice.id}`}>Invoice notes</FieldLabel>
-          <Textarea id={`invoice-notes-${invoice.id}`} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} />
-          <FieldHint>Draft line replacement preserves linked job expenses only while they belong to this job and are not reserved by another invoice.</FieldHint>
         </>
-      ) : (
-        <>
-          <div className="mt-4 space-y-2 md:hidden">
+      ) : null}
+
+      <section className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4" aria-labelledby={`invoice-charges-${invoice.id}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 id={`invoice-charges-${invoice.id}`} className="font-extrabold text-[var(--text)]">Invoice charges</h4>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--text-sub)]">Charges are read-only here so audited hours, job costs, margins, and invoice reservations stay aligned.</p>
+          </div>
+          {editable ? (
+            <nav className="flex flex-wrap gap-2" aria-label="Change invoice source charges">
+              <a className="inline-flex min-h-11 items-center rounded-lg px-3 text-xs font-extrabold text-[var(--primary)] hover:bg-[var(--primary-soft)]" href={schedulerFinanceHref({ view: 'financial-summary', financeId })}>Edit hours</a>
+              <a className="inline-flex min-h-11 items-center rounded-lg px-3 text-xs font-extrabold text-[var(--primary)] hover:bg-[var(--primary-soft)]" href={schedulerFinanceHref({ view: 'bills', financeId })}>Manage bills & expenses</a>
+            </nav>
+          ) : null}
+        </div>
+        {invoice.jobs && invoice.jobs.length > 1 ? (
+          <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">The job-attributed charge breakdown is shown in Included jobs above.</p>
+        ) : (
+          <>
+            <div className="mt-4 space-y-2 md:hidden">
             {invoice.lines.map((line) => (
               <div key={line.id} className="rounded-xl border border-[var(--border)] p-3 text-sm">
                 <p className="font-bold text-[var(--text)]">{line.description}</p>
@@ -549,16 +548,24 @@ function InvoiceDocument({
                 <p className="mt-1 font-extrabold text-[var(--text)]">{money(line.lineTotalExGst, invoice.currency)}</p>
               </div>
             ))}
-          </div>
-          <div className="mt-4 hidden overflow-x-auto md:block">
+            </div>
+            <div className="mt-4 hidden overflow-x-auto md:block">
             <table className="w-full min-w-[560px] text-left text-sm">
               <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--text-sub)]"><th className="py-2 pr-2">Description</th><th className="py-2 pr-2 text-right">Qty</th><th className="py-2 pr-2 text-right">Unit ex GST</th><th className="py-2 text-right">Amount</th></tr></thead>
               <tbody>{invoice.lines.map((line) => <tr key={line.id} className="border-b border-[var(--border)]/70"><td className="py-3 pr-2 font-semibold">{line.description}</td><td className="py-3 pr-2 text-right">{line.quantity}</td><td className="py-3 pr-2 text-right">{money(line.unitAmountExGst, invoice.currency)}</td><td className="py-3 text-right font-extrabold">{money(line.lineTotalExGst, invoice.currency)}</td></tr>)}</tbody>
             </table>
-          </div>
-          {invoice.notes ? <div className="mt-4 rounded-xl bg-[var(--surface2)] p-3 text-sm"><strong>Notes</strong><p className="mt-1 whitespace-pre-line text-[var(--text-sub)]">{invoice.notes}</p></div> : null}
+            </div>
+          </>
+        )}
+      </section>
+
+      {editable ? (
+        <>
+          <FieldLabel htmlFor={`invoice-notes-${invoice.id}`}>Invoice notes</FieldLabel>
+          <Textarea id={`invoice-notes-${invoice.id}`} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} />
+          <FieldHint>Update hours in Financial Summary and add other charges in Bills & Expenses before creating a replacement draft.</FieldHint>
         </>
-      )}
+      ) : invoice.notes ? <div className="mt-4 rounded-xl bg-[var(--surface2)] p-3 text-sm"><strong>Notes</strong><p className="mt-1 whitespace-pre-line text-[var(--text-sub)]">{invoice.notes}</p></div> : null}
 
       {validation ? <div className="mt-4"><ErrorBanner message={validation} /></div> : null}
       {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
@@ -593,7 +600,7 @@ function InvoiceDocument({
                 : 'Prepare PDF'}
         </Button>
         {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save draft'}</Button> : null}
-        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty} onClick={() => void onIssue()}>{dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
+        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty} onClick={() => void issueInvoice()}>{dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
         {invoice.status === 'issued' ? <Button type="button" disabled={invoiceActionBusy} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
         {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceActionBusy} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>

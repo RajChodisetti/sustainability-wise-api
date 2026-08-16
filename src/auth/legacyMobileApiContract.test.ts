@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import Fastify from 'fastify';
-import { buildApp, operationSummary } from '../app.js';
+import { buildApp, completeOpenApiDocument, operationSummary } from '../app.js';
 import { db } from '../db/client.js';
 import {
   authenticate,
@@ -114,6 +114,28 @@ test('generated OpenAPI summaries display the brand without changing the route n
     operationSummary('post', '/v1/installhub/sync/push'),
     'POST Field App Complete sync push',
   );
+});
+
+test('generated OpenAPI describes Scheduler bill uploads as authenticated binary media', () => {
+  const path = '/v1/portal/scheduler/expenses/{expenseId}/attachments';
+  const document = completeOpenApiDocument({
+    paths: { [path]: { post: {} } },
+    components: {},
+  });
+  const requestBody = document.paths[path].post.requestBody;
+  assert.deepEqual(Object.keys(requestBody.content).sort(), [
+    'application/octet-stream',
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/webp',
+  ]);
+  for (const media of Object.values(requestBody.content) as Array<{
+    schema: { type: string; format: string };
+  }>) {
+    assert.deepEqual(media.schema, { type: 'string', format: 'binary' });
+  }
+  assert.deepEqual(document.paths[path].post.security, [{ bearerAuth: [] }]);
 });
 
 test('legacy login keeps the email, password and app request contract', async () => {

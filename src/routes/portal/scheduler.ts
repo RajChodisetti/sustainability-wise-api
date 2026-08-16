@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../auth/middleware.js';
+import { config } from '../../config.js';
 import {
   assertPortalSchedulerApp,
   cancelScheduleEvent,
@@ -20,36 +21,51 @@ import { queueManualSchedulerReminder } from '../../services/schedulerNotificati
 import {
   createQuickSchedulerInvoice,
   createQuickSchedulerInvoiceByFinanceId,
+  createConsolidatedSchedulerInvoice,
   createSchedulerExpense,
   createSchedulerExpenseByFinanceId,
   deleteSchedulerExpense,
+  deleteSchedulerExpenseAttachment,
   deleteSchedulerExpenseByFinanceId,
   getSchedulerFinancialSummary,
   getSchedulerFinancialSummaryById,
+  getSchedulerFinancePortfolioSummary,
+  getConsolidatedInvoiceEligibility,
+  getConsolidatedSchedulerInvoice,
   getSchedulerInvoice,
   getSchedulerInvoiceByFinanceId,
   issueSchedulerInvoice,
   issueSchedulerInvoiceByFinanceId,
+  issueConsolidatedSchedulerInvoice,
+  listSchedulerExpensePortfolio,
   listSchedulerFinanceOverview,
+  listSchedulerInvoicePortfolio,
   listSchedulerInvoices,
   listSchedulerInvoicesByFinanceId,
   markSchedulerInvoicePaid,
   markSchedulerInvoicePaidByFinanceId,
+  markConsolidatedSchedulerInvoicePaid,
   updateSchedulerDraftInvoice,
   updateSchedulerDraftInvoiceByFinanceId,
+  updateConsolidatedSchedulerDraftInvoice,
   updateSchedulerExpense,
   updateSchedulerExpenseByFinanceId,
   updateSchedulerFinance,
   updateSchedulerFinanceById,
   voidSchedulerInvoice,
   voidSchedulerInvoiceByFinanceId,
+  voidConsolidatedSchedulerInvoice,
+  uploadSchedulerExpenseAttachment,
+  downloadSchedulerExpenseAttachment,
+  type ConsolidatedInvoiceInput,
   type ExpenseInput,
   type FinanceUpdateInput,
-  type InvoiceLineInput,
   type QuickInvoiceInput,
   type UpdateDraftInvoiceInput,
 } from '../../services/schedulerFinanceService.js';
+import { exportArtifactContentDisposition } from '../pdfJobs.js';
 import {
+  queueSchedulerInvoicePdfByInvoiceId,
   queueSchedulerInvoicePdfByEventId,
   queueSchedulerInvoicePdfByFinanceId,
 } from '../../services/schedulerInvoicePdfExport.js';
@@ -75,6 +91,7 @@ const financeUpdateBodySchema = {
     currency: { type: 'string', minLength: 1, maxLength: 8 },
     notes: { type: ['string', 'null'], maxLength: 5000 },
     billingName: { type: ['string', 'null'], maxLength: 300 },
+    billingAbn: { type: ['string', 'null'], maxLength: 100 },
     billingAddress: { type: ['string', 'null'], maxLength: 1000 },
     billingEmail: { type: ['string', 'null'], maxLength: 320 },
     billingReference: { type: ['string', 'null'], maxLength: 200 },
@@ -110,26 +127,13 @@ const invoiceDraftBodySchema = {
     notes: { type: ['string', 'null'], maxLength: 5000 },
     dueDate: { type: ['string', 'null'] },
     billToName: { type: 'string', minLength: 1, maxLength: 300 },
+    billToAbn: { type: ['string', 'null'], maxLength: 100 },
     billToAddress: { type: ['string', 'null'], maxLength: 1000 },
     billToEmail: { type: ['string', 'null'], maxLength: 320 },
     purchaseOrderReference: { type: ['string', 'null'], maxLength: 200 },
-    lines: {
-      type: 'array',
-      maxItems: 250,
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['description', 'quantity', 'unitAmountExGst'],
-        properties: {
-          id: { type: 'string' },
-          description: { type: 'string', minLength: 1, maxLength: 500 },
-          quantity: { type: 'number', exclusiveMinimum: 0 },
-          unitAmountExGst: { type: 'number', minimum: 0 },
-          expenseId: { type: ['string', 'null'] },
-          kind: { type: 'string', enum: ['labour', 'expense', 'quoted', 'other'] },
-        },
-      },
-    },
+    // Keep this recognized-but-impossible so Fastify cannot silently strip a
+    // legacy client line edit and make the caller believe it was applied.
+    lines: { not: {} },
   },
 } as const;
 
@@ -375,6 +379,358 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     }));
   });
 
+  app.get('/scheduler/finance/portfolio-summary', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Get exact currency-separated Scheduler portfolio totals',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sourceApp: { type: 'string', enum: ['ecoaudit', 'solarsense', 'installhub'] },
+          sourceId: { type: 'string' },
+          currency: { type: 'string', minLength: 1, maxLength: 8 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send(await getSchedulerFinancePortfolioSummary(
+    request.user,
+    request.query as {
+      sourceApp?: 'ecoaudit' | 'solarsense' | 'installhub';
+      sourceId?: string;
+      currency?: string;
+    },
+  )));
+
+  app.get('/scheduler/invoices', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'List invoices across every Scheduler job',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          limit: { type: 'string' },
+          cursor: { type: 'string' },
+          status: { type: 'string', enum: ['draft', 'issued', 'paid', 'void'] },
+          sourceApp: { type: 'string', enum: ['ecoaudit', 'solarsense', 'installhub'] },
+          financeId: { type: 'string' },
+          search: { type: 'string', maxLength: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const query = request.query as {
+      limit?: string;
+      cursor?: string;
+      status?: 'draft' | 'issued' | 'paid' | 'void';
+      sourceApp?: 'ecoaudit' | 'solarsense' | 'installhub';
+      financeId?: string;
+      search?: string;
+    };
+    const limit = query.limit === undefined ? undefined : Number(query.limit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+      throw badRequest('limit must be a positive integer');
+    }
+    return reply.send(await listSchedulerInvoicePortfolio(request.user, {
+      ...query,
+      limit,
+    }));
+  });
+
+  app.post('/scheduler/invoices/eligibility', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Preview reservation-safe consolidated invoice eligibility',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['financeIds'],
+        properties: {
+          financeIds: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 50,
+            uniqueItems: true,
+            items: { type: 'string', minLength: 1 },
+          },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { financeIds: string[] };
+    return reply.send(await getConsolidatedInvoiceEligibility(request.user, body.financeIds));
+  });
+
+  app.post('/scheduler/invoices/quick', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Create one reservation-safe invoice across selected jobs',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['jobs'],
+        properties: {
+          jobs: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 50,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['financeId'],
+              properties: {
+                financeId: { type: 'string', minLength: 1 },
+                expenseIds: {
+                  type: 'array',
+                  uniqueItems: true,
+                  items: { type: 'string', minLength: 1 },
+                },
+                includeLabour: { type: 'boolean' },
+              },
+            },
+          },
+          billTo: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name'],
+            properties: {
+              name: { type: 'string', minLength: 1, maxLength: 300 },
+              abn: { type: ['string', 'null'], maxLength: 100 },
+              address: { type: ['string', 'null'], maxLength: 1000 },
+              email: { type: ['string', 'null'], maxLength: 320 },
+              purchaseOrderReference: { type: ['string', 'null'], maxLength: 200 },
+            },
+          },
+          notes: { type: ['string', 'null'], maxLength: 5000 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.status(201).send(
+    await createConsolidatedSchedulerInvoice(
+      request.user,
+      request.body as ConsolidatedInvoiceInput,
+    ),
+  ));
+
+  app.get<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Get a single- or multi-job Scheduler invoice',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send(await getConsolidatedSchedulerInvoice(
+    request.user,
+    request.params.invoiceId,
+  )));
+
+  app.patch<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Edit a consolidated draft invoice',
+      security: [{ bearerAuth: [] }],
+      body: invoiceDraftBodySchema,
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send(await updateConsolidatedSchedulerDraftInvoice(
+    request.user,
+    request.params.invoiceId,
+    (request.body ?? {}) as UpdateDraftInvoiceInput,
+  )));
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/issue', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Issue and freeze a consolidated invoice snapshot',
+      security: [{ bearerAuth: [] }],
+      body: invoiceVersionBodySchema,
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { expectedUpdatedAt: string };
+    return reply.send(await issueConsolidatedSchedulerInvoice(
+      request.user,
+      request.params.invoiceId,
+      body.expectedUpdatedAt,
+    ));
+  });
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/void', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Void an unpaid consolidated invoice',
+      security: [{ bearerAuth: [] }],
+      body: invoiceVersionBodySchema,
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { expectedUpdatedAt: string };
+    return reply.send(await voidConsolidatedSchedulerInvoice(
+      request.user,
+      request.params.invoiceId,
+      body.expectedUpdatedAt,
+    ));
+  });
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/mark-paid', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Mark an issued consolidated invoice paid',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedUpdatedAt'],
+        properties: {
+          expectedUpdatedAt: { type: 'string', format: 'date-time' },
+          paidAt: { type: ['string', 'null'] },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { expectedUpdatedAt: string; paidAt?: string | null };
+    return reply.send(await markConsolidatedSchedulerInvoicePaid(
+      request.user,
+      request.params.invoiceId,
+      body.paidAt,
+      body.expectedUpdatedAt,
+    ));
+  });
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/pdf/jobs', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Queue a durable consolidated invoice PDF export',
+      security: [{ bearerAuth: [] }],
+      body: invoiceVersionBodySchema,
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { expectedUpdatedAt: string };
+    return reply.status(202).send(await queueSchedulerInvoicePdfByInvoiceId(
+      request.user,
+      request.params.invoiceId,
+      body.expectedUpdatedAt,
+    ));
+  });
+
+  app.get('/scheduler/expenses', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'List bills and expenses across every Scheduler job',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          limit: { type: 'string' },
+          cursor: { type: 'string' },
+          kind: { type: 'string', enum: ['expense', 'supplier_bill'] },
+          sourceApp: { type: 'string', enum: ['ecoaudit', 'solarsense', 'installhub'] },
+          financeId: { type: 'string' },
+          search: { type: 'string', maxLength: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const query = request.query as {
+      limit?: string;
+      cursor?: string;
+      kind?: 'expense' | 'supplier_bill';
+      sourceApp?: 'ecoaudit' | 'solarsense' | 'installhub';
+      financeId?: string;
+      search?: string;
+    };
+    const limit = query.limit === undefined ? undefined : Number(query.limit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) {
+      throw badRequest('limit must be a positive integer');
+    }
+    return reply.send(await listSchedulerExpensePortfolio(request.user, { ...query, limit }));
+  });
+
+  app.post<{ Params: { expenseId: string } }>('/scheduler/expenses/:expenseId/attachments', {
+    bodyLimit: config.schedulerFinance.billAttachmentMaxBytes,
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Upload private PDF or image evidence for a bill or expense',
+      security: [{ bearerAuth: [] }],
+      headers: {
+        type: 'object',
+        required: ['x-file-name'],
+        properties: {
+          'x-file-name': { type: 'string', minLength: 1, maxLength: 500 },
+          'x-file-content-type': { type: 'string', maxLength: 100 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.status(201).send(await uploadSchedulerExpenseAttachment(
+    request.user,
+    request.params.expenseId,
+    {
+      filename: request.headers['x-file-name'],
+      contentType: request.headers['x-file-content-type'],
+      body: request.body,
+    },
+  )));
+
+  app.get<{ Params: { expenseId: string; attachmentId: string } }>(
+    '/scheduler/expenses/:expenseId/attachments/:attachmentId/download',
+    {
+      schema: {
+        tags: ['Portal Scheduler Finance'],
+        summary: 'Download private bill or expense evidence',
+        security: [{ bearerAuth: [] }],
+      },
+      preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+    },
+    async (request, reply) => {
+      const attachment = await downloadSchedulerExpenseAttachment(
+        request.user,
+        request.params.expenseId,
+        request.params.attachmentId,
+      );
+      return reply
+        .header('Content-Length', String(attachment.sizeBytes))
+        .header('Content-Disposition', exportArtifactContentDisposition(attachment.filename))
+        .header('Cache-Control', 'private, no-store')
+        .header('Vary', 'Authorization')
+        .type(attachment.contentType)
+        .send(attachment.stream);
+    },
+  );
+
+  app.delete<{ Params: { expenseId: string; attachmentId: string } }>(
+    '/scheduler/expenses/:expenseId/attachments/:attachmentId',
+    {
+      schema: {
+        tags: ['Portal Scheduler Finance'],
+        summary: 'Delete unreserved private bill or expense evidence',
+        security: [{ bearerAuth: [] }],
+      },
+      preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+    },
+    async (request, reply) => {
+      await deleteSchedulerExpenseAttachment(
+        request.user,
+        request.params.expenseId,
+        request.params.attachmentId,
+      );
+      return reply.status(204).send();
+    },
+  );
+
   app.get<{ Params: { financeId: string } }>('/scheduler/finance/:financeId', {
     schema: {
       tags: ['Portal Scheduler Finance'],
@@ -514,7 +870,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit a draft invoice before its header and lines are frozen at issue',
+        summary: 'Edit draft invoice header fields',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },
@@ -557,14 +913,19 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         tags: ['Portal Scheduler Finance'],
         summary: 'Void an unpaid invoice and release its reservations',
         security: [{ bearerAuth: [] }],
+        body: invoiceVersionBodySchema,
       },
       preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
     },
-    async (request, reply) => reply.send(await voidSchedulerInvoiceByFinanceId(
-      request.user,
-      request.params.financeId,
-      request.params.invoiceId,
-    )),
+    async (request, reply) => {
+      const body = request.body as { expectedUpdatedAt: string };
+      return reply.send(await voidSchedulerInvoiceByFinanceId(
+        request.user,
+        request.params.financeId,
+        request.params.invoiceId,
+        body.expectedUpdatedAt,
+      ));
+    },
   );
 
   app.post<{ Params: { financeId: string; invoiceId: string } }>(
@@ -577,18 +938,23 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         body: {
           type: 'object',
           additionalProperties: false,
-          properties: { paidAt: { type: ['string', 'null'] } },
+          required: ['expectedUpdatedAt'],
+          properties: {
+            expectedUpdatedAt: { type: 'string', format: 'date-time' },
+            paidAt: { type: ['string', 'null'] },
+          },
         },
       },
       preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
     },
     async (request, reply) => {
-      const body = (request.body ?? {}) as { paidAt?: string | null };
+      const body = request.body as { expectedUpdatedAt: string; paidAt?: string | null };
       return reply.send(await markSchedulerInvoicePaidByFinanceId(
         request.user,
         request.params.financeId,
         request.params.invoiceId,
         body.paidAt,
+        body.expectedUpdatedAt,
       ));
     },
   );
@@ -762,7 +1128,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit draft invoice notes, due date, or snapshot lines',
+        summary: 'Edit draft invoice header fields',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },
@@ -772,7 +1138,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       request.user,
       request.params.id,
       request.params.invoiceId,
-      (request.body ?? {}) as UpdateDraftInvoiceInput & { lines?: InvoiceLineInput[] },
+      (request.body ?? {}) as UpdateDraftInvoiceInput,
     )),
   );
 
@@ -805,14 +1171,19 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         tags: ['Portal Scheduler Finance'],
         summary: 'void a scheduler invoice',
         security: [{ bearerAuth: [] }],
+        body: invoiceVersionBodySchema,
       },
       preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
     },
-    async (request, reply) => reply.send(await voidSchedulerInvoice(
-      request.user,
-      request.params.id,
-      request.params.invoiceId,
-    )),
+    async (request, reply) => {
+      const body = request.body as { expectedUpdatedAt: string };
+      return reply.send(await voidSchedulerInvoice(
+        request.user,
+        request.params.id,
+        request.params.invoiceId,
+        body.expectedUpdatedAt,
+      ));
+    },
   );
 
   app.post<{ Params: { id: string; invoiceId: string } }>(
@@ -825,18 +1196,23 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         body: {
           type: 'object',
           additionalProperties: false,
-          properties: { paidAt: { type: ['string', 'null'] } },
+          required: ['expectedUpdatedAt'],
+          properties: {
+            expectedUpdatedAt: { type: 'string', format: 'date-time' },
+            paidAt: { type: ['string', 'null'] },
+          },
         },
       },
       preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
     },
     async (request, reply) => {
-      const body = (request.body ?? {}) as { paidAt?: string | null };
+      const body = request.body as { expectedUpdatedAt: string; paidAt?: string | null };
       return reply.send(await markSchedulerInvoicePaid(
         request.user,
         request.params.id,
         request.params.invoiceId,
         body.paidAt,
+        body.expectedUpdatedAt,
       ));
     },
   );

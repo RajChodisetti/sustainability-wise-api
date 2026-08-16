@@ -3,27 +3,39 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   cancelScheduleEvent,
+  checkConsolidatedSchedulerInvoiceEligibility,
+  createConsolidatedSchedulerInvoice,
   createQuickSchedulerInvoice,
   createScheduleEvent,
   createSchedulerDispatch,
   createSchedulerExpense,
+  deleteSchedulerExpenseAttachment,
   deleteSchedulerExpense,
+  fetchGlobalSchedulerExpenses,
+  fetchGlobalSchedulerInvoice,
+  fetchGlobalSchedulerInvoices,
   fetchSchedulerFinancialSummary,
   fetchSchedulerFinanceOverview,
   fetchSchedulerInvoice,
   fetchSchedulerInvoices,
+  fetchSchedulerPortfolioSummary,
   fetchPortalAssignees,
   fetchScheduleEvents,
   fetchScheduleSummary,
   fetchUnscheduledJobs,
+  issueGlobalSchedulerInvoice,
   issueSchedulerInvoice,
+  markGlobalSchedulerInvoicePaid,
   markSchedulerInvoicePaid,
   searchJobOptions,
   sendScheduleEventReminder,
+  updateGlobalSchedulerInvoice,
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
   updateScheduleEvent,
+  uploadSchedulerExpenseAttachment,
+  voidGlobalSchedulerInvoice,
   voidSchedulerInvoice,
 } from '@/modules/scheduler/api/client';
 import type {
@@ -53,6 +65,18 @@ export const schedulerKeys = {
   financeOverviewTarget: (sourceApp: string, sourceId: string) =>
     [...schedulerKeys.financeOverview(), 'target', sourceApp, sourceId] as const,
   financialSummary: (financeId: string) => [...schedulerKeys.finance(), 'summary', financeId] as const,
+  portfolioSummary: () => [...schedulerKeys.finance(), 'portfolio-summary'] as const,
+  globalExpenses: (filters?: Record<string, string | undefined>) => (
+    filters
+      ? [...schedulerKeys.finance(), 'expenses', filters] as const
+      : [...schedulerKeys.finance(), 'expenses'] as const
+  ),
+  globalInvoices: (filters?: Record<string, string | undefined>) => (
+    filters
+      ? [...schedulerKeys.finance(), 'invoices', 'global', filters] as const
+      : [...schedulerKeys.finance(), 'invoices', 'global'] as const
+  ),
+  globalInvoice: (invoiceId: string) => [...schedulerKeys.finance(), 'invoice', 'global', invoiceId] as const,
   invoices: (financeId: string) => [...schedulerKeys.finance(), 'invoices', financeId] as const,
   invoice: (financeId: string, invoiceId: string) =>
     [...schedulerKeys.invoices(financeId), invoiceId] as const,
@@ -195,6 +219,58 @@ export function useSchedulerFinancialSummary(financeId: string | null) {
   });
 }
 
+export function useSchedulerPortfolioSummary(enabled = true) {
+  return useQuery({
+    queryKey: schedulerKeys.portfolioSummary(),
+    queryFn: fetchSchedulerPortfolioSummary,
+    enabled,
+  });
+}
+
+export function useGlobalSchedulerExpenses(filters: {
+  kind?: 'expense' | 'supplier_bill';
+  sourceApp?: FinanceSourceApp;
+  search?: string;
+} = {}, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: schedulerKeys.globalExpenses(filters),
+    queryFn: ({ pageParam }) => fetchGlobalSchedulerExpenses({
+      cursor: pageParam,
+      limit: 100,
+      ...filters,
+    }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    enabled,
+  });
+}
+
+export function useGlobalSchedulerInvoices(filters: {
+  status?: 'draft' | 'issued' | 'paid' | 'void';
+  sourceApp?: FinanceSourceApp;
+  search?: string;
+} = {}, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: schedulerKeys.globalInvoices(filters),
+    queryFn: ({ pageParam }) => fetchGlobalSchedulerInvoices({
+      cursor: pageParam,
+      limit: 100,
+      ...filters,
+    }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage) => lastPage.nextCursor,
+    enabled,
+  });
+}
+
+export function useGlobalSchedulerInvoice(invoiceId: string | null) {
+  return useQuery({
+    queryKey: schedulerKeys.globalInvoice(invoiceId ?? ''),
+    queryFn: () => fetchGlobalSchedulerInvoice(invoiceId ?? ''),
+    enabled: Boolean(invoiceId),
+  });
+}
+
 export function useUpdateSchedulerFinance(financeId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -209,6 +285,9 @@ export function useUpdateSchedulerFinance(financeId: string) {
 async function invalidateSchedulerCommercialData(qc: ReturnType<typeof useQueryClient>, financeId: string) {
   await Promise.all([
     qc.invalidateQueries({ queryKey: schedulerKeys.financeOverview() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.portfolioSummary() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.globalExpenses() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoices() }),
     qc.invalidateQueries({ queryKey: schedulerKeys.financialSummary(financeId) }),
     qc.invalidateQueries({ queryKey: schedulerKeys.invoices(financeId) }),
   ]);
@@ -239,6 +318,79 @@ export function useDeleteSchedulerExpense(financeId: string) {
   });
 }
 
+async function invalidateGlobalSchedulerCommercialData(
+  qc: ReturnType<typeof useQueryClient>,
+  financeIds: string[] = [],
+) {
+  await Promise.all([
+    qc.invalidateQueries({ queryKey: schedulerKeys.financeOverview() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.portfolioSummary() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.globalExpenses() }),
+    qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoices() }),
+    ...financeIds.map((financeId) => qc.invalidateQueries({
+      queryKey: schedulerKeys.financialSummary(financeId),
+    })),
+  ]);
+}
+
+export function useCreateGlobalSchedulerExpense() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ financeId, input }: { financeId: string; input: FinanceExpenseInput }) => (
+      createSchedulerExpense(financeId, input)
+    ),
+    onSuccess: async (expense) => invalidateGlobalSchedulerCommercialData(qc, [expense.financeId]),
+  });
+}
+
+export function useUpdateGlobalSchedulerExpense() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      financeId,
+      expenseId,
+      input,
+    }: {
+      financeId: string;
+      expenseId: string;
+      input: FinanceExpenseInput;
+    }) => updateSchedulerExpense(financeId, expenseId, input),
+    onSuccess: async (expense) => invalidateGlobalSchedulerCommercialData(qc, [expense.financeId]),
+  });
+}
+
+export function useDeleteGlobalSchedulerExpense() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ financeId, expenseId }: { financeId: string; expenseId: string }) => (
+      deleteSchedulerExpense(financeId, expenseId)
+    ),
+    onSuccess: async (_, variables) => (
+      invalidateGlobalSchedulerCommercialData(qc, [variables.financeId])
+    ),
+  });
+}
+
+export function useUploadSchedulerExpenseAttachment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ expenseId, file }: { expenseId: string; file: File }) => (
+      uploadSchedulerExpenseAttachment(expenseId, file)
+    ),
+    onSuccess: async () => invalidateGlobalSchedulerCommercialData(qc),
+  });
+}
+
+export function useDeleteSchedulerExpenseAttachment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ expenseId, attachmentId }: { expenseId: string; attachmentId: string }) => (
+      deleteSchedulerExpenseAttachment(expenseId, attachmentId)
+    ),
+    onSuccess: async () => invalidateGlobalSchedulerCommercialData(qc),
+  });
+}
+
 export function useSchedulerInvoices(financeId: string | null) {
   return useQuery({
     queryKey: schedulerKeys.invoices(financeId ?? ''),
@@ -262,6 +414,92 @@ export function useCreateQuickSchedulerInvoice(financeId: string) {
     onSuccess: async (invoice) => {
       qc.setQueryData(schedulerKeys.invoice(financeId, invoice.id), invoice);
       await invalidateSchedulerCommercialData(qc, financeId);
+    },
+  });
+}
+
+export function useCheckConsolidatedSchedulerInvoiceEligibility() {
+  return useMutation({
+    mutationFn: (financeIds: string[]) => checkConsolidatedSchedulerInvoiceEligibility(financeIds),
+  });
+}
+
+export function useCreateConsolidatedSchedulerInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createConsolidatedSchedulerInvoice,
+    onSuccess: async (invoice) => {
+      qc.setQueryData(schedulerKeys.globalInvoice(invoice.id), invoice);
+      await invalidateGlobalSchedulerCommercialData(
+        qc,
+        invoice.financeIds ?? [invoice.financeId],
+      );
+    },
+  });
+}
+
+export function useUpdateGlobalSchedulerInvoice() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, input }: {
+      invoiceId: string;
+      input: Parameters<typeof updateGlobalSchedulerInvoice>[1];
+    }) => updateGlobalSchedulerInvoice(invoiceId, input),
+    onSuccess: async (invoice) => {
+      qc.setQueryData(schedulerKeys.globalInvoice(invoice.id), invoice);
+      await invalidateGlobalSchedulerCommercialData(qc, invoice.financeIds ?? [invoice.financeId]);
+    },
+    onError: async () => invalidateGlobalSchedulerCommercialData(qc),
+  });
+}
+
+function useGlobalInvoiceLifecycleMutation<TVariables>(
+  mutationFn: (variables: TVariables) => ReturnType<typeof issueGlobalSchedulerInvoice>,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: async (invoice) => {
+      qc.setQueryData(schedulerKeys.globalInvoice(invoice.id), invoice);
+      await invalidateGlobalSchedulerCommercialData(qc, invoice.financeIds ?? [invoice.financeId]);
+    },
+    onError: async () => invalidateGlobalSchedulerCommercialData(qc),
+  });
+}
+
+export function useIssueGlobalSchedulerInvoice() {
+  return useGlobalInvoiceLifecycleMutation(
+    ({ invoiceId, expectedUpdatedAt }: { invoiceId: string; expectedUpdatedAt: string }) => (
+      issueGlobalSchedulerInvoice(invoiceId, expectedUpdatedAt)
+    ),
+  );
+}
+
+export function useVoidGlobalSchedulerInvoice() {
+  return useGlobalInvoiceLifecycleMutation(({
+    invoiceId,
+    expectedUpdatedAt,
+  }: {
+    invoiceId: string;
+    expectedUpdatedAt: string;
+  }) => (
+    voidGlobalSchedulerInvoice(invoiceId, expectedUpdatedAt)
+  ));
+}
+
+export function useMarkGlobalSchedulerInvoicePaid() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ invoiceId, expectedUpdatedAt, paidAt }: {
+      invoiceId: string;
+      expectedUpdatedAt: string;
+      paidAt?: string;
+    }) => (
+      markGlobalSchedulerInvoicePaid(invoiceId, expectedUpdatedAt, paidAt)
+    ),
+    onSuccess: async (invoice) => {
+      qc.setQueryData(schedulerKeys.globalInvoice(invoice.id), invoice);
+      await invalidateGlobalSchedulerCommercialData(qc, invoice.financeIds ?? [invoice.financeId]);
     },
   });
 }
@@ -304,16 +542,25 @@ export function useIssueSchedulerInvoice(financeId: string) {
 }
 
 export function useVoidSchedulerInvoice(financeId: string) {
-  return useInvoiceLifecycleMutation(financeId, (invoiceId: string) => (
-    voidSchedulerInvoice(financeId, invoiceId)
+  return useInvoiceLifecycleMutation(financeId, ({
+    invoiceId,
+    expectedUpdatedAt,
+  }: {
+    invoiceId: string;
+    expectedUpdatedAt: string;
+  }) => (
+    voidSchedulerInvoice(financeId, invoiceId, expectedUpdatedAt)
   ));
 }
 
 export function useMarkSchedulerInvoicePaid(financeId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ invoiceId, paidAt }: { invoiceId: string; paidAt?: string }) =>
-      markSchedulerInvoicePaid(financeId, invoiceId, paidAt),
+    mutationFn: ({ invoiceId, expectedUpdatedAt, paidAt }: {
+      invoiceId: string;
+      expectedUpdatedAt: string;
+      paidAt?: string;
+    }) => markSchedulerInvoicePaid(financeId, invoiceId, expectedUpdatedAt, paidAt),
     onSuccess: async (invoice) => {
       qc.setQueryData(schedulerKeys.invoice(financeId, invoice.id), invoice);
       await invalidateSchedulerCommercialData(qc, financeId);

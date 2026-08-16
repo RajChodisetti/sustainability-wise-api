@@ -1,8 +1,9 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { AuthUser } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
-import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
+import { ssAssessmentWorkSessions, ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { photoRegistry, recordVersions } from '../../db/schema/shared.js';
+import { assertNoSchedulerCommercialEvidenceBeforePurge } from '../../services/schedulerCommercialRetentionService.js';
 import { deleteLocalFile } from '../../storage/localFiles.js';
 import {
   deleteOwnedPhotosUnlessReferenced,
@@ -162,23 +163,63 @@ export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
 }
 
 export async function purgeSolarsenseAssessment(assessmentId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [assessment] = await tx.select({ id: ssRooftopAssessments.id })
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, assessmentId))
+      .for('update')
+      .limit(1);
+    if (!assessment) throw badRequest('Assessment was already purged');
+    await assertNoSchedulerCommercialEvidenceBeforePurge(tx, {
+      sourceApp: 'solarsense',
+      sourceType: 'assessment',
+      sourceId: assessment.id,
+    });
+    await tx.delete(ssAssessmentWorkSessions)
+      .where(eq(ssAssessmentWorkSessions.assessmentId, assessment.id));
+    await tx.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.id, assessment.id));
+  });
+
   await releaseCopyReferencesForEntity('solarsense', assessmentId);
   await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', entityId: assessmentId });
-  await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.id, assessmentId));
 }
 
 export async function purgeSolarsenseSiteTree(siteId: string, reportPdfStorageKey?: string | null): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [site] = await tx.select({ id: ssSites.id })
+      .from(ssSites)
+      .where(eq(ssSites.id, siteId))
+      .for('update')
+      .limit(1);
+    if (!site) throw badRequest('Site was already purged');
+    const assessments = await tx.select({ id: ssRooftopAssessments.id })
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.siteId, site.id))
+      .for('update');
+    for (const assessment of assessments) {
+      await assertNoSchedulerCommercialEvidenceBeforePurge(tx, {
+        sourceApp: 'solarsense',
+        sourceType: 'assessment',
+        sourceId: assessment.id,
+      });
+    }
+
+    await tx.delete(recordVersions).where(and(
+      eq(recordVersions.app, 'solarsense'),
+      eq(recordVersions.entityType, 'site'),
+      eq(recordVersions.entityId, site.id),
+    ));
+    if (assessments.length) {
+      for (const assessment of assessments) {
+        await tx.delete(ssAssessmentWorkSessions)
+          .where(eq(ssAssessmentWorkSessions.assessmentId, assessment.id));
+      }
+    }
+    await tx.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.siteId, site.id));
+    await tx.delete(ssSites).where(eq(ssSites.id, site.id));
+  });
+
   await releaseCopyReferencesForParent('solarsense', siteId);
   await deleteOwnedPhotosUnlessReferenced({ app: 'solarsense', parentId: siteId });
-
   await deleteLocalFile(reportPdfStorageKey);
-
-  await db.delete(recordVersions).where(and(
-    eq(recordVersions.app, 'solarsense'),
-    eq(recordVersions.entityType, 'site'),
-    eq(recordVersions.entityId, siteId),
-  ));
-
-  await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.siteId, siteId));
-  await db.delete(ssSites).where(eq(ssSites.id, siteId));
 }

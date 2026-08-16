@@ -162,6 +162,32 @@ mobile clients and with the old portal/API during the switch. Use an
 expand/migrate/contract sequence for changes that cannot be backward compatible
 in one release.
 
+### Scheduler consolidated-invoice cutover (migration 0034)
+
+Migration 0034 is additive for existing one-job invoice reads and creates, and
+database fences preserve reservations, source evidence, and immutable lines
+while the old API is drained. It is intentionally not a mixed-version feature
+rollout: the old API cannot correctly group or render a multi-job invoice.
+
+For a release containing 0034:
+
+1. Put Scheduler commercial writes in the maintenance state and drain every
+   pre-0034/d89 API process.
+2. Apply the migration and start only the new API release.
+3. Pass database, API health, one-job compatibility, consolidated lifecycle,
+   and grouped PDF checks before allowing administrators to create a multi-job
+   invoice.
+4. Record whether any invoice now has more than one `scheduler_invoice_jobs`
+   row. Once that is true, do not start or roll back to d89. The rollback target
+   must include the 0034-aware membership/reservation queries, grouped read/PDF
+   adapters, and transaction-local lifecycle writer marker.
+
+PostgreSQL rejects old consolidated status transitions and invoice-line
+rewrites, but it cannot make an old binary's reads or PDFs semantically correct.
+This is therefore a one-way application cutover once consolidated data exists,
+unless both database and matching storage are restored to a verified
+pre-consolidation recovery point with all writers stopped.
+
 ## 2. Create the release candidate
 
 On the integrated local `main` branch:
@@ -493,6 +519,11 @@ observation window.
    place.
 
 Do not restore the database for a normal code or PDF regression.
+
+For migration 0034, first query for invoices with more than one
+`scheduler_invoice_jobs` member. If any exist, a d89 code-only rollback is
+prohibited; use a reviewed 0034-aware rollback build or the coordinated
+database-and-storage recovery procedure below.
 
 ### Migration/data rollback
 

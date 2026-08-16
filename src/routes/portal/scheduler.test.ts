@@ -140,3 +140,98 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
     await app.close();
   }
 });
+
+test('global Scheduler finance routes are admin-only, CAS-bound, and parse private PDF uploads', async () => {
+  const app = Fastify();
+  app.addContentTypeParser(
+    'application/pdf',
+    { parseAs: 'buffer' },
+    (_request, body, done) => done(null, body),
+  );
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const inspectorToken = signAccessToken({
+    userId: 'eco-inspector',
+    app: 'ecoaudit',
+    role: 'inspector',
+  });
+  const adminToken = signAccessToken({
+    userId: 'eco-admin',
+    app: 'ecoaudit',
+    role: 'admin',
+  });
+  const routeTemplates: Array<{ method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; url: string }> = [
+    { method: 'GET', url: '/v1/portal/scheduler/finance/portfolio-summary' },
+    { method: 'GET', url: '/v1/portal/scheduler/invoices' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/eligibility' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/quick' },
+    { method: 'GET', url: '/v1/portal/scheduler/invoices/:invoiceId' },
+    { method: 'PATCH', url: '/v1/portal/scheduler/invoices/:invoiceId' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/issue' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/void' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/mark-paid' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs' },
+    { method: 'GET', url: '/v1/portal/scheduler/expenses' },
+    { method: 'POST', url: '/v1/portal/scheduler/expenses/:expenseId/attachments' },
+    {
+      method: 'GET',
+      url: '/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download',
+    },
+    {
+      method: 'DELETE',
+      url: '/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId',
+    },
+  ];
+  try {
+    for (const route of routeTemplates) {
+      assert.equal(app.hasRoute(route), true, `${route.method} ${route.url}`);
+    }
+
+    const invoiceList = await app.inject({
+      method: 'GET',
+      url: '/v1/portal/scheduler/invoices',
+      headers: { authorization: `Bearer ${inspectorToken}` },
+    });
+    assert.equal(invoiceList.statusCode, 403);
+
+    const pdfUpload = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/expenses/expense-1/attachments',
+      headers: {
+        authorization: `Bearer ${inspectorToken}`,
+        'content-type': 'application/pdf',
+        'x-file-name': 'supplier-bill.pdf',
+      },
+      payload: Buffer.from('%PDF-1.4\n%%EOF'),
+    });
+    assert.equal(pdfUpload.statusCode, 403, pdfUpload.body);
+
+    for (const suffix of ['issue', 'void', 'mark-paid', 'pdf/jobs']) {
+      const missingCas = await app.inject({
+        method: 'POST',
+        url: `/v1/portal/scheduler/invoices/invoice-1/${suffix}`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {},
+      });
+      assert.equal(missingCas.statusCode, 400, `${suffix}: ${missingCas.body}`);
+    }
+
+    const manualLineEdit = await app.inject({
+      method: 'PATCH',
+      url: '/v1/portal/scheduler/invoices/invoice-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        lines: [{
+          kind: 'other',
+          description: 'Manual adjustment',
+          quantity: 1,
+          unitAmountExGst: 10,
+        }],
+      },
+    });
+    assert.equal(manualLineEdit.statusCode, 400, manualLineEdit.body);
+  } finally {
+    await app.close();
+  }
+});

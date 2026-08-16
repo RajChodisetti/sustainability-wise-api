@@ -23,6 +23,15 @@ export type InvoicePdfJob = {
   siteAddress: string | null;
 };
 
+export type InvoicePdfJobGroup = {
+  /** Internal grouping key. It is never rendered into the customer PDF. */
+  financeId: string;
+  job: InvoicePdfJob;
+  reference: string | null;
+  subtotalExGst: number;
+  lines: InvoicePdfLine[];
+};
+
 export type InvoicePdfModel = {
   invoiceNumber: string;
   status: string;
@@ -44,9 +53,15 @@ export type InvoicePdfModel = {
   };
   billTo?: {
     name: string | null;
+    abn?: string | null;
     address: string | null;
     email: string | null;
   };
+  /**
+   * Immutable per-job invoice snapshots. Older one-job invoices do not have
+   * this field and continue to render from `job` and `lines` below.
+   */
+  jobs?: InvoicePdfJobGroup[];
   job: InvoicePdfJob;
   lines: InvoicePdfLine[];
 };
@@ -82,12 +97,12 @@ function money(amount: number, currency: string): string {
 }
 
 function formatDate(iso: string | null): string {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const calendarDate = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(iso)?.[1];
   const d = calendarDate
     ? new Date(`${calendarDate}T00:00:00.000Z`)
     : new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return '-';
   return d.toLocaleDateString('en-AU', {
     day: 'numeric',
     month: 'short',
@@ -148,9 +163,10 @@ export function buildInvoiceDownloadFilename(input: {
   jobName: string;
   jobDate: string;
   invoiceNumber: string;
+  additionalJobCount?: number;
 }): string {
   const jobDate = assertJobDate(input.jobDate.trim());
-  const jobName = truncateUtf8Segment(
+  const initialJobName = truncateUtf8Segment(
     safeFilenameSegment(input.jobName.trim(), 'job'),
     MAX_JOB_FILENAME_BYTES,
   ) || 'job';
@@ -158,7 +174,22 @@ export function buildInvoiceDownloadFilename(input: {
     safeFilenameSegment(input.invoiceNumber.trim(), 'invoice'),
     MAX_INVOICE_NUMBER_FILENAME_BYTES,
   ) || 'invoice';
-  const filename = `invoice-${jobName}-${jobDate}-${invoiceNumber}.pdf`;
+  const additionalJobCount = input.additionalJobCount ?? 0;
+  if (!Number.isSafeInteger(additionalJobCount) || additionalJobCount < 0) {
+    throw new TypeError('additionalJobCount must be a non-negative safe integer');
+  }
+  const jobCountMarker = additionalJobCount > 0
+    ? `-and-${additionalJobCount}-more`
+    : '';
+  const fixedTail = `${jobCountMarker}-${jobDate}-${invoiceNumber}.pdf`;
+  const jobNameBudget = MAX_DOWNLOAD_FILENAME_BYTES
+    - Buffer.byteLength('invoice-', 'utf8')
+    - Buffer.byteLength(fixedTail, 'utf8');
+  if (jobNameBudget < 1) {
+    throw new Error('Invoice identity leaves no room for a safe filename');
+  }
+  const jobName = truncateUtf8Segment(initialJobName, jobNameBudget) || 'job';
+  const filename = `invoice-${jobName}${fixedTail}`;
   if (Buffer.byteLength(filename, 'utf8') > MAX_DOWNLOAD_FILENAME_BYTES) {
     throw new Error('Generated invoice filename exceeds the safe byte limit');
   }
@@ -217,25 +248,78 @@ export function buildInvoiceHtml(
   const gstPct = Math.round(model.gstRate * 1000) / 10;
   const isTaxInvoice = Boolean(model.seller.abn?.trim());
   const title = isTaxInvoice ? 'Tax Invoice' : 'Invoice';
-  const jobDate = assertJobDate(model.job.jobDate.trim());
-  const productLabel = sourceProductLabel(model.job.sourceApp);
-  const jobTypeLabel = sourceTypeLabel(model.job.sourceType);
+  const jobGroups: InvoicePdfJobGroup[] = model.jobs?.length
+    ? model.jobs
+    : [{
+        financeId: '',
+        job: model.job,
+        reference: null,
+        subtotalExGst: model.subtotalExGst,
+        lines: model.lines,
+      }];
+  const primaryJob = jobGroups[0]?.job ?? model.job;
+  const primaryJobDate = assertJobDate(primaryJob.jobDate.trim());
+  const isMultiJob = jobGroups.length > 1;
   const clientName = model.billTo?.name?.trim()
-    || model.job.clientName?.trim()
+    || primaryJob.clientName?.trim()
     || 'Client';
   const billToAddress = model.billTo?.address?.trim();
   const billToEmail = model.billTo?.email?.trim();
-  const siteName = model.job.siteName?.trim();
-  const siteAddress = model.job.siteAddress?.trim();
+  const billToAbn = model.billTo?.abn?.trim();
+  const groupedJobTables = jobGroups.map((group, index) => {
+    const jobDate = assertJobDate(group.job.jobDate.trim());
+    const productLabel = sourceProductLabel(group.job.sourceApp);
+    const jobTypeLabel = sourceTypeLabel(group.job.sourceType);
+    const siteName = group.job.siteName?.trim();
+    const siteAddress = group.job.siteAddress?.trim();
+    const reference = group.reference?.trim();
+    const lineRows = group.lines.map((line) => `
+        <tr>
+          <td class="description">${esc(line.description)}</td>
+          <td class="num">${line.quantity}</td>
+          <td class="num">${esc(money(line.unitAmountExGst, model.currency))}</td>
+          <td class="num">${esc(money(line.lineTotalExGst, model.currency))}</td>
+        </tr>
+    `).join('');
 
-  const lineRows = model.lines.map((line) => `
-    <tr>
-      <td class="description">${esc(line.description)}</td>
-      <td class="num">${line.quantity}</td>
-      <td class="num">${esc(money(line.unitAmountExGst, model.currency))}</td>
-      <td class="num">${esc(money(line.lineTotalExGst, model.currency))}</td>
-    </tr>
-  `).join('');
+    return `
+    <section class="job-section">
+      <table class="job-table">
+        <thead>
+          <tr class="job-heading-row">
+            <th colspan="4">
+              <div class="job-heading">
+                <div>
+                  <span class="job-index">Job ${index + 1} of ${jobGroups.length}</span>
+                  <span class="job-name">${esc(group.job.jobName || siteName || 'Job')}</span>
+                </div>
+                <div class="job-context">
+                  <span>${esc(productLabel)} ${esc(jobTypeLabel)}</span>
+                  <span>Job date: ${esc(formatDate(jobDate))}</span>
+                  <span>Reference: ${reference ? esc(reference) : '-'}</span>
+                </div>
+                ${siteName && siteName !== group.job.jobName ? `<div class="job-site">Site: ${esc(siteName)}</div>` : ''}
+                ${siteAddress ? `<div class="job-site seller-address">${esc(siteAddress)}</div>` : ''}
+              </div>
+            </th>
+          </tr>
+          <tr class="column-headings">
+            <th>Description</th>
+            <th class="num">Qty</th>
+            <th class="num">Unit (ex GST)</th>
+            <th class="num">Amount (ex GST)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lineRows || '<tr><td colspan="4" class="muted">No lines</td></tr>'}
+          <tr class="job-subtotal">
+            <td colspan="3">Job subtotal (ex GST)</td>
+            <td class="num">${esc(money(group.subtotalExGst, model.currency))}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>`;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -305,7 +389,7 @@ export function buildInvoiceHtml(
       letter-spacing: 0.07em;
     }
     .job-title { color: #1a1f2c; font-size: 14px; font-weight: 700; }
-    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    table { width: 100%; border-collapse: collapse; }
     thead { display: table-header-group; }
     tr { break-inside: avoid; }
     th {
@@ -325,9 +409,51 @@ export function buildInvoiceHtml(
     }
     .description { white-space: pre-line; }
     .num { text-align: right; white-space: nowrap; }
+    .job-section { margin-top: 18px; }
+    .job-table { border: 1px solid #cbd5e1; }
+    .job-heading-row th {
+      padding: 10px 12px;
+      border-bottom: 1px solid #aab8cc;
+      background: #eef4ff;
+      text-align: left;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+    .job-heading { color: #1a1f2c; }
+    .job-index {
+      display: inline-block;
+      margin-right: 8px;
+      color: #5b6475;
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .job-name { color: #142f70; font-size: 13px; font-weight: 700; }
+    .job-context {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px 14px;
+      margin-top: 3px;
+      color: #5b6475;
+      font-size: 9px;
+      font-weight: 400;
+    }
+    .job-site { margin-top: 2px; color: #5b6475; font-size: 9px; font-weight: 400; }
+    .column-headings th { background: #f8fafc; }
+    .job-subtotal td {
+      padding-top: 9px;
+      padding-bottom: 9px;
+      border-top: 1px solid #aab8cc;
+      border-bottom: none;
+      background: #f8fafc;
+      color: #142f70;
+      font-weight: 700;
+      text-align: right;
+    }
     .totals {
       width: 280px;
-      margin: 16px 0 0 auto;
+      margin: 20px 0 0 auto;
       break-inside: avoid;
     }
     .totals tr td { border: none; padding: 6px 0; }
@@ -385,38 +511,29 @@ export function buildInvoiceHtml(
     <section class="detail-card">
       <h2>Bill to</h2>
       <div><strong>${esc(clientName)}</strong></div>
+      ${billToAbn ? `<div class="muted">ABN ${esc(billToAbn)}</div>` : ''}
       ${billToAddress ? `<div class="muted seller-address">${esc(billToAddress)}</div>` : ''}
       ${billToEmail ? `<div class="muted">${esc(billToEmail)}</div>` : ''}
       ${model.purchaseOrderReference ? `<div class="muted">PO: ${esc(model.purchaseOrderReference)}</div>` : ''}
     </section>
     <section class="detail-card">
-      <h2>Job</h2>
-      <div class="job-title">${esc(model.job.jobName || siteName || 'Job')}</div>
-      <div class="muted">${esc(productLabel)} ${esc(jobTypeLabel)}</div>
-      <div class="muted">Job date: ${esc(formatDate(jobDate))}</div>
-      ${siteName && siteName !== model.job.jobName ? `<div class="muted">Site: ${esc(siteName)}</div>` : ''}
-      ${siteAddress ? `<div class="muted seller-address">${esc(siteAddress)}</div>` : ''}
+      <h2>${isMultiJob ? 'Invoice scope' : 'Job summary'}</h2>
+      <div class="job-title">${isMultiJob
+        ? `${jobGroups.length} jobs included`
+        : esc(primaryJob.jobName || primaryJob.siteName || 'Job')}</div>
+      <div class="muted">${isMultiJob
+        ? `Detailed by job below · First job date: ${esc(formatDate(primaryJobDate))}`
+        : `${esc(sourceProductLabel(primaryJob.sourceApp))} ${esc(sourceTypeLabel(primaryJob.sourceType))}`}</div>
+      ${!isMultiJob ? `<div class="muted">Job date: ${esc(formatDate(primaryJobDate))}</div>` : ''}
       <div class="muted">Currency: ${esc(model.currency || 'AUD')}</div>
     </section>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Description</th>
-        <th class="num">Qty</th>
-        <th class="num">Unit (ex GST)</th>
-        <th class="num">Amount (ex GST)</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${lineRows || '<tr><td colspan="4" class="muted">No lines</td></tr>'}
-    </tbody>
-  </table>
+  ${groupedJobTables}
 
   <table class="totals">
     <tr>
-      <td class="muted">Subtotal (ex GST)</td>
+      <td class="muted">Consolidated subtotal (ex GST)</td>
       <td class="num">${esc(money(model.subtotalExGst, model.currency))}</td>
     </tr>
     <tr>
@@ -439,9 +556,13 @@ export async function renderInvoicePdf(model: InvoicePdfModel): Promise<InvoiceP
   const logoDataUri = await loadBrandLogoDataUri();
   const buffer = await renderPdf(buildInvoiceHtml(model, { logoDataUri }));
   const filename = buildInvoiceDownloadFilename({
-    jobName: model.job.jobName,
-    jobDate: model.job.jobDate,
+    jobName: model.jobs?.[0]?.job.jobName ?? model.job.jobName,
+    jobDate: model.jobs && model.jobs.length > 1
+      ? (/^(\d{4}-\d{2}-\d{2})/.exec(model.issueDate ?? '')?.[1]
+        ?? model.jobs[0].job.jobDate)
+      : (model.jobs?.[0]?.job.jobDate ?? model.job.jobDate),
     invoiceNumber: model.invoiceNumber,
+    additionalJobCount: Math.max(0, (model.jobs?.length ?? 1) - 1),
   });
   return {
     filename,

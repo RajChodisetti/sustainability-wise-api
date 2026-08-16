@@ -153,16 +153,27 @@ function apiNotFoundResponse(path: string) {
   };
 }
 
+function binaryRequestBody(contentTypes: string[]) {
+  return {
+    required: true,
+    content: Object.fromEntries(contentTypes.map((contentType) => [contentType, {
+      schema: { type: 'string', format: 'binary' },
+    }])),
+  };
+}
+
 function defaultRequestBody(path: string) {
+  if (path.endsWith('/portal/scheduler/expenses/{expenseId}/attachments')) {
+    return binaryRequestBody([
+      'application/octet-stream',
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+    ]);
+  }
   if (path.includes('/sync/upload/')) {
-    return {
-      required: true,
-      content: {
-        'application/octet-stream': {
-          schema: { type: 'string', format: 'binary' },
-        },
-      },
-    };
+    return binaryRequestBody(['application/octet-stream']);
   }
 
   return {
@@ -175,7 +186,9 @@ function defaultRequestBody(path: string) {
   };
 }
 
-function completeOpenApiDocument(swaggerObject: Readonly<Record<string, any>>): Record<string, any> {
+export function completeOpenApiDocument(
+  swaggerObject: Readonly<Record<string, any>>,
+): Record<string, any> {
   const doc = swaggerObject as Record<string, any>;
   doc.tags = orderedTags;
   doc.components ??= {};
@@ -275,6 +288,7 @@ export async function buildApp() {
     done(null, body);
   };
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, bufferParser);
+  app.addContentTypeParser('application/pdf', { parseAs: 'buffer' }, bufferParser);
   app.addContentTypeParser(/^image\/[\w.+-]+$/, { parseAs: 'buffer' }, bufferParser);
 
   await app.register(helmet, {

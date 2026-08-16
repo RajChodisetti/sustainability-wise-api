@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -502,6 +503,7 @@ export const schedulerJobFinance = pgTable('scheduler_job_finance', {
   currency: text('currency').notNull().default('AUD'),
   notes: text('notes'),
   billToName: text('bill_to_name'),
+  billToAbn: text('bill_to_abn'),
   billToAddress: text('bill_to_address'),
   billToEmail: text('bill_to_email'),
   billingReference: text('billing_reference'),
@@ -625,6 +627,45 @@ export const schedulerJobExpenses = pgTable('scheduler_job_expenses', {
   `),
 ]);
 
+/** Private accounting evidence linked to one structured expense or supplier bill. */
+export const schedulerExpenseAttachments = pgTable('scheduler_expense_attachments', {
+  id: text('id').primaryKey(),
+  expenseId: text('expense_id').notNull().references(
+    () => schedulerJobExpenses.id,
+    { onDelete: 'restrict' },
+  ),
+  status: text('status').notNull().default('pending'),
+  filename: text('filename').notNull(),
+  contentType: text('content_type').notNull(),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+  sha256: text('sha256'),
+  storageKey: text('storage_key').notNull(),
+  createdByUserId: text('created_by_user_id').notNull(),
+  createdByDisplayName: text('created_by_display_name'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  confirmedAt: timestamp('confirmed_at'),
+}, (table) => [
+  index('scheduler_expense_attachments_expense_idx').on(table.expenseId, table.createdAt),
+  uniqueIndex('scheduler_expense_attachments_storage_key_unique').on(table.storageKey),
+  check('scheduler_expense_attachments_status_check', sql`
+    ${table.status} IN ('pending', 'confirmed')
+  `),
+  check('scheduler_expense_attachments_size_check', sql`
+    ${table.sizeBytes} > 0
+  `),
+  check('scheduler_expense_attachments_filename_check', sql`
+    length(btrim(${table.filename})) > 0
+  `),
+  check('scheduler_expense_attachments_confirmation_check', sql`
+    (${table.status} = 'pending' AND ${table.confirmedAt} IS NULL)
+    OR (
+      ${table.status} = 'confirmed'
+      AND ${table.confirmedAt} IS NOT NULL
+      AND ${table.sha256} ~ '^[0-9a-f]{64}$'
+    )
+  `),
+]);
+
 /** Immutable accounting document header; source and party fields are snapshots. */
 export const schedulerInvoices = pgTable('scheduler_invoices', {
   id: text('id').primaryKey(),
@@ -647,6 +688,7 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   sellerAddress: text('seller_address'),
   sellerEmail: text('seller_email'),
   billToName: text('bill_to_name').notNull(),
+  billToAbn: text('bill_to_abn'),
   billToAddress: text('bill_to_address'),
   billToEmail: text('bill_to_email'),
   purchaseOrderReference: text('purchase_order_reference'),
@@ -689,12 +731,53 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   `),
 ]);
 
+/** Immutable per-job provenance and source snapshot for single or consolidated invoices. */
+export const schedulerInvoiceJobs = pgTable('scheduler_invoice_jobs', {
+  invoiceId: text('invoice_id').notNull().references(
+    () => schedulerInvoices.id,
+    { onDelete: 'cascade' },
+  ),
+  financeId: text('finance_id').notNull().references(
+    () => schedulerJobFinance.id,
+    { onDelete: 'restrict' },
+  ),
+  sortOrder: integer('sort_order').notNull().default(0),
+  billingReference: text('billing_reference'),
+  jobSiteName: text('job_site_name').notNull(),
+  jobSiteAddress: text('job_site_address'),
+  jobName: text('job_name').notNull(),
+  jobDate: text('job_date').notNull(),
+  jobClientName: text('job_client_name'),
+  jobStatus: text('job_status').notNull(),
+  jobSourceApp: text('job_source_app').notNull(),
+  jobSourceType: text('job_source_type').notNull(),
+  jobSourceId: text('job_source_id').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.invoiceId, table.financeId] }),
+  uniqueIndex('scheduler_invoice_jobs_invoice_sort_unique').on(table.invoiceId, table.sortOrder),
+  index('scheduler_invoice_jobs_finance_idx').on(table.financeId, table.invoiceId),
+  check('scheduler_invoice_jobs_sort_check', sql`${table.sortOrder} >= 0`),
+  check('scheduler_invoice_jobs_source_check', sql`
+    (${table.jobSourceApp} = 'ecoaudit' AND ${table.jobSourceType} = 'audit')
+    OR (${table.jobSourceApp} = 'solarsense' AND ${table.jobSourceType} = 'assessment')
+    OR (${table.jobSourceApp} = 'installhub' AND ${table.jobSourceType} = 'installation')
+  `),
+  check('scheduler_invoice_jobs_date_check', sql`
+    ${table.jobDate} ~ '^\\d{4}-\\d{2}-\\d{2}$'
+  `),
+]);
+
 /** Invoice line snapshots; non-void rows reserve their linked source value. */
 export const schedulerInvoiceLines = pgTable('scheduler_invoice_lines', {
   id: text('id').primaryKey(),
   invoiceId: text('invoice_id').notNull().references(
     () => schedulerInvoices.id,
     { onDelete: 'cascade' },
+  ),
+  financeId: text('finance_id').notNull().references(
+    () => schedulerJobFinance.id,
+    { onDelete: 'restrict' },
   ),
   sortOrder: integer('sort_order').notNull().default(0),
   kind: text('kind').notNull(),
@@ -710,7 +793,13 @@ export const schedulerInvoiceLines = pgTable('scheduler_invoice_lines', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   index('scheduler_invoice_lines_invoice_idx').on(table.invoiceId, table.sortOrder),
+  index('scheduler_invoice_lines_finance_idx').on(table.financeId, table.invoiceId),
   index('scheduler_invoice_lines_expense_idx').on(table.expenseId),
+  foreignKey({
+    columns: [table.invoiceId, table.financeId],
+    foreignColumns: [schedulerInvoiceJobs.invoiceId, schedulerInvoiceJobs.financeId],
+    name: 'scheduler_invoice_lines_invoice_job_fk',
+  }).onDelete('cascade'),
   check('scheduler_invoice_lines_kind_check', sql`
     ${table.kind} IN ('labour', 'expense', 'quoted', 'other')
   `),

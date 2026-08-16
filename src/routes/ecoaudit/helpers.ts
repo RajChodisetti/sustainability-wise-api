@@ -3,6 +3,7 @@ import type { AuthUser } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
 import {
   eaAdditionalSwitchboards,
+  eaAuditWorkSessions,
   eaAudits,
   eaForkliftChargers,
   eaGeneralElectricity,
@@ -15,6 +16,7 @@ import {
   eaZones,
 } from '../../db/schema/ecoaudit.js';
 import { photoRegistry, recordVersions } from '../../db/schema/shared.js';
+import { assertNoSchedulerCommercialEvidenceBeforePurge } from '../../services/schedulerCommercialRetentionService.js';
 import { deleteLocalFile } from '../../storage/localFiles.js';
 import {
   deleteOwnedPhotosUnlessReferenced,
@@ -175,26 +177,40 @@ export function shouldPurgeQuery(query?: Record<string, unknown>): boolean {
 }
 
 export async function purgeEcoauditAuditTree(auditId: string, reportPdfStorageKey?: string | null): Promise<void> {
+  await db.transaction(async (tx) => {
+    const [audit] = await tx.select({ id: eaAudits.id })
+      .from(eaAudits)
+      .where(eq(eaAudits.id, auditId))
+      .for('update')
+      .limit(1);
+    if (!audit) throw badRequest('Audit was already purged');
+
+    await assertNoSchedulerCommercialEvidenceBeforePurge(tx, {
+      sourceApp: 'ecoaudit',
+      sourceType: 'audit',
+      sourceId: audit.id,
+    });
+
+    await tx.delete(recordVersions).where(and(
+      eq(recordVersions.app, 'ecoaudit'),
+      eq(recordVersions.entityType, 'audit'),
+      eq(recordVersions.entityId, audit.id),
+    ));
+    await tx.delete(eaMainSwitchboards).where(eq(eaMainSwitchboards.auditId, audit.id));
+    await tx.delete(eaAdditionalSwitchboards).where(eq(eaAdditionalSwitchboards.auditId, audit.id));
+    await tx.delete(eaHvacUnits).where(eq(eaHvacUnits.auditId, audit.id));
+    await tx.delete(eaLightingSystems).where(eq(eaLightingSystems.auditId, audit.id));
+    await tx.delete(eaSolarPv).where(eq(eaSolarPv.auditId, audit.id));
+    await tx.delete(eaForkliftChargers).where(eq(eaForkliftChargers.auditId, audit.id));
+    await tx.delete(eaHotWaterSystems).where(eq(eaHotWaterSystems.auditId, audit.id));
+    await tx.delete(eaGeneralWater).where(eq(eaGeneralWater.auditId, audit.id));
+    await tx.delete(eaGeneralElectricity).where(eq(eaGeneralElectricity.auditId, audit.id));
+    await tx.delete(eaZones).where(eq(eaZones.auditId, audit.id));
+    await tx.delete(eaAuditWorkSessions).where(eq(eaAuditWorkSessions.auditId, audit.id));
+    await tx.delete(eaAudits).where(eq(eaAudits.id, audit.id));
+  });
+
   await releaseCopyReferencesForParent('ecoaudit', auditId);
   await deleteOwnedPhotosUnlessReferenced({ app: 'ecoaudit', parentId: auditId });
-
   await deleteLocalFile(reportPdfStorageKey);
-
-  await db.delete(recordVersions).where(and(
-    eq(recordVersions.app, 'ecoaudit'),
-    eq(recordVersions.entityType, 'audit'),
-    eq(recordVersions.entityId, auditId),
-  ));
-
-  await db.delete(eaMainSwitchboards).where(eq(eaMainSwitchboards.auditId, auditId));
-  await db.delete(eaAdditionalSwitchboards).where(eq(eaAdditionalSwitchboards.auditId, auditId));
-  await db.delete(eaHvacUnits).where(eq(eaHvacUnits.auditId, auditId));
-  await db.delete(eaLightingSystems).where(eq(eaLightingSystems.auditId, auditId));
-  await db.delete(eaSolarPv).where(eq(eaSolarPv.auditId, auditId));
-  await db.delete(eaForkliftChargers).where(eq(eaForkliftChargers.auditId, auditId));
-  await db.delete(eaHotWaterSystems).where(eq(eaHotWaterSystems.auditId, auditId));
-  await db.delete(eaGeneralWater).where(eq(eaGeneralWater.auditId, auditId));
-  await db.delete(eaGeneralElectricity).where(eq(eaGeneralElectricity.auditId, auditId));
-  await db.delete(eaZones).where(eq(eaZones.auditId, auditId));
-  await db.delete(eaAudits).where(eq(eaAudits.id, auditId));
 }

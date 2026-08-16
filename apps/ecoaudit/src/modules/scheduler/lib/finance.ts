@@ -9,9 +9,41 @@ import type {
   SchedulerInvoiceListItem,
   SchedulerInvoiceStatus,
   SchedulerFinanceTarget,
+  SchedulerFinanceView,
+  SchedulerInvoiceEligibilityJob,
 } from '@/modules/scheduler/types/domain';
 
-export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v1';
+export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v2';
+export const MAX_CONSOLIDATED_INVOICE_JOBS = 50;
+
+export async function persistExpenseBeforeAttachment<TExpense>(input: {
+  create: () => Promise<TExpense>;
+  onPersisted: (expense: TExpense) => void;
+  upload?: (expense: TExpense) => Promise<void>;
+}): Promise<{ expense: TExpense; attachmentError: unknown | null }> {
+  const expense = await input.create();
+  input.onPersisted(expense);
+  if (!input.upload) return { expense, attachmentError: null };
+  try {
+    await input.upload(expense);
+    return { expense, attachmentError: null };
+  } catch (attachmentError) {
+    return { expense, attachmentError };
+  }
+}
+
+export function toggleConsolidatedInvoiceJob(
+  current: string[],
+  financeId: string,
+  checked: boolean,
+): { financeIds: string[]; atLimit: boolean } {
+  if (!checked) return { financeIds: current.filter((id) => id !== financeId), atLimit: false };
+  if (current.includes(financeId)) return { financeIds: current, atLimit: false };
+  if (current.length >= MAX_CONSOLIDATED_INVOICE_JOBS) {
+    return { financeIds: current, atLimit: true };
+  }
+  return { financeIds: [...current, financeId], atLimit: false };
+}
 
 export function schedulerInvoicePdfReportVariantKey(
   invoice: Pick<SchedulerInvoiceListItem, 'id' | 'updatedAt'>,
@@ -72,6 +104,14 @@ export function financeTargetFromPages(
   return undefined;
 }
 
+export function financeTargetRequiresJobLookup(target?: SchedulerFinanceTarget): boolean {
+  return Boolean(
+    target?.financeId
+    || target?.eventId
+    || (target?.sourceApp && target.sourceId),
+  );
+}
+
 export function financeTargetLookupFailed(input: {
   target?: SchedulerFinanceTarget;
   resolved: boolean;
@@ -83,7 +123,7 @@ export function financeTargetLookupFailed(input: {
   if (input.target.financeId) return input.directLookupTerminal;
   if (input.target.sourceApp && input.target.sourceId) return input.exactSourceLookupTerminal;
   if (input.target.eventId) return input.cursorLookupTerminal;
-  return Boolean(input.target.invoiceId);
+  return false;
 }
 
 export function financeOverviewFromSummary(
@@ -225,12 +265,109 @@ export function schedulerFinanceHref(input: {
   sourceApp?: FinanceSourceApp;
   sourceId?: string;
   invoiceId?: string;
+  view?: SchedulerFinanceView;
 }): string {
-  const params = new URLSearchParams({ tab: 'finance' });
+  const params = new URLSearchParams({
+    tab: input.view ?? (input.invoiceId ? 'invoices' : 'financial-summary'),
+  });
   if (input.financeId) params.set('financeId', input.financeId);
   if (input.eventId) params.set('eventId', input.eventId);
   if (input.sourceApp) params.set('sourceApp', input.sourceApp);
   if (input.sourceId) params.set('sourceId', input.sourceId);
   if (input.invoiceId) params.set('invoiceId', input.invoiceId);
   return `/scheduler?${params.toString()}`;
+}
+
+export function schedulerFinanceTargetFromSearchParams(
+  params: Pick<URLSearchParams, 'get'>,
+): SchedulerFinanceTarget | undefined {
+  const sourceAppValue = params.get('sourceApp')?.trim();
+  const sourceApp = sourceAppValue === 'ecoaudit'
+    || sourceAppValue === 'solarsense'
+    || sourceAppValue === 'installhub'
+    ? sourceAppValue
+    : undefined;
+  const target: SchedulerFinanceTarget = {
+    financeId: params.get('financeId')?.trim() || undefined,
+    eventId: params.get('eventId')?.trim() || undefined,
+    sourceApp,
+    sourceId: params.get('sourceId')?.trim() || undefined,
+    invoiceId: params.get('invoiceId')?.trim() || undefined,
+  };
+  return target.financeId
+    || target.eventId
+    || target.sourceApp
+    || target.sourceId
+    || target.invoiceId
+    ? target
+    : undefined;
+}
+
+export function schedulerTabTransition(
+  currentSearch: string,
+  nextTab: 'overview' | 'calendar' | 'deadlines' | SchedulerFinanceView,
+): { href: string; financeTarget?: SchedulerFinanceTarget } {
+  const params = new URLSearchParams(currentSearch);
+  params.set('tab', nextTab);
+  const financeTab = nextTab === 'financial-summary' || nextTab === 'bills' || nextTab === 'invoices';
+  if (!financeTab) {
+    params.delete('eventId');
+    params.delete('financeId');
+    params.delete('sourceApp');
+    params.delete('sourceId');
+    params.delete('invoiceId');
+  } else if (nextTab !== 'invoices') {
+    params.delete('invoiceId');
+  }
+  return {
+    href: `/scheduler?${params.toString()}`,
+    financeTarget: financeTab ? schedulerFinanceTargetFromSearchParams(params) : undefined,
+  };
+}
+
+export function consolidatedInvoiceJobSubtotal(
+  job: SchedulerInvoiceEligibilityJob,
+  selection: { includeLabour: boolean; expenseIds: string[] },
+): number {
+  const labour = selection.includeLabour
+    ? job.pricingMode === 'quoted'
+      ? job.availableQuotedAmount
+      : job.availableLabourAmount ?? 0
+    : 0;
+  const expenses = job.availableExpenses
+    .filter((expense) => selection.expenseIds.includes(expense.id))
+    .reduce((sum, expense) => sum + expense.effectiveBillableAmount, 0);
+  return Math.round((labour + expenses + Number.EPSILON) * 100) / 100;
+}
+
+export function consolidatedInvoiceJobsWithoutCharges(
+  jobs: SchedulerInvoiceEligibilityJob[],
+  selections: Record<string, { includeLabour: boolean; expenseIds: string[] }>,
+): SchedulerInvoiceEligibilityJob[] {
+  return jobs.filter((job) => consolidatedInvoiceJobSubtotal(
+    job,
+    selections[job.financeId] ?? { includeLabour: false, expenseIds: [] },
+  ) <= 0);
+}
+
+export function consolidatedInvoiceRecipientIssue(input: { name: string }): string | null {
+  if (!input.name.trim()) return 'Enter the invoice recipient name.';
+  return null;
+}
+
+const billAttachmentTypes = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+export function billAttachmentValidation(file: Pick<File, 'name' | 'size' | 'type'>): string | null {
+  if (!billAttachmentTypes.has(file.type)) {
+    return 'Upload a PDF, JPEG, PNG, or WebP bill.';
+  }
+  if (file.size <= 0) return 'The selected bill file is empty.';
+  if (file.size > 10 * 1024 * 1024) return 'Bill attachments must be 10 MB or smaller.';
+  if (!file.name.trim()) return 'The selected bill needs a filename.';
+  return null;
 }

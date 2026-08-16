@@ -158,8 +158,42 @@ export type FinanceExpense = {
   invoiceId: string | null;
   reserved: boolean;
   markupPct: number | null;
+  attachments: FinanceExpenseAttachment[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type FinanceExpenseAttachment = {
+  id: string;
+  expenseId: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  sha256: string;
+  createdAt: string;
+  downloadUrl: string;
+};
+
+export type SchedulerGlobalExpense = FinanceExpense & {
+  currency: string;
+  source: {
+    sourceApp: FinanceSourceApp;
+    sourceType: FinanceSourceType;
+    sourceId: string;
+  };
+  job: {
+    jobName: string;
+    jobDate: string;
+    clientName: string | null;
+    siteName: string;
+    siteAddress: string | null;
+    status: string;
+  };
+};
+
+export type SchedulerExpensePage = {
+  items: SchedulerGlobalExpense[];
+  nextCursor: string | null;
 };
 
 export type FinanceExpenseInput = {
@@ -203,6 +237,41 @@ export type SchedulerInvoiceLine = {
   expenseId: string | null;
   kind: SchedulerInvoiceLineKind;
   category: FinanceExpenseCategory | null;
+  financeId: string;
+};
+
+export type SchedulerInvoiceJob = {
+  financeId: string;
+  sortOrder: number;
+  source: {
+    sourceApp: FinanceSourceApp;
+    sourceType: FinanceSourceType;
+    sourceId: string;
+  };
+  job: {
+    jobName: string;
+    jobDate: string;
+    clientName: string | null;
+    siteName: string;
+    siteAddress: string | null;
+    status: string;
+  };
+  billingReference: string | null;
+  subtotalExGst: number;
+  lines: SchedulerInvoiceLine[];
+};
+
+export type SchedulerGlobalInvoiceListItem = SchedulerInvoiceListItem & {
+  financeIds: string[];
+  jobCount: number;
+  jobNames: string[];
+  sourceApps: FinanceSourceApp[];
+  billToName: string;
+};
+
+export type SchedulerInvoicePage = {
+  items: SchedulerGlobalInvoiceListItem[];
+  nextCursor: string | null;
 };
 
 export type SchedulerInvoice = SchedulerInvoiceListItem & {
@@ -218,7 +287,13 @@ export type SchedulerInvoice = SchedulerInvoiceListItem & {
   billToName: string;
   billToAddress: string | null;
   billToEmail: string | null;
+  billToAbn: string | null;
   purchaseOrderReference: string | null;
+  financeIds: string[];
+  jobCount: number;
+  jobNames: string[];
+  sourceApps: FinanceSourceApp[];
+  jobs: SchedulerInvoiceJob[];
   job: {
     jobName: string;
     jobDate: string;
@@ -267,6 +342,7 @@ export type SchedulerFinancialSummary = {
     name: string | null;
     address: string | null;
     email: string | null;
+    abn: string | null;
     reference: string | null;
   };
   time: {
@@ -331,6 +407,7 @@ export type UpdateSchedulerFinanceInput = {
   billingName: string | null;
   billingAddress: string | null;
   billingEmail: string | null;
+  billingAbn: string | null;
   billingReference: string | null;
 };
 
@@ -347,6 +424,7 @@ export type UpdateSchedulerInvoiceInput = {
   billToName?: string;
   billToAddress?: string | null;
   billToEmail?: string | null;
+  billToAbn?: string | null;
   purchaseOrderReference?: string | null;
   lines?: Array<{
     id?: string;
@@ -355,8 +433,98 @@ export type UpdateSchedulerInvoiceInput = {
     unitAmountExGst: number;
     expenseId?: string | null;
     kind?: SchedulerInvoiceLineKind;
+    financeId?: string;
   }>;
 };
+
+export type SchedulerInvoiceEligibilityIssue = {
+  code:
+    | 'mixed_currency'
+    | 'billing_name_missing'
+    | 'bill_to_override_required'
+    | 'no_available_charges';
+  message: string;
+  financeId: string | null;
+};
+
+export type SchedulerInvoiceEligibilityJob = {
+  financeId: string;
+  source: {
+    sourceApp: FinanceSourceApp;
+    sourceType: FinanceSourceType;
+    sourceId: string;
+  };
+  job: {
+    jobName: string;
+    jobDate: string;
+    clientName: string | null;
+    siteName: string;
+    siteAddress: string | null;
+    status: string;
+  };
+  currency: string;
+  billing: {
+    name: string | null;
+    address: string | null;
+    email: string | null;
+    abn: string | null;
+    reference: string | null;
+  };
+  pricingMode: FinancePricingMode;
+  availableLabourHours: number;
+  billableRate: number;
+  availableLabourAmount: number;
+  availableQuotedAmount: number;
+  availableExpenses: FinanceExpense[];
+};
+
+export type SchedulerInvoiceEligibility = {
+  eligible: boolean;
+  commonCurrency: string | null;
+  gstRate: number;
+  requiresExplicitBillTo: boolean;
+  issues: SchedulerInvoiceEligibilityIssue[];
+  jobs: SchedulerInvoiceEligibilityJob[];
+};
+
+export type ConsolidatedSchedulerInvoiceInput = {
+  jobs: Array<{
+    financeId: string;
+    includeLabour: boolean;
+    expenseIds: string[];
+  }>;
+  billTo?: {
+    name: string;
+    address?: string | null;
+    email?: string | null;
+    abn?: string | null;
+    purchaseOrderReference?: string | null;
+  };
+  notes?: string | null;
+};
+
+export type SchedulerPortfolioCurrencySummary = {
+  currency: string;
+  billableAmount: number;
+  totalCost: number;
+  invoicedAmount: number;
+  reservedAmount: number;
+  unbilledAmount: number;
+  grossProfit: number;
+  marginPct: number | null;
+  actualHours: number;
+  billableHours: number;
+  costHours: number;
+};
+
+export type SchedulerPortfolioSummary = {
+  complete: true;
+  jobCount: number;
+  statusCounts: Record<SchedulerInvoiceStatus | 'overdue', number>;
+  currencies: SchedulerPortfolioCurrencySummary[];
+};
+
+export type SchedulerFinanceView = 'financial-summary' | 'bills' | 'invoices';
 
 export type SchedulerFinanceTarget = {
   financeId?: string;
@@ -364,4 +532,5 @@ export type SchedulerFinanceTarget = {
   sourceApp?: FinanceSourceApp;
   sourceId?: string;
   invoiceId?: string;
+  view?: SchedulerFinanceView;
 };

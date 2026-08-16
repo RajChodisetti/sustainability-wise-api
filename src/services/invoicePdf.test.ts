@@ -34,6 +34,7 @@ function modelFor(
     },
     billTo: {
       name: 'Client & Co',
+      abn: '98 765 432 109',
       address: '1 Main Street\nSydney NSW',
       email: 'accounts@client.example',
     },
@@ -78,6 +79,7 @@ describe('invoice PDF branding and source context', () => {
       assert.match(html, /North Roof Upgrade/);
       assert.match(html, /15 Aug 2026/);
       assert.match(html, /class="brand-logo"/);
+      assert.match(html, /ABN 98 765 432 109/);
       assert.match(html, /data-pdf-page-numbers|data-page-numbers="true"/);
       assert.doesNotMatch(html, /private-internal-source-id/);
     }
@@ -93,6 +95,72 @@ describe('invoice PDF branding and source context', () => {
     assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(html, /white-space: pre-line/);
   });
+
+  it('groups a consolidated invoice by job with references and job subtotals', () => {
+    const model = modelFor('ecoaudit', 'audit');
+    model.subtotalExGst = 1850;
+    model.gstAmount = 185;
+    model.totalIncGst = 2035;
+    model.jobs = [
+      {
+        financeId: 'finance-private-1',
+        job: model.job,
+        reference: 'EA-2041',
+        subtotalExGst: 1250,
+        lines: model.lines,
+      },
+      {
+        financeId: 'finance-private-2',
+        job: {
+          ...model.job,
+          jobName: 'South Plant Solar Assessment',
+          jobDate: '2026-08-18',
+          sourceApp: 'solarsense',
+          sourceType: 'assessment',
+          sourceId: 'private-assessment-id',
+          siteName: 'South Plant',
+        },
+        reference: 'SS-8830',
+        subtotalExGst: 600,
+        lines: [{
+          description: 'Solar assessment',
+          quantity: 1,
+          unitAmountExGst: 600,
+          lineTotalExGst: 600,
+        }],
+      },
+    ];
+
+    const html = buildInvoiceHtml(model, {
+      logoDataUri: 'data:image/png;base64,ZmFrZQ==',
+    });
+    assert.match(html, /2 jobs included/);
+    assert.match(html, /Job 1 of 2/);
+    assert.match(html, /North Roof Upgrade/);
+    assert.match(html, /Reference: EA-2041/);
+    assert.match(html, /Job 2 of 2/);
+    assert.match(html, /South Plant Solar Assessment/);
+    assert.match(html, /Reference: SS-8830/);
+    assert.match(html, /Job subtotal \(ex GST\)/);
+    assert.match(html, /Consolidated subtotal \(ex GST\)/);
+    assert.match(html, /display: table-header-group/);
+    assert.doesNotMatch(html, /finance-private|private-assessment-id/);
+  });
+
+  it('escapes grouped job names, references, and lines', () => {
+    const model = modelFor('ecoaudit', 'audit');
+    model.jobs = [{
+      financeId: 'finance-1',
+      job: { ...model.job, jobName: '<img src=x onerror=alert(1)>' },
+      reference: '<script>bad()</script>',
+      subtotalExGst: model.subtotalExGst,
+      lines: [{ ...model.lines[0], description: '<b>untrusted</b>' }],
+    }];
+    const html = buildInvoiceHtml(model);
+    assert.doesNotMatch(html, /<script>|<img src=x|<b>untrusted/);
+    assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+    assert.match(html, /&lt;b&gt;untrusted&lt;\/b&gt;/);
+  });
 });
 
 describe('invoice PDF download naming', () => {
@@ -102,6 +170,15 @@ describe('invoice PDF download naming', () => {
       jobDate: '2026-08-15',
       invoiceNumber: 'INV-2026-0007',
     }), 'invoice-North-Roof-Upgrade-2026-08-15-INV-2026-0007.pdf');
+  });
+
+  it('uses the first job, job count, invoice date, and number for a consolidated invoice', () => {
+    assert.equal(buildInvoiceDownloadFilename({
+      jobName: 'North Roof Upgrade',
+      jobDate: '2026-08-16',
+      invoiceNumber: 'INV-2026-0007',
+      additionalJobCount: 2,
+    }), 'invoice-North-Roof-Upgrade-and-2-more-2026-08-16-INV-2026-0007.pdf');
   });
 
   it('emits an ASCII fallback and UTF-8 filename without header injection', () => {
@@ -154,5 +231,11 @@ describe('invoice PDF download naming', () => {
       () => buildInvoiceContentDisposition('invoice.pdf\r\nX-Evil: true'),
       /safe PDF filename/,
     );
+    assert.throws(() => buildInvoiceDownloadFilename({
+      jobName: 'Roof',
+      jobDate: '2026-02-28',
+      invoiceNumber: 'INV-1',
+      additionalJobCount: -1,
+    }), /additionalJobCount/);
   });
 });

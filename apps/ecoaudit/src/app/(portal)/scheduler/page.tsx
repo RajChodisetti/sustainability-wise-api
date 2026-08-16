@@ -12,10 +12,17 @@ export default async function Page({
 }) {
   const params = await searchParams;
   const tabValue = value(params.tab);
+  const invoiceId = value(params.invoiceId);
   const initialTab: SchedulerTab = tabValue === 'overview'
     || tabValue === 'deadlines'
-    || tabValue === 'finance'
+    || tabValue === 'financial-summary'
+    || tabValue === 'bills'
+    || tabValue === 'invoices'
     ? tabValue
+    : tabValue === 'finance'
+      ? invoiceId
+        ? 'invoices'
+        : 'financial-summary'
     : 'calendar';
   const sourceAppValue = value(params.sourceApp);
   const sourceApp: FinanceSourceApp | undefined = sourceAppValue === 'ecoaudit'
@@ -27,12 +34,13 @@ export default async function Page({
   return (
     <SchedulerPage
       initialTab={initialTab}
-      initialFinanceTarget={initialTab === 'finance' ? {
+      initialFinanceTarget={initialTab === 'financial-summary' || initialTab === 'bills' || initialTab === 'invoices' ? {
         financeId: value(params.financeId),
         eventId: value(params.eventId),
         sourceApp,
         sourceId: value(params.sourceId),
-        invoiceId: value(params.invoiceId),
+        invoiceId,
+        view: initialTab,
       } : undefined}
     />
   );

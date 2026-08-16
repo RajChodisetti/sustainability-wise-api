@@ -4,6 +4,9 @@ import {
   desc,
   eq,
   inArray,
+  lte,
+  ne,
+  or,
   sql,
   type SQL,
 } from 'drizzle-orm';
@@ -16,7 +19,14 @@ export type StorageDeletionDrainInput = {
   app?: string;
   /** Maximum rows fetched per database page, not a total task limit. */
   limit?: number;
+  /** Optional total visit bound for periodic/background sweeps. */
+  maxTasks?: number;
+  /** Injectable wall clock for cleanup-lease tests. */
+  now?: Date;
 };
+
+export const SCHEDULER_INVOICE_PDF_UNATTACHED_REASON = 'scheduler_invoice_pdf_unattached';
+export const SCHEDULER_INVOICE_PDF_CLEANUP_LEASE_MS = 60 * 60 * 1_000;
 
 export type StorageDeletionTaskCursor = {
   /** Database-precision timestamp text; avoids truncating PostgreSQL microseconds through Date. */
@@ -70,20 +80,23 @@ export async function drainStorageDeletionTaskBatches(
   if (!boundary) return { deleted: 0, pending: 0 };
 
   const batchSize = Math.max(1, Math.min(input.limit ?? 1_000, 1_000));
+  const maximumTasks = Math.max(1, Math.min(input.maxTasks ?? Number.MAX_SAFE_INTEGER, 10_000));
   let deleted = 0;
   let pending = 0;
+  let visited = 0;
   let after: StorageDeletionTaskCursor | undefined;
 
-  while (true) {
+  while (visited < maximumTasks) {
     const tasks = await dependencies.findBatch({
       ...input,
       after,
       through: boundary,
-      limit: batchSize,
+      limit: Math.min(batchSize, maximumTasks - visited),
     });
     if (!tasks.length) break;
 
     for (const task of tasks) {
+      visited += 1;
       try {
         await dependencies.deleteStoredFile(task.storageKey);
         await dependencies.deleteTask(task.id);
@@ -108,6 +121,19 @@ function taskFilterConditions(input: StorageDeletionDrainInput): SQL[] {
   const conditions: SQL[] = [];
   if (input.ids) conditions.push(inArray(storageDeletionTasks.id, input.ids));
   if (input.app) conditions.push(eq(storageDeletionTasks.app, input.app));
+  if (!input.ids) {
+    // `created_at` is a PostgreSQL timestamp without time zone. Comparing it
+    // with a JS Date directly serializes the Date's UTC wall clock and can make
+    // a fresh task appear hours old when the database session is not UTC. Keep
+    // the cutoff in the database's local timestamp domain instead.
+    const leaseCutoff = input.now
+      ? sql`(${input.now.toISOString()}::timestamptz AT TIME ZONE current_setting('TimeZone')) - (${SCHEDULER_INVOICE_PDF_CLEANUP_LEASE_MS} * INTERVAL '1 millisecond')`
+      : sql`LOCALTIMESTAMP - (${SCHEDULER_INVOICE_PDF_CLEANUP_LEASE_MS} * INTERVAL '1 millisecond')`;
+    conditions.push(or(
+      ne(storageDeletionTasks.reason, SCHEDULER_INVOICE_PDF_UNATTACHED_REASON),
+      lte(storageDeletionTasks.createdAt, leaseCutoff),
+    )!);
+  }
   return conditions;
 }
 

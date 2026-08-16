@@ -2,9 +2,7 @@
 
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
-import { ExpenseLedger } from '@/modules/scheduler/components/ExpenseLedger';
 import { FinanceSettingsPanel } from '@/modules/scheduler/components/FinanceSettingsPanel';
-import { InvoiceWorkspace } from '@/modules/scheduler/components/InvoiceWorkspace';
 import { useSchedulerFinancialSummary } from '@/modules/scheduler/hooks/useScheduler';
 import { draftReservedAmount, financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
 import type { FinanceOverviewItem } from '@/modules/scheduler/types/domain';
@@ -41,13 +39,9 @@ const metricTextClasses = {
 export function SchedulerFinanceDetail({
   financeId,
   overview,
-  selectedInvoiceId,
-  onSelectInvoice,
 }: {
   financeId: string;
   overview: FinanceOverviewItem;
-  selectedInvoiceId: string | null;
-  onSelectInvoice: (invoiceId: string | null) => void;
 }) {
   const query = useSchedulerFinancialSummary(financeId);
 
@@ -124,20 +118,13 @@ export function SchedulerFinanceDetail({
           summary.billing.name ?? '',
           summary.billing.address ?? '',
           summary.billing.email ?? '',
+          summary.billing.abn ?? '',
           summary.billing.reference ?? '',
         ].join(':')}
         financeId={financeId}
         summary={summary}
       />
 
-      <ExpenseLedger financeId={financeId} currency={summary.currency} expenses={summary.expenses} />
-
-      <InvoiceWorkspace
-        financeId={financeId}
-        summary={summary}
-        selectedInvoiceId={selectedInvoiceId}
-        onSelectInvoice={onSelectInvoice}
-      />
     </div>
   );
 }

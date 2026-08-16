@@ -334,15 +334,28 @@ and `needsHoursReview`.
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/v1/portal/scheduler/finance/portfolio-summary` | Exact portfolio KPI totals and invoice-status counts; optional `sourceApp`, exact `sourceId`, and `currency` filters; unlike currencies remain separate |
+| GET | `/v1/portal/scheduler/expenses` | Paginated global Bills/Expenses list; `limit`, `cursor`, `kind`, `sourceApp`, `financeId`, and `search` filters; search includes expense, vendor/reference, source id, and resolved job/client/site fields |
+| GET | `/v1/portal/scheduler/invoices` | Paginated global invoice list; `limit`, `cursor`, `status`, `sourceApp`, `financeId`, and `search` filters; each item exposes every participating finance/job/source |
+| POST | `/v1/portal/scheduler/invoices/eligibility` | Preview 1–50 unique finance IDs, per-job available labour/quote/expenses, common currency, GST rate, structured issues, and whether explicit bill-to is required |
+| POST | `/v1/portal/scheduler/invoices/quick` | Create one reservation-safe invoice for 1–50 unique jobs; each job must contribute a positive charge |
+| GET/PATCH | `/v1/portal/scheduler/invoices/:invoiceId` | Read any single/consolidated invoice or edit draft header fields only; PATCH requires `expectedUpdatedAt` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/issue` | Issue the immutable all-job snapshot using required `{expectedUpdatedAt}` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/void` | Void an unpaid invoice and release every job reservation using required `{expectedUpdatedAt}` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/mark-paid` | Mark an issued invoice paid using required `{expectedUpdatedAt}` and optional `{paidAt}` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs` | Queue the exact consolidated PDF revision using required `{expectedUpdatedAt}` |
+| POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
+| GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
+| DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
 | GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, rates, billing contact, and audited hour override |
 | POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
 | GET | `/v1/portal/scheduler/finance/:financeId/invoices` | List draft/issued/paid/void invoices |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/quick` | Reserve remaining quote/labour and selected billable expenses in a draft |
-| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft header, due date, notes, and lines; PATCH requires the displayed `expectedUpdatedAt` revision |
+| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft bill-to, due date, notes, and PO reference only; PATCH requires displayed `expectedUpdatedAt` |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/issue` | Freeze current seller, bill-to, job, and line snapshots using `{expectedUpdatedAt}` |
-| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/mark-paid` | Mark issued invoice paid; optional `{paidAt}` must be between issue and transition time |
-| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/void` | Void unpaid invoice and release reservations |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/mark-paid` | Mark issued invoice paid; required `{expectedUpdatedAt}`, optional `{paidAt}` between issue and transition time |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/void` | Void unpaid invoice and release reservations using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/pdf/jobs` | Queue a durable branded PDF using `{expectedUpdatedAt}` for the invoice's exact `id` + revision; returns HTTP 202 with `jobId`, `sourceUpdatedAt`, and `reportVariantKey` |
 | GET | `/v1/export/jobs/latest?entityId=:invoiceId&artifactType=pdf&reportVariantKey=...` | Recover the current administrator's latest matching invoice export after navigation/reload |
 | GET | `/v1/export/jobs/:jobId` | Poll queued/running/complete/failed status and the canonical branded filename |
@@ -360,9 +373,31 @@ currently active canonical global administrator; same-app administrator bypass
 is disabled for these finance artifacts. `reportVariantKey` includes the
 renderer version, immutable invoice id, and invoice `updatedAt`, so draft edits,
 issue, mark-paid, and void transitions cannot surface an older PDF.
+One-job exports keep the established job-name/job-date filename. Consolidated
+exports use the first snapshotted job name, `and-N-more`, invoice date, and
+invoice number in a bounded filename; no client identity is stored in the
+durable job parameters. The branded PDF groups lines under each immutable job
+name, date, and billing reference, repeats job/table context across page breaks,
+shows each job subtotal, and finishes with consolidated ex-GST, GST, and
+inc-GST totals.
+The renderer loads the header, job snapshots, and lines in one repeatable-read
+transaction. Before a durable job becomes complete, the API locks the invoice,
+rechecks the pinned `updatedAt`, and atomically attaches the stored object. A
+pre-write deletion outbox protects partial/interrupted writes; fresh tasks have
+a one-hour rolling-release lease, while explicit failures clean up immediately.
 Draft edits and issue also compare `expectedUpdatedAt` under the invoice row
 lock. A stale portal intent receives HTTP 409 and refetches the latest snapshot
 instead of overwriting or issuing values reviewed in another session.
+Void, mark-paid, and PDF enqueue apply the same required revision contract.
+
+Invoice lines are server-derived accounting snapshots. Scheduler draft PATCH
+does not accept `lines`: recorded labour must be changed through an audited hour
+override, prices through the job ledger before creating a draft, and additional
+charges through structured expenses or supplier bills. Once a draft exists its
+line ids, job provenance, kind, description, quantity, unit price, and linked
+expense are read-only; void and recreate to change the selected charges.
+Pre-migration manual `other` lines remain readable, issueable by the current
+service, and PDF-compatible, but cannot be edited or newly introduced.
 
 Released Field clients retain the legacy direct download adapter at
 `GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
@@ -370,6 +405,10 @@ The Scheduler portal does not use that synchronous route.
 
 All wire amounts and stored job expenses are ex-GST decimal currency values;
 the database stores integer cents and invoices add the configured GST snapshot.
+Issuing a GST-bearing invoice requires a nonblank
+`SCHEDULER_INVOICE_SELLER_ABN`; absence returns a controlled HTTP 409 instead of
+publishing a GST invoice without the supplier identity. QA/production must set
+the legal Sustainability Wise seller ABN before enabling invoice issue.
 `time.actualMilliseconds` is the immutable sum of foreground work sessions.
 Every insert and revision is rejected when cumulative active time exceeds its
 `startedAt`→`lastActiveAt` wall span by more than the documented five-second
@@ -389,13 +428,47 @@ values, preventing Quick Invoice duplication. Voiding releases reservations;
 paid invoices cannot be voided. Issued and paid snapshots remain readable and
 downloadable even after operational job edits or deletion.
 Job currency is locked once any expense or invoice exists. Pricing mode is
-locked while any non-void invoice exists, and a quote cannot be reduced below
-its currently reserved quote lines; void drafts first when changing basis.
+locked while any non-void invoice exists. Quote value plus billable and cost
+hourly rates are also locked while a non-void invoice exists; void drafts before
+changing the commercial basis.
+Consolidated jobs must share one currency. Differing or missing normalized
+billing parties require an explicit immutable consolidated `billTo` snapshot.
+Every selected job must contribute a positive line both at draft creation and
+issue, and every line retains `financeId` plus its immutable job/source
+provenance. A draft/issued/paid reservation is visible and enforced from every
+participating job, including secondary jobs.
+Migration 0034 deliberately fails closed for pre-0034 line rewrites and
+consolidated lifecycle updates. Before multi-job creation is used, every old API
+process must be drained and the current API must pass health checks. Once any
+invoice has more than one `scheduler_invoice_jobs` member, rollback to the d89
+API is prohibited: the rollback target must include the 0034-aware grouped
+read/PDF adapters and transaction-local lifecycle writer marker. The database
+marker protects writes; it cannot make an old process render grouped reads
+correctly.
 Invoice due dates are calendar dates: an issued invoice becomes overdue only
 after its UTC due-date day has passed, not at midnight at the start of that day.
-Field permanent purge is rejected once the installation has any work-session,
-hour-override, expense (including a soft-deleted audit row), or invoice history;
-an auto-created ledger with no commercial evidence is removed with the job.
+
+Bill attachments are never exposed through public URLs. Uploads require a
+current active canonical global administrator, `x-file-name`, raw bytes, and a
+matching PDF/JPEG/PNG/WebP magic signature. Direct `Content-Type:
+application/pdf`, image types, and octet-stream plus `x-file-content-type` are
+accepted. The default maximum is 10 MiB (`SCHEDULER_BILL_ATTACHMENT_MAX_BYTES`,
+capped at 25 MiB). Metadata exposes checksum, size, type, safe filename, and an
+authenticated download path only. Upload and delete are rejected after the
+expense is reserved or invoiced. Expense deletion atomically removes attachment
+records and queues durable byte deletion; pending upload rows use a one-hour
+lease plus startup/hourly reconciliation so crashes do not publish broken
+evidence or race a live upload.
+
+Permanent purge for EcoAudit audits, SolarSense assessments/sites, and Field
+installations is rejected when the source (or any Solar site child) has a work
+session, Scheduler event, edited commercial ledger, hour override, expense
+(including soft-deleted rows/attachments), or invoice membership (including a
+secondary consolidated job). Purge and first-ledger creation share a database
+source-identity lock. Only a provably pristine auto-created ledger can be
+removed with an otherwise evidence-free source. Migration 0034 also enforces
+source, work-session, and edited-ledger deletion fences in PostgreSQL so an old
+process being drained cannot bypass that retention policy.
 
 ## Active foreground time
 

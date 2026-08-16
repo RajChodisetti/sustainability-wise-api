@@ -1,24 +1,33 @@
 import {
+  ApiError,
+  AuthError,
+  NetworkError,
   getStoredJwt as getEcoJwt,
   request as ecoRequest,
   requestDownload as ecoRequestDownload,
+  tryRefreshToken as tryRefreshEcoToken,
 } from '@/api/client';
 import {
   getStoredJwt as getSolarJwt,
   request as solarRequest,
   requestDownload as solarRequestDownload,
+  tryRefreshToken as tryRefreshSolarToken,
 } from '@/modules/solar/api/client';
 import {
   getStoredJwt as getInstallHubJwt,
   installHubRequest,
   installHubRequestDownload,
+  tryRefreshToken as tryRefreshInstallHubToken,
 } from '@/modules/installhub/api/client';
+import { API_URL } from '@/lib/config';
 import { schedulerFinanceOverviewQuery } from '@/modules/scheduler/lib/finance';
 import type { ExportJobStatus } from '@/types/domain';
 import type {
+  ConsolidatedSchedulerInvoiceInput,
   CreateScheduleEventInput,
   CreateSchedulerDispatchInput,
   FinanceExpense,
+  FinanceExpenseAttachment,
   FinanceExpenseInput,
   FinanceOverviewPage,
   JobOption,
@@ -27,8 +36,12 @@ import type {
   ScheduleEvent,
   ScheduleReminderResponse,
   SchedulerFinancialSummary,
+  SchedulerExpensePage,
+  SchedulerInvoiceEligibility,
   SchedulerInvoice,
+  SchedulerInvoicePage,
   SchedulerInvoiceListItem,
+  SchedulerPortfolioSummary,
   ScheduleSummary,
   ScheduleSourceApp,
   UpdateSchedulerFinanceInput,
@@ -76,6 +89,65 @@ function portalDownload(): PortalDownload {
   ].filter((candidate): candidate is { token: string; request: PortalDownload } => Boolean(candidate.token));
   const selected = candidates.find((candidate) => jwtRole(candidate.token) === 'admin');
   return selected?.request ?? candidates[0]?.request ?? (ecoRequestDownload as PortalDownload);
+}
+
+type AdminCredential = {
+  token: string;
+  refresh: () => Promise<string | null>;
+};
+
+function portalAdminCredential(): AdminCredential | null {
+  const candidates = [
+    { token: getEcoJwt(), refresh: tryRefreshEcoToken },
+    { token: getSolarJwt(), refresh: tryRefreshSolarToken },
+    { token: getInstallHubJwt(), refresh: tryRefreshInstallHubToken },
+  ].filter((candidate): candidate is AdminCredential => Boolean(candidate.token));
+  return candidates.find((candidate) => jwtRole(candidate.token) === 'admin') ?? null;
+}
+
+async function portalRawUpload<T>(
+  path: string,
+  file: File,
+  retried = false,
+): Promise<T> {
+  const credential = portalAdminCredential();
+  if (!credential) throw new AuthError('An administrator session is required.');
+  const safeFilename = file.name
+    .normalize('NFKD')
+    .replace(/[^\x20-\x7E]+/g, '_')
+    .replace(/[\r\n]/g, '_')
+    .slice(0, 180) || 'bill-attachment';
+  let response: Response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${credential.token}`,
+        'Content-Type': 'application/octet-stream',
+        'x-file-content-type': file.type,
+        'x-file-name': safeFilename,
+      },
+      body: file,
+    });
+  } catch (cause) {
+    throw new NetworkError(cause instanceof Error ? cause.message : String(cause));
+  }
+  if (response.status === 401 && !retried) {
+    const fresh = await credential.refresh();
+    if (fresh) return portalRawUpload<T>(path, file, true);
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => response.statusText);
+    let detail = text;
+    try {
+      const body = JSON.parse(text) as { detail?: string; message?: string; error?: string };
+      detail = body.detail ?? body.message ?? body.error ?? text;
+    } catch {
+      // Retain the server text.
+    }
+    throw new ApiError(detail || response.statusText, response.status, detail || undefined);
+  }
+  return response.json() as Promise<T>;
 }
 
 function financeBase(financeId: string): string {
@@ -276,6 +348,169 @@ export async function deleteSchedulerExpense(financeId: string, expenseId: strin
   );
 }
 
+export async function fetchSchedulerPortfolioSummary(): Promise<SchedulerPortfolioSummary> {
+  return portalRequest(true)<SchedulerPortfolioSummary>(
+    'GET',
+    '/v1/portal/scheduler/finance/portfolio-summary',
+  );
+}
+
+export async function fetchGlobalSchedulerExpenses(options: {
+  cursor?: string | null;
+  limit?: number;
+  kind?: 'expense' | 'supplier_bill';
+  financeId?: string;
+  sourceApp?: 'ecoaudit' | 'solarsense' | 'installhub';
+  search?: string;
+} = {}): Promise<SchedulerExpensePage> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.kind) query.set('kind', options.kind);
+  if (options.financeId) query.set('financeId', options.financeId);
+  if (options.sourceApp) query.set('sourceApp', options.sourceApp);
+  if (options.search?.trim()) query.set('search', options.search.trim());
+  const response = await portalRequest(true)<SchedulerExpensePage>(
+    'GET',
+    `/v1/portal/scheduler/expenses?${query}`,
+  );
+  return { items: response.items ?? [], nextCursor: response.nextCursor ?? null };
+}
+
+export function uploadSchedulerExpenseAttachment(
+  expenseId: string,
+  file: File,
+): Promise<FinanceExpenseAttachment> {
+  return portalRawUpload<FinanceExpenseAttachment>(
+    `/v1/portal/scheduler/expenses/${encodeURIComponent(expenseId)}/attachments`,
+    file,
+  );
+}
+
+export async function deleteSchedulerExpenseAttachment(
+  expenseId: string,
+  attachmentId: string,
+): Promise<void> {
+  return portalRequest(true)<void>(
+    'DELETE',
+    `/v1/portal/scheduler/expenses/${encodeURIComponent(expenseId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  );
+}
+
+export async function downloadSchedulerExpenseAttachment(
+  expenseId: string,
+  attachmentId: string,
+): Promise<Blob> {
+  const response = await portalDownload()(
+    'GET',
+    `/v1/portal/scheduler/expenses/${encodeURIComponent(expenseId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+  );
+  return response.blob;
+}
+
+export async function fetchGlobalSchedulerInvoices(options: {
+  cursor?: string | null;
+  limit?: number;
+  status?: 'draft' | 'issued' | 'paid' | 'void';
+  sourceApp?: 'ecoaudit' | 'solarsense' | 'installhub';
+  financeId?: string;
+  search?: string;
+} = {}): Promise<SchedulerInvoicePage> {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.cursor) query.set('cursor', options.cursor);
+  if (options.status) query.set('status', options.status);
+  if (options.sourceApp) query.set('sourceApp', options.sourceApp);
+  if (options.financeId) query.set('financeId', options.financeId);
+  if (options.search?.trim()) query.set('search', options.search.trim());
+  const response = await portalRequest(true)<SchedulerInvoicePage>(
+    'GET',
+    `/v1/portal/scheduler/invoices?${query}`,
+  );
+  return { items: response.items ?? [], nextCursor: response.nextCursor ?? null };
+}
+
+export function checkConsolidatedSchedulerInvoiceEligibility(
+  financeIds: string[],
+): Promise<SchedulerInvoiceEligibility> {
+  return portalRequest(true)<SchedulerInvoiceEligibility>(
+    'POST',
+    '/v1/portal/scheduler/invoices/eligibility',
+    { financeIds },
+  );
+}
+
+export function createConsolidatedSchedulerInvoice(
+  input: ConsolidatedSchedulerInvoiceInput,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'POST',
+    '/v1/portal/scheduler/invoices/quick',
+    input,
+  );
+}
+
+export function fetchGlobalSchedulerInvoice(invoiceId: string): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'GET',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}`,
+  );
+}
+
+export function updateGlobalSchedulerInvoice(
+  invoiceId: string,
+  input: UpdateSchedulerInvoiceInput,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'PATCH',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}`,
+    input,
+  );
+}
+
+export function issueGlobalSchedulerInvoice(
+  invoiceId: string,
+  expectedUpdatedAt: string,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/issue`,
+    { expectedUpdatedAt },
+  );
+}
+
+export function voidGlobalSchedulerInvoice(
+  invoiceId: string,
+  expectedUpdatedAt: string,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/void`,
+    { expectedUpdatedAt },
+  );
+}
+
+export function markGlobalSchedulerInvoicePaid(
+  invoiceId: string,
+  expectedUpdatedAt: string,
+  paidAt?: string,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/mark-paid`,
+    { expectedUpdatedAt, ...(paidAt ? { paidAt } : {}) },
+  );
+}
+
+export function startGlobalSchedulerInvoicePdfExport(
+  invoiceId: string,
+  expectedUpdatedAt: string,
+): Promise<QueuedSchedulerInvoicePdfExport> {
+  return portalRequest(true)<QueuedSchedulerInvoicePdfExport>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/pdf/jobs`,
+    { expectedUpdatedAt },
+  );
+}
+
 export async function fetchSchedulerInvoices(financeId: string): Promise<SchedulerInvoiceListItem[]> {
   const response = await portalRequest(true)<{ items: SchedulerInvoiceListItem[] }>(
     'GET',
@@ -332,22 +567,25 @@ export async function issueSchedulerInvoice(
 export async function voidSchedulerInvoice(
   financeId: string,
   invoiceId: string,
+  expectedUpdatedAt: string,
 ): Promise<SchedulerInvoice> {
   return portalRequest(true)<SchedulerInvoice>(
     'POST',
     `${financeBase(financeId)}/invoices/${encodeURIComponent(invoiceId)}/void`,
+    { expectedUpdatedAt },
   );
 }
 
 export async function markSchedulerInvoicePaid(
   financeId: string,
   invoiceId: string,
+  expectedUpdatedAt: string,
   paidAt?: string,
 ): Promise<SchedulerInvoice> {
   return portalRequest(true)<SchedulerInvoice>(
     'POST',
     `${financeBase(financeId)}/invoices/${encodeURIComponent(invoiceId)}/mark-paid`,
-    paidAt ? { paidAt } : {},
+    { expectedUpdatedAt, ...(paidAt ? { paidAt } : {}) },
   );
 }
 

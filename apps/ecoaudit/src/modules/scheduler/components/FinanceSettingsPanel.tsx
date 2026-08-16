@@ -69,6 +69,7 @@ export function FinanceSettingsPanel({
   const [billingName, setBillingName] = useState(summary.billing.name ?? '');
   const [billingAddress, setBillingAddress] = useState(summary.billing.address ?? '');
   const [billingEmail, setBillingEmail] = useState(summary.billing.email ?? '');
+  const [billingAbn, setBillingAbn] = useState(summary.billing.abn ?? '');
   const [billingReference, setBillingReference] = useState(summary.billing.reference ?? '');
   const [error, setError] = useState<string | null>(null);
 
@@ -139,6 +140,7 @@ export function FinanceSettingsPanel({
       billingName: billingName.trim() || null,
       billingAddress: billingAddress.trim() || null,
       billingEmail: billingEmail.trim() || null,
+      billingAbn: billingAbn.trim() || null,
       billingReference: billingReference.trim() || null,
     };
   };
@@ -308,6 +310,10 @@ export function FinanceSettingsPanel({
             <div>
               <FieldLabel htmlFor="finance-bill-email">Bill-to email</FieldLabel>
               <Input id="finance-bill-email" type="email" value={billingEmail} onChange={(event) => setBillingEmail(event.target.value)} />
+            </div>
+            <div>
+              <FieldLabel htmlFor="finance-bill-abn">Recipient ABN</FieldLabel>
+              <Input id="finance-bill-abn" inputMode="numeric" value={billingAbn} onChange={(event) => setBillingAbn(event.target.value)} />
             </div>
           </div>
           <FieldLabel htmlFor="finance-bill-address">Bill-to address</FieldLabel>

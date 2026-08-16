@@ -1,5 +1,6 @@
 import type { AuthUser } from '../auth/middleware.js';
 import { config } from '../config.js';
+import { notFound } from '../utils/errors.js';
 import {
   createQuickSchedulerInvoiceByFinanceId,
   getSchedulerFinancialSummaryForSource,
@@ -127,6 +128,15 @@ function sharedInvoiceToLegacy(row: SchedulerInvoiceDto): InvoiceDto {
   };
 }
 
+function assertLegacySingleJobInvoice(row: SchedulerInvoiceDto): SchedulerInvoiceDto {
+  if (
+    row.jobCount !== 1
+    || row.job.sourceApp !== 'installhub'
+    || row.job.sourceType !== 'installation'
+  ) throw notFound('Invoice');
+  return row;
+}
+
 async function sharedFinanceId(user: AuthUser, installationId: string): Promise<string> {
   const summary = await getSchedulerFinancialSummaryForSource(user, {
     sourceApp: 'installhub',
@@ -200,6 +210,7 @@ export async function listInvoices(
 ): Promise<InvoiceListItemDto[]> {
   const financeId = await sharedFinanceId(user, installationId);
   return (await listSchedulerInvoicesByFinanceId(user, financeId))
+    .filter((row) => row.jobCount === 1 && row.sourceApps[0] === 'installhub')
     .map((row) => sharedListToLegacy(row, installationId));
 }
 
@@ -209,7 +220,9 @@ export async function getInvoice(
   invoiceId: string,
 ): Promise<InvoiceDto> {
   const financeId = await sharedFinanceId(user, installationId);
-  return sharedInvoiceToLegacy(await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId));
+  return sharedInvoiceToLegacy(assertLegacySingleJobInvoice(
+    await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId),
+  ));
 }
 
 export async function quickCreateInvoice(
@@ -233,6 +246,7 @@ export async function updateDraftInvoice(
   input: UpdateDraftInput,
 ): Promise<InvoiceDto> {
   const financeId = await sharedFinanceId(user, installationId);
+  assertLegacySingleJobInvoice(await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId));
   return sharedInvoiceToLegacy(await updateSchedulerDraftInvoiceByFinanceId(
     user,
     financeId,
@@ -247,6 +261,7 @@ export async function issueInvoice(
   invoiceId: string,
 ): Promise<InvoiceDto> {
   const financeId = await sharedFinanceId(user, installationId);
+  assertLegacySingleJobInvoice(await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId));
   return sharedInvoiceToLegacy(await issueSchedulerInvoiceByFinanceId(
     user,
     financeId,
@@ -260,6 +275,7 @@ export async function voidInvoice(
   invoiceId: string,
 ): Promise<InvoiceDto> {
   const financeId = await sharedFinanceId(user, installationId);
+  assertLegacySingleJobInvoice(await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId));
   return sharedInvoiceToLegacy(await voidSchedulerInvoiceByFinanceId(
     user,
     financeId,
@@ -273,5 +289,6 @@ export async function getInvoicePdf(
   invoiceId: string,
 ): Promise<{ filename: string; contentDisposition: string; buffer: Buffer }> {
   const financeId = await sharedFinanceId(user, installationId);
+  assertLegacySingleJobInvoice(await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId));
   return getSchedulerInvoicePdfByFinanceId(user, financeId, invoiceId);
 }

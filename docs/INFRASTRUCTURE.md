@@ -98,10 +98,22 @@ Scheduler invoice PDFs use the shared durable `pdf_jobs` queue rather than a
 browser-held render request. Jobs and stored artifacts are owned by the exact
 portal app/user credential that queued them, pin invoice `id` + `updatedAt` in
 their `reportVariantKey`, and are marked complete only after object storage has
-accepted the branded PDF. Latest/status/download access revalidates the creator
-as a current active global administrator. Keep `pdf_jobs` and its referenced PDF
-objects in the same backup and restore plan. The released Field invoice PDF
-endpoint remains synchronous only as a mobile compatibility adapter.
+accepted the branded PDF. Rendering reads invoice headers, grouped jobs, and
+lines from one repeatable-read snapshot. Publication then locks and rechecks the
+pinned invoice revision in the same transaction that completes `pdf_jobs`.
+Before any PDF bytes are written, a `storage_deletion_tasks` outbox row protects
+against interrupted or partial writes; successful publication removes that row
+atomically. Explicit failure cleanup runs immediately. Global/startup cleanup
+leases fresh invoice-export tasks for one hour to avoid rolling-restart races,
+then a bounded 15-minute no-overlap sweep reclaims abandoned artifacts and
+fails export workers that have remained inactive beyond the same lease. Fresh
+workers and artifact tasks are skipped, so rolling startup or a periodic sweep
+cannot fail or delete another process's live export. Latest/status/download
+access revalidates the creator as a
+current active global administrator. Keep `pdf_jobs`, `storage_deletion_tasks`,
+and referenced PDF objects in the same backup and restore plan. The released
+Field invoice PDF endpoint remains synchronous only as a mobile compatibility
+adapter.
 
 Configure Scheduler defaults with `SCHEDULER_LABOUR_COST_RATE`,
 `SCHEDULER_LABOUR_BILLABLE_RATE`, `SCHEDULER_INVOICE_GST_RATE`,

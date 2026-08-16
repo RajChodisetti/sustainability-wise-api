@@ -2,23 +2,38 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   availableInvoiceExpenses,
+  billAttachmentValidation,
+  consolidatedInvoiceJobSubtotal,
+  consolidatedInvoiceJobsWithoutCharges,
+  consolidatedInvoiceRecipientIssue,
   draftReservedAmount,
   financeJobNeedsReview,
   financeOverviewFromSummary,
   financeTargetLookupFailed,
   financeTargetFromPages,
+  financeTargetRequiresJobLookup,
   invoiceDraftIsDirty,
   invoiceFilenameFromContentDisposition,
   isFinanceScheduleEvent,
   marginTone,
+  MAX_CONSOLIDATED_INVOICE_JOBS,
+  persistExpenseBeforeAttachment,
   resolveHourOverrideValues,
   schedulerFinanceOverviewQuery,
   schedulerFinanceHref,
+  schedulerFinanceTargetFromSearchParams,
+  schedulerTabTransition,
   schedulerInvoicePdfFallbackFilename,
   schedulerInvoicePdfReportVariantKey,
   shouldAttachHourOverrideReason,
+  toggleConsolidatedInvoiceJob,
 } from './finance';
-import type { FinanceOverviewItem, SchedulerFinancialSummary } from '../types/domain';
+import type {
+  FinanceExpense,
+  FinanceOverviewItem,
+  SchedulerFinancialSummary,
+  SchedulerInvoiceEligibilityJob,
+} from '../types/domain';
 
 test('finance events are limited to exact mobile source pairs', () => {
   assert.equal(isFinanceScheduleEvent({ sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a1' }), true);
@@ -55,7 +70,7 @@ test('scheduler invoice PDF identity follows the exact server revision contract'
   const version = { id: 'invoice-42', updatedAt: '2026-08-16T18:15:00.000Z' };
   assert.equal(
     schedulerInvoicePdfReportVariantKey(version),
-    'scheduler-invoice-pdf:v1:invoice-42:2026-08-16T18:15:00.000Z',
+    'scheduler-invoice-pdf:v2:invoice-42:2026-08-16T18:15:00.000Z',
   );
   assert.notEqual(
     schedulerInvoicePdfReportVariantKey({ ...version, updatedAt: '2026-08-16T18:16:00.000Z' }),
@@ -86,7 +101,41 @@ test('finance helpers expose stable margin cues and deep links', () => {
   assert.equal(marginTone(20), 'success');
   assert.equal(
     schedulerFinanceHref({ sourceApp: 'installhub', sourceId: 'job 1', invoiceId: 'inv/2' }),
-    '/scheduler?tab=finance&sourceApp=installhub&sourceId=job+1&invoiceId=inv%2F2',
+    '/scheduler?tab=invoices&sourceApp=installhub&sourceId=job+1&invoiceId=inv%2F2',
+  );
+  assert.equal(
+    schedulerFinanceHref({ view: 'bills', financeId: 'finance 1' }),
+    '/scheduler?tab=bills&financeId=finance+1',
+  );
+  assert.equal(schedulerFinanceHref({}), '/scheduler?tab=financial-summary');
+  assert.deepEqual(
+    schedulerFinanceTargetFromSearchParams(new URLSearchParams('financeId=finance-7&sourceApp=solarsense&sourceId=assessment-8')),
+    { financeId: 'finance-7', eventId: undefined, sourceApp: 'solarsense', sourceId: 'assessment-8', invoiceId: undefined },
+  );
+  assert.equal(schedulerFinanceTargetFromSearchParams(new URLSearchParams('sourceApp=unknown')), undefined);
+});
+
+test('scheduler tab transitions keep URL and in-memory finance targets in parity', () => {
+  assert.deepEqual(
+    schedulerTabTransition('?tab=financial-summary&financeId=finance-7&eventId=event-7', 'calendar'),
+    { href: '/scheduler?tab=calendar', financeTarget: undefined },
+  );
+  assert.deepEqual(
+    schedulerTabTransition('?tab=calendar', 'bills'),
+    { href: '/scheduler?tab=bills', financeTarget: undefined },
+  );
+  assert.deepEqual(
+    schedulerTabTransition('?tab=invoices&financeId=finance-7&invoiceId=invoice-7', 'bills'),
+    {
+      href: '/scheduler?tab=bills&financeId=finance-7',
+      financeTarget: {
+        financeId: 'finance-7',
+        eventId: undefined,
+        sourceApp: undefined,
+        sourceId: undefined,
+        invoiceId: undefined,
+      },
+    },
   );
 });
 
@@ -102,20 +151,97 @@ test('hours review uses the audited backend state even when recorded hours are z
 });
 
 test('reserved and invoiced expenses are excluded from new drafts', () => {
-  const expense = {
+  const expense: FinanceExpense = {
     id: 'x', financeId: 'f', eventId: null, kind: 'expense', category: 'materials', description: 'Cable',
     vendor: null, reference: null, costAmount: 10, billableAmount: null,
     effectiveBillableAmount: 10, billable: true, incurredAt: null, invoiced: false,
     invoiceId: null, reserved: false, markupPct: 0,
+    attachments: [],
     createdAt: '', updatedAt: '',
-  } as const;
+  };
   assert.deepEqual(availableInvoiceExpenses([expense]), [expense]);
   assert.deepEqual(availableInvoiceExpenses([{ ...expense, reserved: true }]), []);
   assert.deepEqual(availableInvoiceExpenses([{ ...expense, invoiced: true }]), []);
 });
 
-test('draft dirty detection blocks issuing stale server lines', () => {
-  const original = { notes: '', dueDate: '2026-08-20', lines: [{ description: 'Labour' }] };
+test('consolidated invoice previews use quote balance for quoted jobs and labour for charge-up', () => {
+  const base: Omit<SchedulerInvoiceEligibilityJob, 'pricingMode'> = {
+    financeId: 'finance-1',
+    source: { sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'audit-1' },
+    job: { jobName: 'Audit', jobDate: '2026-08-16', clientName: 'Client', siteName: 'Site', siteAddress: null, status: 'complete' },
+    currency: 'AUD',
+    billing: { name: 'Client', address: null, email: null, abn: null, reference: null },
+    availableLabourHours: 2,
+    billableRate: 150,
+    availableLabourAmount: 300,
+    availableQuotedAmount: 725,
+    availableExpenses: [],
+  };
+  assert.equal(
+    consolidatedInvoiceJobSubtotal({ ...base, pricingMode: 'quoted' }, { includeLabour: true, expenseIds: [] }),
+    725,
+  );
+  assert.equal(
+    consolidatedInvoiceJobSubtotal({ ...base, pricingMode: 'charge_up' }, { includeLabour: true, expenseIds: [] }),
+    300,
+  );
+  const quoted = { ...base, pricingMode: 'quoted' as const };
+  const empty = { ...base, financeId: 'finance-2', pricingMode: 'charge_up' as const, availableLabourAmount: 0 };
+  assert.deepEqual(
+    consolidatedInvoiceJobsWithoutCharges([quoted, empty], {
+      'finance-1': { includeLabour: true, expenseIds: [] },
+      'finance-2': { includeLabour: false, expenseIds: [] },
+    }).map((job) => job.financeId),
+    ['finance-2'],
+  );
+});
+
+test('bill attachments enforce the exact supported formats and 10 MiB boundary', () => {
+  assert.equal(billAttachmentValidation({ name: 'bill.pdf', type: 'application/pdf', size: 10 * 1024 * 1024 }), null);
+  assert.equal(billAttachmentValidation({ name: 'bill.pdf', type: 'application/pdf', size: 10 * 1024 * 1024 + 1 }), 'Bill attachments must be 10 MB or smaller.');
+  assert.equal(billAttachmentValidation({ name: 'bill.txt', type: 'text/plain', size: 100 }), 'Upload a PDF, JPEG, PNG, or WebP bill.');
+});
+
+test('a persisted bill closes before a failed initial attachment can be retried', async () => {
+  const sequence: string[] = [];
+  let createCount = 0;
+  const result = await persistExpenseBeforeAttachment({
+    create: async () => {
+      createCount += 1;
+      sequence.push('bill-persisted');
+      return { id: 'expense-1' };
+    },
+    onPersisted: () => sequence.push('form-closed'),
+    upload: async () => {
+      sequence.push('attachment-started');
+      throw new Error('upload unavailable');
+    },
+  });
+  assert.equal(createCount, 1);
+  assert.deepEqual(sequence, ['bill-persisted', 'form-closed', 'attachment-started']);
+  assert.equal(result.expense.id, 'expense-1');
+  assert.match(String(result.attachmentError), /upload unavailable/);
+});
+
+test('invoice recipient validation requires an identity name without over-requiring address or ABN', () => {
+  assert.equal(consolidatedInvoiceRecipientIssue({ name: '   ' }), 'Enter the invoice recipient name.');
+  assert.equal(consolidatedInvoiceRecipientIssue({ name: 'Example Customer Pty Ltd' }), null);
+});
+
+test('consolidated invoice job selection prevents a 51st job before the API call', () => {
+  const fifty = Array.from({ length: MAX_CONSOLIDATED_INVOICE_JOBS }, (_, index) => `finance-${index}`);
+  assert.deepEqual(toggleConsolidatedInvoiceJob(fifty, 'finance-50', true), {
+    financeIds: fifty,
+    atLimit: true,
+  });
+  assert.deepEqual(toggleConsolidatedInvoiceJob(fifty, 'finance-0', false), {
+    financeIds: fifty.slice(1),
+    atLimit: false,
+  });
+});
+
+test('draft dirty detection blocks issuing stale invoice metadata', () => {
+  const original = { notes: '', dueDate: '2026-08-20', billToName: 'Example Customer' };
   assert.equal(invoiceDraftIsDirty(original, original), false);
   assert.equal(invoiceDraftIsDirty(original, { ...original, notes: 'Updated' }), true);
 });
@@ -192,6 +318,9 @@ test('deep-linked finance targets are found beyond the first cursor page', () =>
 });
 
 test('a failed deep-link lookup never falls back to an unrelated first job', () => {
+  assert.equal(financeTargetRequiresJobLookup({ invoiceId: 'invoice-without-job' }), false);
+  assert.equal(financeTargetRequiresJobLookup({ financeId: 'finance-2' }), true);
+  assert.equal(financeTargetRequiresJobLookup({ sourceApp: 'installhub', sourceId: 'installation-2' }), true);
   assert.equal(financeTargetLookupFailed({
     target: { sourceApp: 'installhub', sourceId: 'missing-installation', invoiceId: 'invoice-9' },
     resolved: false,
@@ -207,12 +336,26 @@ test('a failed deep-link lookup never falls back to an unrelated first job', () 
     cursorLookupTerminal: false,
   }), false);
   assert.equal(financeTargetLookupFailed({
+    target: { financeId: 'missing-finance' },
+    resolved: false,
+    directLookupTerminal: false,
+    exactSourceLookupTerminal: false,
+    cursorLookupTerminal: false,
+  }), false);
+  assert.equal(financeTargetLookupFailed({
+    target: { financeId: 'missing-finance' },
+    resolved: false,
+    directLookupTerminal: true,
+    exactSourceLookupTerminal: false,
+    cursorLookupTerminal: false,
+  }), true);
+  assert.equal(financeTargetLookupFailed({
     target: { invoiceId: 'invoice-without-job' },
     resolved: false,
     directLookupTerminal: false,
     exactSourceLookupTerminal: false,
     cursorLookupTerminal: false,
-  }), true);
+  }), false);
 });
 
 test('draft-held amount excludes issued and paid invoice reservations', () => {

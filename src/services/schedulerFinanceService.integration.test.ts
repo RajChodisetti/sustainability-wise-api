@@ -3,7 +3,15 @@ import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 
 const integrationDatabase = process.env.SCHEDULER_FINANCE_PG_INTEGRATION_URL;
-if (integrationDatabase) process.env.DATABASE_URL = integrationDatabase;
+if (integrationDatabase) {
+  // Exercise UTC-date accounting while the application connection is on the
+  // opposite calendar day. The setup connection intentionally keeps the
+  // server default zone.
+  const applicationDatabaseUrl = new URL(integrationDatabase);
+  applicationDatabaseUrl.searchParams.set('options', '-c TimeZone=Pacific/Kiritimati');
+  process.env.DATABASE_URL = applicationDatabaseUrl.toString();
+}
+process.env.SCHEDULER_INVOICE_SELLER_ABN ??= '12 345 678 901';
 
 const migrationsDirectory = new URL('../db/migrations/', import.meta.url);
 
@@ -36,6 +44,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
     for (const migration of migrations) {
       await setup.begin(async (tx) => tx.unsafe(migrationSource(migration)));
     }
+    await setup.unsafe(`SET TIME ZONE 'Pacific/Kiritimati'`);
 
     await setup.unsafe(`
       INSERT INTO global_users (
@@ -95,7 +104,11 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         ('field-expense-purge', 'Expense Client', 'Expense Field Job', '6 Field Road',
          'Worker', '2026-08-25', 'Draft', 'worker-installhub', '2026-08-01'),
         ('field-deleted-ledger', 'Deleted Client', 'Deleted Field Job', '7 Field Road',
-         'Worker', '2026-08-26', 'Draft', 'worker-installhub', '2026-08-01')
+         'Worker', '2026-08-26', 'Draft', 'worker-installhub', '2026-08-01'),
+        ('field-event-purge', 'Event Client', 'Event Field Job', '8 Field Road',
+         'Worker', '2026-08-27', 'Draft', 'worker-installhub', '2026-08-01'),
+        ('field-edited-purge', 'Edited Client', 'Edited Field Job', '9 Field Road',
+         'Worker', '2026-08-28', 'Draft', 'worker-installhub', '2026-08-01')
     `);
     await setup.unsafe(`
       INSERT INTO ea_audit_work_sessions (
@@ -138,6 +151,10 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
          'admin-eco', 'ecoaudit'),
         ('field-event', 'Field visit', 'installhub', 'installation', 'field-job', 'worker-field',
          '2026-08-23 09:00', '2026-08-23 13:00', '2026-08-23 17:00', 'planned',
+         'admin-eco', 'ecoaudit'),
+        ('field-purge-event', 'Retained Field visit', 'installhub', 'installation',
+         'field-event-purge', 'worker-field', '2026-08-27 09:00', '2026-08-27 10:00',
+         '2026-08-27 17:00', 'planned',
          'admin-eco', 'ecoaudit')
     `);
 
@@ -386,13 +403,13 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       assert.deepEqual(solarDraft.lines.map((line) => line.kind), ['quoted', 'expense']);
       await assert.rejects(
         service.updateSchedulerFinanceById(admin, solar.financeId, { quotedAmount: 999 }),
-        appErrorDetailIncludes('Quoted amount cannot be less than reserved invoice value'),
+        appErrorDetailIncludes('Pricing mode, quote, and hourly rates cannot change'),
       );
       await assert.rejects(
         service.updateSchedulerFinanceById(admin, solar.financeId, {
           pricingMode: 'charge_up',
         }),
-        appErrorDetailIncludes('Pricing mode cannot change while a non-void invoice exists'),
+        appErrorDetailIncludes('Pricing mode, quote, and hourly rates cannot change'),
       );
       await service.voidSchedulerInvoiceByFinanceId(admin, solar.financeId, solarDraft.id);
       const solarReplacement = await service.createQuickSchedulerInvoiceByFinanceId(
@@ -401,6 +418,419 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         { expenseIds: [solarExpense.id] },
       );
       assert.notEqual(solarReplacement.invoiceNumber, solarDraft.invoiceNumber);
+      await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        solarReplacement.id,
+        solarReplacement.updatedAt,
+      );
+
+      const consolidatedEligibility = await service.getConsolidatedInvoiceEligibility(
+        admin,
+        [eco.financeId, solar.financeId],
+      );
+      assert.equal(consolidatedEligibility.eligible, true);
+      assert.equal(consolidatedEligibility.requiresExplicitBillTo, true);
+      assert.equal(consolidatedEligibility.commonCurrency, 'AUD');
+      assert.equal(consolidatedEligibility.jobs.length, 2);
+      await assert.rejects(
+        service.createConsolidatedSchedulerInvoice(admin, {
+          jobs: [
+            { financeId: eco.financeId, includeLabour: true, expenseIds: [] },
+            { financeId: solar.financeId, includeLabour: true, expenseIds: [solarExpense.id] },
+          ],
+        }),
+        appErrorDetailIncludes('explicit billTo snapshot'),
+      );
+      await assert.rejects(
+        service.createConsolidatedSchedulerInvoice(admin, {
+          jobs: [
+            { financeId: eco.financeId, includeLabour: true, expenseIds: [] },
+            { financeId: solar.financeId, includeLabour: false, expenseIds: [] },
+          ],
+          billTo: { name: 'Consolidated Client' },
+        }),
+        appErrorDetailIncludes('no positive available charges'),
+      );
+      await assert.rejects(
+        service.createConsolidatedSchedulerInvoice(admin, {
+          jobs: [
+            { financeId: eco.financeId },
+            { financeId: eco.financeId },
+          ],
+          billTo: { name: 'Consolidated Client' },
+        }),
+        appErrorDetailIncludes('Each financeId can appear only once'),
+      );
+      const consolidatedDraft = await service.createConsolidatedSchedulerInvoice(admin, {
+        jobs: [
+          { financeId: eco.financeId, includeLabour: true, expenseIds: [] },
+          { financeId: solar.financeId, includeLabour: true, expenseIds: [solarExpense.id] },
+        ],
+        billTo: {
+          name: 'Consolidated Client Pty Ltd',
+          abn: '12 345 678 901',
+          address: '10 Billing Street',
+          email: 'accounts@consolidated.example',
+          purchaseOrderReference: 'GROUP-PO-1',
+        },
+      });
+      assert.equal(consolidatedDraft.jobs.length, 2);
+      assert.equal(consolidatedDraft.billToAbn, '12 345 678 901');
+      assert.equal(consolidatedDraft.lines.every((line) => Boolean(line.financeId)), true);
+      assert.equal(
+        (await service.getSchedulerInvoiceByFinanceId(
+          admin,
+          solar.financeId,
+          consolidatedDraft.id,
+        )).id,
+        consolidatedDraft.id,
+      );
+      assert.equal(
+        (await service.listSchedulerInvoicesByFinanceId(admin, solar.financeId))
+          .some((invoice) => invoice.id === consolidatedDraft.id && invoice.jobCount === 2),
+        true,
+      );
+      await assert.rejects(
+        service.updateSchedulerFinanceById(admin, solar.financeId, { quotedAmount: 1100 }),
+        appErrorDetailIncludes('Pricing mode, quote, and hourly rates cannot change'),
+      );
+      await assert.rejects(
+        service.voidConsolidatedSchedulerInvoice(
+          admin,
+          consolidatedDraft.id,
+          '2020-01-01T00:00:00.000Z',
+        ),
+        appErrorDetailIncludes('Invoice changed; refresh before continuing'),
+      );
+      const consolidatedHeader = await service.updateConsolidatedSchedulerDraftInvoice(
+        admin,
+        consolidatedDraft.id,
+        {
+          expectedUpdatedAt: consolidatedDraft.updatedAt,
+          notes: 'Two-job invoice',
+        },
+      );
+      const consolidatedVoided = await service.voidConsolidatedSchedulerInvoice(
+        admin,
+        consolidatedDraft.id,
+        consolidatedHeader.updatedAt,
+      );
+      assert.equal(consolidatedVoided.status, 'void');
+
+      const consolidatedRecreated = await service.createConsolidatedSchedulerInvoice(admin, {
+        jobs: [
+          { financeId: eco.financeId, includeLabour: true, expenseIds: [] },
+          { financeId: solar.financeId, includeLabour: true, expenseIds: [solarExpense.id] },
+        ],
+        billTo: { name: 'Consolidated Client Pty Ltd', address: '10 Billing Street' },
+      });
+      const consolidatedIssued = await service.issueConsolidatedSchedulerInvoice(
+        admin,
+        consolidatedRecreated.id,
+        consolidatedRecreated.updatedAt,
+      );
+      assert.equal(consolidatedIssued.status, 'issued');
+      assert.equal(consolidatedIssued.jobs.length, 2);
+      const consolidatedPaid = await service.markConsolidatedSchedulerInvoicePaid(
+        admin,
+        consolidatedIssued.id,
+        consolidatedIssued.issuedAt,
+        consolidatedIssued.updatedAt,
+      );
+      assert.equal(consolidatedPaid.status, 'paid');
+      const consolidatedPortfolio = await service.listSchedulerInvoicePortfolio(admin, {
+        limit: 10,
+        search: 'Consolidated Client Pty Ltd',
+      });
+      assert.equal(
+        consolidatedPortfolio.items.some((invoice) => (
+          invoice.id === consolidatedPaid.id
+          && invoice.jobCount === 2
+          && invoice.financeIds.includes(solar.financeId)
+        )),
+        true,
+      );
+      await assert.rejects(
+        service.voidConsolidatedSchedulerInvoice(
+          admin,
+          consolidatedPaid.id,
+          consolidatedPaid.updatedAt,
+        ),
+        appErrorDetailIncludes('Paid invoices cannot be voided'),
+      );
+      await assert.rejects(
+        service.uploadSchedulerExpenseAttachment(admin, solarExpense.id, {
+          filename: 'paid-bill.pdf',
+          contentType: 'application/pdf',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        }),
+        appErrorDetailIncludes('cannot be added to reserved or invoiced expenses'),
+      );
+
+      const attachmentExpense = await service.createSchedulerExpenseByFinanceId(
+        admin,
+        eco.financeId,
+        {
+          kind: 'supplier_bill',
+          category: 'materials',
+          description: 'Attachment lifecycle fixture',
+          vendor: 'Evidence Co',
+          costAmount: 25,
+          billableAmount: 30,
+          billable: true,
+        },
+      );
+      await assert.rejects(
+        service.uploadSchedulerExpenseAttachment(inspector, attachmentExpense.id, {
+          filename: 'inspector.pdf',
+          contentType: 'application/pdf',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        }),
+        appErrorDetailIncludes('Only global administrators'),
+      );
+      await assert.rejects(
+        service.uploadSchedulerExpenseAttachment(admin, attachmentExpense.id, {
+          filename: 'mismatch.png',
+          contentType: 'image/png',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        }),
+        appErrorDetailIncludes('content type does not match'),
+      );
+      const attachment = await service.uploadSchedulerExpenseAttachment(
+        admin,
+        attachmentExpense.id,
+        {
+          filename: '../supplier-bill.pdf',
+          contentType: 'application/pdf',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        },
+      );
+      assert.equal(attachment.filename, 'supplier-bill.pdf');
+      assert.match(attachment.sha256, /^[0-9a-f]{64}$/);
+      const downloaded = await service.downloadSchedulerExpenseAttachment(
+        admin,
+        attachmentExpense.id,
+        attachment.id,
+      );
+      const downloadedChunks: Buffer[] = [];
+      for await (const chunk of downloaded.stream) downloadedChunks.push(Buffer.from(chunk));
+      assert.equal(Buffer.concat(downloadedChunks).toString('utf8'), '%PDF-1.4\n%%EOF');
+      await service.deleteSchedulerExpenseAttachment(
+        admin,
+        attachmentExpense.id,
+        attachment.id,
+      );
+      assert.equal((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_expense_attachments
+        WHERE id = ${attachment.id}
+      `)[0]?.count, '0');
+
+      const ambiguousExpense = await service.createSchedulerExpenseByFinanceId(
+        admin,
+        eco.financeId,
+        {
+          kind: 'supplier_bill', category: 'other', description: 'Ambiguous confirm fixture',
+          costAmount: 5, billableAmount: 6, billable: true,
+        },
+      );
+      await assert.rejects(
+        service.uploadSchedulerExpenseAttachment(
+          admin,
+          ambiguousExpense.id,
+          {
+            filename: 'confirmed-before-ack.pdf',
+            contentType: 'application/pdf',
+            body: Buffer.from('%PDF-1.4\n%%EOF'),
+          },
+          {
+            afterConfirmationCommitted: async () => {
+              throw new Error('simulated confirmation acknowledgement failure');
+            },
+            beforeFailureInspection: async () => {
+              throw new Error('simulated confirmation status read failure');
+            },
+          },
+        ),
+        /simulated confirmation acknowledgement failure/,
+      );
+      const [survivingConfirmed] = await setup<{ id: string; status: string }[]>`
+        SELECT id, status FROM scheduler_expense_attachments
+        WHERE expense_id = ${ambiguousExpense.id}
+      `;
+      assert.equal(survivingConfirmed?.status, 'confirmed');
+      await service.deleteSchedulerExpenseAttachment(
+        admin,
+        ambiguousExpense.id,
+        survivingConfirmed!.id,
+      );
+
+      const uploadRaceExpense = await service.createSchedulerExpenseByFinanceId(
+        admin,
+        eco.financeId,
+        {
+          kind: 'expense', category: 'other', description: 'Upload reservation race',
+          costAmount: 8, billableAmount: 9, billable: true,
+        },
+      );
+      let signalPending!: () => void;
+      let releaseUpload!: () => void;
+      const pendingPersisted = new Promise<void>((resolve) => { signalPending = resolve; });
+      const uploadRelease = new Promise<void>((resolve) => { releaseUpload = resolve; });
+      const racingUpload = service.uploadSchedulerExpenseAttachment(
+        admin,
+        uploadRaceExpense.id,
+        {
+          filename: 'racing-upload.pdf',
+          contentType: 'application/pdf',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        },
+        {
+          afterPendingPersisted: async () => {
+            signalPending();
+            await uploadRelease;
+          },
+        },
+      );
+      await pendingPersisted;
+      const raceDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+        admin,
+        eco.financeId,
+        { includeLabour: false, expenseIds: [uploadRaceExpense.id] },
+      );
+      releaseUpload();
+      await assert.rejects(
+        racingUpload,
+        appErrorDetailIncludes('cannot be added to reserved or invoiced expenses'),
+      );
+      assert.equal((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_expense_attachments
+        WHERE expense_id = ${uploadRaceExpense.id}
+      `)[0]?.count, '0');
+      await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        eco.financeId,
+        raceDraft.id,
+        raceDraft.updatedAt,
+      );
+      const abnGateDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+        admin,
+        eco.financeId,
+        { includeLabour: false, expenseIds: [uploadRaceExpense.id] },
+      );
+      const runtimeConfig = (await import('../config.js')).config;
+      const configuredSellerAbn = runtimeConfig.schedulerInvoice.sellerAbn;
+      (runtimeConfig.schedulerInvoice as { sellerAbn: string }).sellerAbn = '';
+      try {
+        await assert.rejects(
+          service.issueSchedulerInvoiceByFinanceId(
+            admin,
+            eco.financeId,
+            abnGateDraft.id,
+            abnGateDraft.updatedAt,
+          ),
+          appErrorDetailIncludes('seller ABN'),
+        );
+      } finally {
+        (runtimeConfig.schedulerInvoice as { sellerAbn: string }).sellerAbn = configuredSellerAbn;
+      }
+      await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        eco.financeId,
+        abnGateDraft.id,
+        abnGateDraft.updatedAt,
+      );
+
+      const attachmentForExpenseDelete = await service.uploadSchedulerExpenseAttachment(
+        admin,
+        attachmentExpense.id,
+        {
+          filename: 'delete-with-expense.pdf',
+          contentType: 'application/pdf',
+          body: Buffer.from('%PDF-1.4\n%%EOF'),
+        },
+      );
+      await service.deleteSchedulerExpenseByFinanceId(
+        admin,
+        eco.financeId,
+        attachmentExpense.id,
+      );
+      assert.equal((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_expense_attachments
+        WHERE id = ${attachmentForExpenseDelete.id}
+      `)[0]?.count, '0');
+
+      await setup`
+        INSERT INTO scheduler_expense_attachments (
+          id, expense_id, status, filename, content_type, size_bytes, storage_key,
+          created_by_user_id, created_at
+        ) VALUES (
+          'stale-pending-attachment', ${attachmentExpense.id}, 'pending', 'stale.pdf',
+          'application/pdf', 10, 'ecoaudit/eco-job/stale-pending.pdf',
+          'admin-global', now() - interval '2 hours'
+        )
+      `;
+      assert.equal(await service.reconcilePendingSchedulerExpenseAttachments(), 1);
+      assert.equal((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_expense_attachments
+        WHERE id = 'stale-pending-attachment'
+      `)[0]?.count, '0');
+
+      await setup`
+        INSERT INTO scheduler_expense_attachments (
+          id, expense_id, status, filename, content_type, size_bytes, storage_key,
+          created_by_user_id, created_at
+        ) VALUES (
+          'fresh-pending-attachment', ${attachmentExpense.id}, 'pending', 'fresh.pdf',
+          'application/pdf', 10, 'ecoaudit/eco-job/fresh-pending.pdf',
+          'admin-global', now()
+        )
+      `;
+      assert.equal(await service.reconcilePendingSchedulerExpenseAttachments(), 0);
+      assert.equal((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_expense_attachments
+        WHERE id = 'fresh-pending-attachment'
+      `)[0]?.count, '1');
+      assert.equal(await service.reconcilePendingSchedulerExpenseAttachments({
+        now: new Date(Date.now() + 2 * 60 * 60 * 1_000),
+      }), 1);
+
+      await setup`
+        INSERT INTO scheduler_expense_attachments (
+          id, expense_id, status, filename, content_type, size_bytes, storage_key,
+          created_by_user_id, created_at
+        ) VALUES (
+          'confirm-during-sweep', ${attachmentExpense.id}, 'pending', 'confirm.pdf',
+          'application/pdf', 10, 'ecoaudit/eco-job/confirm-during-sweep.pdf',
+          'admin-global', now() - interval '2 hours'
+        )
+      `;
+      let signalSweepCandidate!: () => void;
+      let releaseSweep!: () => void;
+      const sweepCandidateSelected = new Promise<void>((resolve) => {
+        signalSweepCandidate = resolve;
+      });
+      const sweepRelease = new Promise<void>((resolve) => { releaseSweep = resolve; });
+      const racingSweep = service.reconcilePendingSchedulerExpenseAttachments({
+        afterCandidateSelected: async (attachmentId) => {
+          if (attachmentId !== 'confirm-during-sweep') return;
+          signalSweepCandidate();
+          await sweepRelease;
+        },
+      });
+      await sweepCandidateSelected;
+      await setup`
+        UPDATE scheduler_expense_attachments
+        SET status = 'confirmed', confirmed_at = now(), sha256 = ${'a'.repeat(64)}
+        WHERE id = 'confirm-during-sweep'
+      `;
+      releaseSweep();
+      assert.equal(await racingSweep, 0);
+      assert.equal((await setup<{ status: string }[]>`
+        SELECT status FROM scheduler_expense_attachments
+        WHERE id = 'confirm-during-sweep'
+      `)[0]?.status, 'confirmed');
+      await setup`DELETE FROM scheduler_expense_attachments WHERE id = 'confirm-during-sweep'`;
 
       const ecoExpense = await service.createSchedulerExpenseByFinanceId(
         admin,
@@ -427,6 +857,48 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           costAmount: 5, billableAmount: 10, billable: true,
         },
       );
+      const mixedEligibility = await service.getConsolidatedInvoiceEligibility(
+        admin,
+        [eco.financeId, unscheduled.financeId],
+      );
+      assert.equal(mixedEligibility.eligible, false);
+      assert.equal(mixedEligibility.issues.some((issue) => issue.code === 'mixed_currency'), true);
+      await assert.rejects(
+        service.createConsolidatedSchedulerInvoice(admin, {
+          jobs: [
+            { financeId: eco.financeId },
+            { financeId: unscheduled.financeId },
+          ],
+          billTo: { name: 'Mixed Currency Client' },
+        }),
+        appErrorDetailIncludes('same currency'),
+      );
+      await setup`
+        INSERT INTO scheduler_job_expenses (
+          id, finance_id, kind, category, description, cost_amount_cents,
+          billable_amount_cents, billable, invoiced, created_at, updated_at
+        )
+        SELECT
+          'job-search-expense-' || ordinal::text,
+          ${unscheduled.financeId},
+          'expense', 'other', 'Generic portfolio cost', 100, 100, true, false,
+          now() - (ordinal::text || ' minutes')::interval,
+          now() - (ordinal::text || ' minutes')::interval
+        FROM generate_series(1, 30) AS ordinal
+      `;
+      const searchedExpenseIds: string[] = [];
+      let expenseCursor: string | undefined;
+      do {
+        const page = await service.listSchedulerExpensePortfolio(admin, {
+          limit: 7,
+          cursor: expenseCursor,
+          search: 'Unscheduled Eco',
+        });
+        searchedExpenseIds.push(...page.items.map((expense) => expense.id));
+        expenseCursor = page.nextCursor ?? undefined;
+      } while (expenseCursor);
+      assert.equal(searchedExpenseIds.includes(unscheduledExpense.id), true);
+      assert.equal(searchedExpenseIds.length >= 31, true);
       const [ecoConcurrent, unscheduledConcurrent] = await Promise.all([
         service.createQuickSchedulerInvoiceByFinanceId(admin, eco.financeId, {
           expenseIds: [ecoExpense.id], includeLabour: false,
@@ -438,19 +910,26 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       ]);
       assert.ok(ecoConcurrent.invoiceNumber);
       assert.notEqual(ecoConcurrent.invoiceNumber, unscheduledConcurrent.invoiceNumber);
+      const derivedLine = unscheduledConcurrent.lines[0]!;
       await assert.rejects(
         service.updateSchedulerDraftInvoiceByFinanceId(
           admin,
           unscheduled.financeId,
           unscheduledConcurrent.id,
           {
+            expectedUpdatedAt: unscheduledConcurrent.updatedAt,
             lines: [{
-              kind: 'other', description: 'Too precise', quantity: 0.00001,
-              unitAmountExGst: 10,
+              id: derivedLine.id,
+              financeId: derivedLine.financeId,
+              kind: derivedLine.kind,
+              description: derivedLine.description,
+              quantity: derivedLine.quantity,
+              unitAmountExGst: derivedLine.unitAmountExGst + 1,
+              expenseId: derivedLine.expenseId,
             }],
           },
         ),
-        appErrorDetailIncludes('quantity must be at least 0.0001'),
+        appErrorDetailIncludes('Derived invoice lines are read-only'),
       );
       await assert.rejects(
         service.updateSchedulerDraftInvoiceByFinanceId(
@@ -458,83 +937,28 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           unscheduled.financeId,
           unscheduledConcurrent.id,
           {
-            lines: [1, 2, 3].map((ordinal) => ({
-              kind: 'other' as const,
-              description: `Unsafe aggregate ${ordinal}`,
-              quantity: 1,
-              unitAmountExGst: 45_000_000_000_000,
-            })),
+            expectedUpdatedAt: unscheduledConcurrent.updatedAt,
+            lines: [
+              {
+                id: derivedLine.id,
+                financeId: derivedLine.financeId,
+                kind: derivedLine.kind,
+                description: derivedLine.description,
+                quantity: derivedLine.quantity,
+                unitAmountExGst: derivedLine.unitAmountExGst,
+                expenseId: derivedLine.expenseId,
+              },
+              {
+                kind: 'other',
+                financeId: unscheduled.financeId,
+                description: 'Manual adjustment',
+                quantity: 1,
+                unitAmountExGst: 10,
+              },
+            ],
           },
         ),
-        appErrorDetailIncludes('Invoice subtotal is too large'),
-      );
-      const normalizedQuantity = await service.updateSchedulerDraftInvoiceByFinanceId(
-        admin,
-        unscheduled.financeId,
-        unscheduledConcurrent.id,
-        {
-          lines: [{
-            kind: 'other', description: 'Normalized quantity', quantity: 1.23456,
-            unitAmountExGst: 10,
-          }],
-        },
-      );
-      assert.equal(normalizedQuantity.lines[0]?.quantity, 1.2346);
-      assert.equal(normalizedQuantity.lines[0]?.lineTotalExGst, 12.35);
-      assert.equal(normalizedQuantity.subtotalExGst, 12.35);
-
-      const overflowExpenseA = await service.createSchedulerExpenseByFinanceId(
-        admin,
-        unscheduled.financeId,
-        {
-          kind: 'expense', category: 'other', description: 'Overflow fixture A',
-          costAmount: 1, billableAmount: 1, billable: true,
-        },
-      );
-      const overflowExpenseB = await service.createSchedulerExpenseByFinanceId(
-        admin,
-        unscheduled.financeId,
-        {
-          kind: 'expense', category: 'other', description: 'Overflow fixture B',
-          costAmount: 1, billableAmount: 1, billable: true,
-        },
-      );
-      const overflowDraftA = await service.createQuickSchedulerInvoiceByFinanceId(
-        admin,
-        unscheduled.financeId,
-        { includeLabour: false, expenseIds: [overflowExpenseA.id] },
-      );
-      const overflowDraftB = await service.createQuickSchedulerInvoiceByFinanceId(
-        admin,
-        unscheduled.financeId,
-        { includeLabour: false, expenseIds: [overflowExpenseB.id] },
-      );
-      await service.updateSchedulerDraftInvoiceByFinanceId(
-        admin,
-        unscheduled.financeId,
-        overflowDraftA.id,
-        {
-          expectedUpdatedAt: overflowDraftA.updatedAt,
-          lines: [{
-            kind: 'quoted', description: 'Safe single reservation', quantity: 1,
-            unitAmountExGst: 50_000_000_000_000,
-          }],
-        },
-      );
-      await assert.rejects(
-        service.updateSchedulerDraftInvoiceByFinanceId(
-          admin,
-          unscheduled.financeId,
-          overflowDraftB.id,
-          {
-            expectedUpdatedAt: overflowDraftB.updatedAt,
-            lines: [{
-              kind: 'quoted', description: 'Unsafe aggregate reservation', quantity: 1,
-              unitAmountExGst: 50_000_000_000_000,
-            }],
-          },
-        ),
-        appErrorDetailIncludes('Reserved quote value exceeds the supported accounting range'),
+        appErrorDetailIncludes('cannot be added or removed'),
       );
 
       const oldCostCount = Number((await setup<{ count: string }[]>`
@@ -563,6 +987,22 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
 
       await assert.rejects(
         purgeInstallHubInstallationTree('field-job'),
+        appErrorDetailIncludes('installation_commercial_history_purge_blocked'),
+      );
+      await assert.rejects(
+        purgeInstallHubInstallationTree('field-event-purge'),
+        appErrorDetailIncludes('installation_commercial_history_purge_blocked'),
+      );
+      const editedPurgeLedger = await service.getSchedulerFinancialSummaryForSource(admin, {
+        sourceApp: 'installhub',
+        sourceType: 'installation',
+        sourceId: 'field-edited-purge',
+      });
+      await service.updateSchedulerFinanceById(admin, editedPurgeLedger.financeId, {
+        notes: 'Commercial setup must be retained',
+      });
+      await assert.rejects(
+        purgeInstallHubInstallationTree('field-edited-purge'),
         appErrorDetailIncludes('installation_commercial_history_purge_blocked'),
       );
 
@@ -603,13 +1043,17 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         kind: 'expense', category: 'other', description: 'Historical retained expense',
         costAmount: 10, billableAmount: 12, billable: true,
       });
-      await setup`DELETE FROM ih_installations WHERE id = 'field-deleted-ledger'`;
+      await setup`
+        UPDATE ih_installations
+        SET deleted_at = now(), updated_at = now()
+        WHERE id = 'field-deleted-ledger'
+      `;
       const retainedDeletedLedger = await service.getSchedulerFinancialSummaryById(
         admin,
         deletedLedger.financeId,
       );
       assert.equal(retainedDeletedLedger.job.status, 'Deleted');
-      assert.match(retainedDeletedLedger.job.jobName, /field-deleted-ledger/);
+      assert.equal(retainedDeletedLedger.job.jobName, 'Deleted Field Job');
       assert.equal(retainedDeletedLedger.time.billableHours, 1.25);
       assert.equal(retainedDeletedLedger.expenses.length, 1);
 
@@ -623,6 +1067,44 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       assert.equal((await setup<{ count: string }[]>`
         SELECT count(*) AS count FROM scheduler_job_finance WHERE id = ${emptyPurge.financeId}
       `)[0]?.count, '0');
+
+      await setup.unsafe(`
+        INSERT INTO ea_audits (
+          id, site_name, site_address, inspector_name, audit_date, status, created_at
+        )
+        SELECT
+          'portfolio-audit-' || ordinal::text,
+          'Portfolio Audit ' || ordinal::text,
+          ordinal::text || ' Portfolio Road',
+          'Worker', '2026-08-30', 'Draft', '2026-08-01'
+        FROM generate_series(1, 105) AS ordinal
+      `);
+      await setup`
+        UPDATE scheduler_invoices
+        SET status = 'issued',
+          due_date = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
+          issued_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = ${solarDraft.id}
+      `;
+      const portfolioSummary = await service.getSchedulerFinancePortfolioSummary(admin);
+      assert.equal(portfolioSummary.complete, true);
+      assert.equal(portfolioSummary.jobCount > 100, true);
+      assert.deepEqual(
+        portfolioSummary.currencies.map((currency) => currency.currency).sort(),
+        ['AUD', 'USD'],
+      );
+      const databasePaidCount = Number((await setup<{ count: string }[]>`
+        SELECT count(*) AS count FROM scheduler_invoices WHERE status = 'paid'
+      `)[0]?.count ?? 0);
+      assert.equal(portfolioSummary.statusCounts.paid, databasePaidCount);
+      const databaseOverdueCount = Number((await setup<{ count: string }[]>`
+        SELECT count(*) AS count
+        FROM scheduler_invoices
+        WHERE status = 'issued'
+          AND due_date < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
+      `)[0]?.count ?? 0);
+      assert.equal(portfolioSummary.statusCounts.overdue, databaseOverdueCount);
     } finally {
       await closeDb();
     }

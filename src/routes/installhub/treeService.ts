@@ -64,7 +64,7 @@ import { validStoredElectricalMapLayout } from './electricalMapLayout.js';
 
 // Drizzle transactions expose the same query builder surface used here. This
 // narrow structural type keeps every lifecycle write on the caller's tx.
-export type InstallHubExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete'>;
+export type InstallHubExecutor = Pick<typeof db, 'select' | 'insert' | 'update' | 'delete' | 'execute'>;
 
 function iso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
