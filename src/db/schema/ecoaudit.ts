@@ -1,12 +1,17 @@
 import {
+  bigint,
   boolean,
+  check,
+  index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 const syncCols = {
   serverId: text('server_id'),
@@ -42,6 +47,41 @@ export const eaAudits = pgTable('ea_audits', {
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
+
+export const eaAuditWorkSessions = pgTable('ea_audit_work_sessions', {
+  id: text('id').notNull(),
+  auditId: text('audit_id')
+    .notNull()
+    .references(() => eaAudits.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').notNull(),
+  startedAt: timestamp('started_at').notNull(),
+  lastActiveAt: timestamp('last_active_at').notNull(),
+  endedAt: timestamp('ended_at'),
+  activeMilliseconds: bigint('active_milliseconds', { mode: 'number' }).notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  primaryKey({
+    columns: [table.auditId, table.id],
+    name: 'ea_audit_work_sessions_pk',
+  }),
+  index('ea_audit_work_sessions_audit_actor_idx').on(
+    table.auditId,
+    table.actorUserId,
+    table.updatedAt,
+  ),
+  check(
+    'ea_audit_work_sessions_active_milliseconds_check',
+    sql`${table.activeMilliseconds} >= 0`,
+  ),
+  check('ea_audit_work_sessions_revision_check', sql`${table.revision} >= 0`),
+  check(
+    'ea_audit_work_sessions_time_order_check',
+    sql`${table.startedAt} <= ${table.lastActiveAt}
+      AND (${table.endedAt} IS NULL OR ${table.lastActiveAt} <= ${table.endedAt})`,
+  ),
+]);
 
 export const eaZones = pgTable('ea_zones', {
   id: text('id').primaryKey(),

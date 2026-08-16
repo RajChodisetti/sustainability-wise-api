@@ -15,6 +15,7 @@ function registryUser(
 ): typeof unifiedUsers.$inferSelect {
   return {
     id: 'unified-user:installhub:field-user',
+    globalUserId: 'global-user:installhub:field-user',
     originApp: 'installhub',
     originUserId: 'field-user',
     fieldUserId: 'field-user',

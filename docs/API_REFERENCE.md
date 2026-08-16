@@ -22,25 +22,29 @@ where the token is either a JWT access token or a service account API key. Publi
 | POST | `/v1/auth/logout` | Revoke refresh token. |
 | GET | `/v1/auth/me` | Return current user info from token. |
 
-An Eco Audit or Solar Sense account also receives Field App Complete access from its
-`unified_users` registry row, with the exact same role and active state. The
-Field App Complete token still has `app: "installhub"` and uses the row's stable
-Field App Complete subject ID; it is not a cross-application bearer token.
-Field App Complete login rejects an
-unqualified credential when it matches two independent source accounts. Use the
-source-local Eco Audit/Solar Sense login address, a targeted portal login, or an
-authenticated `/field-session` exchange to select the intended source account.
+Eco Audit, Solar Sense, and Field App Complete share one canonical identity.
+Creating a user in any product creates a projection in all three; password,
+profile, role, active state, and deactivation changes propagate globally. An
+administrator in any membership is therefore an administrator in all three.
+Each response remains app-scoped: the JWT `app` claim names the requested
+product and `user.id` is that product projection's existing authorization ID.
+Field App Complete uses the canonical Field subject. It is not a cross-app
+bearer token, and released `/login`, `/refresh`, `/me`, `/field-session`,
+`/register`, and `/bootstrap-local` envelopes remain available.
 
-For a source-managed Field App Complete account, login and `/me` add:
+Field login and `/me` now return `sourceManaged: false` and `sourceApp: null`:
+the real `ih_users` projection is editable even when the identity was first
+created in Eco Audit or Solar Sense. `/field-session` remains a convenience
+exchange from an authenticated Eco/Solar session, but resolves that same Field
+projection rather than creating a synthetic read-only identity.
 
-```json
-{ "sourceManaged": true, "sourceApp": "ecoaudit" }
-```
-
-Native Field App Complete accounts return `sourceManaged: false` and `sourceApp: null`.
-When both independent source sessions are already active in the portal, the
-user chooses Eco Audit or Solar Sense before this exchange; the portal never
-silently assigns Field App Complete ownership from whichever source responds first.
+Migration 0030 preserves every legacy password hash for a merged identity, so
+any one of its former credentials can log into any of the three products. The
+first password change replaces that preserved set and revokes refresh sessions
+for all three projections. If two canonical candidates accept the same login
+and password, authentication fails closed. Remapped legacy Field refresh JWTs
+are revoked because their signed subject cannot be rewritten; sign in again
+with the unchanged credential.
 
 ## API Keys
 
@@ -54,11 +58,116 @@ silently assigns Field App Complete ownership from whichever source responds fir
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return the registry-backed three-app user directory, per-app role/status memberships, source state, and possible-duplicate hints |
+| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return one canonical person per entry with Eco Audit, Solar Sense, and Field App Complete memberships and the shared Field subject |
 
 This endpoint selects public fields from `unified_users` and never returns or
-loads password hashes. Equal usernames/emails are surfaced as possible matches
-but are not automatically merged.
+loads password hashes. `key`/`identityIds` identify `global_users`; each
+membership retains its product `userId` and includes the shared `fieldUserId`.
+Role and active state should be identical in all three memberships; missing or
+drifted projections are marked for attention.
+
+The 0030 backfill treats one pre-existing row per product with the same
+normalized real email or app-local username as one person. It prefers an
+existing Field ID, then Eco, then Solar, independent of creation order. Deploy
+after reviewing/exporting local-username matches. Migration aborts if one
+product contains duplicate normalized keys, if matched rows disagree on active
+state, or if canonicalizing lifecycle idempotency would collide; reconcile and
+rerun. Existing admin role is combined with OR as required. Wattwatchers remains
+separate: only identities that already had an active Eco/Solar admin Fleet
+entitlement before migration may use the source-admin Fleet bridge; generated
+global projections never grant it.
+
+## Portal scheduler
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
+| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft product job, or create a custom event |
+| POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
+| PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event and keep the product assignment aligned |
+| DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
+| POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
+| GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
+| GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List active Draft jobs without an active event |
+
+New-work dispatch accepts `sourceApp`, the assignee's canonical
+`assigneeFieldUserId`, schedule/deadline timestamps, and a product-specific
+`job` object. Eco Audit requires `siteName` and `siteAddress`; SolarSense
+requires `siteName`, `location`, and `buildingIdName`; Field App Complete
+requires `clientName`, `siteName`, and `siteAddress`. `auditDate` is optional
+when calling the API directly and must use `YYYY-MM-DD`; the portal sends the
+locally selected calendar date. Field App Complete defaults to
+`Australia/Sydney` unless an explicit timezone is supplied.
+
+The server derives ownership and inspector display fields from authenticated
+canonical identities. Client-supplied IDs, assignment, sync state, deletion,
+completion, and lifecycle status fields are rejected. New work is always Draft
+and its event is always planned. SolarSense dispatches and new links target a
+rooftop assessment; historical site-linked events remain readable, but cannot
+be newly linked or reassigned. Completed or deleted jobs are not linkable.
+Product completion does not implicitly mark the calendar event done, and event
+status changes do not complete or reopen product data.
+
+Creating or linking mobile product work atomically queues an `assigned` push.
+Meaningful title, schedule, deadline, status, or assignee changes queue the
+corresponding update; an equivalent PATCH does not. Reassignment notifies the
+former assignee that access was removed and the new assignee that work was
+assigned. Cancellation cancels pending automatic notifications and notifies the
+current assignee only when the linked product assignment was aligned before the
+transition. Marking a scheduler event `done` cancels pending notifications and
+does not queue a completion push. Active mobile events also queue
+`one_day_before` exactly 24 hours before `scheduledStartAt` and `day_of` at
+`scheduledStartAt`; triggers already in the past are not replayed.
+
+A notification target must be exactly Eco Audit/`audit`, Solar
+Sense/`assessment`, or Field App Complete/`installation`, with a non-null linked
+source ID. Custom events and historical Solar `site` rows have no mobile push
+target. Before enqueue and again immediately before each Expo send batch, the
+API verifies that the event is active, the linked product and (for Solar) parent
+site are non-deleted Draft rows, and the current product assignment matches the
+canonical scheduler assignee. A completed, deleted, rescheduled, or reassigned
+job therefore cannot receive a stale automatic push. Recovered `one_day_before`
+jobs expire at the scheduled start; recovered `day_of` jobs expire 24 hours
+after it or at `scheduledEndAt`, whichever comes first, and both use generic
+time-safe copy. Migration 0031 backfills
+only future reminders for legacy rows already satisfying those checks; skipped
+misaligned Draft rows can be repaired by explicitly saving their current
+`assigneeFieldUserId`, which realigns product access and queues a fresh assigned
+notice plus future reminders. Missing/completed/deleted and Solar-site legacy
+rows remain skipped. Deploy through migration 0032 as well: it adds monotonic
+device lifecycle fences, upgrades the durable notification attempt budget, and
+terminalizes any nonterminal delivery rows left beneath an already-terminal
+0031 job.
+
+Manual reminder input is `{ "idempotencyKey": "<client-generated value>" }`.
+The first request returns HTTP 202 with
+`{ "queued": true, "notificationId": "..." }`; the same key for the same
+event returns the original ID with `queued: false`.
+
+## Mobile notification devices
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| PUT | `/v1/notifications/devices/:deviceId` | Eco Audit, Solar Sense, or Field App Complete user JWT | Register or atomically transfer this app/device to the signed-in canonical user |
+| DELETE | `/v1/notifications/devices/:deviceId` | same owning user/app JWT | Disable the destination during logout |
+
+PUT accepts
+`{ expoPushToken, platform: "ios" | "android", projectId, registrationGeneration }`.
+`registrationGeneration` is a positive safe integer persisted by the app and
+incremented once for each provider/login lifecycle; token refreshes in the same
+lifecycle reuse it. DELETE does not accept a body and requires the same value as
+`?registrationGeneration=N`.
+Registrations are app-scoped even though identity is shared. Re-registering the
+same device transfers it away from a prior login, and only one enabled device
+may own a given Expo token within an app. A logout durably revokes that account's
+generation, so a delayed PUT from the logged-out lifecycle returns 409 instead
+of re-enabling notifications. Lower-generation DELETE requests and DELETEs from
+another canonical owner are idempotent no-ops against the current registration;
+a higher generation begins a new login lifecycle. API keys and Wattwatchers sessions
+cannot register a mobile destination. DELETE is idempotent and ownership-scoped.
+An Expo `DeviceNotRegistered` response disables only that exact destination,
+not the login lifecycle fence, so a fresh token can be registered with the same
+generation. Explicit logout and ownership transfer remain the only revocations.
 
 ## Files
 
@@ -117,6 +226,7 @@ remain available where installed mobile clients require them.
 | POST | `/v1/solarsense/sites/:siteId/assessments` | inspector/admin | Create assessment |
 | GET | `/v1/solarsense/sites/:siteId/assessments/:id` | inspector/admin | Get assessment |
 | PATCH | `/v1/solarsense/sites/:siteId/assessments/:id` | inspector/admin | Update assessment |
+| PUT | `/v1/solarsense/sites/:siteId/assessments/:id/active-time/sessions/:sessionId` | inspector/admin | Idempotently checkpoint one foreground work session |
 | DELETE | `/v1/solarsense/sites/:siteId/assessments/:id` | inspector/admin | Soft-delete |
 | PATCH | `/v1/solarsense/sites/:siteId/assessments/:id/complete` | inspector/admin | Mark Completed |
 
@@ -156,6 +266,7 @@ Same shape as SolarSense Users at `/v1/ecoaudit/users/…`
 | POST | `/v1/ecoaudit/audits` | inspector/admin | Create audit |
 | GET | `/v1/ecoaudit/audits/:id` | inspector/admin | Get audit |
 | PATCH | `/v1/ecoaudit/audits/:id` | inspector/admin | Update audit |
+| PUT | `/v1/ecoaudit/audits/:id/active-time/sessions/:sessionId` | inspector/admin | Idempotently checkpoint one foreground work session |
 | DELETE | `/v1/ecoaudit/audits/:id` | inspector/admin | Soft-delete |
 | PATCH | `/v1/ecoaudit/audits/:id/complete` | inspector/admin | Mark Completed — enables sync |
 
@@ -203,6 +314,152 @@ Each type has identical CRUD. Replace `{type}` with one of:
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/v1/ecoaudit/audits/:auditId/report/pdf` | inspector/admin | Queue a durable EcoAudit PDF report |
+
+---
+
+## Scheduler commercial control
+
+All commercial routes require an active canonical global administrator. Finance
+belongs to the immutable source identity, not a calendar event. Exact supported
+identities are EcoAudit `audit`, SolarSense `assessment`, and Field App Complete
+`installation`; custom events and legacy Solar site rows are excluded.
+
+`GET /v1/portal/scheduler/finance?limit=25&cursor=...` returns
+`{items,nextCursor}`. It includes every non-deleted product job (scheduled or
+not) plus retained ledgers for deleted historical work. Optional `sourceApp`
+and exact `sourceId` filters resolve a job directly. Each row exposes stable
+`financeId`, nullable `eventId`, explicit `jobStatus` and `eventStatus`, recorded
+and effective hours, currency, revenue/cost/profit/margin, invoice/overdue state,
+and `needsHoursReview`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, rates, billing contact, and audited hour override |
+| POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
+| PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
+| GET | `/v1/portal/scheduler/finance/:financeId/invoices` | List draft/issued/paid/void invoices |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/quick` | Reserve remaining quote/labour and selected billable expenses in a draft |
+| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft header, due date, notes, and lines; PATCH requires the displayed `expectedUpdatedAt` revision |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/issue` | Freeze current seller, bill-to, job, and line snapshots using `{expectedUpdatedAt}` |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/mark-paid` | Mark issued invoice paid; optional `{paidAt}` must be between issue and transition time |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/void` | Void unpaid invoice and release reservations |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/pdf/jobs` | Queue a durable branded PDF using `{expectedUpdatedAt}` for the invoice's exact `id` + revision; returns HTTP 202 with `jobId`, `sourceUpdatedAt`, and `reportVariantKey` |
+| GET | `/v1/export/jobs/latest?entityId=:invoiceId&artifactType=pdf&reportVariantKey=...` | Recover the current administrator's latest matching invoice export after navigation/reload |
+| GET | `/v1/export/jobs/:jobId` | Poll queued/running/complete/failed status and the canonical branded filename |
+| GET | `/v1/export/jobs/:jobId/download` | Stream the completed PDF with safe ASCII `filename` and UTF-8 `filename*` Content-Disposition values |
+
+Equivalent `/v1/portal/scheduler/events/:eventId/...` routes remain adapters for
+calendar views. Responses include the canonical `financeId`; migrated Field
+history without an event must use the finance-id family.
+
+Scheduler invoice export jobs use the requesting portal credential's app and
+user as their ownership namespace even when the invoice belongs to another
+product. Start, latest, status, and download therefore use the same selected
+administrator credential. Every access revalidates that exact owner as a
+currently active canonical global administrator; same-app administrator bypass
+is disabled for these finance artifacts. `reportVariantKey` includes the
+renderer version, immutable invoice id, and invoice `updatedAt`, so draft edits,
+issue, mark-paid, and void transitions cannot surface an older PDF.
+Draft edits and issue also compare `expectedUpdatedAt` under the invoice row
+lock. A stale portal intent receives HTTP 409 and refetches the latest snapshot
+instead of overwriting or issuing values reviewed in another session.
+
+Released Field clients retain the legacy direct download adapter at
+`GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
+The Scheduler portal does not use that synchronous route.
+
+All wire amounts and stored job expenses are ex-GST decimal currency values;
+the database stores integer cents and invoices add the configured GST snapshot.
+`time.actualMilliseconds` is the immutable sum of foreground work sessions.
+Every insert and revision is rejected when cumulative active time exceeds its
+`startedAt`→`lastActiveAt` wall span by more than the documented five-second
+monotonic/wall-clock tolerance; client time is therefore plausible evidence,
+not an unconstrained billable number.
+Billable/cost hour overrides never edit those sessions and require a reason;
+`overrideSource`, actor, timestamp, and monotonic revision retain provenance.
+`hoursVariance` means actual minus scheduled hours, while
+`commercialHoursVariance` means effective billable minus effective cost hours.
+An unchanged migrated estimate can be explicitly attested with a fresh reason,
+creating an admin revision and clearing `needsHoursReview`.
+An invoice containing labour derived from an unattested legacy estimate cannot
+be issued until an administrator confirms, replaces, or clears that estimate.
+
+Non-void draft, issued, and paid lines reserve their linked labour/quote/expense
+values, preventing Quick Invoice duplication. Voiding releases reservations;
+paid invoices cannot be voided. Issued and paid snapshots remain readable and
+downloadable even after operational job edits or deletion.
+Job currency is locked once any expense or invoice exists. Pricing mode is
+locked while any non-void invoice exists, and a quote cannot be reduced below
+its currently reserved quote lines; void drafts first when changing basis.
+Invoice due dates are calendar dates: an issued invoice becomes overdue only
+after its UTC due-date day has passed, not at midnight at the start of that day.
+Field permanent purge is rejected once the installation has any work-session,
+hour-override, expense (including a soft-deleted audit row), or invoice history;
+an auto-created ledger with no commercial evidence is removed with the job.
+
+## Active foreground time
+
+The mobile apps checkpoint cumulative foreground-active time to a product-owned
+session row. These endpoints do not expose a time-log UI and do not modify parent
+`updatedAt`, sync status, tree revision, or record version fields.
+
+| Product | Endpoint |
+|---|---|
+| EcoAudit Pro | `PUT /v1/ecoaudit/audits/:id/active-time/sessions/:sessionId` |
+| SolarSense | `PUT /v1/solarsense/sites/:siteId/assessments/:id/active-time/sessions/:sessionId` |
+| Field App Complete | `PUT /v1/installhub/installations/:installationId/active-time/sessions/:sessionId` |
+
+All three accept the same complete replacement checkpoint:
+
+```json
+{
+  "revision": 4,
+  "activeMilliseconds": 93000,
+  "startedAt": "2026-08-15T10:00:00.000Z",
+  "lastActiveAt": "2026-08-15T10:03:10.000Z",
+  "endedAt": null
+}
+```
+
+`revision` and `activeMilliseconds` are non-negative safe integers. Timestamps
+must be ISO date-times ordered as `startedAt <= lastActiveAt <= endedAt` when
+closed. The authenticated user is stored as the actor; clients cannot supply or
+change it. A new or higher revision is applied only if time and timestamps do
+not regress, `startedAt` is stable, and a closed session's `endedAt` is never
+cleared or moved. Lower and equal revisions are idempotent acknowledgements and
+return the current server row without applying the request.
+
+Every successful request is HTTP 200:
+
+```json
+{
+  "sessionId": "device-generated-stable-id",
+  "revision": 4,
+  "activeMilliseconds": 93000,
+  "startedAt": "2026-08-15T10:00:00.000Z",
+  "lastActiveAt": "2026-08-15T10:03:10.000Z",
+  "endedAt": null,
+  "applied": true
+}
+```
+
+`applied` is `false` for a stale or equal-revision retry. A missing or deleted
+parent returns 404, inaccessible ownership returns 403, invalid input returns
+400, and an actor change, higher-revision regression/reopen, or prohibited
+completed-record update returns 409.
+
+No open or advancing session is accepted once its audit unit is Completed. A
+delayed offline checkpoint may still insert or close a session only when it is
+closed and all three timestamps are at or before the authoritative completion
+boundary. EcoAudit and Field App Complete use `completedAt`. SolarSense disables
+tracking when either the assessment or its parent site is Completed and uses the
+earliest applicable server-owned assessment/site `completedAt` boundary. Generic
+EcoAudit and SolarSense sync cannot overwrite these boundaries or transition a
+Completed record back to Draft; reopening requires the dedicated lifecycle
+operation where available. This exception retains foreground work performed
+before completion without counting later app opens. If a legacy Completed
+SolarSense row lacks `completedAt`, the endpoint fails closed with 409 rather
+than falling back to mutable `updatedAt`.
 
 ---
 

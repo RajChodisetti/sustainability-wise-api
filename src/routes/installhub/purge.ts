@@ -7,6 +7,7 @@ import {
   ihElectricalAssets,
   ihFormSubmissions,
   ihGridSupplies,
+  ihInstallationWorkSessions,
   ihInstallations,
   ihMeasurementAssignmentChannels,
   ihMeasurementAssignments,
@@ -21,6 +22,10 @@ import {
   photoCopyReferences,
   photoRegistry,
   recordVersions,
+  schedulerInvoices,
+  schedulerJobExpenses,
+  schedulerJobFinance,
+  schedulerJobHourOverrides,
   storageDeletionTasks,
 } from '../../db/schema/shared.js';
 import { drainStorageDeletionTasks } from '../../services/storageDeletionService.js';
@@ -66,6 +71,47 @@ async function pinnedVersionReferencesPhoto(
   return Boolean(reference);
 }
 
+async function assertNoCommercialEvidenceBeforePurge(
+  executor: InstallHubExecutor,
+  installationId: string,
+): Promise<void> {
+  const [session] = await executor.select({ id: ihInstallationWorkSessions.id })
+    .from(ihInstallationWorkSessions)
+    .where(eq(ihInstallationWorkSessions.installationId, installationId))
+    .limit(1);
+  if (session) throw conflict('installation_commercial_history_purge_blocked');
+
+  const [finance] = await executor.select({ id: schedulerJobFinance.id })
+    .from(schedulerJobFinance)
+    .where(and(
+      eq(schedulerJobFinance.sourceApp, 'installhub'),
+      eq(schedulerJobFinance.sourceType, 'installation'),
+      eq(schedulerJobFinance.sourceId, installationId),
+    ))
+    .for('update')
+    .limit(1);
+  if (!finance) return;
+
+  const [[hourOverride], [expense], [invoice]] = await Promise.all([
+    executor.select({ id: schedulerJobHourOverrides.id })
+      .from(schedulerJobHourOverrides)
+      .where(eq(schedulerJobHourOverrides.financeId, finance.id))
+      .limit(1),
+    executor.select({ id: schedulerJobExpenses.id })
+      .from(schedulerJobExpenses)
+      .where(eq(schedulerJobExpenses.financeId, finance.id))
+      .limit(1),
+    executor.select({ id: schedulerInvoices.id })
+      .from(schedulerInvoices)
+      .where(eq(schedulerInvoices.financeId, finance.id))
+      .limit(1),
+  ]);
+  if (hourOverride || expense || invoice) {
+    throw conflict('installation_commercial_history_purge_blocked');
+  }
+  await executor.delete(schedulerJobFinance).where(eq(schedulerJobFinance.id, finance.id));
+}
+
 /**
  * Permanently removes one Field App Complete server tree.
  *
@@ -91,6 +137,8 @@ export async function purgeInstallHubInstallationTree(
     if (installation.status === 'Completed') {
       throw conflict('installation_completed_reopen_required');
     }
+
+    await assertNoCommercialEvidenceBeforePurge(tx, installation.id);
 
     const tombstonedAt = new Date();
     await tx.update(ihInstallations).set({

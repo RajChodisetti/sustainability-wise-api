@@ -3,9 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { pdfJobs, photoRegistry } from '../../db/schema/shared.js';
-import { ssSites } from '../../db/schema/solarsense.js';
+import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { assertSiteAccess } from './helpers.js';
+import {
+  assertAssessmentAccess,
+  assertSiteAccess,
+  isElevated,
+} from './helpers.js';
 import {
   makeNamedStorageKeyForFilename,
   publicFileUrl,
@@ -67,6 +71,20 @@ async function assertPhotoAccess(photo: PhotoRow, user: Parameters<typeof assert
     } catch (error) {
       directError = error;
     }
+    if (site.status === 'Draft' && photo.entityType === 'rooftop_assessment') {
+      const [assessment] = await db
+        .select()
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, photo.entityId),
+          eq(ssRooftopAssessments.siteId, site.id),
+          isNull(ssRooftopAssessments.deletedAt),
+        ));
+      if (assessment) {
+        assertAssessmentAccess(site, assessment, user);
+        return;
+      }
+    }
   }
   if (await hasAccessibleCopyReference(photo.id, user)) return;
   if (directError) throw directError;
@@ -83,10 +101,45 @@ function zipEntryName(photo: typeof photoRegistry.$inferSelect): string {
   ].join('/');
 }
 
-async function runSolarSensePhotoZipJob(jobId: string, siteId: string, siteName: string): Promise<void> {
+async function accessibleSitePhotos(
+  site: typeof ssSites.$inferSelect,
+  user: Parameters<typeof assertSiteAccess>[1],
+): Promise<PhotoRow[]> {
+  const photos = await loadPhotosForParent({ app: 'solarsense', parentId: site.id });
+  if (isElevated(user) || site.createdByUserId === user.userId) return photos;
+  if (site.status !== 'Draft') {
+    assertSiteAccess(site, user);
+  }
+  const assigned = await db
+    .select({ id: ssRooftopAssessments.id })
+    .from(ssRooftopAssessments)
+    .where(and(
+      eq(ssRooftopAssessments.siteId, site.id),
+      eq(ssRooftopAssessments.assignedInspectorUserId, user.userId),
+      isNull(ssRooftopAssessments.deletedAt),
+    ));
+  if (assigned.length === 0) assertSiteAccess(site, user);
+  const assignedIds = new Set(assigned.map((assessment) => assessment.id));
+  return photos.filter((photo) => (
+    photo.entityType === 'rooftop_assessment' && assignedIds.has(photo.entityId)
+  ));
+}
+
+async function runSolarSensePhotoZipJob(
+  jobId: string,
+  siteId: string,
+  siteName: string,
+  allowedAssessmentIds?: ReadonlySet<string>,
+): Promise<void> {
   try {
     await markJobRunning(jobId, 'Collecting photos...');
-    const photos = await loadPhotosForParent({ app: 'solarsense', parentId: siteId });
+    const allPhotos = await loadPhotosForParent({ app: 'solarsense', parentId: siteId });
+    const photos = allowedAssessmentIds
+      ? allPhotos.filter((photo) => (
+          photo.entityType === 'rooftop_assessment'
+          && allowedAssessmentIds.has(photo.entityId)
+        ))
+      : allPhotos;
     const storageKey = makeNamedStorageKeyForFilename({
       app: 'solarsense',
       parentName: siteName,
@@ -129,10 +182,9 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const { siteId: siteRef } = request.params as { siteId: string };
     const site = await loadSite(siteRef);
-    assertSiteAccess(site, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
 
-    const photos = (await loadPhotosForParent({ app: 'solarsense', parentId: site.id })).map(photoMetadata);
+    const photos = (await accessibleSitePhotos(site, request.user)).map(photoMetadata);
 
     return reply.send({ siteRef, siteId: site.id, siteName: site.siteName, data: photos });
   });
@@ -147,10 +199,9 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const { siteId: siteRef } = request.params as { siteId: string };
     const site = await loadSite(siteRef);
-    assertSiteAccess(site, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
 
-    const photos = await loadPhotosForParent({ app: 'solarsense', parentId: site.id });
+    const photos = await accessibleSitePhotos(site, request.user);
 
     const archive = createPhotoZipStream(
       {
@@ -183,8 +234,11 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const { siteId: siteRef } = request.params as { siteId: string };
     const site = await loadSite(siteRef);
-    assertSiteAccess(site, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: site.id, actor: request.user });
+    const accessiblePhotos = await accessibleSitePhotos(site, request.user);
+    const allowedAssessmentIds = isElevated(request.user) || site.createdByUserId === request.user.userId
+      ? undefined
+      : new Set(accessiblePhotos.map((photo) => photo.entityId));
 
     const params: ExportJobParams = {
       artifactType: 'photos-zip',
@@ -212,7 +266,12 @@ export async function solarsensePhotoRoutes(app: FastifyInstance): Promise<void>
       createdAt: new Date(),
       updatedAt: new Date(),
     });
-    void enqueueExportTask(() => runSolarSensePhotoZipJob(jobId, site.id, site.siteName)).catch((error) => {
+    void enqueueExportTask(() => runSolarSensePhotoZipJob(
+      jobId,
+      site.id,
+      site.siteName,
+      allowedAssessmentIds,
+    )).catch((error) => {
       request.log.error({ jobId, error }, 'SolarSense photo ZIP queue failed');
     });
     return reply.status(202).send({ jobId, reused: false });

@@ -17,6 +17,9 @@ export type UnifiedUserSyncStatus =
  */
 export interface UnifiedUserRegistryRow {
   id: string;
+  globalUserId: string;
+  globalLoginKey: string;
+  globalDisplayEmail: string;
   originApp: UnifiedUserApp;
   originUserId: string;
   fieldUserId: string;
@@ -32,6 +35,7 @@ export interface UnifiedUserRegistryRow {
 export interface UnifiedUserMembership {
   app: UnifiedUserApp;
   userId: string;
+  fieldUserId: string;
   identityId: string | null;
   email: string;
   fullName: string | null;
@@ -88,52 +92,51 @@ function canonicalCandidateKey(email: string): string | null {
 
 function membership(
   user: UnifiedUserRegistryRow,
-  app: UnifiedUserApp,
-  userId: string,
-  sourceApp: UnifiedUserSourceApp | null,
 ): UnifiedUserMembership {
   return {
-    app,
-    userId,
-    identityId: user.id,
+    app: user.originApp,
+    userId: user.originUserId,
+    fieldUserId: user.fieldUserId,
+    identityId: user.globalUserId,
     email: user.email,
     fullName: user.fullName,
     role: user.role,
     isActive: user.isActive,
-    isSourceProjection: sourceApp !== null,
-    sourceApp,
-    sourceUserId: sourceApp ? user.originUserId : null,
+    isSourceProjection: false,
+    sourceApp: null,
+    sourceUserId: null,
     createdAt: user.sourceCreatedAt,
     updatedAt: user.sourceUpdatedAt,
   };
 }
 
-function directoryEntry(
-  user: UnifiedUserRegistryRow,
-): UnifiedUserDirectoryEntry {
-  const sourceApp = user.originApp === 'installhub'
-    ? null
-    : user.originApp;
-  const memberships: UnifiedUserMembership[] = sourceApp
-    ? [
-        membership(user, sourceApp, user.originUserId, null),
-        membership(user, 'installhub', user.fieldUserId, sourceApp),
-      ]
-    : [
-        membership(user, 'installhub', user.fieldUserId, null),
-      ];
-
+function directoryEntry(users: readonly UnifiedUserRegistryRow[]): UnifiedUserDirectoryEntry {
+  const [representative] = users;
+  if (!representative) throw new Error('Cannot build an empty global identity');
+  const memberships = users
+    .map((user) => membership(user))
+    .sort((left, right) => left.app.localeCompare(right.app));
+  const complete = new Set(memberships.map((item) => item.app)).size === 3;
+  const consistent = users.every((user) => (
+    user.fieldUserId === representative.fieldUserId
+    && user.fullName === representative.fullName
+    && user.role === representative.role
+    && user.isActive === representative.isActive
+  ));
   return {
-    key: `${user.originApp}:${user.originUserId}`,
-    identityIds: [user.id],
-    fullName: user.fullName,
-    displayEmail: user.email,
-    candidateKey: canonicalCandidateKey(user.email),
+    key: representative.globalUserId,
+    identityIds: [representative.globalUserId],
+    fullName: representative.fullName,
+    displayEmail: representative.globalDisplayEmail,
+    candidateKey: representative.globalLoginKey
+      || canonicalCandidateKey(representative.globalDisplayEmail),
     possibleDuplicateCount: 0,
     memberships,
-    // Source origins include their Field membership in the registry itself;
-    // native Field origins remain field_only so existing edit affordances work.
-    syncStatus: sourceApp ? 'synced' : 'field_only',
+    syncStatus: !complete
+      ? 'missing_projection'
+      : consistent
+        ? 'synced'
+        : 'drifted',
   };
 }
 
@@ -196,9 +199,14 @@ export function buildUnifiedUserDirectory(
 ): UnifiedUserDirectory {
   // The route filters tombstones in SQL; retain this guard so direct callers
   // cannot accidentally surface deleted credentials in the current directory.
-  const entries = users
-    .filter((user) => user.deletedAt === null)
-    .map(directoryEntry);
+  const grouped = new Map<string, UnifiedUserRegistryRow[]>();
+  for (const user of users) {
+    if (user.deletedAt !== null) continue;
+    const group = grouped.get(user.globalUserId) ?? [];
+    group.push(user);
+    grouped.set(user.globalUserId, group);
+  }
+  const entries = [...grouped.values()].map(directoryEntry);
 
   const candidateCounts = new Map<string, number>();
   for (const entry of entries) {

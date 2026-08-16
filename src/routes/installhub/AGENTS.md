@@ -60,6 +60,9 @@ ownership/parentage, compare-and-swap revisions, stable IDs, and structural
 payload/attachment validation remain enforced.
 Permanent Cloud Backup purge is limited to the creator or an elevated user, must reject active PDF
 jobs, and must preserve immutable originals that another backed-up copy still references.
+It must also reject installations with any foreground work-session or Scheduler
+commercial override, expense (including soft-deleted rows), or invoice history;
+only a finance identity with no commercial evidence may be removed during purge.
 
 Run API typecheck/tests and the Field App Complete mobile typecheck/tests for contract
 changes.

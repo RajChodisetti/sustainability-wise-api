@@ -66,6 +66,14 @@ export function parseFileCapabilityTtlSeconds(value: string | undefined): number
   return parsed;
 }
 
+export function parseSchedulerInvoiceGstRate(value: string | undefined): number {
+  const parsed = Number(value ?? '0.10');
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error('SCHEDULER_INVOICE_GST_RATE must be a number between 0 and 1');
+  }
+  return parsed;
+}
+
 function optionalList(name: string): string[] {
   return optional(name)
     .split(',')
@@ -261,15 +269,6 @@ export const config = {
     'INSTALLHUB_UPLOAD_REVISION_CAS_REQUIRED',
     !isProduction,
   ),
-  /** Field App auto labour: calendar days from start→complete × hours/day × rate. */
-  installhubLabour: {
-    hoursPerDay: Math.max(0, optionalInt('IH_LABOUR_HOURS_PER_DAY', 8)),
-    hourlyRate: (() => {
-      const raw = optional('IH_LABOUR_HOURLY_RATE', '75');
-      const n = Number(raw);
-      return Number.isFinite(n) && n >= 0 ? n : 75;
-    })(),
-  },
   /** Seller branding + GST for InstallHub tax invoices. */
   installhubInvoice: {
     sellerName: optional('IH_INVOICE_SELLER_NAME', 'Sustainability Wise'),
@@ -282,6 +281,42 @@ export const config = {
       const n = Number(raw);
       return Number.isFinite(n) && n >= 0 ? n : 0.1;
     })(),
+  },
+  /** Cross-app Scheduler commercial defaults; all wire amounts are ex-GST. */
+  schedulerFinance: {
+    defaultCostRate: (() => {
+      const raw = optional('SCHEDULER_LABOUR_COST_RATE', '75');
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 75;
+    })(),
+    defaultBillableRate: (() => {
+      const raw = optional('SCHEDULER_LABOUR_BILLABLE_RATE', '150');
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 150;
+    })(),
+  },
+  schedulerInvoice: {
+    sellerName: optional(
+      'SCHEDULER_INVOICE_SELLER_NAME',
+      optional('IH_INVOICE_SELLER_NAME', 'Sustainability Wise'),
+    ),
+    sellerAbn: optional('SCHEDULER_INVOICE_SELLER_ABN', optional('IH_INVOICE_SELLER_ABN', '')),
+    sellerAddress: optional(
+      'SCHEDULER_INVOICE_SELLER_ADDRESS',
+      optional('IH_INVOICE_SELLER_ADDRESS', ''),
+    ),
+    sellerEmail: optional(
+      'SCHEDULER_INVOICE_SELLER_EMAIL',
+      optional('IH_INVOICE_SELLER_EMAIL', ''),
+    ),
+    dueDays: Math.max(0, optionalInt(
+      'SCHEDULER_INVOICE_DUE_DAYS',
+      optionalInt('IH_INVOICE_DUE_DAYS', 14),
+    )),
+    gstRate: parseSchedulerInvoiceGstRate(optional(
+        'SCHEDULER_INVOICE_GST_RATE',
+        optional('IH_INVOICE_GST_RATE', '0.10'),
+      )),
   },
   rateLimit: {
     max: optionalInt('RATE_LIMIT_MAX', 300),
@@ -335,6 +370,34 @@ export const config = {
       optional('ONEDRIVE_PHOTOS_FOLDER', 'SustainabilityWise/photos'),
     ),
     backupRequired: optionalBool('ONEDRIVE_BACKUP_REQUIRED', false),
+  },
+  expoPush: {
+    // Test processes opt in explicitly so buildApp/route suites never start a
+    // real database/Expo poller. Production and development default on.
+    enabled: optionalBool('EXPO_PUSH_ENABLED', nodeEnv !== 'test'),
+    accessToken: optional('EXPO_ACCESS_TOKEN'),
+    pollIntervalMs: Math.max(1_000, optionalInt('EXPO_PUSH_POLL_INTERVAL_MS', 5_000)),
+    claimBatchSize: Math.min(
+      100,
+      Math.max(1, optionalInt('EXPO_PUSH_CLAIM_BATCH_SIZE', 25)),
+    ),
+    staleClaimMs: Math.max(
+      30_000,
+      optionalInt('EXPO_PUSH_STALE_CLAIM_MS', 120_000),
+      2 * Math.max(1_000, optionalInt('EXPO_PUSH_REQUEST_TIMEOUT_MS', 15_000)),
+    ),
+    receiptDelayMs: Math.max(
+      60_000,
+      optionalInt('EXPO_PUSH_RECEIPT_DELAY_MS', 15 * 60_000),
+    ),
+    receiptRetryMs: Math.max(
+      30_000,
+      optionalInt('EXPO_PUSH_RECEIPT_RETRY_MS', 5 * 60_000),
+    ),
+    requestTimeoutMs: Math.max(
+      1_000,
+      optionalInt('EXPO_PUSH_REQUEST_TIMEOUT_MS', 15_000),
+    ),
   },
   puppeteerExecutablePath: resolvePuppeteerExecutablePath(),
 } as const;

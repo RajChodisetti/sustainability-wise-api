@@ -5,6 +5,7 @@ import {
   explicitFieldEmailForLogin,
   fieldBridgeIdentity,
   fleetBridgeIdentity,
+  globalLoginKey,
   selectFieldLoginAuthority,
   selectFleetLoginAuthority,
   sourceIdentitiesForFieldLogin,
@@ -12,7 +13,55 @@ import {
   verifyActiveLogin,
   verifyFieldSourceUser,
   verifyFleetSourceAdmin,
+  verifyGlobalLoginIdentity,
 } from './loginIdentity.js';
+
+test('global login keys collapse product-local aliases but retain real emails', () => {
+  assert.equal(globalLoginKey(' Raj '), 'username:raj');
+  assert.equal(globalLoginKey('raj@ecoaudit.users.local'), 'username:raj');
+  assert.equal(globalLoginKey('raj@solarsense.users.local'), 'username:raj');
+  assert.equal(globalLoginKey('raj@installhub.users.local'), 'username:raj');
+  assert.equal(globalLoginKey('Admin@Example.com'), 'email:admin@example.com');
+  assert.equal(
+    globalLoginKey('raj@wattwatchers.users.local'),
+    'email:raj@wattwatchers.users.local',
+  );
+});
+
+test('global login accepts preserved hashes for one identity', async () => {
+  const resolved = await verifyGlobalLoginIdentity([
+    { globalUserId: 'global-1', passwordHash: 'eco-hash', isActive: true },
+    { globalUserId: 'global-1', passwordHash: 'solar-hash', isActive: true },
+  ], 'old-solar-password', async (password, hash) => (
+    password === 'old-solar-password' && hash === 'solar-hash'
+  ));
+  assert.deepEqual(resolved, {
+    globalUserId: 'global-1',
+    passwordHash: 'solar-hash',
+  });
+});
+
+test('same-key identities accepting the same password fail closed', async () => {
+  const resolved = await verifyGlobalLoginIdentity([
+    { globalUserId: 'global-1', passwordHash: 'hash-1', isActive: true },
+    { globalUserId: 'global-2', passwordHash: 'hash-2', isActive: true },
+  ], 'shared-password', async () => true);
+  assert.equal(resolved, null);
+});
+
+test('missing and inactive global identities still verify a dummy credential', async () => {
+  const checkedHashes: string[] = [];
+  const verifier = async (_password: string, hash: string) => {
+    checkedHashes.push(hash);
+    return true;
+  };
+  assert.equal(await verifyGlobalLoginIdentity([], 'password', verifier), null);
+  assert.equal(await verifyGlobalLoginIdentity([
+    { globalUserId: 'inactive', passwordHash: 'inactive-real-hash', isActive: false },
+  ], 'password', verifier), null);
+  assert.equal(checkedHashes.length, 2);
+  assert.ok(checkedHashes.every((hash) => hash !== 'inactive-real-hash'));
+});
 
 test('Wattwatchers usernames retain their explicit app identity', () => {
   assert.equal(cloudEmailForLogin('wattwatchers', ' Raj '), 'raj@wattwatchers.users.local');

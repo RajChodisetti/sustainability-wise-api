@@ -4,7 +4,8 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { ssUsers } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { hashPassword, verifyPassword } from '../../auth/apiKey.js';
+import { hashPassword } from '../../auth/apiKey.js';
+import { verifyGlobalUserPassword } from '../../auth/globalIdentity.js';
 import { assertFound, assertSelfOrAdmin } from './helpers.js';
 import { badRequest, conflict, unauthorized } from '../../utils/errors.js';
 
@@ -163,7 +164,11 @@ export async function solarsenseUserRoutes(app: FastifyInstance): Promise<void> 
 
     const [user] = await db.select().from(ssUsers).where(eq(ssUsers.id, id));
     const found = assertFound(user, 'User');
-    const currentValid = await verifyPassword(body.currentPassword, found.passwordHash);
+    const currentValid = await verifyGlobalUserPassword(
+      'solarsense',
+      found.id,
+      body.currentPassword,
+    );
     if (!currentValid) throw unauthorized('Current password is incorrect');
 
     const [updated] = await db

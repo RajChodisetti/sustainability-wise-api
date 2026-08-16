@@ -5,6 +5,7 @@ import { closeBrowser } from './pdf/renderer.js';
 import { closeDb } from './db/client.js';
 import { failInterruptedExportJobs } from './services/pdfJobService.js';
 import { drainStorageDeletionTasks } from './services/storageDeletionService.js';
+import { startSchedulerNotificationWorker } from './services/schedulerNotificationWorker.js';
 
 async function main() {
   await runMigrations();
@@ -14,10 +15,12 @@ async function main() {
   const app = await buildApp();
 
   await app.listen({ port: config.port, host: config.host });
+  const notificationWorker = startSchedulerNotificationWorker();
   console.log(`[server] Listening on ${config.host}:${config.port}`);
 
   const shutdown = async (signal: NodeJS.Signals) => {
     console.log(`[server] ${signal} received; shutting down`);
+    await notificationWorker.stop();
     await app.close();
     await closeBrowser();
     await closeDb();

@@ -36,7 +36,61 @@ type PasswordVerifier = (password: string, passwordHash: string) => Promise<bool
 // verification path without exposing whether an app identity exists.
 const DUMMY_PASSWORD_HASH = '$2b$10$a1lmvS6vLz25GfpMp58yjOQV3fVZy.pUmhhGpHkZWhcfYt0cLDFSK';
 const APP_LOCAL_EMAIL = /^([^@]+)@(ecoaudit|solarsense|installhub|wattwatchers)\.users\.local$/;
+const GLOBAL_LOCAL_EMAIL = /^([^@]+)@(ecoaudit|solarsense|installhub)\.users\.local$/;
 const SOURCE_APPS: readonly FleetSourceApp[] = ['ecoaudit', 'solarsense'];
+
+export interface GlobalCredentialCandidate {
+  globalUserId: string;
+  passwordHash: string;
+  isActive: boolean;
+}
+
+/** Mirrors global_identity_login_key() in migration 0030. */
+export function globalLoginKey(value: string): string {
+  const normalized = value.toLowerCase().trim();
+  const localMatch = GLOBAL_LOCAL_EMAIL.exec(normalized);
+  if (localMatch) return `username:${localMatch[1]}`;
+  if (!normalized.includes('@')) return `username:${normalized}`;
+  return `email:${normalized}`;
+}
+
+/**
+ * Resolve one canonical identity while retaining every migrated password hash.
+ * Two identities accepting the same credential fail closed instead of picking
+ * an arbitrary product user ID.
+ */
+export async function verifyGlobalLoginIdentity(
+  candidates: readonly GlobalCredentialCandidate[],
+  password: string,
+  verifyPassword: PasswordVerifier,
+): Promise<{ globalUserId: string; passwordHash: string } | null> {
+  const uniqueCredentials = new Map<string, GlobalCredentialCandidate>();
+  for (const candidate of candidates) {
+    const key = `${candidate.globalUserId}\u0000${candidate.passwordHash}`;
+    if (!uniqueCredentials.has(key)) uniqueCredentials.set(key, candidate);
+  }
+  const slots = uniqueCredentials.size > 0
+    ? [...uniqueCredentials.values()].map((candidate) => ({
+        ...candidate,
+        passwordHash: candidate.isActive
+          ? candidate.passwordHash
+          : DUMMY_PASSWORD_HASH,
+      }))
+    : [{ globalUserId: '', passwordHash: DUMMY_PASSWORD_HASH, isActive: false }];
+  const verified = await Promise.all(slots.map(async (candidate) => {
+    try {
+      const passwordMatches = await verifyPassword(password, candidate.passwordHash);
+      return candidate.isActive && passwordMatches;
+    } catch {
+      return false;
+    }
+  }));
+  const matches = slots.filter((_candidate, index) => verified[index]);
+  const matchingIdentityIds = new Set(matches.map((match) => match.globalUserId));
+  if (matchingIdentityIds.size !== 1) return null;
+  const match = matches[0]!;
+  return { globalUserId: match.globalUserId, passwordHash: match.passwordHash };
+}
 
 export function cloudEmailForLogin(app: App, value: string): string {
   const normalized = value.toLowerCase().trim();

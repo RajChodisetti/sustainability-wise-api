@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { AuthUser } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
 import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
@@ -23,6 +23,61 @@ export function assertSiteAccess(
 ): void {
   if (isElevated(user)) return;
   if (site.createdByUserId !== user.userId) throw forbidden('Site belongs to another user');
+}
+
+export function canAccessAssessment(
+  site: { createdByUserId: string | null; status: string; deletedAt?: Date | string | null },
+  assessment: { assignedInspectorUserId?: string | null },
+  user: AuthUser,
+): boolean {
+  return isElevated(user)
+    || site.createdByUserId === user.userId
+    || (
+      site.status === 'Draft'
+      && !site.deletedAt
+      && assessment.assignedInspectorUserId === user.userId
+    );
+}
+
+export function assertAssessmentAccess(
+  site: { createdByUserId: string | null; status: string; deletedAt?: Date | string | null },
+  assessment: { assignedInspectorUserId?: string | null },
+  user: AuthUser,
+): void {
+  if (!canAccessAssessment(site, assessment, user)) {
+    throw forbidden('Rooftop assessment belongs to another user');
+  }
+}
+
+export async function hasAssignedAssessmentAccess(
+  site: { id: string; status: string; deletedAt?: Date | string | null },
+  user: AuthUser,
+): Promise<boolean> {
+  if (site.status !== 'Draft' || site.deletedAt) return false;
+  const [assigned] = await db
+    .select({ id: ssRooftopAssessments.id })
+    .from(ssRooftopAssessments)
+    .where(and(
+      eq(ssRooftopAssessments.siteId, site.id),
+      eq(ssRooftopAssessments.assignedInspectorUserId, user.userId),
+      isNull(ssRooftopAssessments.deletedAt),
+    ))
+    .limit(1);
+  return Boolean(assigned);
+}
+
+export async function assertSiteContextAccess(
+  site: {
+    id: string;
+    status: string;
+    createdByUserId: string | null;
+    deletedAt?: Date | string | null;
+  },
+  user: AuthUser,
+): Promise<void> {
+  if (isElevated(user) || site.createdByUserId === user.userId) return;
+  if (await hasAssignedAssessmentAccess(site, user)) return;
+  throw forbidden('Site belongs to another user');
 }
 
 export function assertSelfOrAdmin(targetUserId: string, user: AuthUser): void {

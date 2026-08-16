@@ -3,10 +3,10 @@ import type {
   FastifyReply,
   FastifyRequest,
 } from 'fastify';
-import { asc, isNull, sql } from 'drizzle-orm';
+import { asc, eq, isNull, sql } from 'drizzle-orm';
 import { authenticate, requireRole } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
-import { unifiedUsers } from '../../db/schema/shared.js';
+import { globalUsers, unifiedUsers } from '../../db/schema/shared.js';
 import {
   buildUnifiedUserDirectory,
   type UnifiedUserApp,
@@ -36,7 +36,7 @@ export async function portalUserRoutes(app: FastifyInstance): Promise<void> {
     schema: {
       tags: ['Portal Users'],
       summary: 'List the unified EcoAudit, SolarSense, and Field App Complete user directory',
-      description: 'Returns independent identity records and their app memberships without exposing credentials or merging equal usernames.',
+      description: 'Returns one canonical identity with its EcoAudit, SolarSense, and Field App Complete product memberships.',
       security: [{ bearerAuth: [] }],
     },
     preHandler: [
@@ -50,6 +50,9 @@ export async function portalUserRoutes(app: FastifyInstance): Promise<void> {
     const users = await db
       .select({
         id: unifiedUsers.id,
+        globalUserId: unifiedUsers.globalUserId,
+        globalLoginKey: globalUsers.loginKey,
+        globalDisplayEmail: globalUsers.displayEmail,
         originApp: sql<UnifiedUserApp>`${unifiedUsers.originApp}`,
         originUserId: unifiedUsers.originUserId,
         fieldUserId: unifiedUsers.fieldUserId,
@@ -62,6 +65,7 @@ export async function portalUserRoutes(app: FastifyInstance): Promise<void> {
         deletedAt: unifiedUsers.deletedAt,
       })
       .from(unifiedUsers)
+      .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
       .where(isNull(unifiedUsers.deletedAt))
       .orderBy(asc(unifiedUsers.sourceCreatedAt), asc(unifiedUsers.id))
       .limit(DIRECTORY_LIMIT_TOTAL + 1);

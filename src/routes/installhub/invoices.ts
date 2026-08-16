@@ -11,7 +11,7 @@ import {
 } from '../../services/installHubInvoiceService.js';
 
 export async function installhubInvoiceRoutes(app: FastifyInstance): Promise<void> {
-  const readGate = [authenticate, requireApp('installhub'), requireRole('inspector')] as const;
+  const readGate = [authenticate, requireApp('installhub'), requireRole('admin')] as const;
   const writeGate = [authenticate, requireApp('installhub'), requireRole('admin')] as const;
 
   app.get('/:installationId/invoices', {
@@ -127,10 +127,14 @@ export async function installhubInvoiceRoutes(app: FastifyInstance): Promise<voi
       installationId: string;
       invoiceId: string;
     };
-    const { filename, buffer } = await getInvoicePdf(request.user, installationId, invoiceId);
+    const { contentDisposition, buffer } = await getInvoicePdf(
+      request.user,
+      installationId,
+      invoiceId,
+    );
     return reply
       .header('Content-Type', 'application/pdf')
-      .header('Content-Disposition', `attachment; filename="${filename}"`)
+      .header('Content-Disposition', contentDisposition)
       .send(buffer);
   });
 }

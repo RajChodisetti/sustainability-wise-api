@@ -13,7 +13,7 @@ import {
 import { badRequest } from '../../utils/errors.js';
 
 export async function installhubFinanceRoutes(app: FastifyInstance): Promise<void> {
-  const readGate = [authenticate, requireApp('installhub'), requireRole('inspector')] as const;
+  const readGate = [authenticate, requireApp('installhub'), requireRole('admin')] as const;
   const writeGate = [authenticate, requireApp('installhub'), requireRole('admin')] as const;
 
   app.get('/:installationId/financial-summary', {

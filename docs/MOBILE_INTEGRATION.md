@@ -11,6 +11,129 @@ it.
 
 ---
 
+## Scheduler push notifications
+
+After login and notification permission, each app obtains its Expo push token
+and stores it with the authenticated app-scoped JWT:
+
+```http
+PUT /v1/notifications/devices/:stableDeviceId
+Authorization: Bearer <app JWT>
+Content-Type: application/json
+
+{
+  "expoPushToken": "ExpoPushToken[...]",
+  "platform": "ios",
+  "projectId": "<EAS project UUID>",
+  "registrationGeneration": 7
+}
+```
+
+Persist `registrationGeneration` with the device's local authentication state.
+Increment it once when a new provider/login lifecycle begins; reuse the same
+value for token rollover and foreground refreshes within that login. Call PUT
+after login, foreground token refresh, or user change; it atomically transfers
+a device/token away from stale credentials. Before clearing local credentials
+on logout, call the ownership-scoped, idempotent
+`DELETE /v1/notifications/devices/:stableDeviceId?registrationGeneration=7`.
+The server durably revokes that account/device generation, so even a delayed
+in-flight PUT from the logged-out lifecycle receives 409 and cannot re-enable
+notifications. A new login must first persist an incremented generation. A
+stale DELETE from a prior account/generation cannot disable the current owner.
+If Expo reports `DeviceNotRegistered`, the API disables that exact token but
+keeps the current lifecycle usable; register a replacement Expo token with the
+same `registrationGeneration`. Only logout or account transfer revokes it.
+
+Scheduler pushes are normal visible notifications. Eco Audit and Solar Sense
+use Android channel `scheduler-updates`; Field App Complete uses `scheduler`.
+The lock-screen title/body is deliberately generic (for example, “New job
+assigned” / “You were assigned a scheduled job”) and never contains an event
+title, site/client data, address, description, email, credential, or token. The
+navigation payload is:
+
+```json
+{
+  "type": "scheduler",
+  "notificationKind": "assigned | changed | assignment_removed | cancelled | manual_reminder | one_day_before | day_of",
+  "eventId": "...",
+  "sourceApp": "ecoaudit | solarsense | installhub",
+  "sourceType": "audit | assessment | installation",
+  "sourceId": "...",
+  "scheduledStartAt": "2026-08-20T09:00:00.000Z"
+}
+```
+
+The data object is reserved routing metadata for future use. Current clients
+show the operating-system popup only: they do not keep a notification history
+or deep-link a notification tap into the work record. A normal app launch/list
+and subsequent API/sync response remain authoritative for access.
+
+Only linked Eco Audit audits, Solar Sense rooftop assessments, and Field App
+Complete installations are notification targets. Legacy Solar site calendar
+rows, custom events, and rows without a linked source ID do not produce mobile
+pushes. Delivery rechecks the live scheduler row and linked Draft assignment at
+the Expo send boundary, so a completed, deleted, rescheduled, cancelled, or
+reassigned job cannot emit a stale active-work reminder.
+
+## Active foreground audit time
+
+Time tracking is silent operational telemetry; no session history or running
+timer needs to be shown. Count time only while the app is foreground-active and
+the inspector is viewing or editing one specific audit unit. The tracked unit is
+an EcoAudit audit, a SolarSense rooftop assessment, or a Field App Complete
+installation. Stop accumulating immediately when the app backgrounds, the user
+navigates away, another audit becomes active, or the unit is marked Completed.
+
+Persist a stable device-generated session ID and cumulative checkpoint locally:
+
+```json
+{
+  "revision": 4,
+  "activeMilliseconds": 93000,
+  "startedAt": "2026-08-15T10:00:00.000Z",
+  "lastActiveAt": "2026-08-15T10:03:10.000Z",
+  "endedAt": null
+}
+```
+
+Use the product route for the active unit:
+
+| App | PUT endpoint |
+|---|---|
+| EcoAudit Pro | `/v1/ecoaudit/audits/:id/active-time/sessions/:sessionId` |
+| SolarSense | `/v1/solarsense/sites/:siteId/assessments/:id/active-time/sessions/:sessionId` |
+| Field App Complete | `/v1/installhub/installations/:installationId/active-time/sessions/:sessionId` |
+
+Increment `revision` for each cumulative advance. Keep `startedAt` fixed, advance
+`lastActiveAt` and `activeMilliseconds` only for foreground-active intervals,
+and send `endedAt: null` while open. On pause, navigation, backgrounding, or
+completion, durably close the session with a non-null `endedAt` before starting a
+new session later. Queue checkpoints for retry across restarts and connectivity
+loss. A successful response always returns the authoritative row plus
+`applied`; `false` means the server already has the same or a newer revision, so
+the queued item can be acknowledged using the returned revision.
+
+The API requires the parent to exist in cloud storage and applies normal product
+ownership. Field App Complete installations with backup disabled therefore keep
+their session checkpoints queued locally until the installation is backed up.
+The checkpoint endpoint deliberately does not change parent sync watermarks,
+tree revisions, record versions, or full-snapshot payloads.
+
+Completed units never resume counting merely because they are opened in the app.
+A deliberate lifecycle transition back to `Draft` starts a fresh session; it
+never reopens the prior closed session. The API rejects open or new
+post-completion activity with 409. It accepts one delayed closed
+offline checkpoint only when its start, last-active, and end timestamps all
+precede the authoritative completion boundary (EcoAudit/Field `completedAt`;
+SolarSense the earliest server-owned `completedAt` among a Completed assessment
+and Completed parent site). SolarSense clients must not attempt to reopen records
+through generic sync; a future reopen flow requires an explicit lifecycle API.
+A completion conflict must never reopen a timer or block normal content
+synchronization; clients may retain the rejected checkpoint while reconciling
+parent state, but cannot add it to the completed unit.
+
+---
+
 ## Field App Complete Mobile — Cloud Backup
 
 Field App Complete uses user JWT authentication, not a device API key. Login sends
@@ -22,14 +145,26 @@ migration build that supplies both
 `EXPO_PUBLIC_REGISTRATION_SECRET`; normal release builds ignore the secret and
 no registration credential is committed to source.
 
-The additive `unified_users` registry contains every Eco Audit, Solar Sense, and
-native Field App Complete account. Eco Audit and Solar Sense users receive
-source-managed Field App Complete access with the same role and active state.
-They sign in to Field App Complete through
-the unchanged `/v1/auth/login` contract with their current source credential and
-receive a normal `app: "installhub"` token; the response and `/v1/auth/me`
-include `sourceManaged: true` and `sourceApp`. Native Field App Complete accounts keep their
-existing login and return `sourceManaged: false`.
+`global_users` owns one canonical Eco Audit, Solar Sense, and Field App Complete
+identity; `unified_users` retains one compatibility membership for each product.
+A user created in any one app can sign into all three through the unchanged
+`/v1/auth/login` contract with the same credential. The server returns a normal
+app-scoped JWT whose user ID is the target product's projection ID, so installed
+ownership checks and local IDs remain valid. Role, active state, profile,
+password changes, and deactivation propagate to all three projections. Field
+login and `/v1/auth/me` return the editable `ih_users` projection with
+`sourceManaged: false` and `sourceApp: null`.
+
+Deployment ordering is database first, API second: back up/export the three
+legacy user tables and review equal normalized local usernames, apply all
+migrations through 0030, then roll out the API binary. 0030 takes a short write
+lock across identity and Field-subject reference tables, creates missing
+projections, and remaps old Field owner/assignee/actor IDs atomically. It aborts
+for same-product duplicate login keys, conflicting active states, or lifecycle
+idempotency collisions; reconcile those diagnostics instead of bypassing them.
+Existing mobile binaries require no coordinated release. A remapped Field
+refresh token is intentionally revoked, so the next app session asks the user
+to sign in again with the same credential.
 
 The API owns a separate namespace:
 
@@ -38,7 +173,7 @@ The API owns a separate namespace:
 | Routes | `/v1/installhub/*` plus shared `/v1/export/jobs/*` |
 | JWT app claim | `installhub` |
 | API-key prefix (administrative compatibility) | `sk_ih_live_*` |
-| Tables | Native accounts remain in `ih_users`; all three apps are mirrored in additive `unified_users`; Field App Complete data remains in `ih_installations`, `ih_zones`, `ih_electrical_assets`, `ih_site_assets`, and `ih_form_submissions` |
+| Tables | Product IDs remain in `ea_users`, `ss_users`, and `ih_users`; `global_users` owns identity/role/state, `global_user_credentials` preserves migrated credentials, and `unified_users` maps all three projections to one Field subject |
 | Shared media registry | `photo_registry` rows with `app = installhub` |
 
 ### Sync endpoints
@@ -98,20 +233,14 @@ and meters remain frozen. Human names remain separately editable.
 | `DELETE /v1/installhub/installations/:installationId` | creator or admin | Reversibly soft-remove an active Cloud Backup |
 | `DELETE /v1/installhub/installations/:installationId?purge=true` | creator or admin | Permanently delete a Cloud Backup tree, unreferenced originals, report files/jobs, and versions |
 
-Native user administration remains scoped to `ih_users`. The API prevents an
+User administration edits the target product projection and the canonical
+identity trigger applies the change to all three products. The API prevents an
 administrator from demoting/deactivating their own account and prevents removal
-of the last active native Field App Complete administrator. Role or active-state
-changes, password changes, and deactivation revoke outstanding Field App Complete
-refresh tokens.
-
-Source-managed rows are returned by the same list/detail endpoints so installed
-clients remain compatible. The public view uses the source email/name and adds
-`sourceManaged`, `sourceApp`, and `sourceState`. Their profile, role, active
-state, administrator password reset, and deactivation are read-only in Field App Complete and
-must be changed in the source app. A source-managed user may change their own
-password after confirming the current password; this updates the authoritative
-source credential and revokes both source and Field App Complete refresh sessions. Active
-registry-managed users remain valid installation assignees.
+of the last active Field App Complete administrator. Role/active/password
+changes revoke outstanding refresh tokens for Eco Audit, Solar Sense, and Field
+App Complete. Self-service current-password checks accept any credential
+preserved for the same canonical identity; a successful change consolidates to
+the new password. All active canonical users are valid installation assignees.
 
 Assignment augments, rather than transfers, access: the creator and elevated
 users retain access. The assignee can pull/import the tree and access its
@@ -251,18 +380,15 @@ user, and durable PDF-job endpoints as the iOS app.
 
 Its Field App Complete user-management page reads `/v1/portal/users`, showing
 Eco Audit, Solar Sense, and Field App Complete role/status memberships from
-`unified_users` in one responsive matrix. Source-managed Field App Complete
-access is visible but read-only; only native Field App Complete-only rows link
-to the existing editor. Every application login route
+`unified_users` in one canonical-person-per-row matrix. Every identity has all
+three memberships and the Field membership links to the existing editor. Every application login route
 redirects to the portal's single `/login` page. The shared portal login is an
 additive facade over the existing per-app sessions and falls back to the legacy
 login calls only when the new endpoint is unavailable. If an Eco Audit or Solar
 Sense portal session already exists, `/v1/auth/field-session` creates the
 separate Field App Complete session after verifying both its source JWT and matching active
-source refresh session, without displaying another login page. If both
-independent source sessions are active, the portal presents an account chooser
-with no password fields and exchanges only the explicitly selected source
-session.
+source refresh session, without displaying another login page. The exchange
+resolves the same canonical Field projection used by direct Field login.
 
 The web workspace covers installation and zone editing, switchboards, embedded
 meters, site assets, all six schema-v2 form families, readable schema-v1 form

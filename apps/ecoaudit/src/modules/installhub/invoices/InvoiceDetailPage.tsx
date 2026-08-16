@@ -85,13 +85,19 @@ export function InstallHubInvoiceDetailPage() {
                 onClick={() => {
                   setError(null);
                   setDownloading(true);
-                  void downloadInvoicePdf(installationId, invoiceId)
-                    .then((blob) => {
-                      const url = URL.createObjectURL(blob);
+                  void downloadInvoicePdf(
+                    installationId,
+                    invoiceId,
+                    `invoice-${inv.installation.siteName}-${inv.installation.auditDate}-${inv.invoiceNumber}`,
+                  )
+                    .then((file) => {
+                      const url = URL.createObjectURL(file.blob);
                       const a = document.createElement('a');
                       a.href = url;
-                      a.download = `${inv.invoiceNumber}.pdf`;
+                      a.download = file.filename;
+                      document.body.appendChild(a);
                       a.click();
+                      a.remove();
                       URL.revokeObjectURL(url);
                     })
                     .catch((err) => setError(installHubConnectionErrorMessage(err)))

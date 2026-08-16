@@ -27,16 +27,18 @@ export function resolveSyncedAuditTiming(input: {
   existingStartedAt?: Date | null;
   existingCompletedAt?: Date | null;
   createdAt: Date;
-  updatedAt: Date;
+  observedAt: Date;
 }): AuditTiming {
-  const startedAt = input.incomingStartedAt
-    ?? input.existingStartedAt
+  const startedAt = input.existingStartedAt
+    ?? input.incomingStartedAt
     ?? (input.status === 'Completed' ? input.createdAt : null);
 
   return {
     startedAt,
     completedAt: input.status === 'Completed'
-      ? (input.incomingCompletedAt ?? input.existingCompletedAt ?? input.updatedAt)
+      // Completion is a server-owned fence. Client timestamps may describe
+      // offline history, but cannot move the boundary used by active-time.
+      ? (input.existingCompletedAt ?? input.observedAt)
       : null,
   };
 }

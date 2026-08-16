@@ -1,12 +1,17 @@
 import {
+  bigint,
   boolean,
+  check,
+  index,
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 const syncCols = {
   serverId: text('server_id'),
@@ -44,6 +49,7 @@ export const ssSites = pgTable('ss_sites', {
   createdByUserId: text('created_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   status: text('status').notNull().default('Draft'),
+  completedAt: timestamp('completed_at'),
 });
 
 export const ssRooftopAssessments = pgTable('ss_rooftop_assessments', {
@@ -92,6 +98,43 @@ export const ssRooftopAssessments = pgTable('ss_rooftop_assessments', {
   additionalPhotos: jsonb('additional_photos').notNull().default([]),
   photoMetadata: jsonb('photo_metadata').notNull().default({}),
   createdByUserId: text('created_by_user_id'),
+  assignedInspectorUserId: text('assigned_inspector_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   status: text('status').notNull().default('Draft'),
+  completedAt: timestamp('completed_at'),
 });
+
+export const ssAssessmentWorkSessions = pgTable('ss_assessment_work_sessions', {
+  id: text('id').notNull(),
+  assessmentId: text('assessment_id')
+    .notNull()
+    .references(() => ssRooftopAssessments.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').notNull(),
+  startedAt: timestamp('started_at').notNull(),
+  lastActiveAt: timestamp('last_active_at').notNull(),
+  endedAt: timestamp('ended_at'),
+  activeMilliseconds: bigint('active_milliseconds', { mode: 'number' }).notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  primaryKey({
+    columns: [table.assessmentId, table.id],
+    name: 'ss_assessment_work_sessions_pk',
+  }),
+  index('ss_assessment_work_sessions_assessment_actor_idx').on(
+    table.assessmentId,
+    table.actorUserId,
+    table.updatedAt,
+  ),
+  check(
+    'ss_assessment_work_sessions_active_milliseconds_check',
+    sql`${table.activeMilliseconds} >= 0`,
+  ),
+  check('ss_assessment_work_sessions_revision_check', sql`${table.revision} >= 0`),
+  check(
+    'ss_assessment_work_sessions_time_order_check',
+    sql`${table.startedAt} <= ${table.lastActiveAt}
+      AND (${table.endedAt} IS NULL OR ${table.lastActiveAt} <= ${table.endedAt})`,
+  ),
+]);

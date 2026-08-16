@@ -32,6 +32,7 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
+import { schedulerFinanceHref } from '@/modules/scheduler/lib/finance';
 import {
   meteringInventorySummary,
   readinessCorrectionAction,
@@ -185,8 +186,9 @@ export function InstallHubInstallationDetailPage() {
           <WorkspaceLink href={`/installhub/installations/${installationId}/forms`} icon="clipboard" title="Field forms" description="Complete installation and service workflows." count={tree.formSubmissions.length} />
           <WorkspaceLink href={`/installhub/installations/${installationId}/devices`} icon="search" title="Find devices" description="Search every zone in this installation and replace a device." />
           <WorkspaceLink href={`/installhub/installations/${installationId}/report`} icon="file-text" title="Report pack" description="Generate and download the installation report." />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/financials`} icon="gauge" title="Financial summary" description="Live cost tracking — budget, labour, materials, and margins." />
-          <WorkspaceLink href={`/installhub/installations/${installationId}/invoices`} icon="file-text" title="Invoices" description="Quick invoice from tracked costs — draft, issue, and download GST tax PDFs." />
+          {user?.role === 'admin' ? (
+            <WorkspaceLink href={schedulerFinanceHref({ sourceApp: 'installhub', sourceId: installationId })} icon="gauge" title="Finance & invoices" description="Open the shared Scheduler workspace for time, costs, margins, and invoices." />
+          ) : null}
         </div>
       </section>
 

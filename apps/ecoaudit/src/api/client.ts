@@ -230,6 +230,43 @@ export async function requestBinary(method: string, path: string, body?: unknown
   }
 }
 
+export async function requestDownload(
+  method: string,
+  path: string,
+  body?: unknown,
+  retried = false,
+): Promise<{ blob: Blob; contentDisposition: string | null }> {
+  const jwt = await getJwt();
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 401 && !retried) {
+      const fresh = await refreshAfterUnauthorized(jwt);
+      if (fresh) return requestDownload(method, path, body, true);
+      throw sessionExpiredFor(jwt);
+    }
+    if (res.status === 401) throw sessionExpiredFor(jwt);
+    if (!res.ok) {
+      const text = await res.text().catch(() => res.statusText);
+      const parsed = parseErrorBody(text);
+      throw new ApiError(parsed.message, res.status, parsed.detail);
+    }
+    return {
+      blob: await res.blob(),
+      contentDisposition: res.headers.get('Content-Disposition'),
+    };
+  } catch (e) {
+    if (e instanceof AuthError || e instanceof ApiError || e instanceof NetworkError) throw e;
+    throw new NetworkError(String(e));
+  }
+}
+
 export async function publicRequest<T>(
   method: string,
   path: string,

@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import {
   assertFound,
+  assertSiteContextAccess,
   assertDraftMutable,
   assertSiteAccess,
   dateOrNow,
@@ -20,6 +21,10 @@ import {
 } from './helpers.js';
 import { badRequest } from '../../utils/errors.js';
 import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
+import {
+  completionAtFirstObservation,
+  parseSolarLifecycleStatus,
+} from './completionFence.js';
 import {
   reconcilePhotoCopyReferencesForParent,
   linkCopiedPhotoReferences,
@@ -72,7 +77,22 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
   }, async (request, reply) => {
     const conditions = [isNull(ssSites.deletedAt)];
     if (!isElevated(request.user)) {
-      conditions.push(eq(ssSites.createdByUserId, request.user.userId));
+      const assignedSiteRows = await db
+        .select({ siteId: ssRooftopAssessments.siteId })
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.assignedInspectorUserId, request.user.userId),
+          isNull(ssRooftopAssessments.deletedAt),
+        ));
+      const assignedSiteIds = assignedSiteRows
+        .map((row) => row.siteId)
+        .filter((id): id is string => Boolean(id));
+      conditions.push(or(
+        eq(ssSites.createdByUserId, request.user.userId),
+        assignedSiteIds.length > 0
+          ? and(eq(ssSites.status, 'Draft'), inArray(ssSites.id, assignedSiteIds))
+          : undefined,
+      )!);
     }
 
     const sites = await db
@@ -96,6 +116,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
     const id = randomUUID();
     const now = new Date();
     const changes = buildSiteChanges(body);
+    const status = parseSolarLifecycleStatus(body.status);
 
     const [created] = await db
       .insert(ssSites)
@@ -119,7 +140,8 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
         reportPdfRemoteUrl: changes.reportPdfRemoteUrl ?? null,
         createdByUserId: request.user.userId,
         createdAt: dateOrNow(body.createdAt ?? now.toISOString()),
-        status: typeof body.status === 'string' ? body.status : 'Draft',
+        status,
+        completedAt: completionAtFirstObservation(status, now),
       })
       .returning();
 
@@ -142,7 +164,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
       .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
 
     const found = assertFound(site, 'Site');
-    assertSiteAccess(found, request.user);
+    await assertSiteContextAccess(found, request.user);
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: found.id, actor: request.user });
     return reply.send(found);
   });
@@ -224,10 +246,19 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
 
     const found = assertFound(site, 'Site');
     assertSiteAccess(found, request.user);
+    const completedAt = new Date();
 
     const [updated] = await db
       .update(ssSites)
-      .set({ status: 'Completed', updatedAt: new Date(), syncStatus: 'local' })
+      .set({
+        status: 'Completed',
+        completedAt: sql<Date>`coalesce(
+          ${ssSites.completedAt},
+          ${sql.param(completedAt, ssSites.completedAt)}
+        )`,
+        updatedAt: completedAt,
+        syncStatus: 'local',
+      })
       .where(eq(ssSites.id, id))
       .returning();
 
@@ -261,6 +292,7 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
           ...overrides,
           siteName: copyNameWithSuffix(found.siteName),
           status: 'Draft',
+          completedAt: null,
           createdByUserId: request.user.userId,
           reportPdfLocalPath: null,
           reportPdfRemoteUrl: null,
@@ -286,7 +318,9 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
               siteId: targetSite.id,
               siteName: targetSite.siteName,
               status: 'Draft',
+              completedAt: null,
               createdByUserId: request.user.userId,
+              assignedInspectorUserId: null,
             }) as typeof ssRooftopAssessments.$inferInsert);
           await tx.insert(ssRooftopAssessments).values(copiedAssessments);
           assessments.forEach((assessment, index) => {

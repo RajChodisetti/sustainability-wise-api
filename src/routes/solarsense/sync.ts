@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, inArray, isNull } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
 import { photoRegistry } from '../../db/schema/shared.js';
@@ -8,13 +8,16 @@ import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import {
   assertFound,
+  assertAssessmentAccess,
+  assertDraftMutable,
+  assertSiteContextAccess,
   assertSiteAccess,
   dateOrNow,
   isElevated,
   requiredString,
   type JsonRecord,
 } from './helpers.js';
-import { badRequest } from '../../utils/errors.js';
+import { badRequest, conflict } from '../../utils/errors.js';
 import { saveRecordVersion } from '../recordVersions.js';
 import {
   deleteLocalFile,
@@ -35,6 +38,7 @@ import {
   createConfiguredUploadUrl,
   requireUploadCapability,
 } from '../../auth/uploadCapability.js';
+import { resolveSyncedCompletion } from './completionFence.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -42,7 +46,7 @@ async function loadAccessibleSite(siteId: string, request: { user: Parameters<ty
     .from(ssSites)
     .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
   const found = assertFound(site, 'Site');
-  assertSiteAccess(found, request.user);
+  await assertSiteContextAccess(found, request.user);
   return found;
 }
 
@@ -50,10 +54,43 @@ async function loadAnyAccessibleSite(siteId: string, request: { user: Parameters
   const [site] = await db
     .select()
     .from(ssSites)
-    .where(eq(ssSites.id, siteId));
+    .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)));
   const found = assertFound(site, 'Site');
-  assertSiteAccess(found, request.user);
+  await assertSiteContextAccess(found, request.user);
+  assertDraftMutable(found, 'Site');
   return found;
+}
+
+async function loadAccessibleAssessment(
+  site: typeof ssSites.$inferSelect,
+  assessmentId: string,
+  request: { user: Parameters<typeof assertSiteAccess>[1] },
+) {
+  const [assessment] = await db
+    .select()
+    .from(ssRooftopAssessments)
+    .where(and(
+      eq(ssRooftopAssessments.id, assessmentId),
+      eq(ssRooftopAssessments.siteId, site.id),
+      isNull(ssRooftopAssessments.deletedAt),
+    ));
+  const found = assertFound(assessment, 'Assessment');
+  assertAssessmentAccess(site, found, request.user);
+  return found;
+}
+
+async function assertSyncPhotoAccess(
+  siteId: string,
+  assessmentId: string | null,
+  request: { user: Parameters<typeof assertSiteAccess>[1] },
+) {
+  const site = await loadAccessibleSite(siteId, request);
+  if (assessmentId) {
+    await loadAccessibleAssessment(site, assessmentId, request);
+  } else {
+    assertSiteAccess(site, request.user);
+  }
+  return site;
 }
 
 async function deletePhotosForSite(siteId: string): Promise<void> {
@@ -81,11 +118,22 @@ function assertUploadSessionFresh(createdAt: Date): void {
   }
 }
 
-function siteValuesFromPayload(site: JsonRecord, actor: SyncActor, existing?: typeof ssSites.$inferSelect) {
+function siteValuesFromPayload(
+  site: JsonRecord,
+  actor: SyncActor,
+  receivedAt: Date,
+  existing?: typeof ssSites.$inferSelect,
+) {
   const id = requiredString(site, 'id');
   const serverId =
     existing?.serverId ??
     (typeof site.serverId === 'string' && site.serverId.trim() ? site.serverId.trim() : randomUUID());
+  const completion = resolveSyncedCompletion({
+    existing,
+    incomingStatus: site.status,
+    receivedAt,
+    entity: 'site',
+  });
   return {
     id,
     serverId,
@@ -111,13 +159,14 @@ function siteValuesFromPayload(site: JsonRecord, actor: SyncActor, existing?: ty
       actor,
     }),
     createdAt: dateOrNow(site.createdAt),
-    status: typeof site.status === 'string' ? site.status : (existing?.status ?? 'Draft'),
+    ...completion,
   };
 }
 
 function assessmentValuesFromPayload(
   assessment: JsonRecord,
   actor: SyncActor,
+  receivedAt: Date,
   existing?: typeof ssRooftopAssessments.$inferSelect,
 ) {
   const id = requiredString(assessment, 'id');
@@ -126,6 +175,12 @@ function assessmentValuesFromPayload(
     (typeof assessment.serverId === 'string' && assessment.serverId.trim()
       ? assessment.serverId.trim()
       : randomUUID());
+  const completion = resolveSyncedCompletion({
+    existing,
+    incomingStatus: assessment.status,
+    receivedAt,
+    entity: 'assessment',
+  });
   const num = (key: string) => {
     const value = assessment[key];
     if (value === null || value === undefined || value === '') return null;
@@ -189,8 +244,9 @@ function assessmentValuesFromPayload(
       incomingCreatedByUserId: assessment.createdByUserId,
       actor,
     }),
+    assignedInspectorUserId: existing?.assignedInspectorUserId ?? null,
     createdAt: dateOrNow(assessment.createdAt),
-    status: typeof assessment.status === 'string' ? assessment.status : (existing?.status ?? 'Draft'),
+    ...completion,
   };
 }
 
@@ -207,10 +263,10 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const checksum = requiredString(body, 'checksum');
     const siteId = requiredString(body, 'siteId');
     const fieldName = requiredString(body, 'fieldName');
-    await loadAccessibleSite(siteId, request);
     const assessmentId = typeof body.assessmentId === 'string' && body.assessmentId.trim()
       ? body.assessmentId.trim()
       : null;
+    await assertSyncPhotoAccess(siteId, assessmentId, request);
 
     const [existing] = await db
       .select()
@@ -253,22 +309,15 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       throw badRequest(`File exceeds max upload size of ${config.storage.maxUploadBytes} bytes`);
     }
 
-    const site = await loadAccessibleSite(siteId, request);
-
     const assessmentId = typeof body.assessmentId === 'string' && body.assessmentId.trim()
       ? body.assessmentId.trim()
       : null;
+    const site = await loadAccessibleSite(siteId, request);
     let assessment: typeof ssRooftopAssessments.$inferSelect | null = null;
     if (assessmentId) {
-      const [foundAssessment] = await db
-        .select()
-        .from(ssRooftopAssessments)
-        .where(and(
-          eq(ssRooftopAssessments.id, assessmentId),
-          eq(ssRooftopAssessments.siteId, siteId),
-          isNull(ssRooftopAssessments.deletedAt),
-        ));
-      assessment = assertFound(foundAssessment, 'Assessment');
+      assessment = await loadAccessibleAssessment(site, assessmentId, request);
+    } else {
+      assertSiteAccess(site, request.user);
     }
 
     const entityType = assessmentId ? 'rooftop_assessment' : 'site';
@@ -393,6 +442,11 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       .from(photoRegistry)
       .where(and(eq(photoRegistry.id, sessionId), eq(photoRegistry.app, 'solarsense')));
     const found = assertFound(session, 'Upload session');
+    await assertSyncPhotoAccess(
+      found.parentId,
+      found.entityType === 'rooftop_assessment' ? found.entityId : null,
+      request,
+    );
     if (found.checksum !== checksum) throw badRequest('Checksum does not match session');
     if (!found.storageKey) throw badRequest('Upload session has no storage key');
     if (found.status === 'confirmed' && found.remoteUrl) {
@@ -442,6 +496,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const body = request.body as { sites?: JsonRecord[]; assessments?: JsonRecord[] };
     const sites = body.sites ?? [];
     const assessments = body.assessments ?? [];
+    const receivedAt = new Date();
 
     const siteIds: Record<string, string> = {};
     const assessmentIds: Record<string, string> = {};
@@ -450,16 +505,39 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     for (const site of sites) {
       const localId = requiredString(site, 'id');
       const [existing] = await db.select().from(ssSites).where(eq(ssSites.id, localId));
+      if (
+        existing
+        && !isElevated(request.user)
+        && existing.createdByUserId !== request.user.userId
+      ) {
+        await assertSiteContextAccess(existing, request.user);
+        assertDraftMutable(existing, 'Site');
+        siteIds[localId] = existing.serverId ?? existing.id;
+        continue;
+      }
       if (existing) assertSiteAccess(existing, request.user);
-      const values = siteValuesFromPayload(site, request.user, existing);
+      const values = siteValuesFromPayload(site, request.user, receivedAt, existing);
       const { id: _id, ...updateValues } = values;
-      await db
+      const excludedStatus = sql.raw(`excluded.${ssSites.status.name}`);
+      const excludedCompletedAt = sql.raw(`excluded.${ssSites.completedAt.name}`);
+      const [upserted] = await db
         .insert(ssSites)
         .values(values)
         .onConflictDoUpdate({
           target: ssSites.id,
-          set: updateValues,
-        });
+          set: {
+            ...updateValues,
+            completedAt: sql<Date | null>`case
+              when ${ssSites.status} = 'Completed'
+                then coalesce(${ssSites.completedAt}, ${excludedCompletedAt})
+              when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+              else null
+            end`,
+          },
+          setWhere: sql`${ssSites.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+        })
+        .returning({ id: ssSites.id });
+      if (!upserted) throw conflict('site_completed_reopen_requires_explicit_transition');
       siteIds[localId] = values.serverId;
       if (values.deletedAt) {
         await deletePhotosForSite(localId);
@@ -469,21 +547,45 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     for (const assessment of assessments) {
       const localId = requiredString(assessment, 'id');
       const siteId = requiredString(assessment, 'siteId');
-      await loadAnyAccessibleSite(siteId, request);
+      const site = await loadAnyAccessibleSite(siteId, request);
 
       const [existing] = await db
         .select()
         .from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, localId));
-      const values = assessmentValuesFromPayload(assessment, request.user, existing);
+      if (existing) {
+        if (existing.siteId !== siteId) throw badRequest('Assessment siteId cannot change');
+        assertAssessmentAccess(site, existing, request.user);
+      } else {
+        assertSiteAccess(site, request.user);
+      }
+      const values = assessmentValuesFromPayload(
+        assessment,
+        request.user,
+        receivedAt,
+        existing,
+      );
       const { id: _id, ...updateValues } = values;
-      await db
+      const excludedStatus = sql.raw(`excluded.${ssRooftopAssessments.status.name}`);
+      const excludedCompletedAt = sql.raw(`excluded.${ssRooftopAssessments.completedAt.name}`);
+      const [upserted] = await db
         .insert(ssRooftopAssessments)
         .values(values)
         .onConflictDoUpdate({
           target: ssRooftopAssessments.id,
-          set: updateValues,
-        });
+          set: {
+            ...updateValues,
+            completedAt: sql<Date | null>`case
+              when ${ssRooftopAssessments.status} = 'Completed'
+                then coalesce(${ssRooftopAssessments.completedAt}, ${excludedCompletedAt})
+              when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+              else null
+            end`,
+          },
+          setWhere: sql`${ssRooftopAssessments.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+        })
+        .returning({ id: ssRooftopAssessments.id });
+      if (!upserted) throw conflict('assessment_completed_reopen_requires_explicit_transition');
       assessmentIds[localId] = values.serverId;
       if (values.deletedAt) {
         await deletePhotosForAssessment(localId);
@@ -524,24 +626,60 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const query = request.query as { since?: string; siteId?: string };
     const since = query.since ? new Date(query.since) : new Date(0);
     if (Number.isNaN(since.getTime())) throw badRequest('since must be an ISO date');
-    if (query.siteId) await loadAccessibleSite(query.siteId, request);
+    const requestedSite = query.siteId
+      ? await loadAccessibleSite(query.siteId, request)
+      : null;
+
+    const assignedSiteRows = !isElevated(request.user)
+      ? await db
+          .select({ siteId: ssRooftopAssessments.siteId })
+          .from(ssRooftopAssessments)
+          .innerJoin(ssSites, and(
+            eq(ssSites.id, ssRooftopAssessments.siteId),
+            eq(ssSites.status, 'Draft'),
+            isNull(ssSites.deletedAt),
+          ))
+          .where(and(
+            eq(ssRooftopAssessments.assignedInspectorUserId, request.user.userId),
+            isNull(ssRooftopAssessments.deletedAt),
+          ))
+      : [];
+    const assignedSiteIds = assignedSiteRows
+      .map((row) => row.siteId)
+      .filter((id): id is string => Boolean(id));
 
     const siteConditions = [gt(ssSites.updatedAt, since), isNull(ssSites.deletedAt)];
     if (query.siteId) siteConditions.push(eq(ssSites.id, query.siteId));
-    if (!isElevated(request.user)) siteConditions.push(eq(ssSites.createdByUserId, request.user.userId));
+    if (!isElevated(request.user)) {
+      siteConditions.push(or(
+        eq(ssSites.createdByUserId, request.user.userId),
+        assignedSiteIds.length > 0
+          ? and(eq(ssSites.status, 'Draft'), inArray(ssSites.id, assignedSiteIds))
+          : undefined,
+      )!);
+    }
 
     const pulledSites = await db.select().from(ssSites).where(and(...siteConditions));
 
     let pulledAssessments: Array<typeof ssRooftopAssessments.$inferSelect> = [];
     if (query.siteId) {
+      const assessmentConditions = [
+        eq(ssRooftopAssessments.siteId, query.siteId),
+        gt(ssRooftopAssessments.updatedAt, since),
+        isNull(ssRooftopAssessments.deletedAt),
+      ];
+      if (
+        !isElevated(request.user)
+        && requestedSite?.createdByUserId !== request.user.userId
+      ) {
+        assessmentConditions.push(
+          eq(ssRooftopAssessments.assignedInspectorUserId, request.user.userId),
+        );
+      }
       pulledAssessments = await db
         .select()
         .from(ssRooftopAssessments)
-        .where(and(
-          eq(ssRooftopAssessments.siteId, query.siteId),
-          gt(ssRooftopAssessments.updatedAt, since),
-          isNull(ssRooftopAssessments.deletedAt),
-        ));
+        .where(and(...assessmentConditions));
     } else if (isElevated(request.user)) {
       pulledAssessments = await db
         .select()
@@ -553,12 +691,22 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
         .from(ssSites)
         .where(and(eq(ssSites.createdByUserId, request.user.userId), isNull(ssSites.deletedAt)));
       const ownedIds = ownedSites.map((site) => site.id);
-      pulledAssessments = ownedIds.length
+      pulledAssessments = ownedIds.length || assignedSiteIds.length
         ? await db
             .select()
             .from(ssRooftopAssessments)
             .where(and(
-              inArray(ssRooftopAssessments.siteId, ownedIds),
+              or(
+                ownedIds.length > 0
+                  ? inArray(ssRooftopAssessments.siteId, ownedIds)
+                  : undefined,
+                assignedSiteIds.length > 0
+                  ? and(
+                      inArray(ssRooftopAssessments.siteId, assignedSiteIds),
+                      eq(ssRooftopAssessments.assignedInspectorUserId, request.user.userId),
+                    )
+                  : undefined,
+              ),
               gt(ssRooftopAssessments.updatedAt, since),
               isNull(ssRooftopAssessments.deletedAt),
             ))
