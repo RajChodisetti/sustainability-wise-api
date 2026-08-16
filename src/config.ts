@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { assertStorageIsolationPolicy } from './storage/storageIsolationPolicy.js';
 
@@ -24,6 +25,22 @@ function optionalInt(name: string, fallback: number): number {
   const parsed = parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
+
+function resolvePuppeteerExecutablePath(): string {
+  const fromEnv = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+  if (fromEnv) return fromEnv;
+  const candidates = [
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return '/usr/bin/chromium-browser';
+}
+
 
 export function parseUploadCapabilityTtlSeconds(value: string | undefined): number {
   if (value === undefined) return 15 * 60;
@@ -244,6 +261,28 @@ export const config = {
     'INSTALLHUB_UPLOAD_REVISION_CAS_REQUIRED',
     !isProduction,
   ),
+  /** Field App auto labour: calendar days from start→complete × hours/day × rate. */
+  installhubLabour: {
+    hoursPerDay: Math.max(0, optionalInt('IH_LABOUR_HOURS_PER_DAY', 8)),
+    hourlyRate: (() => {
+      const raw = optional('IH_LABOUR_HOURLY_RATE', '75');
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 75;
+    })(),
+  },
+  /** Seller branding + GST for InstallHub tax invoices. */
+  installhubInvoice: {
+    sellerName: optional('IH_INVOICE_SELLER_NAME', 'Sustainability Wise'),
+    sellerAbn: optional('IH_INVOICE_SELLER_ABN', ''),
+    sellerAddress: optional('IH_INVOICE_SELLER_ADDRESS', ''),
+    sellerEmail: optional('IH_INVOICE_SELLER_EMAIL', ''),
+    dueDays: Math.max(0, optionalInt('IH_INVOICE_DUE_DAYS', 14)),
+    gstRate: (() => {
+      const raw = optional('IH_INVOICE_GST_RATE', '0.10');
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 0.1;
+    })(),
+  },
   rateLimit: {
     max: optionalInt('RATE_LIMIT_MAX', 300),
     timeWindowMs: optionalInt('RATE_LIMIT_WINDOW_MS', 60_000),
@@ -297,8 +336,5 @@ export const config = {
     ),
     backupRequired: optionalBool('ONEDRIVE_BACKUP_REQUIRED', false),
   },
-  puppeteerExecutablePath: optional(
-    'PUPPETEER_EXECUTABLE_PATH',
-    '/usr/bin/chromium-browser',
-  ),
+  puppeteerExecutablePath: resolvePuppeteerExecutablePath(),
 } as const;

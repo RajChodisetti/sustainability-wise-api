@@ -4,6 +4,8 @@ import { installhubUserRoutes } from './users.js';
 import { installhubInstallationRoutes } from './installations.js';
 import { installhubPdfRoutes } from './pdf.js';
 import { installhubCanonicalRoutes } from './canonicalRoutes.js';
+import { installhubFinanceRoutes } from './finance.js';
+import { installhubInvoiceRoutes } from './invoices.js';
 
 export async function installhubRoutes(app: FastifyInstance): Promise<void> {
   await app.register(installhubSyncRoutes, { prefix: '/sync' });
@@ -12,6 +14,12 @@ export async function installhubRoutes(app: FastifyInstance): Promise<void> {
     prefix: '/installations',
   });
   await app.register(installhubCanonicalRoutes, {
+    prefix: '/installations',
+  });
+  await app.register(installhubFinanceRoutes, {
+    prefix: '/installations',
+  });
+  await app.register(installhubInvoiceRoutes, {
     prefix: '/installations',
   });
   await app.register(installhubPdfRoutes);

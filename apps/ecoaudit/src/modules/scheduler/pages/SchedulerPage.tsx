@@ -5,8 +5,8 @@ import { PageHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { DeadlineTable } from '@/modules/scheduler/components/DeadlineTable';
+import { DynamicSchedulerBoard } from '@/modules/scheduler/components/DynamicSchedulerBoard';
 import { EventFormModal } from '@/modules/scheduler/components/EventFormModal';
-import { SchedulerCalendar } from '@/modules/scheduler/components/SchedulerCalendar';
 import { SchedulerDashboard } from '@/modules/scheduler/components/SchedulerDashboard';
 import { UserFilter } from '@/modules/scheduler/components/UserFilter';
 import type { ScheduleEvent } from '@/modules/scheduler/types/domain';
@@ -21,7 +21,7 @@ export default function SchedulerPage() {
     || ihUser?.role === 'admin',
   );
 
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>('calendar');
   const [assigneeFilter, setAssigneeFilter] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [slotDay, setSlotDay] = useState<Date | null>(null);
@@ -49,7 +49,7 @@ export default function SchedulerPage() {
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl">
+    <div className={`mx-auto w-full ${tab === 'calendar' ? 'max-w-[90rem]' : 'max-w-6xl'}`}>
       <PageHeader
         title="Scheduler"
         subtitle="Assign audits, solar work, field jobs, and custom tasks — calendar + deadline board."
@@ -77,7 +77,7 @@ export default function SchedulerPage() {
             </button>
           ))}
         </div>
-        {(tab === 'calendar' || tab === 'deadlines') && isAdmin ? (
+        {tab === 'deadlines' && isAdmin ? (
           <UserFilter
             enabled={isAdmin}
             value={assigneeFilter}
@@ -94,12 +94,12 @@ export default function SchedulerPage() {
       ) : null}
 
       {tab === 'calendar' ? (
-        <SchedulerCalendar
-          assigneeFieldUserId={assigneeFilter || undefined}
-          onSlotClick={(day) => {
+        <DynamicSchedulerBoard
+          isAdmin={isAdmin}
+          onSlotCreate={(day) => {
             if (isAdmin) openCreate(day);
           }}
-          onEventClick={openEdit}
+          onEventEdit={openEdit}
         />
       ) : null}
 

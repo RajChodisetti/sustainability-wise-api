@@ -6,6 +6,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -609,4 +610,114 @@ export const ihCompletionIdempotency = pgTable('ih_completion_idempotency', {
     foreignColumns: [ihInstallations.id],
     name: 'ih_completion_idempotency_installation_fk',
   }).onDelete('restrict'),
+]);
+
+/** Job-level finance header (Fergus-style Financial Summary MVP). */
+export const ihJobFinance = pgTable('ih_job_finance', {
+  installationId: text('installation_id').primaryKey(),
+  pricingMode: text('pricing_mode').notNull().default('charge_up'),
+  pricedAmount: real('priced_amount'),
+  currency: text('currency').notNull().default('AUD'),
+  notes: text('notes'),
+  updatedByUserId: text('updated_by_user_id'),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  check('ih_job_finance_pricing_mode_check', sql`${table.pricingMode} IN ('quoted', 'charge_up')`),
+  foreignKey({
+    columns: [table.installationId],
+    foreignColumns: [ihInstallations.id],
+    name: 'ih_job_finance_installation_fk',
+  }).onDelete('cascade'),
+]);
+
+/** Manual labour / material / other cost lines for an installation. */
+export const ihJobCostLines = pgTable('ih_job_cost_lines', {
+  id: text('id').primaryKey(),
+  installationId: text('installation_id').notNull(),
+  category: text('category').notNull(),
+  description: text('description').notNull(),
+  costAmount: real('cost_amount').notNull().default(0),
+  sellAmount: real('sell_amount'),
+  hours: real('hours'),
+  billable: boolean('billable').notNull().default(true),
+  invoiced: boolean('invoiced').notNull().default(false),
+  /** manual = user-entered; auto_labour = system day×hours×rate line */
+  source: text('source').notNull().default('manual'),
+  incurredAt: timestamp('incurred_at'),
+  createdByUserId: text('created_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('ih_job_cost_lines_installation_idx').on(table.installationId),
+  index('ih_job_cost_lines_installation_invoiced_idx').on(table.installationId, table.invoiced),
+  check('ih_job_cost_lines_category_check', sql`${table.category} IN ('labour', 'material', 'other')`),
+  check('ih_job_cost_lines_source_check', sql`${table.source} IN ('manual', 'auto_labour')`),
+  foreignKey({
+    columns: [table.installationId],
+    foreignColumns: [ihInstallations.id],
+    name: 'ih_job_cost_lines_installation_fk',
+  }).onDelete('cascade'),
+]);
+
+/** Tax invoices generated from tracked cost lines (GST-inclusive totals on PDF). */
+export const ihInvoices = pgTable('ih_invoices', {
+  id: text('id').primaryKey(),
+  installationId: text('installation_id').notNull(),
+  invoiceNumber: text('invoice_number').notNull(),
+  status: text('status').notNull().default('draft'),
+  currency: text('currency').notNull().default('AUD'),
+  issueDate: timestamp('issue_date'),
+  dueDate: timestamp('due_date'),
+  subtotalExGst: real('subtotal_ex_gst').notNull().default(0),
+  gstAmount: real('gst_amount').notNull().default(0),
+  totalIncGst: real('total_inc_gst').notNull().default(0),
+  gstRate: real('gst_rate').notNull().default(0.1),
+  notes: text('notes'),
+  sellerName: text('seller_name'),
+  sellerAbn: text('seller_abn'),
+  sellerAddress: text('seller_address'),
+  sellerEmail: text('seller_email'),
+  createdByUserId: text('created_by_user_id'),
+  issuedAt: timestamp('issued_at'),
+  voidedAt: timestamp('voided_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('ih_invoices_number_unique').on(table.invoiceNumber),
+  index('ih_invoices_installation_idx').on(table.installationId),
+  index('ih_invoices_installation_status_idx').on(table.installationId, table.status),
+  check('ih_invoices_status_check', sql`${table.status} IN ('draft', 'issued', 'void')`),
+  foreignKey({
+    columns: [table.installationId],
+    foreignColumns: [ihInstallations.id],
+    name: 'ih_invoices_installation_fk',
+  }).onDelete('cascade'),
+]);
+
+export const ihInvoiceLines = pgTable('ih_invoice_lines', {
+  id: text('id').primaryKey(),
+  invoiceId: text('invoice_id').notNull(),
+  sortOrder: integer('sort_order').notNull().default(0),
+  description: text('description').notNull(),
+  quantity: real('quantity').notNull().default(1),
+  unitAmountExGst: real('unit_amount_ex_gst').notNull().default(0),
+  lineTotalExGst: real('line_total_ex_gst').notNull().default(0),
+  costLineId: text('cost_line_id'),
+  category: text('category'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('ih_invoice_lines_invoice_idx').on(table.invoiceId),
+  index('ih_invoice_lines_cost_line_idx').on(table.costLineId),
+  check('ih_invoice_lines_category_check', sql`${table.category} IS NULL OR ${table.category} IN ('labour', 'material', 'other')`),
+  foreignKey({
+    columns: [table.invoiceId],
+    foreignColumns: [ihInvoices.id],
+    name: 'ih_invoice_lines_invoice_fk',
+  }).onDelete('cascade'),
+  foreignKey({
+    columns: [table.costLineId],
+    foreignColumns: [ihJobCostLines.id],
+    name: 'ih_invoice_lines_cost_line_fk',
+  }).onDelete('set null'),
 ]);

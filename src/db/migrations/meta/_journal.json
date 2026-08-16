@@ -176,6 +176,27 @@
       "when": 1786400000000,
       "tag": "0024_portal_schedule_events",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1786500000000,
+      "tag": "0025_ih_job_finance",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1786510000000,
+      "tag": "0026_ih_job_cost_line_source",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1786520000000,
+      "tag": "0027_ih_invoices",
+      "breakpoints": true
     }
   ]
 }

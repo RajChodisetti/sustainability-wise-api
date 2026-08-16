@@ -90,8 +90,13 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
     }
     const day = initialDay ?? new Date();
     const start = new Date(day);
-    if (!initialDay) start.setMinutes(0, 0, 0);
-    else start.setHours(9, 0, 0, 0);
+    if (!initialDay) {
+      start.setMinutes(0, 0, 0);
+    } else if (initialDay.getHours() === 0 && initialDay.getMinutes() === 0) {
+      // Month-cell click without time → default morning
+      start.setHours(9, 0, 0, 0);
+    }
+    // else: keep explicit hour from week-grid slot click
     const deadline = new Date(start);
     deadline.setDate(deadline.getDate() + 2);
     deadline.setHours(17, 0, 0, 0);
