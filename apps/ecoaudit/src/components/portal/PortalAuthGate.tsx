@@ -67,49 +67,60 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
     ? isInstallHubAuthenticated
     : isAuthenticated;
 
-  // Cap gate wait so a hung /me never freezes the whole shell forever.
+  if (isPublic) return <>{children}</>;
+  if (isRouteAuthenticated) return <>{children}</>;
+  return (
+    <PendingPortalAuthGate
+      key={`${pathname}:${requiresInstallHub ? 'installhub' : 'portal'}`}
+      pathname={pathname}
+      router={router}
+      requiresInstallHub={requiresInstallHub}
+      isLoading={requiresInstallHub ? isInstallHubLoading : isLoading}
+      hasInstallHubSourceSession={hasInstallHubSourceSession}
+      installHubSessionError={installHubSessionError}
+      retryInstallHubSession={retryInstallHubSession}
+    />
+  );
+}
+
+function PendingPortalAuthGate({
+  pathname,
+  router,
+  requiresInstallHub,
+  isLoading,
+  hasInstallHubSourceSession,
+  installHubSessionError,
+  retryInstallHubSession,
+}: {
+  pathname: string;
+  router: ReturnType<typeof useRouter>;
+  requiresInstallHub: boolean;
+  isLoading: boolean;
+  hasInstallHubSourceSession: boolean;
+  installHubSessionError: string | null;
+  retryInstallHubSession: () => Promise<void>;
+}) {
+  // Cap gate wait so a hung /me never freezes the whole shell forever. This
+  // component is keyed and remounted for each protected route/auth attempt.
   const [gateTimedOut, setGateTimedOut] = useState(false);
   useEffect(() => {
-    if (isPublic || isRouteAuthenticated) {
-      setGateTimedOut(false);
-      return;
-    }
     const id = window.setTimeout(() => setGateTimedOut(true), 1_500);
     return () => window.clearTimeout(id);
-  }, [isPublic, isRouteAuthenticated, pathname]);
+  }, []);
 
-  const isRouteLoading = (
-    requiresInstallHub
-      ? isInstallHubLoading
-      : isLoading
-  ) && !gateTimedOut;
-
+  const isRouteLoading = isLoading && !gateTimedOut;
   const canRetryInstallHubSession = (
     requiresInstallHub
-    && !isInstallHubAuthenticated
     && !isRouteLoading
     && hasInstallHubSourceSession
   );
 
   useEffect(() => {
-    if (
-      !isRouteLoading
-      && !isRouteAuthenticated
-      && !isPublic
-      && !canRetryInstallHubSession
-    ) {
+    if (!isRouteLoading && !canRetryInstallHubSession) {
       router.replace(`/login?next=${encodeURIComponent(pathname || '/')}`);
     }
-  }, [
-    isRouteLoading,
-    isRouteAuthenticated,
-    isPublic,
-    canRetryInstallHubSession,
-    pathname,
-    router,
-  ]);
+  }, [isRouteLoading, canRetryInstallHubSession, pathname, router]);
 
-  if (isPublic) return <>{children}</>;
   if (isRouteLoading) return <Spinner fullPage label="Preparing your workspace…" />;
   if (canRetryInstallHubSession) {
     return (
@@ -121,8 +132,5 @@ export function PortalAuthGate({ children }: { children: ReactNode }) {
       />
     );
   }
-  if (!isRouteAuthenticated) {
-    return <Spinner fullPage label="Redirecting to sign in…" />;
-  }
-  return <>{children}</>;
+  return <Spinner fullPage label="Redirecting to sign in…" />;
 }

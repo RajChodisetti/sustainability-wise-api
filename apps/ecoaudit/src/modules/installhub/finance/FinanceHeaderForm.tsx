@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { useUpsertFinanceHeader } from '@/modules/installhub/finance/hooks';
@@ -23,12 +23,6 @@ export function FinanceHeaderForm({
   );
   const [notes, setNotes] = useState(header.notes ?? '');
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setPricingMode(header.pricingMode);
-    setPricedAmount(header.pricedAmount == null ? '' : String(header.pricedAmount));
-    setNotes(header.notes ?? '');
-  }, [header]);
 
   if (!canEdit) {
     return (

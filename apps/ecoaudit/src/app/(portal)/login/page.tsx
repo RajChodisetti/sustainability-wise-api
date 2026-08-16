@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useState, useSyncExternalStore } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { clearTokens as clearEaTokens, cloudConnectionErrorMessage } from '@/api/client';
 import {
@@ -19,6 +19,10 @@ import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { AuthForm } from '@/components/auth/AuthForm';
 import { Spinner } from '@/components/ui/Card';
 import { portalAppForPath, safePortalLoginNext } from '@/lib/portalNavigation';
+
+const subscribeClientSnapshot = () => () => undefined;
+const getClientSnapshot = () => true;
+const getServerClientSnapshot = () => false;
 
 function LoginForm() {
   const {
@@ -71,11 +75,11 @@ function LoginForm() {
 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const mounted = useSyncExternalStore(
+    subscribeClientSnapshot,
+    getClientSnapshot,
+    getServerClientSnapshot,
+  );
 
   // Wipe broken tokens so /me cannot keep soft-blocking navigation.
   useEffect(() => {

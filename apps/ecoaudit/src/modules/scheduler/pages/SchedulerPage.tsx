@@ -111,6 +111,11 @@ export default function SchedulerPage() {
       ) : null}
 
       <EventFormModal
+        key={modalOpen
+          ? editing
+            ? `edit:${editing.id}`
+            : `create:${slotDay?.toISOString() ?? 'now'}`
+          : 'closed'}
         open={modalOpen}
         onClose={() => {
           setModalOpen(false);

@@ -74,8 +74,8 @@ export function DynamicSchedulerBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
   );
 
-  const staff = assignees.data ?? [];
-  const allEvents = eventsQuery.data ?? [];
+  const staff = useMemo(() => assignees.data ?? [], [assignees.data]);
+  const allEvents = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
   const visibleEvents = useMemo(() => {
     if (staffFilter.length === 0) return allEvents;
     return allEvents.filter((e) => staffFilter.includes(e.assigneeFieldUserId));

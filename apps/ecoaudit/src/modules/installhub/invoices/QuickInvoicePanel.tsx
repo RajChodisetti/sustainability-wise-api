@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
@@ -35,18 +35,13 @@ export function QuickInvoicePanel({ installationId, currency, lines, canEdit }: 
     () => lines.filter((l) => l.billable && !l.invoiced),
     [lines],
   );
-  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [unselected, setUnselected] = useState<Set<string>>(() => new Set());
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const eligibleKey = eligible.map((l) => l.id).join('|');
-  useEffect(() => {
-    setSelected(new Set(eligible.map((l) => l.id)));
-  }, [eligibleKey]); // eslint-disable-line react-hooks/exhaustive-deps -- sync when eligible id set changes
-
   if (!canEdit) return null;
 
-  const selectedLines = eligible.filter((l) => selected.has(l.id));
+  const selectedLines = eligible.filter((l) => !unselected.has(l.id));
   const subtotal = selectedLines.reduce((s, l) => s + effectiveSell(l), 0);
   const gst = Math.round(subtotal * 0.1 * 100) / 100;
   const total = Math.round((subtotal + gst) * 100) / 100;
@@ -95,10 +90,10 @@ export function QuickInvoicePanel({ installationId, currency, lines, canEdit }: 
                   <th className="py-2 pr-2 font-bold">
                     <input
                       type="checkbox"
-                      checked={selected.size === eligible.length && eligible.length > 0}
+                      checked={selectedLines.length === eligible.length && eligible.length > 0}
                       onChange={(e) => {
-                        setSelected(
-                          e.target.checked ? new Set(eligible.map((l) => l.id)) : new Set(),
+                        setUnselected(
+                          e.target.checked ? new Set() : new Set(eligible.map((l) => l.id)),
                         );
                       }}
                       aria-label="Select all lines"
@@ -115,12 +110,12 @@ export function QuickInvoicePanel({ installationId, currency, lines, canEdit }: 
                     <td className="py-2 pr-2">
                       <input
                         type="checkbox"
-                        checked={selected.has(line.id)}
+                        checked={!unselected.has(line.id)}
                         onChange={(e) => {
-                          setSelected((prev) => {
+                          setUnselected((prev) => {
                             const next = new Set(prev);
-                            if (e.target.checked) next.add(line.id);
-                            else next.delete(line.id);
+                            if (e.target.checked) next.delete(line.id);
+                            else next.add(line.id);
                             return next;
                           });
                         }}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner } from '@/components/ui/Card';
 import { FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
@@ -45,24 +45,68 @@ function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
   return 'custom';
 }
 
+function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | null) {
+  if (event) {
+    return {
+      sourceApp: event.sourceApp,
+      sourceType: event.sourceType,
+      sourceId: event.sourceId ?? '',
+      jobQuery: '',
+      title: event.title,
+      description: event.description ?? '',
+      assigneeFieldUserId: event.assigneeFieldUserId,
+      startLocal: toDatetimeLocalValue(event.scheduledStartAt),
+      endLocal: event.scheduledEndAt ? toDatetimeLocalValue(event.scheduledEndAt) : '',
+      deadlineLocal: toDatetimeLocalValue(event.deadlineAt),
+      status: event.status,
+    };
+  }
+
+  const start = new Date(initialDay ?? new Date());
+  if (!initialDay) {
+    start.setMinutes(0, 0, 0);
+  } else if (initialDay.getHours() === 0 && initialDay.getMinutes() === 0) {
+    // Month-cell click without time → default morning.
+    start.setHours(9, 0, 0, 0);
+  }
+  const deadline = new Date(start);
+  deadline.setDate(deadline.getDate() + 2);
+  deadline.setHours(17, 0, 0, 0);
+
+  return {
+    sourceApp: 'custom' as ScheduleSourceApp,
+    sourceType: 'custom' as ScheduleSourceType,
+    sourceId: '',
+    jobQuery: '',
+    title: '',
+    description: '',
+    assigneeFieldUserId: '',
+    startLocal: toDatetimeLocalValue(start.toISOString()),
+    endLocal: '',
+    deadlineLocal: toDatetimeLocalValue(deadline.toISOString()),
+    status: 'planned' as ScheduleStatus,
+  };
+}
+
 export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Props) {
   const create = useCreateScheduleEvent();
   const update = useUpdateScheduleEvent();
   const cancel = useCancelScheduleEvent();
   const assignees = usePortalAssignees(open && isAdmin);
   const editing = Boolean(event);
+  const initial = initialFormValues(event, initialDay);
 
-  const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>('custom');
-  const [sourceType, setSourceType] = useState<ScheduleSourceType>('custom');
-  const [sourceId, setSourceId] = useState('');
-  const [jobQuery, setJobQuery] = useState('');
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
-  const [assigneeFieldUserId, setAssigneeFieldUserId] = useState('');
-  const [startLocal, setStartLocal] = useState('');
-  const [endLocal, setEndLocal] = useState('');
-  const [deadlineLocal, setDeadlineLocal] = useState('');
-  const [status, setStatus] = useState<ScheduleStatus>('planned');
+  const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>(initial.sourceApp);
+  const [sourceType, setSourceType] = useState<ScheduleSourceType>(initial.sourceType);
+  const [sourceId, setSourceId] = useState(initial.sourceId);
+  const [jobQuery, setJobQuery] = useState(initial.jobQuery);
+  const [title, setTitle] = useState(initial.title);
+  const [description, setDescription] = useState(initial.description);
+  const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
+  const [startLocal, setStartLocal] = useState(initial.startLocal);
+  const [endLocal, setEndLocal] = useState(initial.endLocal);
+  const [deadlineLocal, setDeadlineLocal] = useState(initial.deadlineLocal);
+  const [status, setStatus] = useState<ScheduleStatus>(initial.status);
   const [error, setError] = useState<string | null>(null);
 
   const jobs = useJobOptions(
@@ -70,48 +114,6 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
     sourceApp === 'custom' ? undefined : sourceApp,
     open && isAdmin && sourceApp !== 'custom',
   );
-
-  useEffect(() => {
-    if (!open) return;
-    setError(null);
-    if (event) {
-      setSourceApp(event.sourceApp);
-      setSourceType(event.sourceType);
-      setSourceId(event.sourceId ?? '');
-      setTitle(event.title);
-      setDescription(event.description ?? '');
-      setAssigneeFieldUserId(event.assigneeFieldUserId);
-      setStartLocal(toDatetimeLocalValue(event.scheduledStartAt));
-      setEndLocal(event.scheduledEndAt ? toDatetimeLocalValue(event.scheduledEndAt) : '');
-      setDeadlineLocal(toDatetimeLocalValue(event.deadlineAt));
-      setStatus(event.status);
-      setJobQuery('');
-      return;
-    }
-    const day = initialDay ?? new Date();
-    const start = new Date(day);
-    if (!initialDay) {
-      start.setMinutes(0, 0, 0);
-    } else if (initialDay.getHours() === 0 && initialDay.getMinutes() === 0) {
-      // Month-cell click without time → default morning
-      start.setHours(9, 0, 0, 0);
-    }
-    // else: keep explicit hour from week-grid slot click
-    const deadline = new Date(start);
-    deadline.setDate(deadline.getDate() + 2);
-    deadline.setHours(17, 0, 0, 0);
-    setSourceApp('custom');
-    setSourceType('custom');
-    setSourceId('');
-    setTitle('');
-    setDescription('');
-    setAssigneeFieldUserId('');
-    setStartLocal(toDatetimeLocalValue(start.toISOString()));
-    setEndLocal('');
-    setDeadlineLocal(toDatetimeLocalValue(deadline.toISOString()));
-    setStatus('planned');
-    setJobQuery('');
-  }, [open, event, initialDay]);
 
   const canSubmit = useMemo(() => {
     if (!isAdmin) return false;

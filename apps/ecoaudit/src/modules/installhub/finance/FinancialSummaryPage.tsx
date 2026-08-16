@@ -223,6 +223,12 @@ export function InstallHubFinancialSummaryPage() {
       </div>
 
       <FinanceHeaderForm
+        key={[
+          s.header.pricingMode,
+          s.header.pricedAmount ?? '',
+          s.header.currency,
+          s.header.notes ?? '',
+        ].join(':')}
         installationId={installationId}
         header={s.header}
         canEdit={canEdit}

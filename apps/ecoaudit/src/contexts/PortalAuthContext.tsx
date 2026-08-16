@@ -146,13 +146,7 @@ export function PortalAuthProvider({ children }: { children: ReactNode }) {
     getClientSnapshot,
     getServerClientSnapshot,
   );
-  // Hard client mount flag — some browsers keep server snapshot briefly and
-  // would otherwise show "Preparing…" without resolving isClient.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-  const clientReady = isClient || mounted;
+  const clientReady = isClient;
   const hasEa = Boolean(eaToken);
   const hasSs = Boolean(ssToken);
   const hasIh = Boolean(ihToken);
