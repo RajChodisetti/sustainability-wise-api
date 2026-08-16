@@ -32,7 +32,6 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
 import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
-import { schedulerFinanceHref } from '@/modules/scheduler/lib/finance';
 import {
   meteringInventorySummary,
   readinessCorrectionAction,
@@ -180,15 +179,12 @@ export function InstallHubInstallationDetailPage() {
 
       <section className="mb-7" aria-labelledby="installhub-workspace">
         <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
           <WorkspaceLink href={`/installhub/installations/${installationId}/zones`} icon="building" title="Zones & assets" description="Manage zones, switchboards, devices, and site assets." count={tree.zones.length} />
           <WorkspaceLink href={`/installhub/installations/${installationId}/data#canonical-electrical-map`} icon="zap" title="Electrical map" description="Review the supply hierarchy and exact metering links." count={tree.electricalAssets.length + tree.siteAssets.length} />
           <WorkspaceLink href={`/installhub/installations/${installationId}/forms`} icon="clipboard" title="Field forms" description="Complete installation and service workflows." count={tree.formSubmissions.length} />
           <WorkspaceLink href={`/installhub/installations/${installationId}/devices`} icon="search" title="Find devices" description="Search every zone in this installation and replace a device." />
           <WorkspaceLink href={`/installhub/installations/${installationId}/report`} icon="file-text" title="Report pack" description="Generate and download the installation report." />
-          {user?.role === 'admin' ? (
-            <WorkspaceLink href={schedulerFinanceHref({ sourceApp: 'installhub', sourceId: installationId })} icon="gauge" title="Finance & invoices" description="Open the shared Scheduler workspace for time, costs, margins, and invoices." />
-          ) : null}
         </div>
       </section>
 

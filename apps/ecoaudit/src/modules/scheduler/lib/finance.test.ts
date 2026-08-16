@@ -104,6 +104,10 @@ test('finance helpers expose stable margin cues and deep links', () => {
     '/scheduler?tab=invoices&sourceApp=installhub&sourceId=job+1&invoiceId=inv%2F2',
   );
   assert.equal(
+    schedulerFinanceHref({ view: 'invoices', sourceApp: 'installhub', sourceId: 'job 1' }),
+    '/scheduler?tab=invoices&sourceApp=installhub&sourceId=job+1',
+  );
+  assert.equal(
     schedulerFinanceHref({ view: 'bills', financeId: 'finance 1' }),
     '/scheduler?tab=bills&financeId=finance+1',
   );
