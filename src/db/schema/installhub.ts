@@ -1,4 +1,5 @@
 import {
+  bigint,
   boolean,
   check,
   foreignKey,
@@ -6,6 +7,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   real,
   text,
   timestamp,
@@ -71,6 +73,41 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_electrical_map_layout_revision_check', sql`${table.electricalMapLayoutRevision} >= 0`),
   check('ih_installations_status_check', sql`${table.status} IN ('Draft', 'Completed')`),
   check('ih_installations_external_key_nonempty_check', sql`length(btrim(${table.externalKey})) > 0`),
+]);
+
+export const ihInstallationWorkSessions = pgTable('ih_installation_work_sessions', {
+  id: text('id').notNull(),
+  installationId: text('installation_id')
+    .notNull()
+    .references(() => ihInstallations.id, { onDelete: 'cascade' }),
+  actorUserId: text('actor_user_id').notNull(),
+  startedAt: timestamp('started_at').notNull(),
+  lastActiveAt: timestamp('last_active_at').notNull(),
+  endedAt: timestamp('ended_at'),
+  activeMilliseconds: bigint('active_milliseconds', { mode: 'number' }).notNull(),
+  revision: integer('revision').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  primaryKey({
+    columns: [table.installationId, table.id],
+    name: 'ih_installation_work_sessions_pk',
+  }),
+  index('ih_installation_work_sessions_installation_actor_idx').on(
+    table.installationId,
+    table.actorUserId,
+    table.updatedAt,
+  ),
+  check(
+    'ih_installation_work_sessions_active_milliseconds_check',
+    sql`${table.activeMilliseconds} >= 0`,
+  ),
+  check('ih_installation_work_sessions_revision_check', sql`${table.revision} >= 0`),
+  check(
+    'ih_installation_work_sessions_time_order_check',
+    sql`${table.startedAt} <= ${table.lastActiveAt}
+      AND (${table.endedAt} IS NULL OR ${table.lastActiveAt} <= ${table.endedAt})`,
+  ),
 ]);
 
 export const ihGridSupplies = pgTable('ih_grid_supplies', {

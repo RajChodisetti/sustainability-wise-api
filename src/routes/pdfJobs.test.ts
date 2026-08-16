@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  exportArtifactContentDisposition,
   exportJobParamsMatchExpectedProvenance,
   exportJobParamsMatchReportVariant,
 } from './pdfJobs.js';
@@ -44,4 +45,17 @@ test('report variant matching keeps detail mode, selected forms and Draft revisi
     reportVariantKey: 'installation-pack:v3:by-zone:map:tree-revision-7:forms-0123456789abcdef01234567',
   }, variant), false);
   assert.equal(exportJobParamsMatchReportVariant({}, variant), false);
+});
+
+test('export downloads retain safe Unicode filenames with an RFC ASCII fallback', () => {
+  assert.equal(
+    exportArtifactContentDisposition('invoice-Café-Retrofit-2026-08-16-INV-0042.pdf'),
+    'attachment; filename="invoice-Cafe-Retrofit-2026-08-16-INV-0042.pdf"; '
+      + "filename*=UTF-8''invoice-Caf%C3%A9-Retrofit-2026-08-16-INV-0042.pdf",
+  );
+
+  const hostile = exportArtifactContentDisposition('../private\r\nX-Header: yes.pdf');
+  assert.equal(/[\r\n\\/]/.test(hostile), false);
+  assert.equal(hostile.includes('filename*=UTF-8\'\''), true);
+  assert.equal(hostile.includes('privateX-Header- yes.pdf'), true);
 });

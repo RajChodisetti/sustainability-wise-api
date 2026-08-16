@@ -11,7 +11,7 @@ import {
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, str, num, arr, type JsonRecord } from './helpers.js';
-import { badRequest } from '../../utils/errors.js';
+import { badRequest, conflict } from '../../utils/errors.js';
 import { deleteLocalFile, localFileExists, publicFileUrl, writeLocalFile } from '../../storage/localFiles.js';
 import { saveRecordVersion } from '../recordVersions.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
@@ -303,7 +303,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       existingStartedAt: existingAudit?.startedAt,
       existingCompletedAt: existingAudit?.completedAt,
       createdAt,
-      updatedAt,
+      observedAt: receivedAt,
     });
 
     const auditValues = {
@@ -321,12 +321,33 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         incomingCreatedByUserId: auditPayload.createdByUserId,
         actor: request.user,
       }),
-      assignedInspectorUserId: str(auditPayload.assignedInspectorUserId),
+      // Preserve the server-side scheduler assignment. A stale mobile copy
+      // must not undo a reassign or cancellation on its next sync.
+      assignedInspectorUserId: existingAudit?.assignedInspectorUserId ?? null,
       ...timing,
       createdAt,
     };
     const { id: _aid, ...auditUpdateValues } = auditValues;
-    await db.insert(eaAudits).values(auditValues as any).onConflictDoUpdate({ target: eaAudits.id, set: auditUpdateValues as any });
+    const excludedStatus = sql.raw(`excluded.${eaAudits.status.name}`);
+    const excludedCompletedAt = sql.raw(`excluded.${eaAudits.completedAt.name}`);
+    const [upsertedAudit] = await db
+      .insert(eaAudits)
+      .values(auditValues as any)
+      .onConflictDoUpdate({
+        target: eaAudits.id,
+        set: {
+          ...auditUpdateValues,
+          completedAt: sql<Date | null>`case
+            when ${eaAudits.status} = 'Completed'
+              then coalesce(${eaAudits.completedAt}, ${excludedCompletedAt})
+            when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+            else null
+          end`,
+        } as any,
+        setWhere: sql`${eaAudits.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+      })
+      .returning({ id: eaAudits.id });
+    if (!upsertedAudit) throw conflict('audit_completed_reopen_requires_explicit_transition');
     if (auditValues.deletedAt) {
       await deletePhotosForAudit(localAuditId);
       const versionNumber = await saveRecordVersion({

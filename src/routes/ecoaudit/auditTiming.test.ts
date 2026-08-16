@@ -49,30 +49,32 @@ test('reopening an unstarted draft is idempotent', () => {
   });
 });
 
-test('sync persists explicit timing supplied by a completed audit', () => {
+test('sync uses server observation time for a newly completed audit', () => {
   const incomingStartedAt = new Date('2026-02-01T01:00:00.000Z');
   const incomingCompletedAt = new Date('2026-02-01T02:00:00.000Z');
+  const observedAt = new Date('2026-02-01T03:00:00.000Z');
 
   assert.deepEqual(resolveSyncedAuditTiming({
     status: 'Completed',
     incomingStartedAt,
     incomingCompletedAt,
     createdAt: new Date('2026-02-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-02-01T03:00:00.000Z'),
-  }), { startedAt: incomingStartedAt, completedAt: incomingCompletedAt });
+    observedAt,
+  }), { startedAt: incomingStartedAt, completedAt: observedAt });
 });
 
-test('sync gives legacy completed audits stable fallback timing', () => {
+test('sync gives completed audits a stable first-observed boundary', () => {
   const createdAt = new Date('2026-03-01T01:00:00.000Z');
-  const updatedAt = new Date('2026-03-01T02:00:00.000Z');
+  const completedAt = new Date('2026-03-01T02:00:00.000Z');
 
   assert.deepEqual(resolveSyncedAuditTiming({
     status: 'Completed',
     incomingStartedAt: null,
     incomingCompletedAt: null,
+    existingCompletedAt: completedAt,
     createdAt,
-    updatedAt,
-  }), { startedAt: createdAt, completedAt: updatedAt });
+    observedAt: new Date('2026-03-02T02:00:00.000Z'),
+  }), { startedAt: createdAt, completedAt });
 });
 
 test('sync does not retain a completion timestamp when an audit is draft', () => {
@@ -85,6 +87,6 @@ test('sync does not retain a completion timestamp when an audit is draft', () =>
     existingStartedAt: startedAt,
     existingCompletedAt: new Date('2026-04-01T02:00:00.000Z'),
     createdAt: new Date('2026-04-01T00:00:00.000Z'),
-    updatedAt: new Date('2026-04-01T03:00:00.000Z'),
+    observedAt: new Date('2026-04-01T03:00:00.000Z'),
   }), { startedAt, completedAt: null });
 });

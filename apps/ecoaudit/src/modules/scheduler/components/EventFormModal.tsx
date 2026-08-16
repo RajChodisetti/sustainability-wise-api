@@ -1,15 +1,18 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner } from '@/components/ui/Card';
 import { FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { cloudConnectionErrorMessage } from '@/api/client';
+import { useToast } from '@/contexts/ToastContext';
 import {
   useCancelScheduleEvent,
   useCreateScheduleEvent,
+  useCreateSchedulerDispatch,
   useJobOptions,
   usePortalAssignees,
+  useSendScheduleEventReminder,
   useUpdateScheduleEvent,
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
@@ -29,7 +32,10 @@ type Props = {
   initialDay?: Date | null;
   event?: ScheduleEvent | null;
   isAdmin: boolean;
+  onOpenFinance?: (event: ScheduleEvent) => void;
 };
+
+type CreationMode = 'new' | 'existing';
 
 const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
   { value: 'custom', label: 'Custom job' },
@@ -41,8 +47,15 @@ const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
 function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
   if (app === 'ecoaudit') return 'audit';
   if (app === 'installhub') return 'installation';
-  if (app === 'solarsense') return 'site';
+  if (app === 'solarsense') return 'assessment';
   return 'custom';
+}
+
+function supportsMobileSchedulerNotifications(event: ScheduleEvent): boolean {
+  if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
+  return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
+    || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
+    || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
 }
 
 function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | null) {
@@ -51,7 +64,13 @@ function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | nul
       sourceApp: event.sourceApp,
       sourceType: event.sourceType,
       sourceId: event.sourceId ?? '',
+      creationMode: 'existing' as CreationMode,
       jobQuery: '',
+      jobSiteName: '',
+      jobSiteAddress: '',
+      jobLocation: '',
+      jobBuildingName: '',
+      jobClientName: '',
       title: event.title,
       description: event.description ?? '',
       assigneeFieldUserId: event.assigneeFieldUserId,
@@ -74,10 +93,16 @@ function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | nul
   deadline.setHours(17, 0, 0, 0);
 
   return {
-    sourceApp: 'custom' as ScheduleSourceApp,
-    sourceType: 'custom' as ScheduleSourceType,
+    sourceApp: 'ecoaudit' as ScheduleSourceApp,
+    sourceType: 'audit' as ScheduleSourceType,
     sourceId: '',
+    creationMode: 'new' as CreationMode,
     jobQuery: '',
+    jobSiteName: '',
+    jobSiteAddress: '',
+    jobLocation: '',
+    jobBuildingName: '',
+    jobClientName: '',
     title: '',
     description: '',
     assigneeFieldUserId: '',
@@ -88,10 +113,13 @@ function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | nul
   };
 }
 
-export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Props) {
+export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOpenFinance }: Props) {
+  const toast = useToast();
   const create = useCreateScheduleEvent();
+  const dispatch = useCreateSchedulerDispatch();
   const update = useUpdateScheduleEvent();
   const cancel = useCancelScheduleEvent();
+  const remind = useSendScheduleEventReminder();
   const assignees = usePortalAssignees(open && isAdmin);
   const editing = Boolean(event);
   const initial = initialFormValues(event, initialDay);
@@ -99,7 +127,13 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
   const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>(initial.sourceApp);
   const [sourceType, setSourceType] = useState<ScheduleSourceType>(initial.sourceType);
   const [sourceId, setSourceId] = useState(initial.sourceId);
+  const [creationMode, setCreationMode] = useState<CreationMode>(initial.creationMode);
   const [jobQuery, setJobQuery] = useState(initial.jobQuery);
+  const [jobSiteName, setJobSiteName] = useState(initial.jobSiteName);
+  const [jobSiteAddress, setJobSiteAddress] = useState(initial.jobSiteAddress);
+  const [jobLocation, setJobLocation] = useState(initial.jobLocation);
+  const [jobBuildingName, setJobBuildingName] = useState(initial.jobBuildingName);
+  const [jobClientName, setJobClientName] = useState(initial.jobClientName);
   const [title, setTitle] = useState(initial.title);
   const [description, setDescription] = useState(initial.description);
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
@@ -108,19 +142,101 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
   const [deadlineLocal, setDeadlineLocal] = useState(initial.deadlineLocal);
   const [status, setStatus] = useState<ScheduleStatus>(initial.status);
   const [error, setError] = useState<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const busyRef = useRef(false);
+  const reminderIdempotencyKeyRef = useRef<string | null>(null);
 
   const jobs = useJobOptions(
     jobQuery,
     sourceApp === 'custom' ? undefined : sourceApp,
-    open && isAdmin && sourceApp !== 'custom',
+    open && isAdmin && sourceApp !== 'custom' && creationMode === 'existing',
   );
+
+  const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
+    sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
+  )), [assignees.data, sourceApp]);
 
   const canSubmit = useMemo(() => {
     if (!isAdmin) return false;
     if (!assigneeFieldUserId || !startLocal || !deadlineLocal) return false;
     if (sourceApp === 'custom') return Boolean(title.trim());
-    return Boolean(sourceId);
-  }, [isAdmin, assigneeFieldUserId, startLocal, deadlineLocal, sourceApp, title, sourceId]);
+    if (creationMode === 'existing') return Boolean(sourceId);
+    if (sourceApp === 'ecoaudit') return Boolean(jobSiteName.trim() && jobSiteAddress.trim());
+    if (sourceApp === 'solarsense') {
+      return Boolean(jobSiteName.trim() && jobLocation.trim() && jobBuildingName.trim());
+    }
+    return Boolean(jobClientName.trim() && jobSiteName.trim() && jobSiteAddress.trim());
+  }, [
+    isAdmin,
+    assigneeFieldUserId,
+    startLocal,
+    deadlineLocal,
+    sourceApp,
+    title,
+    creationMode,
+    sourceId,
+    jobSiteName,
+    jobSiteAddress,
+    jobLocation,
+    jobBuildingName,
+    jobClientName,
+  ]);
+
+  const saving = create.isPending || dispatch.isPending || update.isPending || cancel.isPending;
+  const busy = saving || remind.isPending;
+  const supportsMobileNotifications = event
+    ? supportsMobileSchedulerNotifications(event)
+    : sourceApp !== 'custom';
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    busyRef.current = busy;
+  }, [busy, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialogRef.current?.querySelector<HTMLElement>(
+      'select:not(:disabled), input:not(:disabled), textarea:not(:disabled), button:not(:disabled)',
+    )?.focus();
+
+    function onKeyDown(keyboardEvent: KeyboardEvent) {
+      if (keyboardEvent.key === 'Escape' && !busyRef.current) {
+        keyboardEvent.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (keyboardEvent.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (keyboardEvent.shiftKey && document.activeElement === first) {
+        keyboardEvent.preventDefault();
+        last.focus();
+      } else if (!keyboardEvent.shiftKey && document.activeElement === last) {
+        keyboardEvent.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (error) errorRef.current?.focus();
+  }, [error]);
 
   if (!open) return null;
 
@@ -139,6 +255,37 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
             scheduledEndAt: endLocal ? fromDatetimeLocalValue(endLocal) : null,
             deadlineAt: fromDatetimeLocalValue(deadlineLocal),
             status,
+          },
+        });
+      } else if (sourceApp !== 'custom' && creationMode === 'new') {
+        await dispatch.mutateAsync({
+          sourceApp,
+          title: title.trim() || undefined,
+          description: description.trim() || null,
+          assigneeFieldUserId,
+          scheduledStartAt: fromDatetimeLocalValue(startLocal),
+          scheduledEndAt: endLocal ? fromDatetimeLocalValue(endLocal) : null,
+          deadlineAt: fromDatetimeLocalValue(deadlineLocal),
+          job: {
+            siteName: jobSiteName.trim(),
+            // Preserve the date selected in the site's scheduling UI instead
+            // of deriving it from a UTC-converted instant on the server.
+            auditDate: startLocal.slice(0, 10),
+            ...(sourceApp === 'ecoaudit'
+              ? { siteAddress: jobSiteAddress.trim() }
+              : {}),
+            ...(sourceApp === 'solarsense'
+              ? {
+                  location: jobLocation.trim(),
+                  buildingIdName: jobBuildingName.trim(),
+                }
+              : {}),
+            ...(sourceApp === 'installhub'
+              ? {
+                  clientName: jobClientName.trim(),
+                  siteAddress: jobSiteAddress.trim(),
+                }
+              : {}),
           },
         });
       } else {
@@ -172,11 +319,28 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
     }
   }
 
-  const busy = create.isPending || update.isPending || cancel.isPending;
+  async function handleReminder() {
+    if (!event || event.sourceApp === 'custom') return;
+    setError(null);
+    const idempotencyKey = reminderIdempotencyKeyRef.current ?? (
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${event.id}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    reminderIdempotencyKeyRef.current = idempotencyKey;
+    try {
+      const result = await remind.mutateAsync({ id: event.id, idempotencyKey });
+      reminderIdempotencyKeyRef.current = null;
+      toast.success(result.queued ? 'Reminder queued for delivery.' : 'This reminder was already queued.');
+    } catch (err) {
+      setError(cloudConnectionErrorMessage(err));
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center" role="presentation">
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="scheduler-event-title"
@@ -197,7 +361,7 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
           <div className="mt-2">
             {!editing ? (
               <>
-                <FieldLabel>App / type</FieldLabel>
+                <FieldLabel>Work type</FieldLabel>
                 <Select
                   value={sourceApp}
                   onChange={(e) => {
@@ -205,6 +369,8 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
                     setSourceApp(app);
                     setSourceType(defaultTypeForApp(app));
                     setSourceId('');
+                    setCreationMode('new');
+                    setAssigneeFieldUserId('');
                     setTitle('');
                   }}
                 >
@@ -213,59 +379,108 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
                   ))}
                 </Select>
 
-                {sourceApp === 'solarsense' ? (
-                  <>
-                    <FieldLabel>Solar item type</FieldLabel>
-                    <Select
-                      value={sourceType}
-                      onChange={(e) => {
-                        setSourceType(e.target.value as ScheduleSourceType);
-                        setSourceId('');
-                      }}
-                    >
-                      <option value="site">Site</option>
-                      <option value="assessment">Rooftop assessment</option>
-                    </Select>
-                  </>
-                ) : null}
-
                 {sourceApp !== 'custom' ? (
                   <>
-                    <FieldLabel>Search linked job</FieldLabel>
-                    <Input
-                      value={jobQuery}
-                      onChange={(e) => setJobQuery(e.target.value)}
-                      placeholder="Site name, client, address…"
-                    />
-                    <div className="mt-2 max-h-36 space-y-1 overflow-y-auto rounded-xl border border-[var(--border)] p-2">
-                      {(jobs.data ?? []).map((opt) => (
+                    <fieldset className="mt-4">
+                      <legend className="mb-1.5 text-sm font-bold text-[var(--text)]">
+                        Creation mode
+                      </legend>
+                      <div className="grid grid-cols-2 gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-1">
+                      {([
+                        ['new', 'Create new work'],
+                        ['existing', 'Link existing'],
+                      ] as const).map(([value, label]) => (
                         <button
-                          key={`${opt.sourceType}-${opt.id}`}
+                          key={value}
                           type="button"
                           onClick={() => {
-                            setSourceId(opt.id);
-                            setSourceType(opt.sourceType);
-                            setTitle(opt.label);
+                            setCreationMode(value);
+                            setSourceId('');
+                            setTitle('');
                           }}
-                          className={`block w-full rounded-lg px-2.5 py-2 text-left text-sm ${
-                            sourceId === opt.id
-                              ? 'bg-[var(--primary-soft)] font-extrabold text-[var(--primary)]'
-                              : 'hover:bg-[var(--surface2)]'
+                          aria-pressed={creationMode === value}
+                          className={`cursor-pointer rounded-lg px-3 py-2 text-sm font-extrabold transition-colors ${
+                            creationMode === value
+                              ? 'bg-[var(--surface)] text-[var(--primary)] shadow-sm'
+                              : 'text-[var(--text-sub)] hover:text-[var(--text)]'
                           }`}
                         >
-                          <span className="font-bold">{opt.label}</span>
-                          {opt.subtitle ? (
-                            <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{opt.subtitle}</span>
-                          ) : null}
+                          {label}
                         </button>
                       ))}
-                      {jobs.isLoading ? (
-                        <p className="px-2 py-1 text-xs text-[var(--text-sub)]">Searching…</p>
-                      ) : null}
-                      {!jobs.isLoading && (jobs.data?.length ?? 0) === 0 ? (
-                        <p className="px-2 py-1 text-xs text-[var(--text-sub)]">No matching jobs.</p>
-                      ) : null}
-                    </div>
+                      </div>
+                    </fieldset>
+
+                    {creationMode === 'new' ? (
+                      <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
+                        <p className="text-xs font-bold text-[var(--text-sub)]">
+                          A Draft product record will be created and assigned with this planned event.
+                        </p>
+                        {sourceApp === 'installhub' ? (
+                          <>
+                            <FieldLabel>Client name</FieldLabel>
+                            <Input value={jobClientName} onChange={(e) => setJobClientName(e.target.value)} />
+                          </>
+                        ) : null}
+                        <FieldLabel>Site name</FieldLabel>
+                        <Input value={jobSiteName} onChange={(e) => setJobSiteName(e.target.value)} />
+                        {sourceApp === 'solarsense' ? (
+                          <>
+                            <FieldLabel>Site location</FieldLabel>
+                            <Input value={jobLocation} onChange={(e) => setJobLocation(e.target.value)} />
+                            <FieldLabel>Building / roof name</FieldLabel>
+                            <Input value={jobBuildingName} onChange={(e) => setJobBuildingName(e.target.value)} />
+                          </>
+                        ) : (
+                          <>
+                            <FieldLabel>Site address</FieldLabel>
+                            <Input value={jobSiteAddress} onChange={(e) => setJobSiteAddress(e.target.value)} />
+                          </>
+                        )}
+                      </div>
+                    ) : (
+                      <>
+                        <FieldLabel>Search existing Draft work</FieldLabel>
+                        <Input
+                          value={jobQuery}
+                          onChange={(e) => setJobQuery(e.target.value)}
+                          placeholder="Site name, client, address…"
+                        />
+                        <div className="mt-2 max-h-36 space-y-1 overflow-y-auto rounded-xl border border-[var(--border)] p-2">
+                          {(jobs.data ?? []).map((opt) => (
+                            <button
+                              key={`${opt.sourceType}-${opt.id}`}
+                              type="button"
+                              onClick={() => {
+                                setSourceId(opt.id);
+                                setSourceType(opt.sourceType);
+                                setTitle(opt.label);
+                              }}
+                              className={`block w-full cursor-pointer rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
+                                sourceId === opt.id
+                                  ? 'bg-[var(--primary-soft)] font-extrabold text-[var(--primary)]'
+                                  : 'hover:bg-[var(--surface2)]'
+                              }`}
+                            >
+                              <span className="font-bold">{opt.label}</span>
+                              {opt.subtitle ? (
+                                <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{opt.subtitle}</span>
+                              ) : null}
+                            </button>
+                          ))}
+                          {jobs.isLoading ? (
+                            <p className="px-2 py-1 text-xs text-[var(--text-sub)]" role="status" aria-live="polite">
+                              Searching…
+                            </p>
+                          ) : null}
+                          {!jobs.isLoading && (jobs.data?.length ?? 0) === 0 ? (
+                            <p className="px-2 py-1 text-xs text-[var(--text-sub)]" role="status" aria-live="polite">
+                              No matching Draft work.
+                            </p>
+                          ) : null}
+                        </div>
+                      </>
+                    )}
                   </>
                 ) : null}
               </>
@@ -285,16 +500,28 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
             <Select
               value={assigneeFieldUserId}
               onChange={(e) => setAssigneeFieldUserId(e.target.value)}
+              disabled={assignees.isLoading}
+              aria-busy={assignees.isLoading}
             >
-              <option value="">Select user…</option>
-              {(assignees.data ?? []).map((u) => (
+              <option value="">{assignees.isLoading ? 'Loading users…' : 'Select user…'}</option>
+              {eligibleAssignees.map((u) => (
                 <option key={u.fieldUserId} value={u.fieldUserId}>
                   {u.label} ({u.email})
                 </option>
               ))}
             </Select>
+            {assignees.isLoading ? (
+              <p className="mt-1 text-xs text-[var(--text-sub)]" role="status" aria-live="polite">
+                Loading eligible assignees…
+              </p>
+            ) : null}
+            {sourceApp !== 'custom' && !assignees.isLoading && eligibleAssignees.length === 0 ? (
+              <p className="mt-1 text-xs font-semibold text-[var(--red)]">
+                No active users have access to this product app.
+              </p>
+            ) : null}
             {assignees.error ? (
-              <p className="mt-1 text-xs text-[var(--red)]">
+              <p className="mt-1 text-xs text-[var(--red)]" role="alert">
                 Could not load users (admin directory). {(assignees.error as Error).message}
               </p>
             ) : null}
@@ -329,12 +556,53 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
                 </Select>
               </>
             ) : null}
+
+            {supportsMobileNotifications ? (
+              <p className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text-sub)]">
+                The assignee is notified on assignment and changes, 24 hours before the start,
+                and again at the scheduled start time. Existing jobs also offer an extra reminder action.
+              </p>
+            ) : editing && sourceApp !== 'custom' ? (
+              <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">
+                Mobile reminders are available for Eco Audit audits, Solar Sense assessments,
+                and Field App installations. This legacy calendar link is planning-only.
+              </p>
+            ) : (
+              <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">
+                Custom calendar events do not target a mobile app.
+              </p>
+            )}
           </div>
         )}
 
-        {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
+        {error ? (
+          <div ref={errorRef} className="mt-4 outline-none" tabIndex={-1}>
+            <ErrorBanner message={error} />
+          </div>
+        ) : null}
 
         <div className="mt-6 flex flex-wrap justify-end gap-2">
+          {editing && event && isAdmin && supportsMobileNotifications && onOpenFinance ? (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => onOpenFinance(event)}
+            >
+              Open finance
+            </Button>
+          ) : null}
+          {editing && event && isAdmin && supportsMobileNotifications ? (
+            <Button
+              variant="secondary"
+              disabled={busy || event.status === 'cancelled' || event.status === 'done'}
+              onClick={() => void handleReminder()}
+              title={event.status === 'cancelled' || event.status === 'done'
+                ? 'Reminders are available only for active scheduled jobs.'
+                : 'Send an additional notification to the assigned user now.'}
+            >
+              {remind.isPending ? 'Queuing reminder…' : 'Send reminder'}
+            </Button>
+          ) : null}
           {editing && isAdmin ? (
             <Button variant="danger" disabled={busy} onClick={() => void handleCancel()}>
               Cancel job
@@ -345,7 +613,7 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin }: Pr
           </Button>
           {isAdmin ? (
             <Button disabled={!canSubmit || busy} onClick={() => void handleSubmit()}>
-              {busy ? 'Saving…' : editing ? 'Save changes' : 'Create'}
+              {saving ? 'Saving…' : editing ? 'Save changes' : 'Create'}
             </Button>
           ) : null}
         </div>

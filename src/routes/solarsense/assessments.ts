@@ -1,13 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { ssRooftopAssessments, ssSites } from '../../db/schema/solarsense.js';
+import {
+  ssAssessmentWorkSessions,
+  ssRooftopAssessments,
+  ssSites,
+} from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import {
   assertFound,
+  assertAssessmentAccess,
   assertDraftMutable,
   assertSiteAccess,
+  isElevated,
   dateOrNow,
   optionalBoolean,
   optionalDate,
@@ -19,11 +25,23 @@ import {
   shouldPurgeQuery,
   type JsonRecord,
 } from './helpers.js';
-import { badRequest } from '../../utils/errors.js';
+import { badRequest, conflict } from '../../utils/errors.js';
+import {
+  decideWorkSessionUpdate,
+  parseWorkSessionBody,
+  presentWorkSession,
+  workSessionBodySchema,
+  workSessionResponseSchema,
+} from '../workSessions.js';
 import {
   reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../storage/photoCopyReferences.js';
+import {
+  completionAtFirstObservation,
+  parseSolarLifecycleStatus,
+  resolveSolarCompletionFence,
+} from './completionFence.js';
 
 type AssessmentChanges = Partial<typeof ssRooftopAssessments.$inferInsert>;
 
@@ -117,14 +135,26 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
   }, async (request, reply) => {
     const { siteId } = request.params as { siteId: string };
     const site = await getSite(siteId);
-    assertSiteAccess(site, request.user);
+    const ownsSite = isElevated(request.user) || site.createdByUserId === request.user.userId;
+    if (!ownsSite) assertDraftMutable(site, 'Site');
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
 
+    const conditions = [
+      eq(ssRooftopAssessments.siteId, siteId),
+      isNull(ssRooftopAssessments.deletedAt),
+    ];
+    if (!ownsSite) {
+      conditions.push(eq(ssRooftopAssessments.assignedInspectorUserId, request.user.userId));
+    }
     const assessments = await db
       .select()
       .from(ssRooftopAssessments)
-      .where(and(eq(ssRooftopAssessments.siteId, siteId), isNull(ssRooftopAssessments.deletedAt)))
+      .where(and(...conditions))
       .orderBy(asc(ssRooftopAssessments.createdAt));
+
+    if (!ownsSite && assessments.length === 0) {
+      assertSiteAccess(site, request.user);
+    }
 
     return reply.send({ data: assessments });
   });
@@ -144,7 +174,9 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
 
     const body = request.body as JsonRecord;
     const id = randomUUID();
+    const receivedAt = new Date();
     const changes = buildAssessmentChanges({ ...body, siteId });
+    const status = parseSolarLifecycleStatus(body.status);
 
     const [created] = await db
       .insert(ssRooftopAssessments)
@@ -198,7 +230,8 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         photoMetadata: changes.photoMetadata ?? {},
         createdByUserId: request.user.userId,
         createdAt: dateOrNow(body.createdAt),
-        status: typeof body.status === 'string' ? body.status : 'Draft',
+        status,
+        completedAt: completionAtFirstObservation(status, receivedAt),
       })
       .returning();
 
@@ -216,9 +249,6 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
   }, async (request, reply) => {
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
-    assertSiteAccess(site, request.user);
-    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
-
     const [assessment] = await db
       .select()
       .from(ssRooftopAssessments)
@@ -228,7 +258,107 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         isNull(ssRooftopAssessments.deletedAt),
       ));
 
-    return reply.send(assertFound(assessment, 'Assessment'));
+    const foundAssessment = assertFound(assessment, 'Assessment');
+    if (!isElevated(request.user) && site.createdByUserId !== request.user.userId) {
+      assertDraftMutable(site, 'Site');
+    }
+    assertAssessmentAccess(site, foundAssessment, request.user);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
+    return reply.send(foundAssessment);
+  });
+
+  app.put('/sites/:siteId/assessments/:id/active-time/sessions/:sessionId', {
+    schema: {
+      tags: ['SolarSense Assessments'],
+      summary: 'Checkpoint active foreground time for a rooftop assessment',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['siteId', 'id', 'sessionId'],
+        additionalProperties: false,
+        properties: {
+          siteId: { type: 'string', minLength: 1 },
+          id: { type: 'string', minLength: 1 },
+          sessionId: { type: 'string', minLength: 1, maxLength: 160 },
+        },
+      },
+      body: workSessionBodySchema,
+      response: { 200: workSessionResponseSchema },
+    },
+    preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { siteId, id, sessionId } = request.params as {
+      siteId: string;
+      id: string;
+      sessionId: string;
+    };
+    const incoming = parseWorkSessionBody(request.body);
+    const response = await db.transaction(async (tx) => {
+      const [site] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
+        .for('update');
+      const foundSite = assertFound(site, 'Site');
+
+      const [assessment] = await tx
+        .select()
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+          isNull(ssRooftopAssessments.deletedAt),
+        ))
+        .for('update');
+      const foundAssessment = assertFound(assessment, 'Assessment');
+      assertAssessmentAccess(foundSite, foundAssessment, request.user);
+
+      const [existing] = await tx
+        .select()
+        .from(ssAssessmentWorkSessions)
+        .where(and(
+          eq(ssAssessmentWorkSessions.assessmentId, id),
+          eq(ssAssessmentWorkSessions.id, sessionId),
+        ));
+      const completionFence = resolveSolarCompletionFence(foundSite, foundAssessment);
+      const decision = decideWorkSessionUpdate({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        completed: completionFence.completed,
+        completionBoundary: completionFence.completionBoundary,
+        completedDetail: 'assessment_completed_time_tracking_disabled',
+      });
+
+      if (decision.action === 'current') {
+        return presentWorkSession(existing!, false);
+      }
+      if (decision.action === 'insert') {
+        const [inserted] = await tx
+          .insert(ssAssessmentWorkSessions)
+          .values({
+            id: sessionId,
+            assessmentId: id,
+            actorUserId: request.user.userId,
+            ...incoming,
+          })
+          .returning();
+        return presentWorkSession(inserted, true);
+      }
+
+      const [updated] = await tx
+        .update(ssAssessmentWorkSessions)
+        .set({ ...incoming, updatedAt: new Date() })
+        .where(and(
+          eq(ssAssessmentWorkSessions.assessmentId, id),
+          eq(ssAssessmentWorkSessions.id, sessionId),
+          eq(ssAssessmentWorkSessions.revision, existing!.revision),
+        ))
+        .returning();
+      if (!updated) throw conflict('work_session_concurrent_update');
+      return presentWorkSession(updated, true);
+    });
+    return reply.send(response);
   });
 
   app.patch('/sites/:siteId/assessments/:id', {
@@ -244,7 +374,6 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     if ('status' in body) throw badRequest('Use /complete to change status');
 
     const site = await getSite(siteId);
-    assertSiteAccess(site, request.user);
     assertDraftMutable(site, 'Site');
 
     const [assessment] = await db
@@ -255,7 +384,9 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         eq(ssRooftopAssessments.siteId, siteId),
         isNull(ssRooftopAssessments.deletedAt),
       ));
-    assertDraftMutable(assertFound(assessment, 'Assessment'), 'Assessment');
+    const foundAssessment = assertFound(assessment, 'Assessment');
+    assertAssessmentAccess(site, foundAssessment, request.user);
+    assertDraftMutable(foundAssessment, 'Assessment');
 
     const [updated] = await db
       .update(ssRooftopAssessments)
@@ -281,7 +412,6 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
   }, async (request, reply) => {
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
-    assertSiteAccess(site, request.user);
     assertDraftMutable(site, 'Site');
     const purge = shouldPurgeQuery(request.query as Record<string, unknown> | undefined);
     if (purge) {
@@ -292,8 +422,9 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
           eq(ssRooftopAssessments.id, id),
           eq(ssRooftopAssessments.siteId, siteId),
         ));
-      assertFound(assessment, 'Assessment');
-      assertDraftMutable(assessment, 'Assessment');
+      const foundAssessment = assertFound(assessment, 'Assessment');
+      assertAssessmentAccess(site, foundAssessment, request.user);
+      assertDraftMutable(foundAssessment, 'Assessment');
       await purgeSolarsenseAssessment(id);
       return reply.status(204).send();
     }
@@ -306,7 +437,9 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         eq(ssRooftopAssessments.siteId, siteId),
         isNull(ssRooftopAssessments.deletedAt),
       ));
-    assertDraftMutable(assertFound(assessment, 'Assessment'), 'Assessment');
+    const foundAssessment = assertFound(assessment, 'Assessment');
+    assertAssessmentAccess(site, foundAssessment, request.user);
+    assertDraftMutable(foundAssessment, 'Assessment');
 
     const [updated] = await db
       .update(ssRooftopAssessments)
@@ -333,15 +466,36 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
   }, async (request, reply) => {
     const { siteId, id } = request.params as { siteId: string; id: string };
     const site = await getSite(siteId);
-    assertSiteAccess(site, request.user);
     assertDraftMutable(site, 'Site');
+    const completedAt = new Date();
 
-    const [updated] = await db
-      .update(ssRooftopAssessments)
-      .set({ status: 'Completed', updatedAt: new Date(), syncStatus: 'local' })
+    const [assessment] = await db
+      .select()
+      .from(ssRooftopAssessments)
       .where(and(
         eq(ssRooftopAssessments.id, id),
         eq(ssRooftopAssessments.siteId, siteId),
+        isNull(ssRooftopAssessments.deletedAt),
+      ));
+    const foundAssessment = assertFound(assessment, 'Assessment');
+    assertAssessmentAccess(site, foundAssessment, request.user);
+    assertDraftMutable(foundAssessment, 'Assessment');
+
+    const [updated] = await db
+      .update(ssRooftopAssessments)
+      .set({
+        status: 'Completed',
+        completedAt: sql<Date>`coalesce(
+          ${ssRooftopAssessments.completedAt},
+          ${sql.param(completedAt, ssRooftopAssessments.completedAt)}
+        )`,
+        updatedAt: completedAt,
+        syncStatus: 'local',
+      })
+      .where(and(
+        eq(ssRooftopAssessments.id, id),
+        eq(ssRooftopAssessments.siteId, siteId),
+        eq(ssRooftopAssessments.status, 'Draft'),
         isNull(ssRooftopAssessments.deletedAt),
       ))
       .returning();

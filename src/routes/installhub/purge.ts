@@ -23,6 +23,7 @@ import {
   recordVersions,
   storageDeletionTasks,
 } from '../../db/schema/shared.js';
+import { assertNoSchedulerCommercialEvidenceBeforePurge as assertNoSharedCommercialEvidence } from '../../services/schedulerCommercialRetentionService.js';
 import { drainStorageDeletionTasks } from '../../services/storageDeletionService.js';
 import { badRequest, conflict } from '../../utils/errors.js';
 import type { InstallHubExecutor } from './treeService.js';
@@ -66,6 +67,27 @@ async function pinnedVersionReferencesPhoto(
   return Boolean(reference);
 }
 
+async function assertNoCommercialEvidenceBeforePurge(
+  executor: InstallHubExecutor,
+  installationId: string,
+): Promise<void> {
+  try {
+    await assertNoSharedCommercialEvidence(executor, {
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: installationId,
+    });
+  } catch (error) {
+    if (
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'job_commercial_history_purge_blocked'
+    ) throw conflict('installation_commercial_history_purge_blocked');
+    throw error;
+  }
+}
+
 /**
  * Permanently removes one Field App Complete server tree.
  *
@@ -91,6 +113,8 @@ export async function purgeInstallHubInstallationTree(
     if (installation.status === 'Completed') {
       throw conflict('installation_completed_reopen_required');
     }
+
+    await assertNoCommercialEvidenceBeforePurge(tx, installation.id);
 
     const tombstonedAt = new Date();
     await tx.update(ihInstallations).set({

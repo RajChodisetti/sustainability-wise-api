@@ -2,7 +2,10 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, isNull } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
-import { ihInstallations } from '../../db/schema/installhub.js';
+import {
+  ihInstallationWorkSessions,
+  ihInstallations,
+} from '../../db/schema/installhub.js';
 import { unifiedUsers } from '../../db/schema/shared.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
 import {
@@ -16,6 +19,13 @@ import {
   unifiedInstallHubUserColumns,
   type UnifiedInstallHubUserView,
 } from './users.js';
+import {
+  decideWorkSessionUpdate,
+  parseWorkSessionBody,
+  presentWorkSession,
+  workSessionBodySchema,
+  workSessionResponseSchema,
+} from '../workSessions.js';
 
 type InstallationAssignment = Pick<
   typeof ihInstallations.$inferSelect,
@@ -66,9 +76,9 @@ async function assignmentResponse(
       ? await db
         .select(unifiedInstallHubUserColumns)
         .from(unifiedUsers)
-        .where(eq(
-          unifiedUsers.fieldUserId,
-          installation.assignedInspectorUserId,
+        .where(and(
+          eq(unifiedUsers.fieldUserId, installation.assignedInspectorUserId),
+          eq(unifiedUsers.originApp, 'installhub'),
         ))
         .limit(1)
     : [];
@@ -78,12 +88,101 @@ async function assignmentResponse(
 export async function installhubInstallationRoutes(
   app: FastifyInstance,
 ): Promise<void> {
+  app.put('/:installationId/active-time/sessions/:sessionId', {
+    schema: {
+      tags: ['Field App Complete Installations'],
+      summary: 'Checkpoint active foreground time for an installation audit',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['installationId', 'sessionId'],
+        additionalProperties: false,
+        properties: {
+          installationId: { type: 'string', minLength: 1 },
+          sessionId: { type: 'string', minLength: 1, maxLength: 160 },
+        },
+      },
+      body: workSessionBodySchema,
+      response: { 200: workSessionResponseSchema },
+    },
+    preHandler: [
+      authenticate,
+      requireApp('installhub'),
+      requireRole('inspector'),
+    ],
+  }, async (request, reply) => {
+    const { installationId, sessionId } = request.params as {
+      installationId: string;
+      sessionId: string;
+    };
+    const incoming = parseWorkSessionBody(request.body);
+    const response = await db.transaction(async (tx) => {
+      const [installation] = await tx
+        .select()
+        .from(ihInstallations)
+        .where(and(
+          eq(ihInstallations.id, installationId),
+          isNull(ihInstallations.deletedAt),
+        ))
+        .for('update');
+      if (!installation) throw notFound('Installation');
+      assertInstallationAccess(installation, request.user);
+
+      const [existing] = await tx
+        .select()
+        .from(ihInstallationWorkSessions)
+        .where(and(
+          eq(ihInstallationWorkSessions.installationId, installationId),
+          eq(ihInstallationWorkSessions.id, sessionId),
+        ));
+      const decision = decideWorkSessionUpdate({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        completed: installation.status === 'Completed',
+        completionBoundary: installation.status === 'Completed'
+          ? installation.completedAt
+          : null,
+        completedDetail: 'installation_completed_time_tracking_disabled',
+      });
+
+      if (decision.action === 'current') {
+        return presentWorkSession(existing!, false);
+      }
+      if (decision.action === 'insert') {
+        const [inserted] = await tx
+          .insert(ihInstallationWorkSessions)
+          .values({
+            id: sessionId,
+            installationId,
+            actorUserId: request.user.userId,
+            ...incoming,
+          })
+          .returning();
+        return presentWorkSession(inserted, true);
+      }
+
+      const [updated] = await tx
+        .update(ihInstallationWorkSessions)
+        .set({ ...incoming, updatedAt: new Date() })
+        .where(and(
+          eq(ihInstallationWorkSessions.installationId, installationId),
+          eq(ihInstallationWorkSessions.id, sessionId),
+          eq(ihInstallationWorkSessions.revision, existing!.revision),
+        ))
+        .returning();
+      if (!updated) throw conflict('work_session_concurrent_update');
+      return presentWorkSession(updated, true);
+    });
+    return reply.send(response);
+  });
+
   app.delete('/:installationId', {
     schema: {
       tags: ['Field App Complete Installations'],
       summary: 'Delete a Field App Complete Cloud Backup',
       description:
-        'Soft-deletes by default. purge=true permanently removes the server tree, unreferenced originals, generated reports, and versions.',
+        'Soft-deletes by default. purge=true permanently removes an installation only when it has no work-session or commercial accounting history.',
       security: [{ bearerAuth: [] }],
       querystring: {
         type: 'object',
@@ -171,7 +270,10 @@ export async function installhubInstallationRoutes(
       const [user] = await db
         .select(unifiedInstallHubUserColumns)
         .from(unifiedUsers)
-        .where(eq(unifiedUsers.fieldUserId, assignedInspectorUserId))
+        .where(and(
+          eq(unifiedUsers.fieldUserId, assignedInspectorUserId),
+          eq(unifiedUsers.originApp, 'installhub'),
+        ))
         .limit(1);
       if (!user) throw notFound('Assigned user');
       if (!isAssignableInstallHubUser(user)) {

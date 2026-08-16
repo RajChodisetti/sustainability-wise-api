@@ -73,6 +73,83 @@ pm2 restart sw-api # rolling restart (zero downtime for single instance)
 
 The PM2 config runs `src/index.ts` through `tsx`, so `tsx` is a runtime dependency.
 The API applies Drizzle migrations during startup before listening on the configured port.
+For scheduler push rollout, apply both 0031 and 0032 before accepting traffic.
+0031 creates/backfills aligned future scheduler jobs; 0032 adds device lifecycle
+generations, raises the retry/receipt budget, and reconciles legacy terminal-job
+delivery rows.
+
+0033 adds the cross-app Scheduler commercial ledger. Apply it after 0032 before
+serving finance routes. It copies existing Field headers, manual expenses, and
+draft/issued/void invoice snapshots without dropping the released `ih_*` tables;
+the runtime compatibility endpoints then read/write only the shared ledger.
+The latest historical calendar-day auto-labour value becomes a clearly labelled
+review override only when no recorded active-work session exists, preserving
+both issued-history cost and uninvoiced estimates. Its persisted sell/cost per
+hour is retained as the shared job rate, and legacy quoted invoice labour
+reserves the corresponding quote value. The migration fails closed before
+writing shared rows if legacy monetary/time data is nonfinite, negative, or out
+of the supported accounting range. It seeds the transaction-safe yearly invoice
+counter from preserved `INV-YYYY-NNNN` values.
+Backups must include all `scheduler_job_*`, `scheduler_invoice_*`, and active-time
+session tables because issued/paid invoice retention is independent of mutable
+operational source rows.
+
+Scheduler invoice PDFs use the shared durable `pdf_jobs` queue rather than a
+browser-held render request. Jobs and stored artifacts are owned by the exact
+portal app/user credential that queued them, pin invoice `id` + `updatedAt` in
+their `reportVariantKey`, and are marked complete only after object storage has
+accepted the branded PDF. Rendering reads invoice headers, grouped jobs, and
+lines from one repeatable-read snapshot. Publication then locks and rechecks the
+pinned invoice revision in the same transaction that completes `pdf_jobs`.
+Before any PDF bytes are written, a `storage_deletion_tasks` outbox row protects
+against interrupted or partial writes; successful publication removes that row
+atomically. Explicit failure cleanup runs immediately. Global/startup cleanup
+leases fresh invoice-export tasks for one hour to avoid rolling-restart races,
+then a bounded 15-minute no-overlap sweep reclaims abandoned artifacts and
+fails export workers that have remained inactive beyond the same lease. Fresh
+workers and artifact tasks are skipped, so rolling startup or a periodic sweep
+cannot fail or delete another process's live export. Latest/status/download
+access revalidates the creator as a
+current active global administrator. Keep `pdf_jobs`, `storage_deletion_tasks`,
+and referenced PDF objects in the same backup and restore plan. The released
+Field invoice PDF endpoint remains synchronous only as a mobile compatibility
+adapter.
+
+Configure Scheduler defaults with `SCHEDULER_LABOUR_COST_RATE`,
+`SCHEDULER_LABOUR_BILLABLE_RATE`, `SCHEDULER_INVOICE_GST_RATE`,
+`SCHEDULER_INVOICE_DUE_DAYS`, and the `SCHEDULER_INVOICE_SELLER_*` variables.
+Rates and expense/bill inputs are ex-GST. Invoice creation snapshots configured
+seller values; issue freezes current draft bill-to/PO fields and current job
+name/date/site fields. No receipt attachment upload is exposed in this release;
+supplier bills are structured vendor/reference/date/category/cost/sell records.
+`SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API
+fails startup for an invalid or out-of-range value instead of allowing a later
+integer-column or invoice-total failure.
+Currency is normalized to uppercase during legacy conversion, and migration
+fails closed on mixed-currency Field ledgers rather than aggregating unlike
+amounts. Runtime currency changes are blocked once an expense or invoice exists.
+
+The same API process runs the durable Expo scheduler-notification worker. Jobs,
+per-device tickets, and receipts live in PostgreSQL, so restarts and multiple API
+processes are safe: due rows are claimed with `FOR UPDATE SKIP LOCKED`, abandoned
+claims are recovered, and timers are stopped during graceful shutdown. Expo send
+batches are capped at 100 and receipt requests at 1,000. Configure
+`EXPO_ACCESS_TOKEN` only when enhanced Expo push security is enabled; the Expo
+account/service-account token must have access to all three registered EAS
+projects. Never log or expose it. Each external send batch revalidates the current scheduler event,
+linked Draft product, canonical assignment, and automatic trigger timestamp;
+stale jobs are terminally cancelled. One-day jobs expire at event start and
+day-of jobs expire at event end or after 24 hours so outage recovery cannot emit misleading
+temporal copy. Per-message `MessageRateExceeded` tickets or receipts
+retain only the affected device delivery for bounded backoff/retry.
+`EXPO_PUSH_ENABLED=false` pauses delivery without deleting queued work. See
+`.env.production.example` for polling, claim recovery, receipt delay, retry, and
+request-timeout controls.
+
+Push device lifecycle fences are stored per app/device/canonical owner. The
+monotonic `registrationGeneration` makes PUT/logout ordering restart-safe:
+equal revoked or lower PUTs conflict, while cross-user DELETEs cannot disable
+the device row owned by a newer login.
 
 ## Reverse Proxy (Caddy)
 

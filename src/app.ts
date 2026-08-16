@@ -21,11 +21,18 @@ import { storageBrowserRoutes } from './routes/storageBrowser.js';
 import { pdfJobRoutes } from './routes/pdfJobs.js';
 import { thumbnailRoutes } from './routes/thumbnails.js';
 import { fileRoutes } from './routes/files.js';
+import { notificationRoutes } from './routes/notifications.js';
 import { AppError } from './utils/errors.js';
 import { config } from './config.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const webDistRoot = join(__dirname, '..', 'web', 'dist');
+
+const EXPO_PUSH_TOKEN_IN_LOG = /(?:Exponent|Expo)PushToken\[[A-Za-z0-9_-]+\]/g;
+
+export function redactSensitiveLogText(value: string): string {
+  return value.replace(EXPO_PUSH_TOKEN_IN_LOG, '[REDACTED_EXPO_PUSH_TOKEN]');
+}
 
 const tagMap: Record<string, string> = {
   'SolarSense Users': 'SolarSense / Users',
@@ -54,6 +61,7 @@ const tagMap: Record<string, string> = {
   'Wattwatchers Ingest': 'Wattwatchers / Ingest',
   'Portal Users': 'Portal / Users',
   'Portal Scheduler': 'Portal / Scheduler',
+  Notifications: 'Notifications',
 };
 
 const orderedTags = [
@@ -85,6 +93,7 @@ const orderedTags = [
   { name: 'Wattwatchers / Ingest', description: 'Idempotent service-account collector ingestion.' },
   { name: 'Portal / Users', description: 'Unified EcoAudit, SolarSense, and Field App Complete user directory.' },
   { name: 'Portal / Scheduler', description: 'Portal work calendar: assignments, deadlines, and custom jobs.' },
+  { name: 'Notifications', description: 'App-scoped mobile push destination registration.' },
   { name: 'PDF Jobs', description: 'Async PDF job status polling and download.' },
   { name: 'Files', description: 'Stored photo and generated PDF downloads.' },
   { name: 'System', description: 'Public operational checks.' },
@@ -144,16 +153,27 @@ function apiNotFoundResponse(path: string) {
   };
 }
 
+function binaryRequestBody(contentTypes: string[]) {
+  return {
+    required: true,
+    content: Object.fromEntries(contentTypes.map((contentType) => [contentType, {
+      schema: { type: 'string', format: 'binary' },
+    }])),
+  };
+}
+
 function defaultRequestBody(path: string) {
+  if (path.endsWith('/portal/scheduler/expenses/{expenseId}/attachments')) {
+    return binaryRequestBody([
+      'application/octet-stream',
+      'application/pdf',
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+    ]);
+  }
   if (path.includes('/sync/upload/')) {
-    return {
-      required: true,
-      content: {
-        'application/octet-stream': {
-          schema: { type: 'string', format: 'binary' },
-        },
-      },
-    };
+    return binaryRequestBody(['application/octet-stream']);
   }
 
   return {
@@ -166,7 +186,9 @@ function defaultRequestBody(path: string) {
   };
 }
 
-function completeOpenApiDocument(swaggerObject: Readonly<Record<string, any>>): Record<string, any> {
+export function completeOpenApiDocument(
+  swaggerObject: Readonly<Record<string, any>>,
+): Record<string, any> {
   const doc = swaggerObject as Record<string, any>;
   doc.tags = orderedTags;
   doc.components ??= {};
@@ -266,6 +288,7 @@ export async function buildApp() {
     done(null, body);
   };
   app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, bufferParser);
+  app.addContentTypeParser('application/pdf', { parseAs: 'buffer' }, bufferParser);
   app.addContentTypeParser(/^image\/[\w.+-]+$/, { parseAs: 'buffer' }, bufferParser);
 
   await app.register(helmet, {
@@ -339,7 +362,16 @@ export async function buildApp() {
         detail: fastifyErr.message,
       });
     }
-    app.log.error(err);
+    // Drizzle query errors include bound parameters in their message. Push
+    // registration parameters contain the Expo token, so never hand an
+    // unhandled Error (including its cause/query params) directly to Pino.
+    const unknownError = err as { name?: unknown; message?: unknown };
+    app.log.error({
+      errorName: typeof unknownError.name === 'string' ? unknownError.name : 'Error',
+      errorMessage: redactSensitiveLogText(
+        typeof unknownError.message === 'string' ? unknownError.message : 'Unhandled error',
+      ),
+    }, 'Unhandled request error');
     return reply.status(500).send({ error: 'Internal server error', statusCode: 500 });
   });
 
@@ -358,6 +390,7 @@ export async function buildApp() {
   await app.register(authRoutes,   { prefix: '/v1/auth' });
   await app.register(apiKeyRoutes, { prefix: '/v1/api-keys' });
   await app.register(fileRoutes);
+  await app.register(notificationRoutes, { prefix: '/v1' });
   await app.register(storageBrowserRoutes);
   await app.register(thumbnailRoutes);
 

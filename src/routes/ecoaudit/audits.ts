@@ -10,6 +10,7 @@ import {
   eaGeneralWater,
   eaHotWaterSystems,
   eaHvacUnits,
+  eaAuditWorkSessions,
   eaLightingSystems,
   eaMainSwitchboards,
   eaSolarPv,
@@ -28,8 +29,15 @@ import {
   shouldPurgeQuery,
   type JsonRecord,
 } from './helpers.js';
-import { badRequest } from '../../utils/errors.js';
+import { badRequest, conflict } from '../../utils/errors.js';
 import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
+import {
+  decideWorkSessionUpdate,
+  parseWorkSessionBody,
+  presentWorkSession,
+  workSessionBodySchema,
+  workSessionResponseSchema,
+} from '../workSessions.js';
 import {
   resolveCompletionTiming,
   resolveReopenTiming,
@@ -160,7 +168,7 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       incomingStartedAt: body.startedAt ? dateOrNow(body.startedAt) : null,
       incomingCompletedAt: body.completedAt ? dateOrNow(body.completedAt) : null,
       createdAt,
-      updatedAt,
+      observedAt: receivedAt,
     });
     const [created] = await db.insert(eaAudits).values({
       id,
@@ -173,7 +181,9 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       auditDate: typeof body.auditDate === 'string' ? body.auditDate : null,
       status,
       createdByUserId: request.user.userId,
-      assignedInspectorUserId: typeof body.assignedInspectorUserId === 'string' ? body.assignedInspectorUserId : null,
+      // Assignment is controlled by scheduler/admin workflows, never by an
+      // inspector-supplied create payload.
+      assignedInspectorUserId: null,
       ...timing,
       createdAt,
     }).returning();
@@ -192,6 +202,83 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(found);
   });
 
+  app.put('/:id/active-time/sessions/:sessionId', {
+    schema: {
+      tags: ['EcoAudit Audits'],
+      summary: 'Checkpoint active foreground time for an audit',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id', 'sessionId'],
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', minLength: 1 },
+          sessionId: { type: 'string', minLength: 1, maxLength: 160 },
+        },
+      },
+      body: workSessionBodySchema,
+      response: { 200: workSessionResponseSchema },
+    },
+    preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
+  }, async (request, reply) => {
+    const { id, sessionId } = request.params as { id: string; sessionId: string };
+    const incoming = parseWorkSessionBody(request.body);
+    const response = await db.transaction(async (tx) => {
+      const [audit] = await tx
+        .select()
+        .from(eaAudits)
+        .where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)))
+        .for('update');
+      const found = assertFound(audit, 'Audit');
+      assertAuditAccess(found, request.user);
+
+      const [existing] = await tx
+        .select()
+        .from(eaAuditWorkSessions)
+        .where(and(
+          eq(eaAuditWorkSessions.auditId, id),
+          eq(eaAuditWorkSessions.id, sessionId),
+        ));
+      const decision = decideWorkSessionUpdate({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        completed: found.status === 'Completed',
+        completionBoundary: found.status === 'Completed' ? found.completedAt : null,
+        completedDetail: 'audit_completed_time_tracking_disabled',
+      });
+
+      if (decision.action === 'current') {
+        return presentWorkSession(existing!, false);
+      }
+      if (decision.action === 'insert') {
+        const [inserted] = await tx
+          .insert(eaAuditWorkSessions)
+          .values({
+            id: sessionId,
+            auditId: id,
+            actorUserId: request.user.userId,
+            ...incoming,
+          })
+          .returning();
+        return presentWorkSession(inserted, true);
+      }
+
+      const [updated] = await tx
+        .update(eaAuditWorkSessions)
+        .set({ ...incoming, updatedAt: new Date() })
+        .where(and(
+          eq(eaAuditWorkSessions.auditId, id),
+          eq(eaAuditWorkSessions.id, sessionId),
+          eq(eaAuditWorkSessions.revision, existing!.revision),
+        ))
+        .returning();
+      if (!updated) throw conflict('work_session_concurrent_update');
+      return presentWorkSession(updated, true);
+    });
+    return reply.send(response);
+  });
+
   app.patch('/:id', {
     schema: { tags: ['EcoAudit Audits'], security: [{ bearerAuth: [] }] },
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
@@ -208,7 +295,6 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const sa = optionalString(body, 'siteAddress'); if (sa !== undefined) changes.siteAddress = sa ?? found.siteAddress;
     const iname = optionalString(body, 'inspectorName'); if (iname !== undefined) changes.inspectorName = iname ?? found.inspectorName;
     if ('auditDate' in body) changes.auditDate = typeof body.auditDate === 'string' ? body.auditDate : null;
-    if ('assignedInspectorUserId' in body) changes.assignedInspectorUserId = typeof body.assignedInspectorUserId === 'string' ? body.assignedInspectorUserId : null;
     const [updated] = await db.update(eaAudits).set(changes).where(eq(eaAudits.id, id)).returning();
     return reply.send(assertFound(updated, 'Audit'));
   });

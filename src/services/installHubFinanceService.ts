@@ -1,12 +1,14 @@
-import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, ne } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
-import { config } from '../config.js';
-import { db } from '../db/client.js';
-import { ihInstallations, ihJobCostLines, ihJobFinance } from '../db/schema/installhub.js';
-import { portalScheduleEvents } from '../db/schema/shared.js';
-import { badRequest, forbidden, notFound } from '../utils/errors.js';
-import { assertInstallationAccess } from '../routes/installhub/helpers.js';
+import { badRequest } from '../utils/errors.js';
+import {
+  createSchedulerExpenseByFinanceId,
+  deleteSchedulerExpenseByFinanceId,
+  getSchedulerFinancialSummaryForSource,
+  updateSchedulerExpenseByFinanceId,
+  updateSchedulerFinanceById,
+  type SchedulerExpenseDto,
+  type SchedulerFinancialSummaryDto,
+} from './schedulerFinanceService.js';
 
 export type PricingMode = 'quoted' | 'charge_up';
 export type CostCategory = 'labour' | 'material' | 'other';
@@ -109,16 +111,6 @@ type LineInput = {
   incurredAt?: string | null;
 };
 
-function isElevated(user: AuthUser): boolean {
-  return user.role === 'admin' || user.role === 'service_account';
-}
-
-function assertCanWriteFinance(user: AuthUser): void {
-  if (!isElevated(user)) {
-    throw forbidden('Only administrators can update job finances');
-  }
-}
-
 function parsePricingMode(value: unknown): PricingMode {
   if (value === 'quoted' || value === 'charge_up') return value;
   throw badRequest('pricingMode must be quoted or charge_up');
@@ -154,41 +146,14 @@ function pct(numerator: number, denominator: number): number | null {
   return round2((numerator / denominator) * 100);
 }
 
-function headerToDto(row: typeof ihJobFinance.$inferSelect): FinanceHeaderDto {
-  return {
-    installationId: row.installationId,
-    pricingMode: row.pricingMode as PricingMode,
-    pricedAmount: row.pricedAmount ?? null,
-    currency: row.currency,
-    notes: row.notes ?? null,
-    updatedAt: row.updatedAt.toISOString(),
-  };
-}
-
-function lineToDto(row: typeof ihJobCostLines.$inferSelect): CostLineDto {
-  return {
-    id: row.id,
-    installationId: row.installationId,
-    category: row.category as CostCategory,
-    description: row.description,
-    costAmount: row.costAmount,
-    sellAmount: row.sellAmount ?? null,
-    hours: row.hours ?? null,
-    billable: row.billable,
-    invoiced: row.invoiced,
-    source: (row.source as CostLineSource) || 'manual',
-    incurredAt: row.incurredAt ? row.incurredAt.toISOString() : null,
-    createdByUserId: row.createdByUserId ?? null,
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  };
-}
-
 function startOfLocalDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
 }
 
 /**
+ * Legacy pure calculation retained for existing clients/tests only. Runtime
+ * finance never calls it; recorded active sessions are authoritative.
+ *
  * Inclusive calendar days from start day through end day (same day = 1).
  * Each day is billed at hoursPerDay × hourlyRate (from ENV).
  */
@@ -210,93 +175,6 @@ export function computeAutoLabour(input: {
   const hours = round2(calendarDays * hoursPerDay);
   const costAmount = round2(hours * hourlyRate);
   return { calendarDays, hoursPerDay, hourlyRate, hours, costAmount, startAt: start, endAt: end };
-}
-
-function autoLabourLineId(installationId: string): string {
-  return `auto-labour:${installationId}`;
-}
-
-function parseInstallationStart(installation: typeof ihInstallations.$inferSelect): Date {
-  // Prefer auditDate (job day) when valid; else createdAt.
-  if (installation.auditDate) {
-    const parsed = new Date(installation.auditDate);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
-    // auditDate is often YYYY-MM-DD
-    const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(installation.auditDate);
-    if (parts) {
-      return new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3]));
-    }
-  }
-  return installation.createdAt;
-}
-
-async function syncAutoLabourLine(
-  installation: typeof ihInstallations.$inferSelect,
-): Promise<AutoLabourMeta> {
-  const hoursPerDay = config.installhubLabour.hoursPerDay;
-  const hourlyRate = config.installhubLabour.hourlyRate;
-  const startAt = parseInstallationStart(installation);
-  const endAt = installation.completedAt ?? new Date();
-  const calc = computeAutoLabour({ startAt, endAt, hoursPerDay, hourlyRate });
-  const enabled = hoursPerDay > 0 && hourlyRate >= 0;
-  const meta: AutoLabourMeta = {
-    enabled,
-    hoursPerDay: calc.hoursPerDay,
-    hourlyRate: calc.hourlyRate,
-    calendarDays: calc.calendarDays,
-    hours: calc.hours,
-    costAmount: calc.costAmount,
-    startAt: calc.startAt.toISOString(),
-    endAt: calc.endAt.toISOString(),
-  };
-
-  if (!enabled) return meta;
-
-  await ensureHeader(installation.id);
-  const id = autoLabourLineId(installation.id);
-  const now = new Date();
-  const description =
-    `Auto labour · ${calc.calendarDays} day(s) × ${calc.hoursPerDay}h × $${calc.hourlyRate}/h`;
-
-  const [existing] = await db
-    .select()
-    .from(ihJobCostLines)
-    .where(eq(ihJobCostLines.id, id));
-
-  if (existing) {
-    await db
-      .update(ihJobCostLines)
-      .set({
-        category: 'labour',
-        description,
-        costAmount: calc.costAmount,
-        sellAmount: calc.costAmount,
-        hours: calc.hours,
-        source: 'auto_labour',
-        // preserve billable + invoiced flags set by admin
-        updatedAt: now,
-      })
-      .where(eq(ihJobCostLines.id, id));
-  } else {
-    await db.insert(ihJobCostLines).values({
-      id,
-      installationId: installation.id,
-      category: 'labour',
-      description,
-      costAmount: calc.costAmount,
-      sellAmount: calc.costAmount,
-      hours: calc.hours,
-      billable: true,
-      invoiced: false,
-      source: 'auto_labour',
-      incurredAt: calc.endAt,
-      createdByUserId: null,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-
-  return meta;
 }
 
 /**
@@ -389,95 +267,106 @@ export function computeFinancialSummary(
   };
 }
 
-async function loadInstallationOrThrow(installationId: string) {
-  const [installation] = await db
-    .select()
-    .from(ihInstallations)
-    .where(and(eq(ihInstallations.id, installationId), isNull(ihInstallations.deletedAt)));
-  if (!installation) throw notFound('Installation');
-  return installation;
-}
-
-async function ensureHeader(installationId: string): Promise<typeof ihJobFinance.$inferSelect> {
-  const [existing] = await db
-    .select()
-    .from(ihJobFinance)
-    .where(eq(ihJobFinance.installationId, installationId));
-  if (existing) return existing;
-  await db.insert(ihJobFinance).values({
-    installationId,
-    pricingMode: 'charge_up',
-    pricedAmount: null,
-    currency: 'AUD',
-    notes: null,
-    updatedAt: new Date(),
-    createdAt: new Date(),
-  });
-  const [created] = await db
-    .select()
-    .from(ihJobFinance)
-    .where(eq(ihJobFinance.installationId, installationId));
-  return created!;
-}
-
-async function scheduledHoursForInstallation(installationId: string): Promise<number> {
-  const rows = await db
-    .select({
-      start: portalScheduleEvents.scheduledStartAt,
-      end: portalScheduleEvents.scheduledEndAt,
-    })
-    .from(portalScheduleEvents)
-    .where(and(
-      eq(portalScheduleEvents.sourceApp, 'installhub'),
-      eq(portalScheduleEvents.sourceType, 'installation'),
-      eq(portalScheduleEvents.sourceId, installationId),
-      ne(portalScheduleEvents.status, 'cancelled'),
-    ));
-  let hours = 0;
-  for (const row of rows) {
-    if (!row.end) {
-      hours += 1;
-      continue;
-    }
-    hours += Math.max(0, (row.end.getTime() - row.start.getTime()) / 3_600_000);
-  }
-  return hours;
-}
-
 export async function getFinancialSummary(
   user: AuthUser,
   installationId: string,
 ): Promise<FinancialSummaryDto> {
-  const installation = await loadInstallationOrThrow(installationId);
-  assertInstallationAccess(installation, user);
+  const shared = await getSchedulerFinancialSummaryForSource(user, {
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: installationId,
+  });
+  return sharedSummaryToLegacy(shared, installationId);
+}
 
-  const headerRow = await ensureHeader(installationId);
-  const autoLabour = await syncAutoLabourLine(installation);
+function sharedExpenseToLegacy(expense: SchedulerExpenseDto, installationId: string): CostLineDto {
+  return {
+    id: expense.id,
+    installationId,
+    category: expense.category === 'materials'
+      ? 'material'
+      : expense.category === 'subcontractor'
+        ? 'labour'
+        : 'other',
+    description: expense.description,
+    costAmount: expense.costAmount,
+    sellAmount: expense.billableAmount,
+    hours: null,
+    billable: expense.billable,
+    invoiced: expense.invoiced || expense.reserved,
+    source: 'manual',
+    incurredAt: expense.incurredAt,
+    createdByUserId: null,
+    createdAt: expense.createdAt,
+    updatedAt: expense.updatedAt,
+  };
+}
 
-  const lineRows = await db
-    .select()
-    .from(ihJobCostLines)
-    .where(eq(ihJobCostLines.installationId, installationId))
-    .orderBy(asc(ihJobCostLines.createdAt));
-
-  const header = headerToDto(headerRow);
-  const lines = lineRows.map(lineToDto);
-  const scheduledHours = await scheduledHoursForInstallation(installationId);
-  const rollup = computeFinancialSummary(header, lines, scheduledHours);
-
+function sharedSummaryToLegacy(
+  shared: SchedulerFinancialSummaryDto,
+  installationId: string,
+): FinancialSummaryDto {
+  const lines = shared.expenses.map((expense) => sharedExpenseToLegacy(expense, installationId));
+  const header: FinanceHeaderDto = {
+    installationId,
+    pricingMode: shared.pricing.mode,
+    pricedAmount: shared.pricing.quotedAmount,
+    currency: shared.currency,
+    notes: shared.pricing.notes,
+    updatedAt: new Date().toISOString(),
+  };
+  const legacyEstimate = shared.time.overrideSource === 'legacy_estimate';
+  const labourCost = shared.time.labourCost;
+  const labourSell = shared.time.labourRevenue;
+  const materialLines = lines.filter((line) => line.category === 'material');
+  const otherLines = lines.filter((line) => line.category !== 'material');
+  const materialCost = materialLines.reduce((sum, line) => sum + line.costAmount, 0);
+  const materialSell = materialLines.reduce((sum, line) => sum + effectiveSell(line), 0);
+  const otherCost = otherLines.reduce((sum, line) => sum + line.costAmount, 0);
+  const otherSell = otherLines.reduce((sum, line) => sum + effectiveSell(line), 0);
   return {
     installationId,
     installation: {
-      siteName: installation.siteName,
-      clientName: installation.clientName,
-      siteAddress: installation.siteAddress,
-      status: installation.status,
+      siteName: shared.job.siteName,
+      clientName: shared.job.clientName ?? shared.billing.name ?? '',
+      siteAddress: shared.job.siteAddress ?? '',
+      status: shared.job.status,
     },
     header,
     lines,
-    autoLabour,
-    currency: header.currency,
-    ...rollup,
+    autoLabour: {
+      enabled: legacyEstimate,
+      hoursPerDay: 0,
+      hourlyRate: shared.time.costRate,
+      calendarDays: 0,
+      hours: legacyEstimate ? shared.time.costHours : 0,
+      costAmount: legacyEstimate ? labourCost : 0,
+      startAt: shared.job.jobDate,
+      endAt: shared.job.jobDate,
+    },
+    billablePricedAmount: shared.totals.billableAmount,
+    invoicedCosts: shared.totals.invoicedAmount,
+    uninvoicedCosts: Math.max(0, shared.totals.totalCost - shared.totals.invoicedAmount),
+    uninvoicableCosts: lines.filter((line) => !line.billable)
+      .reduce((sum, line) => sum + line.costAmount, 0),
+    totalCurrentCosts: shared.totals.totalCost,
+    potentialProfit: shared.totals.grossProfit,
+    creditApplied: 0,
+    billablePricedMarginPct: shared.totals.marginPct,
+    currentMarginToDatePct: shared.totals.marginPct,
+    marginBreathingRoomPct: shared.totals.marginPct,
+    invoicedBillable: shared.totals.invoicedAmount,
+    uninvoicedBillable: shared.totals.unbilledAmount,
+    labour: {
+      cost: labourCost,
+      sell: labourSell,
+      hours: shared.time.costHours,
+      unchargedCost: Math.max(0, labourCost - labourSell),
+    },
+    material: { cost: materialCost, sell: materialSell },
+    other: { cost: otherCost, sell: otherSell },
+    scheduledHours: shared.time.scheduledHours,
+    currency: shared.currency,
   };
 }
 
@@ -486,34 +375,16 @@ export async function upsertFinanceHeader(
   installationId: string,
   input: HeaderInput,
 ): Promise<FinanceHeaderDto> {
-  assertCanWriteFinance(user);
-  const installation = await loadInstallationOrThrow(installationId);
-  assertInstallationAccess(installation, user);
-
-  const pricingMode = parsePricingMode(input.pricingMode);
-  const pricedAmount = parseMoney(input.pricedAmount, 'pricedAmount', true);
-  const currency = (input.currency?.trim() || 'AUD').slice(0, 8);
-  const notes = input.notes === undefined ? undefined : (input.notes?.trim() || null);
-  const now = new Date();
-
-  await ensureHeader(installationId);
-  await db
-    .update(ihJobFinance)
-    .set({
-      pricingMode,
-      pricedAmount,
-      currency,
-      ...(notes !== undefined ? { notes } : {}),
-      updatedByUserId: user.userId,
-      updatedAt: now,
-    })
-    .where(eq(ihJobFinance.installationId, installationId));
-
-  const [row] = await db
-    .select()
-    .from(ihJobFinance)
-    .where(eq(ihJobFinance.installationId, installationId));
-  return headerToDto(row!);
+  const current = await getSchedulerFinancialSummaryForSource(user, {
+    sourceApp: 'installhub', sourceType: 'installation', sourceId: installationId,
+  });
+  const updated = await updateSchedulerFinanceById(user, current.financeId, {
+    pricingMode: parsePricingMode(input.pricingMode),
+    quotedAmount: parseMoney(input.pricedAmount, 'pricedAmount', true),
+    currency: input.currency,
+    notes: input.notes,
+  });
+  return sharedSummaryToLegacy(updated, installationId).header;
 }
 
 export async function createCostLine(
@@ -521,45 +392,26 @@ export async function createCostLine(
   installationId: string,
   input: LineInput,
 ): Promise<CostLineDto> {
-  assertCanWriteFinance(user);
-  const installation = await loadInstallationOrThrow(installationId);
-  assertInstallationAccess(installation, user);
-  await ensureHeader(installationId);
-
-  const category = parseCategory(input.category);
-  const description = input.description?.trim();
-  if (!description) throw badRequest('description is required');
-  const costAmount = parseMoney(input.costAmount, 'costAmount') ?? 0;
-  const sellAmount = parseMoney(input.sellAmount, 'sellAmount', true);
-  const hours = parseMoney(input.hours, 'hours', true);
-  const now = new Date();
-  const id = randomUUID();
-
-  let incurredAt: Date | null = null;
-  if (input.incurredAt) {
-    incurredAt = new Date(input.incurredAt);
-    if (Number.isNaN(incurredAt.getTime())) throw badRequest('incurredAt must be a valid ISO datetime');
+  if (input.hours !== undefined && input.hours !== null) {
+    throw badRequest('Recorded hours are managed by the immutable active-work ledger');
   }
-
-  await db.insert(ihJobCostLines).values({
-    id,
-    installationId,
-    category,
-    description: description.slice(0, 500),
-    costAmount,
-    sellAmount,
-    hours,
-    billable: input.billable !== false,
-    invoiced: Boolean(input.invoiced),
-    source: 'manual',
-    incurredAt,
-    createdByUserId: user.userId,
-    createdAt: now,
-    updatedAt: now,
+  if (input.invoiced) throw badRequest('Invoice state is managed by invoice lifecycle');
+  const summary = await getSchedulerFinancialSummaryForSource(user, {
+    sourceApp: 'installhub', sourceType: 'installation', sourceId: installationId,
   });
-
-  const [row] = await db.select().from(ihJobCostLines).where(eq(ihJobCostLines.id, id));
-  return lineToDto(row!);
+  const category = parseCategory(input.category);
+  const expense = await createSchedulerExpenseByFinanceId(user, summary.financeId, {
+    kind: 'expense',
+    category: category === 'material'
+      ? 'materials'
+      : category === 'labour' ? 'subcontractor' : 'other',
+    description: input.description,
+    costAmount: parseMoney(input.costAmount, 'costAmount') ?? 0,
+    billableAmount: parseMoney(input.sellAmount, 'sellAmount', true),
+    billable: input.billable,
+    incurredAt: input.incurredAt,
+  });
+  return sharedExpenseToLegacy(expense, installationId);
 }
 
 export async function updateCostLine(
@@ -568,69 +420,25 @@ export async function updateCostLine(
   lineId: string,
   input: Partial<LineInput>,
 ): Promise<CostLineDto> {
-  assertCanWriteFinance(user);
-  const installation = await loadInstallationOrThrow(installationId);
-  assertInstallationAccess(installation, user);
-
-  const [existing] = await db
-    .select()
-    .from(ihJobCostLines)
-    .where(and(
-      eq(ihJobCostLines.id, lineId),
-      eq(ihJobCostLines.installationId, installationId),
-    ));
-  if (!existing) throw notFound('Cost line');
-
-  const isAuto = existing.source === 'auto_labour';
-  const patch: Partial<typeof ihJobCostLines.$inferInsert> = { updatedAt: new Date() };
-
-  if (isAuto) {
-    if (input.invoiced !== undefined) patch.invoiced = Boolean(input.invoiced);
-    if (input.billable !== undefined) patch.billable = Boolean(input.billable);
-    if (
-      input.category !== undefined
-      || input.description !== undefined
-      || input.costAmount !== undefined
-      || input.sellAmount !== undefined
-      || input.hours !== undefined
-      || input.incurredAt !== undefined
-    ) {
-      throw badRequest(
-        'Auto labour amounts are managed by the system; only invoiced/billable can be changed',
-      );
-    }
-  } else {
-    if (input.category !== undefined) patch.category = parseCategory(input.category);
-    if (input.description !== undefined) {
-      const d = input.description.trim();
-      if (!d) throw badRequest('description is required');
-      patch.description = d.slice(0, 500);
-    }
-    if (input.costAmount !== undefined) {
-      patch.costAmount = parseMoney(input.costAmount, 'costAmount') ?? 0;
-    }
-    if (input.sellAmount !== undefined) {
-      patch.sellAmount = parseMoney(input.sellAmount, 'sellAmount', true);
-    }
-    if (input.hours !== undefined) {
-      patch.hours = parseMoney(input.hours, 'hours', true);
-    }
-    if (input.billable !== undefined) patch.billable = Boolean(input.billable);
-    if (input.invoiced !== undefined) patch.invoiced = Boolean(input.invoiced);
-    if (input.incurredAt !== undefined) {
-      if (input.incurredAt === null || input.incurredAt === '') {
-        patch.incurredAt = null;
-      } else {
-        const d = new Date(input.incurredAt);
-        if (Number.isNaN(d.getTime())) throw badRequest('incurredAt must be a valid ISO datetime');
-        patch.incurredAt = d;
-      }
-    }
+  if (input.invoiced !== undefined || input.hours !== undefined) {
+    throw badRequest('Invoice state and recorded hours are managed by their dedicated ledgers');
   }
-
-  await db.update(ihJobCostLines).set(patch).where(eq(ihJobCostLines.id, lineId));
-  const [row] = await db.select().from(ihJobCostLines).where(eq(ihJobCostLines.id, lineId));
-  return lineToDto(row!);
+  const summary = await getSchedulerFinancialSummaryForSource(user, {
+    sourceApp: 'installhub', sourceType: 'installation', sourceId: installationId,
+  });
+  const category = input.category === undefined ? undefined : parseCategory(input.category);
+  const expense = await updateSchedulerExpenseByFinanceId(user, summary.financeId, lineId, {
+    ...(category === undefined ? {} : {
+      category: category === 'material'
+        ? 'materials' : category === 'labour' ? 'subcontractor' : 'other',
+    }),
+    description: input.description,
+    costAmount: input.costAmount,
+    billableAmount: input.sellAmount,
+    billable: input.billable,
+    incurredAt: input.incurredAt,
+  });
+  return sharedExpenseToLegacy(expense, installationId);
 }
 
 export async function deleteCostLine(
@@ -638,30 +446,10 @@ export async function deleteCostLine(
   installationId: string,
   lineId: string,
 ): Promise<void> {
-  assertCanWriteFinance(user);
-  const installation = await loadInstallationOrThrow(installationId);
-  assertInstallationAccess(installation, user);
-
-  const [existing] = await db
-    .select()
-    .from(ihJobCostLines)
-    .where(and(
-      eq(ihJobCostLines.id, lineId),
-      eq(ihJobCostLines.installationId, installationId),
-    ));
-  if (!existing) throw notFound('Cost line');
-  if (existing.source === 'auto_labour') {
-    throw badRequest(
-      'Auto labour lines cannot be deleted; they refresh from start→complete automatically',
-    );
-  }
-
-  await db
-    .delete(ihJobCostLines)
-    .where(and(
-      eq(ihJobCostLines.id, lineId),
-      eq(ihJobCostLines.installationId, installationId),
-    ));
+  const summary = await getSchedulerFinancialSummaryForSource(user, {
+    sourceApp: 'installhub', sourceType: 'installation', sourceId: installationId,
+  });
+  await deleteSchedulerExpenseByFinanceId(user, summary.financeId, lineId);
 }
 
 export function financialSummaryToCsv(summary: FinancialSummaryDto): string {
@@ -685,11 +473,11 @@ export function financialSummaryToCsv(summary: FinancialSummaryDto): string {
     ['Labour Hours', String(summary.labour.hours)],
     ['Material Cost', String(summary.material.cost)],
     ['Scheduled Hours', String(summary.scheduledHours)],
-    ['Auto labour days', String(summary.autoLabour.calendarDays)],
-    ['Auto labour hours/day', String(summary.autoLabour.hoursPerDay)],
-    ['Auto labour rate', String(summary.autoLabour.hourlyRate)],
-    ['Auto labour hours', String(summary.autoLabour.hours)],
-    ['Auto labour cost', String(summary.autoLabour.costAmount)],
+    ['Migrated legacy estimate days', String(summary.autoLabour.calendarDays)],
+    ['Migrated legacy estimate hours/day', String(summary.autoLabour.hoursPerDay)],
+    ['Migrated legacy estimate rate', String(summary.autoLabour.hourlyRate)],
+    ['Migrated legacy estimate hours', String(summary.autoLabour.hours)],
+    ['Migrated legacy estimate cost', String(summary.autoLabour.costAmount)],
     [],
     ['Cost lines'],
     ['Id', 'Source', 'Category', 'Description', 'Cost', 'Sell', 'Hours', 'Billable', 'Invoiced'],

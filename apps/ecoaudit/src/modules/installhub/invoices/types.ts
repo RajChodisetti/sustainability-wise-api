@@ -39,6 +39,7 @@ export type Invoice = InvoiceListItem & {
   issuedAt: string | null;
   voidedAt: string | null;
   installation: {
+    auditDate: string;
     siteName: string;
     clientName: string;
     siteAddress: string;

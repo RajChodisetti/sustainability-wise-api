@@ -11,8 +11,10 @@ import {
   signedFileUrl,
 } from '../storage/localFiles.js';
 import { exportJobParams, type ExportArtifactType } from '../services/pdfJobService.js';
+import { assertGlobalFinanceAdmin } from '../services/schedulerFinanceService.js';
 
 type ExportJob = typeof pdfJobs.$inferSelect;
+const MAX_EXPORT_FILENAME_BYTES = 180;
 
 export type ExpectedReportProvenance = {
   recordVersionNumber: number;
@@ -76,6 +78,53 @@ function expectedReportProvenance(query: {
   };
 }
 
+function truncateUtf8Filename(filename: string, maxBytes: number): string {
+  if (Buffer.byteLength(filename, 'utf8') <= maxBytes) return filename;
+  const candidateExtension = path.extname(filename);
+  const extension = Buffer.byteLength(candidateExtension, 'utf8') <= 12
+    ? candidateExtension
+    : '';
+  const extensionBytes = Buffer.byteLength(extension, 'utf8');
+  const stemBudget = Math.max(1, maxBytes - extensionBytes);
+  const stemSource = extension ? filename.slice(0, -extension.length) : filename;
+  let stem = '';
+  for (const character of stemSource) {
+    if (Buffer.byteLength(stem + character, 'utf8') > stemBudget) break;
+    stem += character;
+  }
+  return `${stem.replace(/[ ._-]+$/g, '') || 'export'}${extension}`;
+}
+
+function safeArtifactFilename(value: string, fallback: string): string {
+  const basename = path.basename(value.replaceAll('\\', '/'));
+  const sanitized = basename
+    .normalize('NFC')
+    .replace(/[\u0000-\u001F\u007F]/g, '')
+    .replace(/[^\p{L}\p{N} ._()-]+/gu, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[- ._]+|[- ._]+$/g, '');
+  return truncateUtf8Filename(sanitized || fallback, MAX_EXPORT_FILENAME_BYTES);
+}
+
+function asciiArtifactFilename(filename: string): string {
+  const fallback = filename
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\x20-\x7E]/g, '-')
+    .replace(/["\\/;]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .replace(/^[- ._]+|[- ._]+$/g, '');
+  return truncateUtf8Filename(fallback || 'export', MAX_EXPORT_FILENAME_BYTES);
+}
+
+export function exportArtifactContentDisposition(filename: string): string {
+  const canonical = safeArtifactFilename(filename, 'export');
+  const ascii = asciiArtifactFilename(canonical);
+  const encoded = encodeURIComponent(canonical)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 function artifactMetadata(job: ExportJob): {
   artifactType: ExportArtifactType;
   filename: string;
@@ -86,11 +135,8 @@ function artifactMetadata(job: ExportJob): {
   const fallbackFilename = artifactType === 'photos-zip'
     ? `photos-${job.id}.zip`
     : `report-${job.id}.pdf`;
-  const requestedFilename = typeof params.filename === 'string' ? path.basename(params.filename) : fallbackFilename;
-  const filename = requestedFilename
-    .replace(/[\r\n"]/g, '')
-    .replace(/[^a-zA-Z0-9 ._()-]+/g, '-')
-    .slice(0, 180) || fallbackFilename;
+  const requestedFilename = typeof params.filename === 'string' ? params.filename : fallbackFilename;
+  const filename = safeArtifactFilename(requestedFilename, fallbackFilename);
   return {
     artifactType,
     filename,
@@ -126,8 +172,11 @@ function serializeJob(job: ExportJob) {
     phase: job.phase,
     progressCurrent: job.progressCurrent,
     progressTotal: job.progressTotal,
-    pdfUrl:
-      job.status === 'complete' && job.storageKey
+    // Scheduler invoice artifacts stay behind the current-global-admin download
+    // route; do not mint a capability URL that could outlive a later demotion.
+    pdfUrl: job.entityType === 'scheduler_invoice'
+      ? null
+      : job.status === 'complete' && job.storageKey
         ? signedFileUrl(job.storageKey)
         : job.pdfUrl,
     error: job.error,
@@ -144,8 +193,15 @@ function serializeJob(job: ExportJob) {
   };
 }
 
-function assertJobAccess(job: ExportJob, request: FastifyRequest): void {
+async function assertJobAccess(job: ExportJob, request: FastifyRequest): Promise<void> {
   if (job.app !== request.user.app) throw forbidden('Export job belongs to another application');
+  if (job.entityType === 'scheduler_invoice') {
+    if (job.userId !== request.user.userId) {
+      throw forbidden('Scheduler invoice export belongs to another administrator');
+    }
+    await assertGlobalFinanceAdmin(request.user);
+    return;
+  }
   if (job.userId !== request.user.userId && request.user.role !== 'admin') {
     throw forbidden('Export job belongs to another user');
   }
@@ -155,7 +211,7 @@ async function loadAccessibleJob(request: FastifyRequest): Promise<ExportJob> {
   const { jobId } = request.params as { jobId: string };
   const [job] = await db.select().from(pdfJobs).where(eq(pdfJobs.id, jobId));
   if (!job) throw notFound('Export job');
-  assertJobAccess(job, request);
+  await assertJobAccess(job, request);
   return job;
 }
 
@@ -236,7 +292,7 @@ async function downloadHandler(request: FastifyRequest, reply: FastifyReply) {
   const size = await localFileSize(job.storageKey);
   const stream = await localFileStream(job.storageKey);
   return reply
-    .header('Content-Disposition', `attachment; filename="${metadata.filename}"`)
+    .header('Content-Disposition', exportArtifactContentDisposition(metadata.filename))
     .header('Content-Length', String(size))
     .header('Cache-Control', 'private, max-age=86400')
     .type(metadata.contentType)
@@ -318,6 +374,7 @@ export async function pdfJobRoutes(app: FastifyInstance): Promise<void> {
       && (query.reportVariantKey === undefined
         || exportJobParamsMatchReportVariant(candidate.params, query.reportVariantKey as string))
     ));
+    if (job) await assertJobAccess(job, request);
     return reply.send({ job: job ? serializeJob(job) : null });
   });
 

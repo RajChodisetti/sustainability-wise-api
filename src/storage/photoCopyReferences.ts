@@ -879,11 +879,25 @@ export async function hasAccessibleCopyReference(photoId: string, user: AuthUser
     .select({ id: photoCopyReferences.id })
     .from(photoCopyReferences)
     .innerJoin(ssSites, eq(ssSites.id, photoCopyReferences.targetParentId))
+    .leftJoin(ssRooftopAssessments, and(
+      eq(photoCopyReferences.targetEntityType, 'rooftop_assessment'),
+      eq(ssRooftopAssessments.id, photoCopyReferences.targetEntityId),
+      eq(ssRooftopAssessments.siteId, ssSites.id),
+      isNull(ssRooftopAssessments.deletedAt),
+    ))
     .where(and(
       eq(photoCopyReferences.app, 'solarsense'),
       eq(photoCopyReferences.photoId, photoId),
       isNull(ssSites.deletedAt),
-      elevated(user) ? undefined : eq(ssSites.createdByUserId, user.userId),
+      elevated(user)
+        ? undefined
+        : or(
+            eq(ssSites.createdByUserId, user.userId),
+            and(
+              eq(ssSites.status, 'Draft'),
+              eq(ssRooftopAssessments.assignedInspectorUserId, user.userId),
+            ),
+          ),
     ))
     .limit(1);
   return Boolean(row);

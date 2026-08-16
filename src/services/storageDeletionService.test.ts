@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   drainStorageDeletionTaskBatches,
+  SCHEDULER_INVOICE_PDF_CLEANUP_LEASE_MS,
+  SCHEDULER_INVOICE_PDF_UNATTACHED_REASON,
   type StorageDeletionDrainDependencies,
   type StorageDeletionDrainInput,
   type StorageDeletionTask,
@@ -9,6 +11,7 @@ import {
 
 type FakeTask = StorageDeletionTask & {
   app: string;
+  reason: string;
   attempts: number;
 };
 
@@ -31,6 +34,13 @@ function fakeDeletionStore(initialTasks: FakeTask[], failingIds: Set<string> = n
     return [...tasks.values()].filter((task) => (
       (!ids || ids.has(task.id))
       && (!input.app || task.app === input.app)
+      && (
+        ids
+        || task.reason !== SCHEDULER_INVOICE_PDF_UNATTACHED_REASON
+        || new Date(task.createdAt).getTime() <= (
+          (input.now ?? new Date()).getTime() - SCHEDULER_INVOICE_PDF_CLEANUP_LEASE_MS
+        )
+      )
     ));
   };
   const dependencies: StorageDeletionDrainDependencies = {
@@ -90,6 +100,7 @@ function task(
     createdAt,
     app,
     storageKey: `${app}/deletion-test/${id}.bin`,
+    reason: 'test_cleanup',
     attempts: 0,
   };
 }
@@ -169,4 +180,43 @@ test('an explicit empty id filter drains nothing', async () => {
   );
   assert.equal(store.boundaryCalls, 0);
   assert.ok(store.tasks.has('must-remain'));
+});
+
+test('global sweeps lease fresh invoice exports while explicit failure cleanup stays immediate', async () => {
+  const now = new Date('2026-08-16T12:00:00.000Z');
+  const fresh = {
+    ...task('fresh-export', 'ecoaudit', '2026-08-16T11:30:00.000Z'),
+    reason: SCHEDULER_INVOICE_PDF_UNATTACHED_REASON,
+  };
+  const stale = {
+    ...task('stale-export', 'ecoaudit', '2026-08-16T10:59:59.999Z'),
+    reason: SCHEDULER_INVOICE_PDF_UNATTACHED_REASON,
+  };
+  const ordinary = task('ordinary-cleanup', 'ecoaudit', '2026-08-16T11:59:00.000Z');
+  const store = fakeDeletionStore([fresh, stale, ordinary]);
+
+  assert.deepEqual(
+    await drainStorageDeletionTaskBatches({ app: 'ecoaudit', now }, store.dependencies),
+    { deleted: 2, pending: 0 },
+  );
+  assert.ok(store.tasks.has(fresh.id), 'a rolling-startup sweep cannot delete a live export');
+  assert.equal(store.tasks.has(stale.id), false, 'an abandoned export is eventually eligible');
+  assert.equal(store.tasks.has(ordinary.id), false, 'the lease is specific to invoice exports');
+
+  assert.deepEqual(
+    await drainStorageDeletionTaskBatches({ ids: [fresh.id], now }, store.dependencies),
+    { deleted: 1, pending: 0 },
+  );
+  assert.equal(store.tasks.has(fresh.id), false, 'a known failed write bypasses the lease');
+});
+
+test('periodic cleanup respects the total task bound', async () => {
+  const store = fakeDeletionStore(Array.from({ length: 12 }, (_, index) => (
+    task(`bounded-${String(index).padStart(2, '0')}`)
+  )));
+  assert.deepEqual(
+    await drainStorageDeletionTaskBatches({ maxTasks: 5, limit: 2 }, store.dependencies),
+    { deleted: 5, pending: 0 },
+  );
+  assert.equal(store.tasks.size, 7);
 });

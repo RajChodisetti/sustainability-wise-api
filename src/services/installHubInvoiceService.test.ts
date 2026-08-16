@@ -69,6 +69,16 @@ describe('buildInvoiceHtml', () => {
         email: 'billing@example.com',
       },
       billTo: {
+        name: 'Acme',
+        address: '1 Main St',
+        email: 'accounts@acme.example',
+      },
+      job: {
+        jobName: 'Warehouse upgrade',
+        jobDate: '2026-08-12',
+        sourceApp: 'installhub',
+        sourceType: 'installation',
+        sourceId: 'installation-1',
         clientName: 'Acme',
         siteName: 'Warehouse',
         siteAddress: '1 Main St',
@@ -83,6 +93,8 @@ describe('buildInvoiceHtml', () => {
     assert.match(html, /Tax Invoice/);
     assert.match(html, /INV-2026-0001/);
     assert.match(html, /ABN 12 345 678 901/);
+    assert.match(html, /Warehouse upgrade/);
+    assert.match(html, /12 Aug 2026/);
     assert.match(html, /Labour/);
   });
 });

@@ -7,12 +7,12 @@ const authSource = readFileSync(
   'utf8',
 );
 
-test('source login revalidates under a row lock before inserting refresh tokens', () => {
+test('global product login revalidates membership and credential under locks', () => {
   const helperStart = authSource.indexOf(
-    'async function issueSourceTokensAfterVerifiedPassword',
+    'async function issueGlobalTokensAfterVerifiedPassword',
   );
   const helperEnd = authSource.indexOf(
-    'async function issueFieldTokensForSource',
+    'async function loginForGlobalProduct',
     helperStart,
   );
   assert.notEqual(helperStart, -1);
@@ -20,28 +20,28 @@ test('source login revalidates under a row lock before inserting refresh tokens'
 
   const helper = authSource.slice(helperStart, helperEnd);
   assert.match(helper, /db\.transaction\(async \(tx\) =>/);
-  assert.match(helper, /\.for\('update'\)/);
-  assert.match(
-    helper,
-    /sourceUser\.passwordHash !== verified\.passwordHash/,
-  );
-  assert.match(helper, /!sourceUser\?\.isActive/);
+  assert.match(helper, /membershipSnapshot\.originUserId\)\)\.for\('update'\)/);
+  assert.match(helper, /globalUsers\.id, verified\.globalUserId/);
+  assert.match(helper, /globalUserCredentials\.passwordHash, verified\.passwordHash/);
+  assert.match(helper, /!globalUser\?\.isActive/);
+  assert.match(helper, /!productUser\?\.isActive/);
   assert.match(
     helper,
     /await tx\.insert\(refreshTokens\)\.values\(issued\.refreshTokenRecord\)/,
   );
 });
 
-test('legacy Eco and Solar login uses the locked source-session issuer', () => {
-  const sourceLoginBranch = authSource.slice(
-    authSource.indexOf(
-      "if (requestedApp === 'ecoaudit' || requestedApp === 'solarsense')",
-    ),
-    authSource.indexOf("if (requestedApp === 'installhub')"),
+test('all three released products use the locked canonical issuer', () => {
+  const loginBranch = authSource.slice(
+    authSource.indexOf('async function loginForApp'),
+    authSource.indexOf('const { fleetEmail, sources }'),
   );
+  assert.match(loginBranch, /requestedApp === 'ecoaudit'/);
+  assert.match(loginBranch, /requestedApp === 'solarsense'/);
+  assert.match(loginBranch, /requestedApp === 'installhub'/);
   assert.match(
-    sourceLoginBranch,
-    /return issueSourceTokensAfterVerifiedPassword\(/,
+    loginBranch,
+    /return loginForGlobalProduct\(email, password, requestedApp\)/,
   );
-  assert.doesNotMatch(sourceLoginBranch, /return issueTokens\(/);
+  assert.doesNotMatch(loginBranch, /return issueTokens\(/);
 });

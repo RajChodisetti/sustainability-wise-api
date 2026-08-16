@@ -1,8 +1,13 @@
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { eq, and, isNull, gt, inArray, sql } from 'drizzle-orm';
+import { eq, and, isNull, gt, sql } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { refreshTokens, unifiedUsers } from '../db/schema/shared.js';
+import {
+  globalUserCredentials,
+  globalUsers,
+  refreshTokens,
+  unifiedUsers,
+} from '../db/schema/shared.js';
 import { eaUsers } from '../db/schema/ecoaudit.js';
 import { ssUsers } from '../db/schema/solarsense.js';
 import { wwUsers } from '../db/schema/wattwatchers.js';
@@ -13,16 +18,13 @@ import { verifyPassword, hashPassword } from '../auth/apiKey.js';
 import { planLocalBootstrap } from '../auth/bootstrapPolicy.js';
 import {
   cloudEmailForLogin,
-  explicitFieldEmailForLogin,
-  fieldBridgeIdentity,
   fleetBridgeIdentity,
-  selectFieldLoginAuthority,
+  globalLoginKey,
   selectFleetLoginAuthority,
-  sourceIdentitiesForFieldLogin,
   sourceIdentitiesForFleetLogin,
   verifyActiveLogin,
-  verifyFieldSourceUser,
   verifyFleetSourceAdmin,
+  verifyGlobalLoginIdentity,
 } from '../auth/loginIdentity.js';
 import { collectPortalLoginSessions } from '../auth/portalLoginSessions.js';
 import { authenticate, requireRole } from '../auth/middleware.js';
@@ -127,39 +129,113 @@ async function issueTokens(
 }
 
 type AuthResponse = Awaited<ReturnType<typeof issueTokens>>;
+type ProductApp = RegistrationApp;
 
-async function issueSourceTokensAfterVerifiedPassword(
-  sourceApp: 'ecoaudit' | 'solarsense',
-  sourceUserId: string,
-  verified: {
-    email: string;
-    passwordHash: string;
-  },
+async function issueGlobalTokensAfterVerifiedPassword(
+  requestedApp: ProductApp,
+  verified: { globalUserId: string; passwordHash: string },
 ): Promise<AuthResponse> {
   return db.transaction(async (tx) => {
-    const [sourceUser] = sourceApp === 'ecoaudit'
-      ? await tx
-          .select()
-          .from(eaUsers)
-          .where(eq(eaUsers.id, sourceUserId))
-          .for('update')
-      : await tx
-          .select()
-          .from(ssUsers)
-          .where(eq(ssUsers.id, sourceUserId))
-          .for('update');
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext('global-user-mutations'))
+    `);
+    const [membershipSnapshot] = await tx
+      .select({ originUserId: unifiedUsers.originUserId })
+      .from(unifiedUsers)
+      .where(and(
+        eq(unifiedUsers.globalUserId, verified.globalUserId),
+        eq(unifiedUsers.originApp, requestedApp),
+        isNull(unifiedUsers.deletedAt),
+      ));
+    if (!membershipSnapshot) throw unauthorized('Invalid credentials');
+
+    // Product row -> canonical row matches the trigger lock order and closes
+    // the password/update race before a new refresh token can be committed.
+    const [productUser] = requestedApp === 'ecoaudit'
+      ? await tx.select().from(eaUsers)
+          .where(eq(eaUsers.id, membershipSnapshot.originUserId)).for('update')
+      : requestedApp === 'solarsense'
+        ? await tx.select().from(ssUsers)
+            .where(eq(ssUsers.id, membershipSnapshot.originUserId)).for('update')
+        : await tx.select().from(ihUsers)
+            .where(eq(ihUsers.id, membershipSnapshot.originUserId)).for('update');
+    const [globalUser] = await tx
+      .select()
+      .from(globalUsers)
+      .where(eq(globalUsers.id, verified.globalUserId))
+      .for('update');
+    const [credential] = await tx
+      .select({ id: globalUserCredentials.id })
+      .from(globalUserCredentials)
+      .where(and(
+        eq(globalUserCredentials.globalUserId, verified.globalUserId),
+        eq(globalUserCredentials.passwordHash, verified.passwordHash),
+      ));
+    const [membership] = await tx
+      .select()
+      .from(unifiedUsers)
+      .where(and(
+        eq(unifiedUsers.globalUserId, verified.globalUserId),
+        eq(unifiedUsers.originApp, requestedApp),
+        eq(unifiedUsers.originUserId, membershipSnapshot.originUserId),
+        isNull(unifiedUsers.deletedAt),
+      ));
     if (
-      !sourceUser?.isActive
-      || sourceUser.email !== verified.email
-      || sourceUser.passwordHash !== verified.passwordHash
+      !credential
+      || !globalUser?.isActive
+      || !membership?.isActive
+      || !productUser?.isActive
+      || productUser.id !== membership.originUserId
     ) {
       throw unauthorized('Invalid credentials');
     }
 
-    const issued = prepareTokens(sourceUser, sourceApp);
+    const issued = prepareTokens({
+      id: productUser.id,
+      email: productUser.email,
+      fullName: globalUser.fullName,
+      role: globalUser.role,
+      ...(requestedApp === 'installhub'
+        ? { sourceManaged: false, fieldSourceApp: null }
+        : {}),
+    }, requestedApp);
     await tx.insert(refreshTokens).values(issued.refreshTokenRecord);
     return issued.response;
   });
+}
+
+async function verifyGlobalProductCredentials(
+  email: string,
+  password: string,
+): Promise<{ globalUserId: string; passwordHash: string }> {
+  const candidates = await db
+    .select({
+      globalUserId: globalUsers.id,
+      passwordHash: globalUserCredentials.passwordHash,
+      isActive: globalUsers.isActive,
+    })
+    .from(globalUsers)
+    .innerJoin(
+      globalUserCredentials,
+      eq(globalUserCredentials.globalUserId, globalUsers.id),
+    )
+    .where(eq(globalUsers.loginKey, globalLoginKey(email)));
+  const verified = await verifyGlobalLoginIdentity(
+    candidates,
+    password,
+    verifyPassword,
+  );
+  if (!verified) throw unauthorized('Invalid credentials');
+  return verified;
+}
+
+async function loginForGlobalProduct(
+  email: string,
+  password: string,
+  requestedApp: ProductApp,
+): Promise<AuthResponse> {
+  const verified = await verifyGlobalProductCredentials(email, password);
+  return issueGlobalTokensAfterVerifiedPassword(requestedApp, verified);
 }
 
 async function issueFieldTokensForSource(
@@ -167,11 +243,13 @@ async function issueFieldTokensForSource(
   sourceUserId: string,
   expected?: {
     passwordHash?: string;
-    fieldUserId?: string;
     sourceRefreshTokenHash?: string;
   },
 ): Promise<AuthResponse> {
   return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext('global-user-mutations'))
+    `);
     const [sourceUser] = sourceApp === 'ecoaudit'
       ? await tx
           .select()
@@ -183,39 +261,45 @@ async function issueFieldTokensForSource(
           .from(ssUsers)
           .where(eq(ssUsers.id, sourceUserId))
           .for('update');
-    const expectedFieldUserId = fieldBridgeIdentity({
-      app: sourceApp,
-      id: sourceUserId,
-    }).id;
-    const [registryUser] = await tx
+    const [sourceMembership] = await tx
       .select()
       .from(unifiedUsers)
       .where(and(
         eq(unifiedUsers.originApp, sourceApp),
         eq(unifiedUsers.originUserId, sourceUserId),
-        eq(unifiedUsers.fieldUserId, expectedFieldUserId),
         isNull(unifiedUsers.deletedAt),
       ))
       .for('update');
+    const [fieldMembership] = sourceMembership
+      ? await tx
+          .select()
+          .from(unifiedUsers)
+          .where(and(
+            eq(unifiedUsers.globalUserId, sourceMembership.globalUserId),
+            eq(unifiedUsers.originApp, 'installhub'),
+            isNull(unifiedUsers.deletedAt),
+          ))
+          .for('update')
+      : [];
+    const [fieldUser] = fieldMembership
+      ? await tx.select().from(ihUsers)
+          .where(eq(ihUsers.id, fieldMembership.originUserId)).for('update')
+      : [];
+    const [globalUser] = sourceMembership
+      ? await tx.select().from(globalUsers)
+          .where(eq(globalUsers.id, sourceMembership.globalUserId)).for('update')
+      : [];
     if (
       !sourceUser?.isActive
-      || !registryUser?.isActive
-      || registryUser.passwordHash !== sourceUser.passwordHash
-      || registryUser.role !== sourceUser.role
-      || registryUser.email !== sourceUser.email
-      || registryUser.fullName !== sourceUser.fullName
+      || !sourceMembership?.isActive
+      || !fieldMembership?.isActive
+      || !fieldUser?.isActive
+      || !globalUser?.isActive
+      || sourceMembership.globalUserId !== fieldMembership.globalUserId
+      || fieldMembership.fieldUserId !== fieldUser.id
       || (
-        expected !== undefined
-        && (
-          (
-            expected.passwordHash !== undefined
-            && sourceUser.passwordHash !== expected.passwordHash
-          )
-          || (
-            expected.fieldUserId !== undefined
-            && registryUser.fieldUserId !== expected.fieldUserId
-          )
-        )
+        expected?.passwordHash !== undefined
+        && sourceUser.passwordHash !== expected.passwordHash
       )
     ) {
       throw unauthorized('Invalid credentials');
@@ -239,12 +323,12 @@ async function issueFieldTokensForSource(
     }
 
     const issued = prepareTokens({
-      id: registryUser.fieldUserId,
-      email: sourceUser.email,
-      fullName: sourceUser.fullName?.trim() || null,
-      role: sourceUser.role === 'admin' ? 'admin' : 'inspector',
-      sourceManaged: true,
-      fieldSourceApp: sourceApp,
+      id: fieldUser.id,
+      email: fieldUser.email,
+      fullName: globalUser.fullName,
+      role: globalUser.role,
+      sourceManaged: false,
+      fieldSourceApp: null,
     }, 'installhub');
     await tx.insert(refreshTokens).values(issued.refreshTokenRecord);
     return issued.response;
@@ -255,78 +339,14 @@ async function loginForApp(
   email: string,
   password: string,
   requestedApp: App,
-  fieldSourceHint: 'ecoaudit' | 'solarsense' | null = null,
+  _fieldSourceHint: 'ecoaudit' | 'solarsense' | null = null,
 ): Promise<AuthResponse> {
-  if (requestedApp === 'ecoaudit' || requestedApp === 'solarsense') {
-    const userTable = tableForApp(requestedApp);
-    const loginEmail = cloudEmailForLogin(requestedApp, email);
-    const [user] = await db.select().from(userTable).where(eq(userTable.email, loginEmail));
-    if (!user || !user.isActive) throw unauthorized('Invalid credentials');
-    if (!await verifyPassword(password, user.passwordHash)) {
-      throw unauthorized('Invalid credentials');
-    }
-    return issueSourceTokensAfterVerifiedPassword(
-      requestedApp,
-      user.id,
-      {
-        email: user.email,
-        passwordHash: user.passwordHash,
-      },
-    );
-  }
-
-  if (requestedApp === 'installhub') {
-    const resolved = sourceIdentitiesForFieldLogin(email);
-    const { sources } = resolved;
-    const sourceHint = fieldSourceHint ?? resolved.sourceHint;
-    const explicitFieldEmail = explicitFieldEmailForLogin(email, fieldSourceHint);
-    const [fieldUser] = explicitFieldEmail
-      ? await db.select().from(ihUsers).where(eq(ihUsers.email, explicitFieldEmail))
-      : [];
-    const explicitLoginValid = await verifyActiveLogin(
-      fieldUser,
-      password,
-      verifyPassword,
-    );
-    if (selectFieldLoginAuthority(explicitLoginValid, null) === 'explicit_field' && fieldUser) {
-      return issueTokens({
-        ...fieldUser,
-        sourceManaged: false,
-        fieldSourceApp: null,
-      }, 'installhub');
-    }
-
-    const sourceRegistryRows = await db
-      .select()
-      .from(unifiedUsers)
-      .where(and(
-        inArray(unifiedUsers.originApp, ['ecoaudit', 'solarsense']),
-        inArray(unifiedUsers.email, sources.map((candidate) => candidate.email)),
-        isNull(unifiedUsers.deletedAt),
-      ));
-    const sourceUser = await verifyFieldSourceUser(
-      sourceRegistryRows.map((candidate) => ({
-        app: candidate.originApp as 'ecoaudit' | 'solarsense',
-        id: candidate.originUserId,
-        fieldUserId: candidate.fieldUserId,
-        email: candidate.email,
-        passwordHash: candidate.passwordHash,
-        fullName: candidate.fullName,
-        role: candidate.role,
-        isActive: candidate.isActive,
-      })),
-      password,
-      verifyPassword,
-      sourceHint,
-    );
-    if (selectFieldLoginAuthority(false, sourceUser) !== 'source_user' || !sourceUser) {
-      throw unauthorized('Invalid credentials');
-    }
-
-    return issueFieldTokensForSource(sourceUser.app, sourceUser.id, {
-      passwordHash: sourceUser.passwordHash,
-      fieldUserId: sourceUser.fieldUserId,
-    });
+  if (
+    requestedApp === 'ecoaudit'
+    || requestedApp === 'solarsense'
+    || requestedApp === 'installhub'
+  ) {
+    return loginForGlobalProduct(email, password, requestedApp);
   }
 
   const { fleetEmail, sources } = sourceIdentitiesForFleetLogin(email);
@@ -356,6 +376,9 @@ async function loginForApp(
   const unusablePasswordHash = await hashPassword(randomToken(32));
   const now = new Date();
   return db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtext('global-user-mutations'))
+    `);
     const [lockedSourceAdmin] = sourceAdmin.app === 'ecoaudit'
       ? await tx
           .select()
@@ -372,6 +395,18 @@ async function loginForApp(
       || lockedSourceAdmin.role !== 'admin'
       || lockedSourceAdmin.passwordHash !== sourceAdmin.passwordHash
     ) {
+      throw unauthorized('Invalid credentials');
+    }
+    const [fleetEntitlement] = await tx
+      .select({ entitled: globalUsers.fleetEntitled })
+      .from(unifiedUsers)
+      .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
+      .where(and(
+        eq(unifiedUsers.originApp, sourceAdmin.app),
+        eq(unifiedUsers.originUserId, sourceAdmin.id),
+        isNull(unifiedUsers.deletedAt),
+      ));
+    if (!fleetEntitlement?.entitled) {
       throw unauthorized('Invalid credentials');
     }
 
@@ -477,13 +512,26 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!target && skipApps.length > 0) {
       throw badRequest('skipApps requires target');
     }
+    let verifiedProductIdentity:
+      | Promise<{ globalUserId: string; passwordHash: string }>
+      | undefined;
     const sessions = await collectPortalLoginSessions<AuthResponse>(
-      (candidate, fieldSourceHint) => loginForApp(
-        email,
-        password,
-        candidate,
-        fieldSourceHint ?? null,
-      ),
+      (candidate, fieldSourceHint) => {
+        if (
+          candidate === 'ecoaudit'
+          || candidate === 'solarsense'
+          || candidate === 'installhub'
+        ) {
+          verifiedProductIdentity ??= verifyGlobalProductCredentials(
+            email,
+            password,
+          );
+          return verifiedProductIdentity.then((verified) => (
+            issueGlobalTokensAfterVerifiedPassword(candidate, verified)
+          ));
+        }
+        return loginForApp(email, password, candidate, fieldSourceHint ?? null);
+      },
       target,
       skipApps,
     );
@@ -553,113 +601,65 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const rotated = await db.transaction(async (tx) => {
       const now = new Date();
       let tokenUser: { id: string; role: string };
+      await tx.execute(sql`
+        SELECT pg_advisory_xact_lock(hashtext('global-user-mutations'))
+      `);
 
-      /*
-       * Lock the authoritative user before claiming the refresh token. Source
-       * account writes use source -> unified registry -> refresh-token order,
-       * so matching that order avoids deadlocks and prevents a source change
-       * racing a newly issued Field token back into validity.
-       */
-      if (payload.app === 'ecoaudit') {
-        const [user] = await tx
-          .select()
-          .from(eaUsers)
-          .where(eq(eaUsers.id, payload.userId))
-          .for('update');
-        if (!user?.isActive) throw unauthorized('User not found or inactive');
-        tokenUser = user;
-      } else if (payload.app === 'solarsense') {
-        const [user] = await tx
-          .select()
-          .from(ssUsers)
-          .where(eq(ssUsers.id, payload.userId))
-          .for('update');
-        if (!user?.isActive) throw unauthorized('User not found or inactive');
-        tokenUser = user;
-      } else if (payload.app === 'installhub') {
+      /* Product row -> canonical row matches the global propagation trigger's
+       * lock order and prevents password/role/deactivation races. */
+      if (
+        payload.app === 'ecoaudit'
+        || payload.app === 'solarsense'
+        || payload.app === 'installhub'
+      ) {
         const [snapshot] = await tx
           .select({
             id: unifiedUsers.id,
-            originApp: unifiedUsers.originApp,
+            globalUserId: unifiedUsers.globalUserId,
             originUserId: unifiedUsers.originUserId,
             fieldUserId: unifiedUsers.fieldUserId,
           })
           .from(unifiedUsers)
           .where(and(
-            eq(unifiedUsers.fieldUserId, payload.userId),
+            eq(unifiedUsers.originApp, payload.app),
+            eq(unifiedUsers.originUserId, payload.userId),
             isNull(unifiedUsers.deletedAt),
           ));
-        if (!snapshot || (
-          snapshot.originApp !== 'ecoaudit'
-          && snapshot.originApp !== 'solarsense'
-          && snapshot.originApp !== 'installhub'
-        )) {
+        if (!snapshot) throw unauthorized('User not found or inactive');
+
+        const [productUser] = payload.app === 'ecoaudit'
+          ? await tx.select().from(eaUsers)
+              .where(eq(eaUsers.id, payload.userId)).for('update')
+          : payload.app === 'solarsense'
+            ? await tx.select().from(ssUsers)
+                .where(eq(ssUsers.id, payload.userId)).for('update')
+            : await tx.select().from(ihUsers)
+                .where(eq(ihUsers.id, payload.userId)).for('update');
+        const [globalUser] = await tx
+          .select()
+          .from(globalUsers)
+          .where(eq(globalUsers.id, snapshot.globalUserId))
+          .for('update');
+        const [membership] = await tx
+          .select()
+          .from(unifiedUsers)
+          .where(eq(unifiedUsers.id, snapshot.id))
+          .for('update');
+        if (
+          !productUser?.isActive
+          || !globalUser?.isActive
+          || !membership?.isActive
+          || membership.deletedAt !== null
+          || membership.originUserId !== productUser.id
+          || membership.globalUserId !== globalUser.id
+          || (
+            payload.app === 'installhub'
+            && membership.fieldUserId !== productUser.id
+          )
+        ) {
           throw unauthorized('User not found or inactive');
         }
-
-        if (
-          snapshot.originApp === 'ecoaudit'
-          || snapshot.originApp === 'solarsense'
-        ) {
-          const [sourceUser] = snapshot.originApp === 'ecoaudit'
-            ? await tx
-                .select()
-                .from(eaUsers)
-                .where(eq(eaUsers.id, snapshot.originUserId))
-                .for('update')
-            : await tx
-                .select()
-                .from(ssUsers)
-                .where(eq(ssUsers.id, snapshot.originUserId))
-                .for('update');
-          if (!sourceUser?.isActive) throw unauthorized('User not found or inactive');
-
-          const [registryUser] = await tx
-            .select()
-            .from(unifiedUsers)
-            .where(eq(unifiedUsers.id, snapshot.id))
-            .for('update');
-          if (
-            !registryUser?.isActive
-            || registryUser.deletedAt !== null
-            || registryUser.originApp !== snapshot.originApp
-            || registryUser.originUserId !== sourceUser.id
-            || registryUser.fieldUserId !== payload.userId
-            || registryUser.passwordHash !== sourceUser.passwordHash
-            || registryUser.role !== sourceUser.role
-          ) {
-            throw unauthorized('User not found or inactive');
-          }
-
-          const sourceRole = sourceUser.role === 'admin' ? 'admin' : 'inspector';
-          tokenUser = { id: registryUser.fieldUserId, role: sourceRole };
-        } else {
-          const [fieldUser] = await tx
-            .select()
-            .from(ihUsers)
-            .where(eq(ihUsers.id, snapshot.originUserId))
-            .for('update');
-          if (!fieldUser?.isActive || fieldUser.id !== payload.userId) {
-            throw unauthorized('User not found or inactive');
-          }
-          const [registryUser] = await tx
-            .select()
-            .from(unifiedUsers)
-            .where(eq(unifiedUsers.id, snapshot.id))
-            .for('update');
-          if (
-            !registryUser?.isActive
-            || registryUser.deletedAt !== null
-            || registryUser.originApp !== 'installhub'
-            || registryUser.originUserId !== fieldUser.id
-            || registryUser.fieldUserId !== fieldUser.id
-            || registryUser.passwordHash !== fieldUser.passwordHash
-            || registryUser.role !== fieldUser.role
-          ) {
-            throw unauthorized('User not found or inactive');
-          }
-          tokenUser = fieldUser;
-        }
+        tokenUser = { id: productUser.id, role: globalUser.role };
       } else {
         const [snapshot] = await tx
           .select({
@@ -697,6 +697,18 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
                 .where(eq(ssUsers.id, snapshot.sourceUserId))
                 .for('update');
           if (!sourceUser?.isActive || sourceUser.role !== 'admin') {
+            throw unauthorized('User not found or inactive');
+          }
+          const [fleetEntitlement] = await tx
+            .select({ entitled: globalUsers.fleetEntitled })
+            .from(unifiedUsers)
+            .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
+            .where(and(
+              eq(unifiedUsers.originApp, snapshot.sourceApp),
+              eq(unifiedUsers.originUserId, snapshot.sourceUserId),
+              isNull(unifiedUsers.deletedAt),
+            ));
+          if (!fleetEntitlement?.entitled) {
             throw unauthorized('User not found or inactive');
           }
 
@@ -970,59 +982,43 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (authType === 'apikey') {
       return reply.send({ id: null, email: null, fullName: keyName ?? null, role, app });
     }
-    if (app === 'installhub') {
-      const [registryUser] = await db
+    if (app !== 'wattwatchers') {
+      const [membership] = await db
         .select()
         .from(unifiedUsers)
         .where(and(
-          eq(unifiedUsers.fieldUserId, userId),
+          eq(unifiedUsers.originApp, app),
+          eq(unifiedUsers.originUserId, userId),
           isNull(unifiedUsers.deletedAt),
         ));
-      if (!registryUser?.isActive) throw notFound('User');
+      const [globalUser] = membership
+        ? await db.select().from(globalUsers)
+            .where(eq(globalUsers.id, membership.globalUserId))
+        : [];
+      const [productUser] = app === 'ecoaudit'
+        ? await db.select().from(eaUsers).where(eq(eaUsers.id, userId))
+        : app === 'solarsense'
+          ? await db.select().from(ssUsers).where(eq(ssUsers.id, userId))
+          : await db.select().from(ihUsers).where(eq(ihUsers.id, userId));
       if (
-        registryUser.originApp === 'ecoaudit'
-        || registryUser.originApp === 'solarsense'
-      ) {
-        const [sourceUser] = registryUser.originApp === 'ecoaudit'
-          ? await db
-              .select()
-              .from(eaUsers)
-              .where(eq(eaUsers.id, registryUser.originUserId))
-          : await db
-              .select()
-              .from(ssUsers)
-              .where(eq(ssUsers.id, registryUser.originUserId));
-        if (!sourceUser?.isActive) throw notFound('User');
-        return reply.send({
-          id: registryUser.fieldUserId,
-          email: sourceUser.email,
-          fullName: sourceUser.fullName,
-          role,
-          app,
-          sourceManaged: true,
-          sourceApp: registryUser.originApp,
-        });
-      }
-      if (registryUser.originApp !== 'installhub') throw notFound('User');
-      const [fieldUser] = await db
-        .select()
-        .from(ihUsers)
-        .where(eq(ihUsers.id, registryUser.originUserId));
-      if (!fieldUser?.isActive) throw notFound('User');
+        !membership?.isActive
+        || !globalUser?.isActive
+        || !productUser?.isActive
+      ) throw notFound('User');
       return reply.send({
-        id: fieldUser.id,
-        email: fieldUser.email,
-        fullName: fieldUser.fullName,
-        role,
+        id: productUser.id,
+        email: productUser.email,
+        fullName: globalUser.fullName,
+        role: globalUser.role,
         app,
-        sourceManaged: false,
-        sourceApp: null,
+        ...(app === 'installhub'
+          ? { sourceManaged: false, sourceApp: null }
+          : {}),
       });
     }
 
-    const userTable = tableForApp(app);
-    const [user] = await db.select().from(userTable).where(eq(userTable.id, userId));
-    if (!user) throw notFound('User');
+    const [user] = await db.select().from(wwUsers).where(eq(wwUsers.id, userId));
+    if (!user?.isActive) throw notFound('User');
     return reply.send({
       id: user.id,
       email: user.email,

@@ -7,7 +7,8 @@ import { ihUsers } from '../../db/schema/installhub.js';
 import { refreshTokens, unifiedUsers } from '../../db/schema/shared.js';
 import { ssUsers } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
-import { hashPassword, verifyPassword } from '../../auth/apiKey.js';
+import { hashPassword } from '../../auth/apiKey.js';
+import { verifyGlobalUserPassword } from '../../auth/globalIdentity.js';
 import { cloudEmailForLogin } from '../../auth/loginIdentity.js';
 import {
   assertFound,
@@ -183,6 +184,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
     const users = await db
       .select(unifiedInstallHubUserColumns)
       .from(unifiedUsers)
+      .where(eq(unifiedUsers.originApp, 'installhub'))
       .orderBy(asc(unifiedUsers.sourceCreatedAt));
     return reply.send({
       data: users.map(presentUnifiedInstallHubUser),
@@ -258,7 +260,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
     const [user] = await db
       .select(unifiedInstallHubUserColumns)
       .from(unifiedUsers)
-      .where(eq(unifiedUsers.fieldUserId, id));
+      .where(and(
+        eq(unifiedUsers.fieldUserId, id),
+        eq(unifiedUsers.originApp, 'installhub'),
+      ));
     return reply.send(
       presentUnifiedInstallHubUser(assertFound(user, 'User')),
     );
@@ -296,7 +301,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         const [registryUser] = await tx
           .select(unifiedInstallHubUserColumns)
           .from(unifiedUsers)
-          .where(eq(unifiedUsers.fieldUserId, id));
+          .where(and(
+            eq(unifiedUsers.fieldUserId, id),
+            eq(unifiedUsers.originApp, 'installhub'),
+          ));
         if (!registryUser) throw notFound('User');
         if (isSourceManagedInstallHubUser(registryUser)) {
           throw conflict(
@@ -362,7 +370,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         const [updatedRegistryUser] = await tx
           .select(unifiedInstallHubUserColumns)
           .from(unifiedUsers)
-          .where(eq(unifiedUsers.fieldUserId, id));
+          .where(and(
+            eq(unifiedUsers.fieldUserId, id),
+            eq(unifiedUsers.originApp, 'installhub'),
+          ));
         return assertFound(updatedRegistryUser, 'User');
       });
       return reply.send(presentUnifiedInstallHubUser(updated));
@@ -403,7 +414,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
     const [registryUser] = await db
       .select()
       .from(unifiedUsers)
-      .where(eq(unifiedUsers.fieldUserId, id));
+      .where(and(
+        eq(unifiedUsers.fieldUserId, id),
+        eq(unifiedUsers.originApp, 'installhub'),
+      ));
     const found = assertFound(registryUser, 'User');
     const managedSourceApp = sourceApp(found.originApp);
     if (managedSourceApp && (!found.isActive || found.deletedAt)) {
@@ -413,7 +427,11 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       if (!body.currentPassword) {
         throw badRequest('currentPassword is required when changing your own password');
       }
-      if (!await verifyPassword(body.currentPassword, found.passwordHash)) {
+      if (!await verifyGlobalUserPassword(
+        'installhub',
+        found.originUserId,
+        body.currentPassword,
+      )) {
         throw unauthorized('Current password is incorrect');
       }
     }
@@ -466,7 +484,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       const [updatedRegistryUser] = await tx
         .select(unifiedInstallHubUserColumns)
         .from(unifiedUsers)
-        .where(eq(unifiedUsers.fieldUserId, found.fieldUserId));
+        .where(and(
+          eq(unifiedUsers.fieldUserId, found.fieldUserId),
+          eq(unifiedUsers.originApp, 'installhub'),
+        ));
       return assertFound(updatedRegistryUser, 'User');
     });
     return reply.send(presentUnifiedInstallHubUser(updated));
@@ -490,7 +511,10 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       const [registryUser] = await tx
         .select(unifiedInstallHubUserColumns)
         .from(unifiedUsers)
-        .where(eq(unifiedUsers.fieldUserId, id));
+        .where(and(
+          eq(unifiedUsers.fieldUserId, id),
+          eq(unifiedUsers.originApp, 'installhub'),
+        ));
       if (!registryUser) throw notFound('User');
       if (isSourceManagedInstallHubUser(registryUser)) {
         throw conflict(

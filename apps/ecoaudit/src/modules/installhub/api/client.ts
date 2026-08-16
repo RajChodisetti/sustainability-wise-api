@@ -230,6 +230,18 @@ export async function installHubRequestBlob(
   return response.blob();
 }
 
+export async function installHubRequestDownload(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ blob: Blob; contentDisposition: string | null }> {
+  const response = await authenticatedFetch(method, path, body);
+  return {
+    blob: await response.blob(),
+    contentDisposition: response.headers.get('Content-Disposition'),
+  };
+}
+
 export async function installHubPublicRequest<T>(
   method: string,
   path: string,
