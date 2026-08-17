@@ -344,6 +344,8 @@ and `needsHoursReview`.
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/void` | Void an unpaid invoice and release every job reservation using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/mark-paid` | Mark an issued invoice paid using required `{expectedUpdatedAt}` and optional `{paidAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs` | Queue the exact consolidated PDF revision using required `{expectedUpdatedAt}` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/email` | Queue Gmail delivery of an issued/paid invoice's exact branded PDF; requires `{expectedUpdatedAt,idempotencyKey}` and accepts optional `{to,subject,message}`; returns `202 {delivery,reused}` |
+| GET | `/v1/portal/scheduler/invoices/:invoiceId/email-deliveries` | List the newest 100 durable email delivery audit rows, including queued/sent/failed/unknown status and provider message identity |
 | POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
 | GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
 | DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
@@ -361,6 +363,22 @@ and `needsHoursReview`.
 | GET | `/v1/export/jobs/:jobId` | Poll queued/running/complete/failed status and the canonical branded filename |
 | GET | `/v1/export/jobs/:jobId/download` | Stream the completed PDF with safe ASCII `filename` and UTF-8 `filename*` Content-Disposition values |
 
+Invoice email delivery status is `queued` while its exact PDF or a safe retry
+is pending, `processing` only while one worker owns the attempt, `sent` after
+Gmail returns a provider message ID, `failed` after a definitive rejection or
+retry exhaustion, and `delivery_unknown` when Gmail may have accepted a request
+whose acknowledgement was lost. Never automatically resubmit
+`delivery_unknown`; verify the sender mailbox before an administrator chooses a
+new idempotency key. Replaying the same invoice/idempotency key and identical
+request returns the original row with `reused: true`; changing that request is a
+409 conflict. `to` defaults to the invoice's snapshotted `billToEmail`. Draft or
+void invoices return 409, an absent/invalid recipient returns 400, and an API
+runtime without explicitly enabled Gmail credentials returns 503.
+Voiding an invoice while its Gmail provider submission is in progress returns
+409; retry only after the delivery reaches a terminal audit status. This fence
+is enforced in PostgreSQL as well as the current API so rolling older writers
+cannot invalidate an invoice during the external send boundary.
+
 Equivalent `/v1/portal/scheduler/events/:eventId/...` routes remain adapters for
 calendar views. Responses include the canonical `financeId`; migrated Field
 history without an event must use the finance-id family.
@@ -373,6 +391,11 @@ currently active canonical global administrator; same-app administrator bypass
 is disabled for these finance artifacts. `reportVariantKey` includes the
 renderer version, immutable invoice id, and invoice `updatedAt`, so draft edits,
 issue, mark-paid, and void transitions cannot surface an older PDF.
+Persisted Scheduler PDF jobs are claimed by a startup/poll worker using a
+heartbeat lease and ownership token. Queued work survives a crash before local
+dispatch; expired running work is safely resumed, while fresh rolling-old jobs
+receive a one-hour compatibility grace. Completion is token-fenced before a
+linked invoice email becomes eligible.
 One-job exports keep the established job-name/job-date filename. Consolidated
 exports use the first snapshotted job name, `and-N-more`, invoice date, and
 invoice number in a bounded filename; no client identity is stored in the

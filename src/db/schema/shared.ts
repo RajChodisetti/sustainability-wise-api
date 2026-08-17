@@ -209,6 +209,8 @@ export const pdfJobs = pgTable('pdf_jobs', {
   params: jsonb('params').notNull().$type<Record<string, unknown>>(),
   status: text('status').notNull().default('queued'),
   phase: text('phase'),
+  claimToken: text('claim_token'),
+  claimExpiresAt: timestamp('claim_expires_at'),
   progressCurrent: integer('progress_current'),
   progressTotal: integer('progress_total'),
   pdfUrl: text('pdf_url'),
@@ -216,7 +218,17 @@ export const pdfJobs = pgTable('pdf_jobs', {
   error: text('error'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
+}, (table) => [
+  check('pdf_jobs_scheduler_invoice_claim_terminal_check', sql`
+    ${table.entityType} <> 'scheduler_invoice'
+    OR ${table.status} IN ('queued', 'running')
+    OR (
+      ${table.status} IN ('complete', 'failed')
+      AND ${table.claimToken} IS NULL
+      AND ${table.claimExpiresAt} IS NULL
+    )
+  `),
+]);
 
 /**
  * Durable outbox for storage deletion. Domain/registry rows and this task are
@@ -822,4 +834,95 @@ export const schedulerInvoiceCounters = pgTable('scheduler_invoice_counters', {
 }, (table) => [
   check('scheduler_invoice_counters_year_check', sql`${table.year} BETWEEN 2000 AND 9999`),
   check('scheduler_invoice_counters_value_check', sql`${table.lastValue} >= 0`),
+]);
+
+/**
+ * Durable, idempotent audit trail for Scheduler invoice email delivery.
+ *
+ * The PDF job is an immutable revision-specific artifact. A delivery enters
+ * `processing` before provider submission; once `providerSubmissionStartedAt`
+ * is set, an interrupted attempt is deliberately never auto-retried because
+ * Gmail may have accepted the message before the connection was lost.
+ */
+export const schedulerInvoiceEmailDeliveries = pgTable('scheduler_invoice_email_deliveries', {
+  id: text('id').primaryKey(),
+  invoiceId: text('invoice_id').notNull().references(
+    () => schedulerInvoices.id,
+    { onDelete: 'restrict' },
+  ),
+  pdfJobId: text('pdf_job_id').notNull().references(
+    () => pdfJobs.id,
+    { onDelete: 'restrict' },
+  ),
+  sourceUpdatedAt: timestamp('source_updated_at').notNull(),
+  attachmentFilename: text('attachment_filename').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  requestFingerprint: text('request_fingerprint').notNull(),
+  recipient: text('recipient').notNull(),
+  subject: text('subject').notNull(),
+  message: text('message').notNull(),
+  requestedByGlobalUserId: text('requested_by_global_user_id').notNull().references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  requestedByDisplayName: text('requested_by_display_name'),
+  requestedByApp: text('requested_by_app').notNull(),
+  status: text('status').notNull().default('queued'),
+  attempts: integer('attempts').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(5),
+  availableAt: timestamp('available_at').notNull().defaultNow(),
+  claimToken: text('claim_token'),
+  claimedAt: timestamp('claimed_at'),
+  providerSubmissionStartedAt: timestamp('provider_submission_started_at'),
+  provider: text('provider').notNull().default('gmail_api'),
+  providerMessageId: text('provider_message_id'),
+  lastErrorCode: text('last_error_code'),
+  sentAt: timestamp('sent_at'),
+  completedAt: timestamp('completed_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('scheduler_invoice_email_idempotency_unique').on(
+    table.invoiceId,
+    table.idempotencyKey,
+  ),
+  index('scheduler_invoice_email_invoice_created_idx').on(table.invoiceId, table.createdAt),
+  index('scheduler_invoice_email_status_available_idx').on(table.status, table.availableAt),
+  check('scheduler_invoice_email_status_check', sql`
+    ${table.status} IN ('queued', 'processing', 'sent', 'failed', 'delivery_unknown')
+  `),
+  check('scheduler_invoice_email_attempts_check', sql`
+    ${table.attempts} >= 0
+    AND ${table.maxAttempts} > 0
+    AND ${table.attempts} <= ${table.maxAttempts}
+  `),
+  check('scheduler_invoice_email_provider_check', sql`${table.provider} = 'gmail_api'`),
+  check('scheduler_invoice_email_request_app_check', sql`
+    ${table.requestedByApp} IN ('ecoaudit', 'solarsense', 'installhub')
+  `),
+  check('scheduler_invoice_email_fingerprint_check', sql`
+    ${table.requestFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+  check('scheduler_invoice_email_text_check', sql`
+    length(btrim(${table.idempotencyKey})) > 0
+    AND length(btrim(${table.attachmentFilename})) > 0
+    AND length(btrim(${table.recipient})) > 0
+    AND length(btrim(${table.subject})) > 0
+  `),
+  check('scheduler_invoice_email_claim_check', sql`
+    (${table.status} = 'processing' AND ${table.claimToken} IS NOT NULL AND ${table.claimedAt} IS NOT NULL)
+    OR (${table.status} <> 'processing' AND ${table.claimToken} IS NULL AND ${table.claimedAt} IS NULL)
+  `),
+  check('scheduler_invoice_email_completion_check', sql`
+    (${table.status} = 'sent'
+      AND ${table.sentAt} IS NOT NULL
+      AND ${table.completedAt} IS NOT NULL
+      AND ${table.providerMessageId} IS NOT NULL)
+    OR (${table.status} IN ('failed', 'delivery_unknown')
+      AND ${table.sentAt} IS NULL
+      AND ${table.completedAt} IS NOT NULL)
+    OR (${table.status} IN ('queued', 'processing')
+      AND ${table.sentAt} IS NULL
+      AND ${table.completedAt} IS NULL)
+  `),
 ]);

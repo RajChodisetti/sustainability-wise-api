@@ -3,7 +3,49 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { AppError } from '../utils/errors.js';
 import { parseSchedulerInvoiceGstRate } from '../config.js';
-import { computeSchedulerCommercialTotals } from './schedulerFinanceService.js';
+import {
+  computeSchedulerCommercialTotals,
+  schedulerInvoiceCompletionReadiness,
+  schedulerInvoiceHoursReadiness,
+} from './schedulerFinanceService.js';
+
+test('invoice completion readiness follows each product lifecycle fence', () => {
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    sourceApp: 'ecoaudit', jobStatus: 'Completed',
+  }), { satisfied: true, basis: 'job' });
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    sourceApp: 'installhub', jobStatus: 'Draft',
+  }), { satisfied: false, basis: null });
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    sourceApp: 'solarsense', jobStatus: 'Completed', parentStatus: 'Draft',
+  }), { satisfied: true, basis: 'job' });
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    sourceApp: 'solarsense', jobStatus: 'Draft', parentStatus: 'Completed',
+  }), { satisfied: true, basis: 'parent_site' });
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    sourceApp: 'solarsense', jobStatus: 'Draft', parentStatus: 'Draft',
+  }), { satisfied: false, basis: null });
+});
+
+test('missing app time requires both explicit admin hour values, including valid zeroes', () => {
+  assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, null), {
+    satisfied: true,
+    basis: 'app_time',
+  });
+  assert.deepEqual(schedulerInvoiceHoursReadiness(0, null), {
+    satisfied: false,
+    basis: null,
+  });
+  assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
+    source: 'admin', billableMilliseconds: 0, costMilliseconds: 0,
+  }), { satisfied: true, basis: 'admin_override' });
+  assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
+    source: 'admin', billableMilliseconds: 0, costMilliseconds: null,
+  }), { satisfied: false, basis: null });
+  assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, {
+    source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
+  }), { satisfied: false, basis: null });
+});
 
 test('charge-up totals use effective labour sell, actual costs, and ex-GST expenses', () => {
   const totals = computeSchedulerCommercialTotals({

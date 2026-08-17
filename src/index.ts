@@ -7,6 +7,8 @@ import { failInterruptedExportJobs } from './services/pdfJobService.js';
 import { drainStorageDeletionTasks } from './services/storageDeletionService.js';
 import { startSchedulerNotificationWorker } from './services/schedulerNotificationWorker.js';
 import { reconcilePendingSchedulerExpenseAttachments } from './services/schedulerFinanceService.js';
+import { startSchedulerInvoiceEmailWorker } from './services/schedulerInvoiceEmailWorker.js';
+import { startSchedulerInvoicePdfWorker } from './services/schedulerInvoicePdfExport.js';
 
 async function main() {
   await runMigrations();
@@ -18,6 +20,8 @@ async function main() {
 
   await app.listen({ port: config.port, host: config.host });
   const notificationWorker = startSchedulerNotificationWorker();
+  const invoicePdfWorker = startSchedulerInvoicePdfWorker();
+  const invoiceEmailWorker = startSchedulerInvoiceEmailWorker();
   let storageCleanupRunning = false;
   const storageCleanupTimer = setInterval(() => {
     if (storageCleanupRunning) return;
@@ -47,6 +51,8 @@ async function main() {
     console.log(`[server] ${signal} received; shutting down`);
     clearInterval(storageCleanupTimer);
     clearInterval(attachmentReconcileTimer);
+    await invoiceEmailWorker.stop();
+    await invoicePdfWorker.stop();
     await notificationWorker.stop();
     await app.close();
     await closeBrowser();

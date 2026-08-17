@@ -19,7 +19,9 @@ import {
   useIssueSchedulerInvoice,
   useMarkSchedulerInvoicePaid,
   useSchedulerInvoice,
+  useSchedulerInvoiceEmailDeliveries,
   useSchedulerInvoices,
+  useSendSchedulerInvoiceEmail,
   useUpdateSchedulerInvoice,
   useVoidSchedulerInvoice,
 } from '@/modules/scheduler/hooks/useScheduler';
@@ -28,6 +30,7 @@ import {
   consolidatedInvoiceRecipientIssue,
   financeAppLabel,
   invoiceDraftIsDirty,
+  invoiceEmailAttemptNeedsSameIdempotencyKey,
   invoiceStatusLabel,
   schedulerFinanceHref,
   schedulerInvoicePdfFallbackFilename,
@@ -56,6 +59,59 @@ function displayDate(value: string | null): string {
 
 function dateInput(value: string | null): string {
   return value?.slice(0, 10) ?? '';
+}
+
+function newInvoiceEmailIdempotencyKey(invoiceId: string): string {
+  const nonce = globalThis.crypto?.randomUUID?.()
+    ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `scheduler-invoice-email:${invoiceId}:${nonce}`;
+}
+
+type PendingInvoiceEmailRequest = {
+  idempotencyKey: string;
+  sourceUpdatedAt: string;
+  recipient: string;
+  subject: string;
+  message: string;
+};
+
+function invoiceEmailSessionKey(invoiceId: string): string {
+  return `scheduler-invoice-email:${encodeURIComponent(invoiceId)}`;
+}
+
+function readPendingInvoiceEmail(key: string): PendingInvoiceEmailRequest | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(key) ?? 'null') as Partial<PendingInvoiceEmailRequest> | null;
+    return parsed
+      && typeof parsed.idempotencyKey === 'string'
+      && typeof parsed.sourceUpdatedAt === 'string'
+      && typeof parsed.recipient === 'string'
+      && typeof parsed.subject === 'string'
+      && typeof parsed.message === 'string'
+      ? parsed as PendingInvoiceEmailRequest
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingInvoiceEmail(key: string, request: PendingInvoiceEmailRequest): boolean {
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(request));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingInvoiceEmail(key: string): void {
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // A definitive server response still makes the request safe; storage may
+    // be unavailable in privacy-restricted browser contexts.
+  }
 }
 
 const statusClasses = {
@@ -343,7 +399,31 @@ export function InvoiceDocument({
   const [billToAbn, setBillToAbn] = useState(invoice.billToAbn ?? '');
   const [purchaseOrderReference, setPurchaseOrderReference] = useState(invoice.purchaseOrderReference ?? '');
   const [validation, setValidation] = useState<string | null>(null);
+  const [emailOpen, setEmailOpen] = useState(false);
+  const emailSessionKey = useMemo(
+    () => invoiceEmailSessionKey(invoice.id),
+    [invoice.id],
+  );
+  const initialEmailRequest = useMemo(() => {
+    const pending = readPendingInvoiceEmail(emailSessionKey);
+    return {
+      idempotencyKey: pending?.idempotencyKey ?? newInvoiceEmailIdempotencyKey(invoice.id),
+      sourceUpdatedAt: pending?.sourceUpdatedAt ?? invoice.updatedAt,
+      recipient: pending?.recipient ?? invoice.billToEmail ?? '',
+      subject: pending?.subject ?? `Invoice ${invoice.invoiceNumber} from ${invoice.sellerName}`,
+      message: pending?.message ?? `Hello ${invoice.billToName || 'there'},\n\nPlease find invoice ${invoice.invoiceNumber} attached.\n\nRegards,\n${invoice.sellerName}`,
+      locked: Boolean(pending),
+    };
+  }, [emailSessionKey, invoice.billToEmail, invoice.billToName, invoice.id, invoice.invoiceNumber, invoice.sellerName, invoice.updatedAt]);
+  const [emailTo, setEmailTo] = useState(initialEmailRequest.recipient);
+  const [emailSubject, setEmailSubject] = useState(initialEmailRequest.subject);
+  const [emailMessage, setEmailMessage] = useState(initialEmailRequest.message);
+  const [emailIdempotencyKey, setEmailIdempotencyKey] = useState(initialEmailRequest.idempotencyKey);
+  const [emailSourceUpdatedAt, setEmailSourceUpdatedAt] = useState(initialEmailRequest.sourceUpdatedAt);
+  const [emailRetryLocked, setEmailRetryLocked] = useState(initialEmailRequest.locked);
   const toast = useToast();
+  const sendEmail = useSendSchedulerInvoiceEmail(invoice.id);
+  const emailDeliveries = useSchedulerInvoiceEmailDeliveries(invoice.id, true);
   const reportVariantKey = schedulerInvoicePdfReportVariantKey(invoice);
   const pdfExport = useExportJob({
     scopeKey: ['scheduler', 'invoice-pdf', invoice.id, invoice.updatedAt],
@@ -359,7 +439,9 @@ export function InvoiceDocument({
   const invoiceActionBusy = busy
     || pdfExport.starting
     || pdfExport.active
-    || pdfExport.downloading;
+    || pdfExport.downloading
+    || sendEmail.isPending;
+  const invoiceLifecycleBusy = invoiceActionBusy || emailRetryLocked;
   const dirty = editable && invoiceDraftIsDirty({
     notes: invoice.notes ?? '',
     dueDate: dateInput(invoice.dueDate),
@@ -418,6 +500,60 @@ export function InvoiceDocument({
     }
     setValidation(null);
     await onIssue();
+  }
+
+  async function emailInvoice() {
+    const recipient = emailTo.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      setValidation('Enter a valid recipient email address.');
+      return;
+    }
+    if (!emailSubject.trim()) {
+      setValidation('Add an email subject.');
+      return;
+    }
+    if (!emailMessage.trim()) {
+      setValidation('Add a short email message.');
+      return;
+    }
+    const request = {
+      idempotencyKey: emailIdempotencyKey,
+      sourceUpdatedAt: emailSourceUpdatedAt,
+      recipient,
+      subject: emailSubject.trim(),
+      message: emailMessage.trim(),
+    };
+    if (!writePendingInvoiceEmail(emailSessionKey, request)) {
+      setValidation('This browser could not safely retain the email request for retry. Enable session storage and try again.');
+      return;
+    }
+    setEmailRetryLocked(true);
+    setValidation(null);
+    try {
+      const response = await sendEmail.mutateAsync({
+        expectedUpdatedAt: request.sourceUpdatedAt,
+        idempotencyKey: request.idempotencyKey,
+        to: request.recipient,
+        subject: request.subject,
+        message: request.message,
+      });
+      toast.success(response.reused
+        ? 'The existing invoice email request is still being tracked.'
+        : 'Invoice email queued. Delivery status will update here.');
+      clearPendingInvoiceEmail(emailSessionKey);
+      setEmailRetryLocked(false);
+      setEmailIdempotencyKey(newInvoiceEmailIdempotencyKey(invoice.id));
+      setEmailSourceUpdatedAt(invoice.updatedAt);
+      setEmailOpen(false);
+    } catch (cause) {
+      if (!invoiceEmailAttemptNeedsSameIdempotencyKey(cause)) {
+        clearPendingInvoiceEmail(emailSessionKey);
+        setEmailRetryLocked(false);
+        setEmailIdempotencyKey(newInvoiceEmailIdempotencyKey(invoice.id));
+        setEmailSourceUpdatedAt(invoice.updatedAt);
+      }
+      setValidation(cloudConnectionErrorMessage(cause));
+    }
   }
 
   return (
@@ -581,6 +717,70 @@ export function InvoiceDocument({
         onDownload={() => void downloadPdf()}
         className="mt-5"
       />
+
+      {(invoice.status === 'issued' || invoice.status === 'paid' || (emailDeliveries.data?.length ?? 0) > 0) ? (
+        <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4" aria-labelledby={`invoice-email-${invoice.id}`}>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h4 id={`invoice-email-${invoice.id}`} className="font-extrabold text-[var(--text)]">Email invoice</h4>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">The immutable branded PDF is attached and sent through the existing Sustainability Wise Gmail account.</p>
+            </div>
+            {invoice.status === 'issued' || invoice.status === 'paid' ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={invoiceActionBusy}
+                aria-expanded={emailOpen}
+                aria-controls={`invoice-email-panel-${invoice.id}`}
+                onClick={() => setEmailOpen((open) => !open)}
+              >
+                {emailOpen ? 'Close email' : 'Email invoice'}
+              </Button>
+            ) : null}
+          </div>
+          {emailRetryLocked && !emailOpen ? (
+            <p className="mt-3 rounded-lg border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text)]">
+              An email request needs an exact retry. Reopen it before marking this invoice paid or void.
+            </p>
+          ) : null}
+          {emailOpen ? (
+            <div id={`invoice-email-panel-${invoice.id}`} className="mt-4 rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-4">
+              <FieldLabel htmlFor={`invoice-email-to-${invoice.id}`}>Recipient</FieldLabel>
+              <Input id={`invoice-email-to-${invoice.id}`} type="email" autoComplete="email" value={emailTo} disabled={emailRetryLocked} onChange={(event) => setEmailTo(event.target.value)} />
+              <FieldLabel htmlFor={`invoice-email-subject-${invoice.id}`}>Subject</FieldLabel>
+              <Input id={`invoice-email-subject-${invoice.id}`} maxLength={300} value={emailSubject} disabled={emailRetryLocked} onChange={(event) => setEmailSubject(event.target.value)} />
+              <FieldLabel htmlFor={`invoice-email-message-${invoice.id}`}>Message</FieldLabel>
+              <Textarea id={`invoice-email-message-${invoice.id}`} rows={6} maxLength={4_000} value={emailMessage} disabled={emailRetryLocked} onChange={(event) => setEmailMessage(event.target.value)} />
+              <FieldHint>{emailRetryLocked
+                ? 'The exact request is retained for this browser tab. Retry it unchanged so a lost response cannot create a duplicate email.'
+                : 'Ambiguous provider outcomes are never sent again automatically; they are flagged for review to avoid duplicate customer emails.'}</FieldHint>
+              <div className="mt-4 flex justify-end gap-2">
+                <Button type="button" variant="secondary" disabled={sendEmail.isPending} onClick={() => setEmailOpen(false)}>Cancel</Button>
+                <Button type="button" disabled={sendEmail.isPending} aria-busy={sendEmail.isPending} onClick={() => void emailInvoice()}>{sendEmail.isPending ? 'Queueing…' : emailRetryLocked ? 'Retry same request' : 'Send invoice'}</Button>
+              </div>
+            </div>
+          ) : null}
+          {emailDeliveries.isLoading ? <Spinner label="Loading email delivery history…" /> : null}
+          {emailDeliveries.error ? <div className="mt-3"><ErrorBanner message={cloudConnectionErrorMessage(emailDeliveries.error)} /></div> : null}
+          {(emailDeliveries.data ?? []).length > 0 ? (
+            <ul className="mt-4 space-y-2" aria-label="Invoice email delivery history">
+              {(emailDeliveries.data ?? []).slice(0, 5).map((delivery) => (
+                <li key={delivery.id} className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2.5 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate font-bold text-[var(--text)]">{delivery.recipient}</p>
+                    <p className="mt-0.5 truncate text-xs text-[var(--text-sub)]">{delivery.subject}</p>
+                    <p className="mt-1 text-[10px] text-[var(--muted)]">Requested {displayDate(delivery.createdAt)} by {delivery.requestedByDisplayName || 'Admin'}</p>
+                    {delivery.status === 'delivery_unknown' ? <p className="mt-1 text-xs font-semibold text-[var(--red)]">Check the recipient inbox before trying again; Gmail may have accepted this message.</p> : null}
+                    {delivery.status === 'failed' && delivery.lastErrorCode ? <p className="mt-1 text-xs font-semibold text-[var(--red)]">Delivery failed: {delivery.lastErrorCode.replaceAll('_', ' ')}</p> : null}
+                  </div>
+                  <EmailDeliveryBadge status={delivery.status} />
+                </li>
+              ))}
+            </ul>
+          ) : !emailDeliveries.isLoading ? <p className="mt-3 text-xs text-[var(--text-sub)]">No email delivery attempts yet.</p> : null}
+        </section>
+      ) : null}
+
       <div className="mt-5 flex flex-wrap justify-end gap-2">
         <Button
           type="button"
@@ -601,11 +801,27 @@ export function InvoiceDocument({
         </Button>
         {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save draft'}</Button> : null}
         {editable ? <Button type="button" disabled={invoiceActionBusy || dirty} onClick={() => void issueInvoice()}>{dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
-        {invoice.status === 'issued' ? <Button type="button" disabled={invoiceActionBusy} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
-        {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceActionBusy} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
+        {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
+        {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>
     </article>
   );
+}
+
+function EmailDeliveryBadge({ status }: { status: import('@/modules/scheduler/types/domain').SchedulerInvoiceEmailStatus }) {
+  const labels = {
+    queued: 'Queued',
+    processing: 'Sending',
+    sent: 'Sent',
+    failed: 'Failed',
+    delivery_unknown: 'Needs review',
+  } as const;
+  const className = status === 'sent'
+    ? 'bg-[var(--green-soft)] text-[var(--green)]'
+    : status === 'failed' || status === 'delivery_unknown'
+      ? 'bg-[var(--red-soft)] text-[var(--red)]'
+      : 'bg-[var(--primary-soft)] text-[var(--primary)]';
+  return <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-extrabold ${className}`}>{labels[status]}</span>;
 }
 
 function InfoBlock({ label, children }: { label: string; children: React.ReactNode }) {

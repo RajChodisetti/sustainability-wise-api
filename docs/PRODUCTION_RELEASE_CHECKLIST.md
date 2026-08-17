@@ -67,6 +67,7 @@ cannot be proved.
 - [ ] A tested rollback path and named rollback owner exist.
 - [ ] Required database and storage recovery points are verified.
 - [ ] Queued/running PDF and ZIP jobs are zero, or impact is approved.
+- [ ] Queued/processing invoice emails are zero; no provider submission is interrupted.
 - [ ] Temporary exceptions are documented with owner and expiry.
 
 CI evidence:
@@ -144,6 +145,7 @@ Preflight manifest checksum/evidence:
 - [ ] Current API and portal paths were confirmed directly from PM2.
 - [ ] Previous immutable releases remain present and readable.
 - [ ] Queued/running export query returned zero rows.
+- [ ] Queued/processing invoice-email query returned zero rows.
 - [ ] Managed PostgreSQL backup/PITR status was checked.
 - [ ] Pre-release database dump exists when required.
 - [ ] Dump SHA-256 and `pg_restore --list` passed.

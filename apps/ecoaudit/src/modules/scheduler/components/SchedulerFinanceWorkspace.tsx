@@ -264,7 +264,7 @@ export function SchedulerFinanceWorkspace({
             }}
           />
           <main className="min-w-0">
-            {selected ? <SchedulerFinanceDetail financeId={selected.financeId} overview={selected} /> : <EmptyState title="Select a job" description="Choose a job to review active hours, billing settings, rates, and profitability." icon="gauge" />}
+            {selected ? <SchedulerFinanceDetail key={selected.financeId} financeId={selected.financeId} overview={selected} /> : <EmptyState title="Select a job" description="Choose a job to review active hours, billing settings, rates, and profitability." icon="gauge" />}
           </main>
         </div>
       )}

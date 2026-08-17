@@ -105,10 +105,17 @@ Before any PDF bytes are written, a `storage_deletion_tasks` outbox row protects
 against interrupted or partial writes; successful publication removes that row
 atomically. Explicit failure cleanup runs immediately. Global/startup cleanup
 leases fresh invoice-export tasks for one hour to avoid rolling-restart races,
-then a bounded 15-minute no-overlap sweep reclaims abandoned artifacts and
-fails export workers that have remained inactive beyond the same lease. Fresh
-workers and artifact tasks are skipped, so rolling startup or a periodic sweep
-cannot fail or delete another process's live export. Latest/status/download
+then a bounded 15-minute no-overlap sweep reclaims abandoned artifacts.
+Scheduler PDF execution itself is durable: startup plus five-second polling
+claims persisted jobs through a database token/lease, heartbeats live renders,
+and reclaims expired running work without reversing its monotonic status.
+New queued rows carry a durable-executor marker; fresh tokenless rows from a
+rolling old API receive a one-hour grace before claim, preventing duplicate old
+in-memory dispatch. Final completion and failure are fenced by the claim token,
+so a replaced worker cannot publish over the new owner. A database failure-write
+fence also makes the legacy interrupted-export reaper a no-op for queued or
+running Scheduler PDFs; only the current claim worker can deliberately mark one
+failed inside its transaction. Latest/status/download
 access revalidates the creator as a
 current active global administrator. Keep `pdf_jobs`, `storage_deletion_tasks`,
 and referenced PDF objects in the same backup and restore plan. The released
@@ -128,6 +135,38 @@ integer-column or invoice-total failure.
 Currency is normalized to uppercase during legacy conversion, and migration
 fails closed on mixed-currency Field ledgers rather than aggregating unlike
 amounts. Runtime currency changes are blocked once an expense or invoice exists.
+
+Issued and paid Scheduler invoices can be emailed from the portal. Delivery
+reuses the Wattwatchers Fleet monitor's Gmail OAuth identity: provision the
+same `EMAIL_DELIVERY_METHOD=gmail_api`, `GMAIL_USER_ID`, `GMAIL_CLIENT_ID`,
+`GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, and `SMTP_USER`/`FROM_EMAIL`
+values into the protected API runtime environment, then set
+`SCHEDULER_INVOICE_EMAIL_ENABLED=true`. Copy these values only through the
+approved secret-management/deploy path; do not source the monitor's complete
+environment into the API, print values, or commit them. The API refreshes an
+access token in memory and never stores OAuth secrets in PostgreSQL. Its exact
+outbound allowlist is HTTPS/TCP 443 to `oauth2.googleapis.com` and
+`gmail.googleapis.com`; it does not open an SMTP connection. The API does not
+read or require the monitor's mutable `GMAIL_ACCESS_TOKEN`, `SMTP_PASS`, or
+`TARGET_EMAIL`. `SMTP_USER` is used only as the sender-header fallback when the
+monitor's explicit `FROM_EMAIL=` value is empty. The selected sender must be one
+plain mailbox address (no display name, list, or line breaks); otherwise email
+remains unconfigured and new requests fail closed. Invoice PDF attachments are
+hard-capped at 18 MiB (`18874368` bytes) so attachment base64 plus the Gmail
+API's whole-message base64url/JSON envelope remains safely below its request
+limit; a higher environment value is clamped to that cap.
+
+Each request first queues an exact invoice-revision PDF through `pdf_jobs`, then
+records a unique invoice/idempotency-key row in
+`scheduler_invoice_email_deliveries`. The email worker sends only that completed
+branded artifact and revalidates invoice status and the requesting global admin
+at the provider boundary. Known pre-submit failures use bounded backoff. Once a
+Gmail submission may have started, a timeout, 5xx, malformed success, or process
+interruption becomes `delivery_unknown` and is never retried automatically;
+this favors one auditable uncertain outcome over a duplicate customer invoice.
+Keep email delivery rows and their referenced PDF jobs/objects in the same
+backup and restore plan. `SCHEDULER_INVOICE_EMAIL_ENABLED=false` pauses new
+delivery and the worker without deleting audit history.
 
 The same API process runs the durable Expo scheduler-notification worker. Jobs,
 per-device tickets, and receipts live in PostgreSQL, so restarts and multiple API

@@ -108,6 +108,49 @@ export type FinanceExpenseCategory =
   | 'other';
 export type SchedulerInvoiceStatus = 'draft' | 'issued' | 'paid' | 'void';
 export type SchedulerInvoiceLineKind = 'labour' | 'quoted' | 'expense' | 'other';
+export type SchedulerInvoiceEmailStatus =
+  | 'queued'
+  | 'processing'
+  | 'sent'
+  | 'failed'
+  | 'delivery_unknown';
+
+export type SchedulerInvoiceEmailDelivery = {
+  id: string;
+  invoiceId: string;
+  pdfJobId: string;
+  sourceUpdatedAt: string;
+  attachmentFilename: string;
+  recipient: string;
+  subject: string;
+  message: string;
+  status: SchedulerInvoiceEmailStatus;
+  attempts: number;
+  maxAttempts: number;
+  provider: 'gmail_api';
+  providerMessageId: string | null;
+  lastErrorCode: string | null;
+  requestedByGlobalUserId: string;
+  requestedByDisplayName: string | null;
+  requestedByApp: FinanceSourceApp;
+  sentAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SendSchedulerInvoiceEmailInput = {
+  expectedUpdatedAt: string;
+  idempotencyKey: string;
+  to?: string;
+  subject?: string;
+  message?: string;
+};
+
+export type SendSchedulerInvoiceEmailResponse = {
+  delivery: SchedulerInvoiceEmailDelivery;
+  reused: boolean;
+};
 
 export type FinanceOverviewItem = {
   financeId: string;
@@ -133,6 +176,13 @@ export type FinanceOverviewItem = {
   hasOverdueInvoice: boolean;
   /** True when recorded time is absent or sourced from a migrated estimate. */
   needsHoursReview: boolean;
+  invoiceReadiness: {
+    completionSatisfied: boolean;
+    completionBasis: 'job' | 'parent_site' | null;
+    hoursSatisfied: boolean;
+    hoursBasis: 'app_time' | 'admin_override' | null;
+    ready: boolean;
+  };
 };
 
 export type FinanceOverviewPage = {
@@ -345,6 +395,13 @@ export type SchedulerFinancialSummary = {
     abn: string | null;
     reference: string | null;
   };
+  invoiceReadiness: {
+    completionSatisfied: boolean;
+    completionBasis: 'job' | 'parent_site' | null;
+    hoursSatisfied: boolean;
+    hoursBasis: 'app_time' | 'admin_override' | null;
+    ready: boolean;
+  };
   time: {
     scheduledHours: number;
     actualHours: number;
@@ -442,6 +499,8 @@ export type SchedulerInvoiceEligibilityIssue = {
     | 'mixed_currency'
     | 'billing_name_missing'
     | 'bill_to_override_required'
+    | 'job_not_completed'
+    | 'hours_entry_required'
     | 'no_available_charges';
   message: string;
   financeId: string | null;
@@ -471,6 +530,7 @@ export type SchedulerInvoiceEligibilityJob = {
     reference: string | null;
   };
   pricingMode: FinancePricingMode;
+  invoiceReadiness: SchedulerFinancialSummary['invoiceReadiness'];
   availableLabourHours: number;
   billableRate: number;
   availableLabourAmount: number;

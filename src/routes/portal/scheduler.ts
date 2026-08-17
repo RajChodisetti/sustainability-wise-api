@@ -69,6 +69,11 @@ import {
   queueSchedulerInvoicePdfByEventId,
   queueSchedulerInvoicePdfByFinanceId,
 } from '../../services/schedulerInvoicePdfExport.js';
+import {
+  listSchedulerInvoiceEmailDeliveries,
+  queueSchedulerInvoiceEmail,
+  type QueueSchedulerInvoiceEmailInput,
+} from '../../services/schedulerInvoiceEmailService.js';
 
 function parseOptionalDate(value: unknown, name: string): Date | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -143,6 +148,19 @@ const invoiceVersionBodySchema = {
   required: ['expectedUpdatedAt'],
   properties: {
     expectedUpdatedAt: { type: 'string', format: 'date-time' },
+  },
+} as const;
+
+const invoiceEmailBodySchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['expectedUpdatedAt', 'idempotencyKey'],
+  properties: {
+    expectedUpdatedAt: { type: 'string', format: 'date-time' },
+    idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+    to: { type: 'string', minLength: 1, maxLength: 320 },
+    subject: { type: 'string', minLength: 1, maxLength: 500 },
+    message: { type: 'string', maxLength: 10000 },
   },
 } as const;
 
@@ -623,6 +641,38 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       body.expectedUpdatedAt,
     ));
   });
+
+  app.get<{ Params: { invoiceId: string } }>(
+    '/scheduler/invoices/:invoiceId/email-deliveries',
+    {
+      schema: {
+        tags: ['Portal Scheduler Finance'],
+        summary: 'List the durable email delivery audit for a Scheduler invoice',
+        security: [{ bearerAuth: [] }],
+      },
+      preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+    },
+    async (request, reply) => reply.send({
+      items: await listSchedulerInvoiceEmailDeliveries(
+        request.user,
+        request.params.invoiceId,
+      ),
+    }),
+  );
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/email', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Queue an issued Scheduler invoice for idempotent Gmail delivery',
+      security: [{ bearerAuth: [] }],
+      body: invoiceEmailBodySchema,
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.status(202).send(await queueSchedulerInvoiceEmail(
+    request.user,
+    request.params.invoiceId,
+    request.body as QueueSchedulerInvoiceEmailInput,
+  )));
 
   app.get('/scheduler/expenses', {
     schema: {

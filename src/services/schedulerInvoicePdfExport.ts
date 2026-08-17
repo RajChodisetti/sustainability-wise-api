@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import {
@@ -13,13 +13,12 @@ import { buildInvoiceDownloadFilename } from './invoicePdf.js';
 import { enqueueExportTask } from './exportJobQueue.js';
 import {
   completeJob,
-  failJob,
+  EXPORT_JOB_INTERRUPTION_LEASE_MS,
   findActiveExportJob,
-  markJobRunning,
-  updateJobPhase,
   type ExportJobParams,
 } from './pdfJobService.js';
 import {
+  assertSchedulerInvoicePdfStartReady,
   getSchedulerInvoice,
   getSchedulerInvoiceByFinanceId,
   getConsolidatedSchedulerInvoice,
@@ -51,6 +50,32 @@ export type QueuedSchedulerInvoicePdfExport = {
   sourceUpdatedAt: string;
   reportVariantKey: string;
 };
+
+export type ClaimedSchedulerInvoicePdfJob = {
+  id: string;
+  claimToken: string;
+  app: string;
+  entityId: string;
+  userId: string;
+  params: Record<string, unknown>;
+};
+
+export type SchedulerInvoicePdfWorker = {
+  wake: () => void;
+  stop: () => Promise<void>;
+};
+
+export type SchedulerInvoicePdfWorkerDependencies = {
+  claimNext: () => Promise<ClaimedSchedulerInvoicePdfJob | null>;
+  execute: (job: ClaimedSchedulerInvoicePdfJob) => Promise<void>;
+  logCycleError: (error: unknown) => void;
+};
+
+const SCHEDULER_INVOICE_PDF_POLL_INTERVAL_MS = 5_000;
+export const SCHEDULER_INVOICE_PDF_CLAIM_LEASE_MS = 2 * 60 * 1_000;
+export const SCHEDULER_INVOICE_PDF_CLAIM_HEARTBEAT_MS = 30 * 1_000;
+export const SCHEDULER_INVOICE_PDF_DURABLE_QUEUE_MARKER = 'scheduler_invoice_pdf:durable:v1';
+let activeSchedulerInvoicePdfWorkerWake: (() => void) | null = null;
 
 function requireStorageApp(app: AuthUser['app']): StorageApp {
   if (app === 'ecoaudit' || app === 'solarsense' || app === 'installhub') return app;
@@ -119,6 +144,7 @@ export type SchedulerInvoicePdfArtifactDependencies = {
     invoiceId: string;
     sourceUpdatedAt: string;
     jobId: string;
+    claimToken?: string;
     storageKey: string;
     pdfUrl: string;
     cleanupTaskId: string;
@@ -157,6 +183,7 @@ async function publishSchedulerInvoicePdfWithRevisionLock(input: {
   invoiceId: string;
   sourceUpdatedAt: string;
   jobId: string;
+  claimToken?: string;
   storageKey: string;
   pdfUrl: string;
   cleanupTaskId: string;
@@ -177,7 +204,13 @@ async function publishSchedulerInvoicePdfWithRevisionLock(input: {
         .limit(1);
       if (!cleanupTask) throw new Error('scheduler_invoice_pdf_cleanup_guard_missing');
 
-      await completeJob(input.jobId, input.pdfUrl, input.storageKey, executor);
+      await completeJob(
+        input.jobId,
+        input.pdfUrl,
+        input.storageKey,
+        executor,
+        input.claimToken,
+      );
       const [released] = await executor.delete(storageDeletionTasks)
         .where(and(
           eq(storageDeletionTasks.id, input.cleanupTaskId),
@@ -224,6 +257,7 @@ export async function persistSchedulerInvoicePdfArtifact(
     invoiceId: string;
     sourceUpdatedAt: string;
     jobId: string;
+    claimToken?: string;
     storageKey: string;
     pdfUrl: string;
     buffer: Buffer;
@@ -262,6 +296,7 @@ export async function persistSchedulerInvoicePdfArtifact(
       invoiceId: input.invoiceId,
       sourceUpdatedAt: input.sourceUpdatedAt,
       jobId: input.jobId,
+      claimToken: input.claimToken,
       storageKey: input.storageKey,
       pdfUrl: input.pdfUrl,
       cleanupTaskId,
@@ -282,6 +317,170 @@ export async function persistSchedulerInvoicePdfArtifact(
   }
 }
 
+function schedulerInvoicePdfClaimableCondition() {
+  const legacyCutoff = sql`LOCALTIMESTAMP - (${EXPORT_JOB_INTERRUPTION_LEASE_MS} * INTERVAL '1 millisecond')`;
+  return and(
+    eq(pdfJobs.entityType, 'scheduler_invoice'),
+    or(
+      and(
+        eq(pdfJobs.status, 'queued'),
+        or(
+          eq(pdfJobs.claimToken, SCHEDULER_INVOICE_PDF_DURABLE_QUEUE_MARKER),
+          and(isNull(pdfJobs.claimToken), lte(pdfJobs.updatedAt, legacyCutoff)),
+        ),
+      ),
+      and(
+        eq(pdfJobs.status, 'running'),
+        or(
+          lte(pdfJobs.claimExpiresAt, sql`LOCALTIMESTAMP`),
+          and(isNull(pdfJobs.claimExpiresAt), lte(pdfJobs.updatedAt, legacyCutoff)),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Claims the oldest eligible Scheduler invoice PDF. Durable-marker queued jobs
+ * are immediate; tokenless rolling-old jobs wait through the legacy grace; an
+ * expired running lease is reclaimed in-place. UPDATE ... RETURNING is the
+ * ownership CAS across API processes.
+ */
+export async function claimNextSchedulerInvoicePdfJob(
+): Promise<ClaimedSchedulerInvoicePdfJob | null> {
+  const [candidate] = await db.select({ id: pdfJobs.id })
+    .from(pdfJobs)
+    .where(schedulerInvoicePdfClaimableCondition())
+    .orderBy(asc(pdfJobs.createdAt), asc(pdfJobs.id))
+    .limit(1);
+  if (!candidate) return null;
+
+  const claimToken = randomUUID();
+  const [claimed] = await db.update(pdfJobs).set({
+    status: 'running',
+    phase: 'Loading invoice snapshot',
+    claimToken,
+    claimExpiresAt: sql`LOCALTIMESTAMP + (${SCHEDULER_INVOICE_PDF_CLAIM_LEASE_MS} * INTERVAL '1 millisecond')`,
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(
+    eq(pdfJobs.id, candidate.id),
+    schedulerInvoicePdfClaimableCondition(),
+  )).returning({
+    id: pdfJobs.id,
+    claimToken: pdfJobs.claimToken,
+    app: pdfJobs.app,
+    entityId: pdfJobs.entityId,
+    userId: pdfJobs.userId,
+    params: pdfJobs.params,
+  });
+  if (!claimed || claimed.claimToken !== claimToken) return null;
+  return { ...claimed, claimToken };
+}
+
+async function renewSchedulerInvoicePdfClaim(job: ClaimedSchedulerInvoicePdfJob): Promise<boolean> {
+  const [renewed] = await db.update(pdfJobs).set({
+    claimExpiresAt: sql`LOCALTIMESTAMP + (${SCHEDULER_INVOICE_PDF_CLAIM_LEASE_MS} * INTERVAL '1 millisecond')`,
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(
+    eq(pdfJobs.id, job.id),
+    eq(pdfJobs.status, 'running'),
+    eq(pdfJobs.claimToken, job.claimToken),
+  )).returning({ id: pdfJobs.id });
+  return Boolean(renewed);
+}
+
+async function updateSchedulerInvoicePdfClaimPhase(
+  job: Pick<ClaimedSchedulerInvoicePdfJob, 'id' | 'claimToken'>,
+  phase: string,
+): Promise<void> {
+  const [updated] = await db.update(pdfJobs).set({
+    phase,
+    claimExpiresAt: sql`LOCALTIMESTAMP + (${SCHEDULER_INVOICE_PDF_CLAIM_LEASE_MS} * INTERVAL '1 millisecond')`,
+    updatedAt: sql`LOCALTIMESTAMP`,
+  }).where(and(
+    eq(pdfJobs.id, job.id),
+    eq(pdfJobs.status, 'running'),
+    eq(pdfJobs.claimToken, job.claimToken),
+  )).returning({ id: pdfJobs.id });
+  if (!updated) throw new Error('scheduler_invoice_pdf_claim_lost');
+}
+
+async function failClaimedSchedulerInvoicePdfJob(
+  job: Pick<ClaimedSchedulerInvoicePdfJob, 'id' | 'claimToken'>,
+  error: string,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      SELECT set_config('app.scheduler_invoice_pdf_worker_write', '1', true)
+    `);
+    await tx.update(pdfJobs).set({
+      status: 'failed',
+      phase: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      error,
+      updatedAt: sql`LOCALTIMESTAMP`,
+    }).where(and(
+      eq(pdfJobs.id, job.id),
+      eq(pdfJobs.status, 'running'),
+      eq(pdfJobs.claimToken, job.claimToken),
+    ));
+  }).catch(() => {});
+}
+
+function requiredClaimParam(
+  params: Record<string, unknown>,
+  key: keyof SchedulerInvoicePdfJobParams,
+): string {
+  const value = params[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`scheduler_invoice_pdf_claim_invalid_${key}`);
+  }
+  return value;
+}
+
+function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
+  jobId: string;
+  claimToken: string;
+  user: AuthUser;
+  financeId: string;
+  invoiceId: string;
+  sourceUpdatedAt: string;
+} {
+  const app = requireStorageApp(job.app as AuthUser['app']);
+  const invoiceId = requiredClaimParam(job.params, 'invoiceId');
+  const financeId = requiredClaimParam(job.params, 'financeId');
+  const sourceUpdatedAt = requiredClaimParam(job.params, 'sourceUpdatedAt');
+  const filename = requiredClaimParam(job.params, 'filename');
+  const reportVariantKey = requiredClaimParam(job.params, 'reportVariantKey');
+  if (
+    job.params.artifactType !== 'pdf'
+    || job.params.contentType !== 'application/pdf'
+    || job.params.rendererVersion !== SCHEDULER_INVOICE_PDF_RENDERER_VERSION
+    || invoiceId !== job.entityId
+    || reportVariantKey !== schedulerInvoicePdfReportVariantKey({
+      id: invoiceId,
+      updatedAt: sourceUpdatedAt,
+    })
+    || !filename.toLowerCase().endsWith('.pdf')
+  ) {
+    throw new Error('scheduler_invoice_pdf_claim_invalid_provenance');
+  }
+  return {
+    jobId: job.id,
+    claimToken: job.claimToken,
+    user: {
+      userId: job.userId,
+      app,
+      role: 'admin',
+      authType: 'jwt',
+    },
+    financeId,
+    invoiceId,
+    sourceUpdatedAt,
+  };
+}
+
 function isInvoiceRevisionConflict(error: unknown): boolean {
   return error instanceof AppError
     && error.statusCode === 409
@@ -290,13 +489,15 @@ function isInvoiceRevisionConflict(error: unknown): boolean {
 
 async function runSchedulerInvoicePdfExport(args: {
   jobId: string;
+  claimToken: string;
   user: AuthUser;
   financeId: string;
   invoiceId: string;
   sourceUpdatedAt: string;
 }): Promise<void> {
+  const claim = { id: args.jobId, claimToken: args.claimToken };
   try {
-    await markJobRunning(args.jobId, 'Loading invoice snapshot');
+    await updateSchedulerInvoicePdfClaimPhase(claim, 'Loading invoice snapshot');
     const invoice = await loadSchedulerInvoiceExportSnapshot(
       args.user,
       args.financeId,
@@ -304,14 +505,16 @@ async function runSchedulerInvoicePdfExport(args: {
       args.sourceUpdatedAt,
     );
 
-    await updateJobPhase(args.jobId, 'Rendering PDF');
+    await updateSchedulerInvoicePdfClaimPhase(claim, 'Rendering PDF');
     const pdf = await renderSchedulerInvoicePdf(invoice);
-    await updateJobPhase(args.jobId, 'Saving PDF');
+    await updateSchedulerInvoicePdfClaimPhase(claim, 'Saving PDF');
     const storageKey = makePdfStorageKeyFromName({
       app: requireStorageApp(args.user.app),
       parentName: invoice.job.jobName,
       fieldName: `scheduler-invoice-${invoice.id}`,
-      sessionId: args.jobId,
+      // A reclaimed job receives a new claim token. Including it prevents a
+      // stale owner cleaning up the new owner's bytes at the shared job key.
+      sessionId: `${args.jobId}-${args.claimToken}`,
       filename: pdf.filename,
     });
     await persistSchedulerInvoicePdfArtifact({
@@ -320,6 +523,7 @@ async function runSchedulerInvoicePdfExport(args: {
       invoiceId: args.invoiceId,
       sourceUpdatedAt: args.sourceUpdatedAt,
       jobId: args.jobId,
+      claimToken: args.claimToken,
       storageKey,
       pdfUrl: publicFileUrl(storageKey),
       buffer: pdf.buffer,
@@ -329,7 +533,7 @@ async function runSchedulerInvoicePdfExport(args: {
     const publicMessage = stale
       ? 'Invoice changed after this PDF was queued. Start a new PDF export.'
       : 'Invoice PDF could not be created. Please try again.';
-    await failJob(args.jobId, publicMessage);
+    await failClaimedSchedulerInvoicePdfJob(claim, publicMessage);
     console.error('[pdf-job] Scheduler invoice export failed', {
       jobId: args.jobId,
       financeId: args.financeId,
@@ -337,6 +541,132 @@ async function runSchedulerInvoicePdfExport(args: {
       errorName: error instanceof Error ? error.name : 'UnknownError',
     });
   }
+}
+
+export async function executeClaimedSchedulerInvoicePdfJob(
+  job: ClaimedSchedulerInvoicePdfJob,
+): Promise<void> {
+  let args: Parameters<typeof runSchedulerInvoicePdfExport>[0];
+  try {
+    args = schedulerInvoicePdfExecutionArgs(job);
+  } catch (error) {
+    await failClaimedSchedulerInvoicePdfJob(
+      job,
+      'Invoice PDF job data is invalid. Start a new PDF export.',
+    );
+    console.error('[pdf-job] Scheduler invoice claim was invalid', {
+      jobId: job.id,
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    });
+    return;
+  }
+  let heartbeat: Promise<void> | null = null;
+  const heartbeatTimer = setInterval(() => {
+    if (heartbeat) return;
+    heartbeat = renewSchedulerInvoicePdfClaim(job)
+      .then(() => undefined)
+      .catch((error) => {
+        console.error('[pdf-job] Scheduler invoice claim heartbeat failed', {
+          jobId: job.id,
+          errorName: error instanceof Error ? error.name : 'UnknownError',
+        });
+      })
+      .finally(() => { heartbeat = null; });
+  }, SCHEDULER_INVOICE_PDF_CLAIM_HEARTBEAT_MS);
+  heartbeatTimer.unref();
+  try {
+    await runSchedulerInvoicePdfExport(args);
+  } finally {
+    clearInterval(heartbeatTimer);
+    await heartbeat;
+  }
+}
+
+const schedulerInvoicePdfWorkerDependencies: SchedulerInvoicePdfWorkerDependencies = {
+  claimNext: claimNextSchedulerInvoicePdfJob,
+  execute: executeClaimedSchedulerInvoicePdfJob,
+  logCycleError(error) {
+    console.error('[pdf-job] Scheduler invoice worker cycle failed', {
+      errorName: error instanceof Error ? error.name : 'UnknownError',
+    });
+  },
+};
+
+/**
+ * Polls the durable pdf_jobs table and drains claims serially in this process.
+ * Database compare-and-set claims prevent duplicate execution across processes.
+ */
+export function startSchedulerInvoicePdfWorker(options: {
+  pollIntervalMs?: number;
+  dependencies?: Partial<SchedulerInvoicePdfWorkerDependencies>;
+} = {}): SchedulerInvoicePdfWorker {
+  if (activeSchedulerInvoicePdfWorkerWake) {
+    throw new Error('scheduler_invoice_pdf_worker_already_started');
+  }
+  const pollIntervalMs = options.pollIntervalMs ?? SCHEDULER_INVOICE_PDF_POLL_INTERVAL_MS;
+  if (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1) {
+    throw new TypeError('pollIntervalMs must be a positive safe integer');
+  }
+  const dependencies: SchedulerInvoicePdfWorkerDependencies = {
+    ...schedulerInvoicePdfWorkerDependencies,
+    ...options.dependencies,
+  };
+  let stopping = false;
+  let rerunRequested = false;
+  let currentRun: Promise<void> | null = null;
+
+  const wake = () => {
+    if (stopping) return;
+    rerunRequested = true;
+    if (currentRun) return;
+    currentRun = (async () => {
+      do {
+        rerunRequested = false;
+        while (!stopping) {
+          const processed = await enqueueExportTask(async () => {
+            // Do not acquire ownership merely to leave the job running behind
+            // another expensive in-process export during shutdown.
+            if (stopping) return false;
+            const job = await dependencies.claimNext();
+            if (!job) return false;
+            // A stop requested after the claim still waits for this execution
+            // so shutdown never abandons a job it changed to running.
+            await dependencies.execute(job);
+            return true;
+          });
+          if (!processed) break;
+        }
+      } while (rerunRequested && !stopping);
+    })().catch((error) => dependencies.logCycleError(error)).finally(() => {
+      currentRun = null;
+      if (rerunRequested && !stopping) queueMicrotask(wake);
+    });
+  };
+
+  activeSchedulerInvoicePdfWorkerWake = wake;
+  const timer = setInterval(wake, pollIntervalMs);
+  timer.unref();
+  wake();
+
+  return {
+    wake,
+    async stop() {
+      if (stopping) {
+        await currentRun;
+        return;
+      }
+      stopping = true;
+      clearInterval(timer);
+      if (activeSchedulerInvoicePdfWorkerWake === wake) {
+        activeSchedulerInvoicePdfWorkerWake = null;
+      }
+      await currentRun;
+    },
+  };
+}
+
+function wakeSchedulerInvoicePdfWorker(): void {
+  activeSchedulerInvoicePdfWorkerWake?.();
 }
 
 async function queueSchedulerInvoicePdfForSnapshot(
@@ -351,6 +681,9 @@ async function queueSchedulerInvoicePdfForSnapshot(
   const params = schedulerInvoicePdfJobParams(invoice);
   const jobId = randomUUID();
   const queued = await db.transaction(async (tx) => {
+    // Draft readiness locks finance/source rows before the invoice row, matching
+    // invoice mutation lock order and avoiding a queue/issue deadlock.
+    await assertSchedulerInvoicePdfStartReady(invoice.id, tx);
     const [lockedInvoice] = await tx
       .select({
         id: schedulerInvoices.id,
@@ -368,7 +701,6 @@ async function queueSchedulerInvoicePdfForSnapshot(
     if (lockedInvoice.updatedAt.toISOString() !== invoice.updatedAt) {
       throw conflict('Invoice changed while its PDF export was being queued. Refresh and try again.');
     }
-
     const active = await findActiveExportJob({
       app,
       entityId: invoice.id,
@@ -397,6 +729,9 @@ async function queueSchedulerInvoicePdfForSnapshot(
       params,
       status: 'queued',
       phase: 'Queued',
+      // Distinguishes durable-worker rows from fresh tokenless rows created by
+      // a rolling old process that may already be dispatching in memory.
+      claimToken: SCHEDULER_INVOICE_PDF_DURABLE_QUEUE_MARKER,
     });
     return {
       jobId,
@@ -406,22 +741,7 @@ async function queueSchedulerInvoicePdfForSnapshot(
     };
   });
 
-  if (!queued.reused) {
-    void enqueueExportTask(() => runSchedulerInvoicePdfExport({
-      jobId,
-      user,
-      financeId: invoice.financeId,
-      invoiceId: invoice.id,
-      sourceUpdatedAt: invoice.updatedAt,
-    })).catch((error) => {
-      console.error('[pdf-job] Scheduler invoice queue failed', {
-        jobId,
-        financeId: invoice.financeId,
-        invoiceId: invoice.id,
-        errorName: error instanceof Error ? error.name : 'UnknownError',
-      });
-    });
-  }
+  wakeSchedulerInvoicePdfWorker();
   return queued;
 }
 

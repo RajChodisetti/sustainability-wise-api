@@ -46,16 +46,20 @@ export async function completeJob(
   pdfUrl: string,
   storageKey: string,
   executor: PdfJobUpdateExecutor = db,
+  expectedClaimToken?: string,
 ): Promise<void> {
   const [completed] = await executor.update(pdfJobs).set({
     status: 'complete',
     phase: 'Ready to download',
+    claimToken: null,
+    claimExpiresAt: null,
     pdfUrl,
     storageKey,
     updatedAt: sql`LOCALTIMESTAMP`,
   }).where(and(
     eq(pdfJobs.id, jobId),
     inArray(pdfJobs.status, ['queued', 'running']),
+    expectedClaimToken ? eq(pdfJobs.claimToken, expectedClaimToken) : undefined,
   )).returning({ id: pdfJobs.id });
   if (!completed) throw new Error('export_job_completion_failed');
 }
@@ -64,6 +68,8 @@ export async function failJob(jobId: string, error: string): Promise<void> {
   await db.update(pdfJobs).set({
     status: 'failed',
     phase: null,
+    claimToken: null,
+    claimExpiresAt: null,
     error,
     updatedAt: sql`LOCALTIMESTAMP`,
   }).where(and(eq(pdfJobs.id, jobId), ne(pdfJobs.status, 'complete'))).catch(() => {});
@@ -104,6 +110,7 @@ export async function failInterruptedExportJobs(now = new Date()): Promise<void>
     updatedAt: sql`LOCALTIMESTAMP`,
   }).where(and(
     inArray(pdfJobs.status, ['queued', 'running']),
+    ne(pdfJobs.entityType, 'scheduler_invoice'),
     lte(pdfJobs.updatedAt, staleBefore),
   ));
 }

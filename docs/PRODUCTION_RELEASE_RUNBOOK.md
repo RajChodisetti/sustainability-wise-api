@@ -254,10 +254,26 @@ FROM pdf_jobs
 WHERE status IN ('queued', 'running')
 GROUP BY status
 ORDER BY status;
+
+SELECT to_regclass('public.scheduler_invoice_email_deliveries') AS invoice_email_table;
+-- Run this second query only when invoice_email_table is non-null:
+SELECT status, count(*)
+FROM scheduler_invoice_email_deliveries
+WHERE status IN ('queued', 'processing')
+GROUP BY status
+ORDER BY status;
 ```
 
-The expected result is zero rows. Otherwise wait, or record that affected users
-will need to restart those exports.
+On the first 0035 rollout, a null `invoice_email_table` is expected and proves
+there can be no legacy email work to drain; run the status query after applying
+0035. On later releases, the expected result for both job-status queries is zero
+rows. In particular, do not restart
+while an invoice email is `processing`: provider submission may already have
+started, and interruption must resolve to `delivery_unknown` rather than risk a
+duplicate. Pause new sends and wait for queued email/PDF work to settle. If an
+explicitly approved emergency restart leaves `queued` work, it remains durable
+and resumes; record the affected IDs. Never change an uncertain row back to
+`queued` manually.
 
 Record the current immutable API and portal working directories and their full
 commit SHAs. These are the code rollback targets.

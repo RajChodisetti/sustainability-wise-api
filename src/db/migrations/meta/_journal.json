@@ -246,6 +246,27 @@
       "when": 1786896447917,
       "tag": "0034_thankful_pestilence",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1786921942492,
+      "tag": "0035_silly_triton",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1786924569503,
+      "tag": "0036_cultured_psynapse",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1786925202185,
+      "tag": "0037_cultured_vulcan",
+      "breakpoints": true
     }
   ]
 }

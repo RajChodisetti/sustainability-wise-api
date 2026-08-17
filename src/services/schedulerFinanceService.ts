@@ -240,6 +240,13 @@ export type SchedulerFinancialSummaryDto = {
     email: string | null;
     reference: string | null;
   };
+  invoiceReadiness: {
+    completionSatisfied: boolean;
+    completionBasis: 'job' | 'parent_site' | null;
+    hoursSatisfied: boolean;
+    hoursBasis: 'app_time' | 'admin_override' | null;
+    ready: boolean;
+  };
   time: {
     scheduledHours: number;
     actualHours: number;
@@ -296,6 +303,7 @@ export type SchedulerFinanceOverviewItemDto = {
   jobDate: string;
   jobStatus: string;
   eventStatus: string | null;
+  invoiceReadiness: SchedulerFinancialSummaryDto['invoiceReadiness'];
   currency: string;
   actualHours: number;
   billableHours: number;
@@ -399,6 +407,7 @@ export type ConsolidatedInvoiceEligibilityJobDto = {
   currency: string;
   pricingMode: PricingMode;
   billing: SchedulerFinancialSummaryDto['billing'];
+  invoiceReadiness: SchedulerFinancialSummaryDto['invoiceReadiness'];
   availableLabourHours: number;
   billableRate: number;
   availableLabourAmount: number;
@@ -412,7 +421,13 @@ export type ConsolidatedInvoiceEligibilityDto = {
   gstRate: number;
   requiresExplicitBillTo: boolean;
   issues: Array<{
-    code: 'mixed_currency' | 'billing_name_missing' | 'bill_to_override_required' | 'no_available_charges';
+    code:
+      | 'mixed_currency'
+      | 'billing_name_missing'
+      | 'bill_to_override_required'
+      | 'job_not_completed'
+      | 'hours_entry_required'
+      | 'no_available_charges';
     message: string;
     financeId: string | null;
   }>;
@@ -450,6 +465,57 @@ export type SchedulerFinancePortfolioSummaryDto = {
 
 const ACTIVE_INVOICE_STATUSES: InvoiceStatus[] = ['draft', 'issued', 'paid'];
 const ISSUED_INVOICE_STATUSES: InvoiceStatus[] = ['issued', 'paid'];
+
+type InvoiceCompletionReadiness = {
+  satisfied: boolean;
+  basis: 'job' | 'parent_site' | null;
+};
+
+type InvoiceHoursReadiness = {
+  satisfied: boolean;
+  basis: 'app_time' | 'admin_override' | null;
+};
+
+type HourOverrideForReadiness = Pick<
+  typeof schedulerJobHourOverrides.$inferSelect,
+  'source' | 'billableMilliseconds' | 'costMilliseconds'
+> | null;
+
+/**
+ * SolarSense assessments inherit the completion fence of their parent site.
+ * The other Scheduler source types have no parent lifecycle boundary.
+ */
+export function schedulerInvoiceCompletionReadiness(input: {
+  sourceApp: FinanceSourceApp;
+  jobStatus: string | null;
+  parentStatus?: string | null;
+}): InvoiceCompletionReadiness {
+  if (input.jobStatus === 'Completed') return { satisfied: true, basis: 'job' };
+  if (input.sourceApp === 'solarsense' && input.parentStatus === 'Completed') {
+    return { satisfied: true, basis: 'parent_site' };
+  }
+  return { satisfied: false, basis: null };
+}
+
+/** Zero is a valid reviewed value, but both accounting hour values must be explicit without app time. */
+export function schedulerInvoiceHoursReadiness(
+  activeMilliseconds: number,
+  override: HourOverrideForReadiness,
+): InvoiceHoursReadiness {
+  if (override?.source === 'legacy_estimate') return { satisfied: false, basis: null };
+  if (activeMilliseconds > 0) {
+    return {
+      satisfied: true,
+      basis: override?.source === 'admin' ? 'admin_override' : 'app_time',
+    };
+  }
+  if (
+    override?.source === 'admin'
+    && override.billableMilliseconds !== null
+    && override.costMilliseconds !== null
+  ) return { satisfied: true, basis: 'admin_override' };
+  return { satisfied: false, basis: null };
+}
 
 function round(value: number, places = 2): number {
   const factor = 10 ** places;
@@ -542,6 +608,28 @@ function assertInvoiceVersion(invoice: InvoiceRow, expectedUpdatedAt?: string): 
   if (!expected || expected.getTime() !== invoice.updatedAt.getTime()) {
     throw conflict('Invoice changed; refresh before continuing');
   }
+}
+
+function isInvoiceEmailDeliveryInProgressDatabaseError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as {
+    cause?: unknown;
+    code?: unknown;
+    constraint?: unknown;
+    constraint_name?: unknown;
+    message?: unknown;
+  };
+  return candidate.constraint === 'scheduler_invoice_email_void_delivery_fence'
+    || candidate.constraint_name === 'scheduler_invoice_email_void_delivery_fence'
+    || (
+      candidate.code === '23514'
+      && typeof candidate.message === 'string'
+      && candidate.message.includes('scheduler_invoice_email_delivery_in_progress')
+    )
+    || (
+      candidate.cause !== error
+      && isInvoiceEmailDeliveryInProgressDatabaseError(candidate.cause)
+    );
 }
 
 function nextInvoiceUpdatedAt(invoice: InvoiceRow, now = new Date()): Date {
@@ -755,6 +843,128 @@ async function loadJobMetadata(
     siteAddress: null,
     status: event.status,
   };
+}
+
+async function sourceCompletionReadiness(
+  source: FinanceSource,
+  executor: FinanceExecutor = db,
+  lock = false,
+): Promise<InvoiceCompletionReadiness> {
+  if (source.sourceApp === 'ecoaudit') {
+    const rows = lock
+      ? await executor.select({
+          status: eaAudits.status,
+          deletedAt: eaAudits.deletedAt,
+        }).from(eaAudits)
+          .where(eq(eaAudits.id, source.sourceId))
+          .for('share')
+          .limit(1)
+      : await executor.select({
+          status: eaAudits.status,
+          deletedAt: eaAudits.deletedAt,
+        }).from(eaAudits)
+          .where(eq(eaAudits.id, source.sourceId))
+          .limit(1);
+    const audit = rows[0];
+    if (!audit || audit.deletedAt) return { satisfied: false, basis: null };
+    return schedulerInvoiceCompletionReadiness({
+      sourceApp: source.sourceApp,
+      jobStatus: audit.status,
+    });
+  }
+
+  if (source.sourceApp === 'installhub') {
+    const rows = lock
+      ? await executor.select({
+          status: ihInstallations.status,
+          deletedAt: ihInstallations.deletedAt,
+        }).from(ihInstallations)
+          .where(eq(ihInstallations.id, source.sourceId))
+          .for('share')
+          .limit(1)
+      : await executor.select({
+          status: ihInstallations.status,
+          deletedAt: ihInstallations.deletedAt,
+        }).from(ihInstallations)
+          .where(eq(ihInstallations.id, source.sourceId))
+          .limit(1);
+    const installation = rows[0];
+    if (!installation || installation.deletedAt) return { satisfied: false, basis: null };
+    return schedulerInvoiceCompletionReadiness({
+      sourceApp: source.sourceApp,
+      jobStatus: installation.status,
+    });
+  }
+
+  const assessmentRows = lock
+    ? await executor.select({
+        siteId: ssRooftopAssessments.siteId,
+        status: ssRooftopAssessments.status,
+        deletedAt: ssRooftopAssessments.deletedAt,
+      }).from(ssRooftopAssessments)
+        .where(eq(ssRooftopAssessments.id, source.sourceId))
+        .for('share')
+        .limit(1)
+    : await executor.select({
+        siteId: ssRooftopAssessments.siteId,
+        status: ssRooftopAssessments.status,
+        deletedAt: ssRooftopAssessments.deletedAt,
+      }).from(ssRooftopAssessments)
+        .where(eq(ssRooftopAssessments.id, source.sourceId))
+        .limit(1);
+  const assessment = assessmentRows[0];
+  if (!assessment || assessment.deletedAt || !assessment.siteId) {
+    return { satisfied: false, basis: null };
+  }
+  const siteRows = lock
+    ? await executor.select({ status: ssSites.status, deletedAt: ssSites.deletedAt })
+        .from(ssSites)
+        .where(eq(ssSites.id, assessment.siteId))
+        .for('share')
+        .limit(1)
+    : await executor.select({ status: ssSites.status, deletedAt: ssSites.deletedAt })
+        .from(ssSites)
+        .where(eq(ssSites.id, assessment.siteId))
+        .limit(1);
+  const site = siteRows[0];
+  if (!site || site.deletedAt) return { satisfied: false, basis: null };
+  return schedulerInvoiceCompletionReadiness({
+    sourceApp: source.sourceApp,
+    jobStatus: assessment.status,
+    parentStatus: site.status,
+  });
+}
+
+async function requireInvoiceReady(
+  source: FinanceSource,
+  financeId: string,
+  jobName: string,
+  executor: FinanceExecutor,
+): Promise<{
+  recorded: Awaited<ReturnType<typeof recordedHoursForSource>>;
+  currentOverride: Awaited<ReturnType<typeof latestHourOverride>>;
+}> {
+  const completion = await sourceCompletionReadiness(source, executor, true);
+  if (!completion.satisfied) {
+    const instruction = source.sourceApp === 'solarsense'
+      ? 'Mark the assessment or its SolarSense site complete'
+      : 'Mark the job complete';
+    throw conflict(`${instruction} before generating an invoice for ${jobName}`);
+  }
+  const [recorded, currentOverride] = await Promise.all([
+    recordedHoursForSource(source, executor),
+    latestHourOverride(financeId, executor),
+  ]);
+  const hours = schedulerInvoiceHoursReadiness(recorded.activeMilliseconds, currentOverride);
+  if (!hours.satisfied) {
+    if (currentOverride?.source === 'legacy_estimate') {
+      throw conflict(`Confirm or replace migrated legacy hours for ${jobName} before generating an invoice`);
+    }
+    throw conflict(
+      `Enter both billable and cost hours for ${jobName} before generating an invoice because no active app time was recorded`,
+    );
+  }
+  return { recorded, currentOverride };
 }
 
 async function scheduledHoursForSource(
@@ -1259,10 +1469,18 @@ async function buildFinancialSummary(
 ): Promise<SchedulerFinancialSummaryDto> {
   const metadata = await loadJobMetadata(source, event, executor);
   const finance = await ensureFinance(source, metadata, executor);
-  const [recorded, scheduledHours, currentOverride, expenseRows, invoiceJobRefs] = await Promise.all([
+  const [
+    recorded,
+    scheduledHours,
+    currentOverride,
+    completionReadiness,
+    expenseRows,
+    invoiceJobRefs,
+  ] = await Promise.all([
     recordedHoursForSource(source, executor),
     scheduledHoursForSource(source, executor),
     latestHourOverride(finance.id, executor),
+    sourceCompletionReadiness(source, executor),
     executor.select().from(schedulerJobExpenses).where(and(
       eq(schedulerJobExpenses.financeId, finance.id),
       isNull(schedulerJobExpenses.deletedAt),
@@ -1352,6 +1570,10 @@ async function buildFinancialSummary(
   const effectiveEvent = event ?? await latestEventForSource(source, executor);
   const eventId = effectiveEvent?.id ?? null;
   const overrideSource = currentOverride?.source as 'admin' | 'legacy_estimate' | undefined;
+  const hoursReadiness = schedulerInvoiceHoursReadiness(
+    recorded.activeMilliseconds,
+    currentOverride,
+  );
 
   return {
     financeId: finance.id,
@@ -1381,6 +1603,13 @@ async function buildFinancialSummary(
       email: finance.billToEmail,
       reference: finance.billingReference,
     },
+    invoiceReadiness: {
+      completionSatisfied: completionReadiness.satisfied,
+      completionBasis: completionReadiness.basis,
+      hoursSatisfied: hoursReadiness.satisfied,
+      hoursBasis: hoursReadiness.basis,
+      ready: completionReadiness.satisfied && hoursReadiness.satisfied,
+    },
     time: {
       scheduledHours,
       actualHours,
@@ -1409,8 +1638,7 @@ async function buildFinancialSummary(
             displayName: currentOverride.actorDisplayName,
           }
         : null,
-      needsHoursReview: overrideSource === 'legacy_estimate'
-        || (recorded.activeMilliseconds === 0 && !currentOverride),
+      needsHoursReview: !hoursReadiness.satisfied,
     },
     expenses: expenseRows.map((expense) => expenseDto(
       expense,
@@ -1982,6 +2210,43 @@ function assertInvoiceFinanceMembership(jobs: InvoiceJobRow[], financeId: string
   if (!jobs.some((job) => job.financeId === financeId)) throw notFound('Invoice');
 }
 
+async function assertDraftInvoiceReady(
+  invoice: InvoiceRow,
+  executor: FinanceExecutor,
+): Promise<void> {
+  if (invoice.status !== 'draft') return;
+  const { jobs, finances } = await lockInvoiceFinances(invoice, executor);
+  const jobByFinance = new Map(jobs.map((job) => [job.financeId, job]));
+  for (const finance of finances) {
+    await requireInvoiceReady(
+      {
+        sourceApp: finance.sourceApp,
+        sourceType: finance.sourceType,
+        sourceId: finance.sourceId,
+      } as FinanceSource,
+      finance.id,
+      jobByFinance.get(finance.id)?.jobName ?? finance.id,
+      executor,
+    );
+  }
+}
+
+/**
+ * Draft invoice PDFs are customer-facing generation, so queueing must use the
+ * same live completion and reviewed-hours fence as draft creation and issue.
+ * Issued/paid/void snapshots stay exportable independently of later source edits.
+ */
+export async function assertSchedulerInvoicePdfStartReady(
+  invoiceId: string,
+  executor: SchedulerFinanceExecutor,
+): Promise<void> {
+  const [invoice] = await executor.select().from(schedulerInvoices)
+    .where(eq(schedulerInvoices.id, invoiceId))
+    .limit(1);
+  if (!invoice) throw notFound('Invoice');
+  await assertDraftInvoiceReady(invoice, executor);
+}
+
 function normalizedPartyValue(value: string | null | undefined): string {
   return value?.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-AU') ?? '';
 }
@@ -2400,11 +2665,14 @@ async function createQuickSchedulerInvoiceForContext(
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, context.finance.id)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
-    const [recorded, currentOverride, reserved] = await Promise.all([
-      recordedHoursForSource(context.source, tx),
-      latestHourOverride(finance.id, tx),
-      reservationRollup(finance.id, tx),
-    ]);
+    const { recorded, currentOverride } = await requireInvoiceReady(
+      context.source,
+      finance.id,
+      context.metadata.jobName,
+      tx,
+    );
+    const metadata = await loadJobMetadata(context.source, context.event, tx);
+    const reserved = await reservationRollup(finance.id, tx);
     const effectiveBillableHours = currentOverride?.billableMilliseconds == null
       ? recorded.activeMilliseconds / 3_600_000
       : currentOverride.billableMilliseconds / 3_600_000;
@@ -2461,12 +2729,12 @@ async function createQuickSchedulerInvoiceForContext(
       billToAddress: finance.billToAddress,
       billToEmail: finance.billToEmail,
       purchaseOrderReference: finance.billingReference,
-      jobSiteName: context.metadata.siteName,
-      jobSiteAddress: context.metadata.siteAddress,
-      jobName: context.metadata.jobName,
-      jobDate: context.metadata.jobDate,
-      jobClientName: context.metadata.clientName,
-      jobStatus: context.metadata.status,
+      jobSiteName: metadata.siteName,
+      jobSiteAddress: metadata.siteAddress,
+      jobName: metadata.jobName,
+      jobDate: metadata.jobDate,
+      jobClientName: metadata.clientName,
+      jobStatus: metadata.status,
       jobSourceApp: context.source.sourceApp,
       jobSourceType: context.source.sourceType,
       jobSourceId: context.source.sourceId,
@@ -2480,12 +2748,12 @@ async function createQuickSchedulerInvoiceForContext(
       financeId: finance.id,
       sortOrder: 0,
       billingReference: finance.billingReference,
-      jobSiteName: context.metadata.siteName,
-      jobSiteAddress: context.metadata.siteAddress,
-      jobName: context.metadata.jobName,
-      jobDate: context.metadata.jobDate,
-      jobClientName: context.metadata.clientName,
-      jobStatus: context.metadata.status,
+      jobSiteName: metadata.siteName,
+      jobSiteAddress: metadata.siteAddress,
+      jobName: metadata.jobName,
+      jobDate: metadata.jobDate,
+      jobClientName: metadata.clientName,
+      jobStatus: metadata.status,
       jobSourceApp: context.source.sourceApp,
       jobSourceType: context.source.sourceType,
       jobSourceId: context.source.sourceId,
@@ -2516,7 +2784,7 @@ async function createQuickSchedulerInvoiceForContext(
         if (remainingCents > 0) {
           lines.push({
             kind: 'quoted',
-            description: `Quoted ${context.metadata.jobName}`,
+            description: `Quoted ${metadata.jobName}`,
             quantity: 1,
             unitAmountExGst: centsToMoney(remainingCents),
           });
@@ -2623,6 +2891,20 @@ export async function getConsolidatedInvoiceEligibility(
     financeId: null,
   });
   summaries.forEach((summary) => {
+    if (!summary.invoiceReadiness.completionSatisfied) issues.push({
+      code: 'job_not_completed',
+      message: summary.source.sourceApp === 'solarsense'
+        ? 'Mark this assessment or its SolarSense site complete before generating an invoice'
+        : 'Mark this job complete before generating an invoice',
+      financeId: summary.financeId,
+    });
+    if (!summary.invoiceReadiness.hoursSatisfied) issues.push({
+      code: 'hours_entry_required',
+      message: summary.time.overrideSource === 'legacy_estimate'
+        ? 'Confirm or replace the migrated legacy hours before generating an invoice'
+        : 'Enter both billable and cost hours because no active app time was recorded',
+      financeId: summary.financeId,
+    });
     if (!summary.billing.name?.trim()) issues.push({
       code: 'billing_name_missing',
       message: 'This job needs a billing name or an explicit consolidated bill-to snapshot',
@@ -2660,6 +2942,7 @@ export async function getConsolidatedInvoiceEligibility(
       currency: context.finance.currency,
       pricingMode: context.finance.pricingMode as PricingMode,
       billing: summary.billing,
+      invoiceReadiness: summary.invoiceReadiness,
       availableLabourHours,
       billableRate: centsToMoney(context.finance.billableRateCents),
       availableLabourAmount,
@@ -2678,7 +2961,10 @@ export async function getConsolidatedInvoiceEligibility(
   }
   return {
     eligible: !issues.some((issue) => (
-      issue.code === 'mixed_currency' || issue.code === 'no_available_charges'
+      issue.code === 'mixed_currency'
+      || issue.code === 'job_not_completed'
+      || issue.code === 'hours_entry_required'
+      || issue.code === 'no_available_charges'
     )),
     commonCurrency: currencies.length === 1 ? currencies[0]! : null,
     gstRate: config.schedulerInvoice.gstRate,
@@ -2717,6 +3003,7 @@ export async function createConsolidatedSchedulerInvoice(
       : anchor.billToName?.trim();
     if (!billToName) throw badRequest('Set a billing name before creating an invoice');
     const contexts: FinanceContext[] = [];
+    const readinessByFinance = new Map<string, Awaited<ReturnType<typeof requireInvoiceReady>>>();
     for (const finance of orderedFinances) {
       const source = {
         sourceApp: finance.sourceApp,
@@ -2725,12 +3012,20 @@ export async function createConsolidatedSchedulerInvoice(
       } as FinanceSource;
       if (!isSupportedSource(source)) throw badRequest('Unsupported commercial source job');
       const event = await latestEventForSource(source, tx);
-      contexts.push({
+      const initialMetadata = await loadJobMetadata(source, event, tx);
+      readinessByFinance.set(finance.id, await requireInvoiceReady(
+        source,
+        finance.id,
+        initialMetadata.jobName,
+        tx,
+      ));
+      const context = {
         finance,
         source,
         event,
         metadata: await loadJobMetadata(source, event, tx),
-      });
+      };
+      contexts.push(context);
     }
     const now = new Date();
     const invoiceNumber = await allocateInvoiceNumber(now, tx);
@@ -2815,11 +3110,8 @@ export async function createConsolidatedSchedulerInvoice(
     for (let index = 0; index < contexts.length; index += 1) {
       const context = contexts[index]!;
       const request = requestedJobs[index]!;
-      const [recorded, currentOverride, reserved] = await Promise.all([
-        recordedHoursForSource(context.source, tx),
-        latestHourOverride(context.finance.id, tx),
-        reservationRollup(context.finance.id, tx),
-      ]);
+      const { recorded, currentOverride } = readinessByFinance.get(context.finance.id)!;
+      const reserved = await reservationRollup(context.finance.id, tx);
       const effectiveBillableHours = (currentOverride?.billableMilliseconds
         ?? recorded.activeMilliseconds) / 3_600_000;
       if (request.includeLabour !== false) {
@@ -3010,26 +3302,19 @@ async function issueSchedulerInvoiceForContext(
         throw conflict(`Every invoice job must contain a positive-value line (${job.financeId})`);
       }
     }
+    const invoiceJobByFinance = new Map(jobs.map((job) => [job.financeId, job]));
     for (const finance of finances) {
-      if (
-        finance.pricingMode !== 'charge_up'
-        || !lines.some((line) => line.financeId === finance.id && line.kind === 'labour')
-      ) continue;
       const source = {
         sourceApp: finance.sourceApp,
         sourceType: finance.sourceType,
         sourceId: finance.sourceId,
       } as FinanceSource;
-      const [currentOverride, recorded] = await Promise.all([
-        latestHourOverride(finance.id, tx),
-        recordedHoursForSource(source, tx),
-      ]);
-      if (currentOverride?.source === 'legacy_estimate') {
-        throw conflict(`Confirm or replace migrated legacy hours for ${finance.id} before issuing`);
-      }
-      if (recorded.activeMilliseconds === 0 && !currentOverride) {
-        throw conflict(`Review or enter billable hours for ${finance.id} before issuing`);
-      }
+      await requireInvoiceReady(
+        source,
+        finance.id,
+        invoiceJobByFinance.get(finance.id)?.jobName ?? finance.id,
+        tx,
+      );
     }
     const transitionAt = new Date();
     const updatedAt = nextInvoiceUpdatedAt(invoice, transitionAt);
@@ -3151,34 +3436,41 @@ async function voidSchedulerInvoiceForContext(
   invoiceId: string,
   expectedUpdatedAt?: string,
 ): Promise<SchedulerInvoiceDto> {
-  await db.transaction(async (tx) => {
-    const [unlockedInvoice] = await tx.select().from(schedulerInvoices)
-      .where(eq(schedulerInvoices.id, invoiceId)).limit(1);
-    if (!unlockedInvoice) throw notFound('Invoice');
-    const { jobs } = await lockInvoiceFinances(unlockedInvoice, tx);
-    if (context) assertInvoiceFinanceMembership(jobs, context.finance.id);
-    const [invoice] = await tx.select().from(schedulerInvoices)
-      .where(eq(schedulerInvoices.id, invoiceId)).for('update').limit(1);
-    if (!invoice) throw notFound('Invoice');
-    assertInvoiceVersion(invoice, expectedUpdatedAt);
-    if (invoice.status === 'void') return;
-    if (invoice.status === 'paid') throw conflict('Paid invoices cannot be voided');
-    const lines = await tx.select().from(schedulerInvoiceLines)
-      .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
-    const now = new Date();
-    const updatedAt = nextInvoiceUpdatedAt(invoice, now);
-    await markCurrentMultiJobInvoiceWriter(tx);
-    await tx.update(schedulerInvoices).set({
-      status: 'void',
-      voidedAt: now,
-      updatedAt,
-    }).where(eq(schedulerInvoices.id, invoice.id));
-    const expenseIds = lines.flatMap((line) => line.expenseId ? [line.expenseId] : []);
-    if (expenseIds.length > 0) {
-      await tx.update(schedulerJobExpenses).set({ invoiced: false, updatedAt: now })
-        .where(inArray(schedulerJobExpenses.id, expenseIds));
+  try {
+    await db.transaction(async (tx) => {
+      const [unlockedInvoice] = await tx.select().from(schedulerInvoices)
+        .where(eq(schedulerInvoices.id, invoiceId)).limit(1);
+      if (!unlockedInvoice) throw notFound('Invoice');
+      const { jobs } = await lockInvoiceFinances(unlockedInvoice, tx);
+      if (context) assertInvoiceFinanceMembership(jobs, context.finance.id);
+      const [invoice] = await tx.select().from(schedulerInvoices)
+        .where(eq(schedulerInvoices.id, invoiceId)).for('update').limit(1);
+      if (!invoice) throw notFound('Invoice');
+      assertInvoiceVersion(invoice, expectedUpdatedAt);
+      if (invoice.status === 'void') return;
+      if (invoice.status === 'paid') throw conflict('Paid invoices cannot be voided');
+      const lines = await tx.select().from(schedulerInvoiceLines)
+        .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
+      const now = new Date();
+      const updatedAt = nextInvoiceUpdatedAt(invoice, now);
+      await markCurrentMultiJobInvoiceWriter(tx);
+      await tx.update(schedulerInvoices).set({
+        status: 'void',
+        voidedAt: now,
+        updatedAt,
+      }).where(eq(schedulerInvoices.id, invoice.id));
+      const expenseIds = lines.flatMap((line) => line.expenseId ? [line.expenseId] : []);
+      if (expenseIds.length > 0) {
+        await tx.update(schedulerJobExpenses).set({ invoiced: false, updatedAt: now })
+          .where(inArray(schedulerJobExpenses.id, expenseIds));
+      }
+    });
+  } catch (error) {
+    if (isInvoiceEmailDeliveryInProgressDatabaseError(error)) {
+      throw conflict('Invoice email delivery is in progress; wait for it to finish before voiding');
     }
-  });
+    throw error;
+  }
   return loadInvoiceDto(context?.finance.id ?? null, invoiceId);
 }
 
@@ -3310,6 +3602,8 @@ export async function loadSchedulerInvoiceExportSnapshot(
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
     await requireGlobalFinanceAdmin(user, tx);
+    // Preserve the finance -> source -> invoice lock order used by invoice mutations.
+    await assertSchedulerInvoicePdfStartReady(invoiceId, tx);
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId))
       .for('share')
@@ -3335,6 +3629,8 @@ export async function withSchedulerInvoiceExportRevisionLock<T>(
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await requireGlobalFinanceAdmin(user, tx);
+    // Preserve the finance -> source -> invoice lock order used by invoice mutations.
+    await assertSchedulerInvoicePdfStartReady(invoiceId, tx);
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId))
       .for('update')
@@ -4083,6 +4379,7 @@ export async function listSchedulerFinanceOverview(
     jobDate: summary.job.jobDate,
     jobStatus: summary.job.status,
     eventStatus: summary.event?.status ?? null,
+    invoiceReadiness: summary.invoiceReadiness,
     currency: summary.currency,
     actualHours: summary.time.actualHours,
     billableHours: summary.time.billableHours,
