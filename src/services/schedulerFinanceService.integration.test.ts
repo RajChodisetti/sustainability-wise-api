@@ -194,12 +194,69 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       }]);
       assert.equal(solar.time.actualHours, 2);
       assert.equal(field.time.actualHours, 3);
+      assert.equal(eco.invoiceReadiness.completionSatisfied, false);
+      assert.equal(eco.invoiceReadiness.hoursSatisfied, true);
+      assert.equal(eco.invoiceReadiness.ready, false);
+
+      const incompleteEligibility = await service.getConsolidatedInvoiceEligibility(
+        admin,
+        [eco.financeId, solar.financeId, field.financeId],
+      );
+      assert.equal(incompleteEligibility.eligible, false);
+      assert.deepEqual(
+        incompleteEligibility.issues
+          .filter((issue) => issue.code === 'job_not_completed')
+          .map((issue) => issue.financeId)
+          .sort(),
+        [eco.financeId, field.financeId, solar.financeId].sort(),
+      );
+      for (const summary of [eco, solar, field]) {
+        await assert.rejects(
+          service.createQuickSchedulerInvoiceByFinanceId(admin, summary.financeId, {
+            includeLabour: true,
+          }),
+          appErrorDetailIncludes('complete before generating an invoice'),
+        );
+      }
+
+      await setup.unsafe(`
+        UPDATE ea_audits
+        SET status = 'Completed', completed_at = now()
+        WHERE id = 'eco-job';
+        UPDATE ih_installations
+        SET status = 'Completed', completed_at = now()
+        WHERE id = 'field-job';
+        UPDATE ss_sites
+        SET status = 'Completed', completed_at = now()
+        WHERE id = 'solar-site';
+      `);
+      const [completedEco, parentCompletedSolar, completedField] = await Promise.all([
+        service.getSchedulerFinancialSummaryById(admin, eco.financeId),
+        service.getSchedulerFinancialSummaryById(admin, solar.financeId),
+        service.getSchedulerFinancialSummaryById(admin, field.financeId),
+      ]);
+      assert.deepEqual(completedEco.invoiceReadiness, {
+        completionSatisfied: true,
+        completionBasis: 'job',
+        hoursSatisfied: true,
+        hoursBasis: 'app_time',
+        ready: true,
+      });
+      assert.equal(parentCompletedSolar.job.status, 'Draft');
+      assert.equal(parentCompletedSolar.invoiceReadiness.completionBasis, 'parent_site');
+      assert.equal(parentCompletedSolar.invoiceReadiness.ready, true);
+      assert.equal(completedField.invoiceReadiness.completionBasis, 'job');
 
       const overview = await service.listSchedulerFinanceOverview(admin, { limit: 100 });
       assert.equal(overview.items.some((item) => (
         item.sourceId === 'eco-unscheduled' && item.eventId === null
       )), true);
       assert.equal(overview.items.every((item) => typeof item.currency === 'string'), true);
+      assert.equal(
+        overview.items.find((item) => item.sourceId === 'solar-job')
+          ?.invoiceReadiness.completionBasis,
+        'parent_site',
+      );
 
       const overridden = await service.updateSchedulerFinanceById(admin, eco.financeId, {
         billableHoursOverride: 2,
@@ -220,24 +277,23 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         ) VALUES ('solar-legacy-estimate', ${solar.financeId}, 1, 'set',
           'legacy_estimate', 7200000, 7200000, 'Legacy estimate', 'migration:0033', now())
       `;
-      const unconfirmedLegacyDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+      const legacyEligibility = await service.getConsolidatedInvoiceEligibility(
         admin,
-        solar.financeId,
-        { includeLabour: true },
+        [solar.financeId],
       );
-      assert.deepEqual(unconfirmedLegacyDraft.lines.map((line) => line.kind), ['labour']);
+      assert.equal(legacyEligibility.eligible, false);
+      assert.equal(legacyEligibility.jobs[0]?.invoiceReadiness.hoursSatisfied, false);
+      assert.equal(
+        legacyEligibility.issues.some((issue) => issue.code === 'hours_entry_required'),
+        true,
+      );
       await assert.rejects(
-        service.issueSchedulerInvoiceByFinanceId(
+        service.createQuickSchedulerInvoiceByFinanceId(
           admin,
           solar.financeId,
-          unconfirmedLegacyDraft.id,
+          { includeLabour: true },
         ),
         appErrorDetailIncludes('Confirm or replace migrated legacy hours'),
-      );
-      await service.voidSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        unconfirmedLegacyDraft.id,
       );
       const confirmed = await service.updateSchedulerFinanceById(admin, solar.financeId, {
         billableHoursOverride: 2,
@@ -532,6 +588,15 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       );
       assert.equal(consolidatedIssued.status, 'issued');
       assert.equal(consolidatedIssued.jobs.length, 2);
+      await setup`UPDATE ea_audits SET status = 'Draft', completed_at = null WHERE id = 'eco-job'`;
+      const immutableIssuedSnapshot = await service.loadSchedulerInvoiceExportSnapshot(
+        admin,
+        null,
+        consolidatedIssued.id,
+        consolidatedIssued.updatedAt,
+      );
+      assert.equal(immutableIssuedSnapshot.status, 'issued');
+      await setup`UPDATE ea_audits SET status = 'Completed', completed_at = now() WHERE id = 'eco-job'`;
       const consolidatedPaid = await service.markConsolidatedSchedulerInvoicePaid(
         admin,
         consolidatedIssued.id,
@@ -874,6 +939,56 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         appErrorDetailIncludes('same currency'),
       );
       await setup`
+        UPDATE ea_audits
+        SET status = 'Completed', completed_at = now()
+        WHERE id = 'eco-unscheduled'
+      `;
+      const missingTime = await service.getSchedulerFinancialSummaryById(
+        admin,
+        unscheduled.financeId,
+      );
+      assert.deepEqual(missingTime.invoiceReadiness, {
+        completionSatisfied: true,
+        completionBasis: 'job',
+        hoursSatisfied: false,
+        hoursBasis: null,
+        ready: false,
+      });
+      const missingTimeEligibility = await service.getConsolidatedInvoiceEligibility(
+        admin,
+        [unscheduled.financeId],
+      );
+      assert.equal(missingTimeEligibility.eligible, false);
+      assert.equal(
+        missingTimeEligibility.issues.some((issue) => issue.code === 'hours_entry_required'),
+        true,
+      );
+      await assert.rejects(
+        service.createQuickSchedulerInvoiceByFinanceId(admin, unscheduled.financeId, {
+          includeLabour: false,
+          expenseIds: [unscheduledExpense.id],
+        }),
+        appErrorDetailIncludes('Enter both billable and cost hours'),
+      );
+      const zeroHoursReviewed = await service.updateSchedulerFinanceById(
+        admin,
+        unscheduled.financeId,
+        {
+          billableHoursOverride: 0,
+          costHoursOverride: 0,
+          overrideReason: 'No labour required; expense-only job',
+        },
+      );
+      assert.equal(zeroHoursReviewed.time.billableHours, 0);
+      assert.equal(zeroHoursReviewed.time.costHours, 0);
+      assert.deepEqual(zeroHoursReviewed.invoiceReadiness, {
+        completionSatisfied: true,
+        completionBasis: 'job',
+        hoursSatisfied: true,
+        hoursBasis: 'admin_override',
+        ready: true,
+      });
+      await setup`
         INSERT INTO scheduler_job_expenses (
           id, finance_id, kind, category, description, cost_amount_cents,
           billable_amount_cents, billable, invoiced, created_at, updated_at
@@ -961,6 +1076,67 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         appErrorDetailIncludes('cannot be added or removed'),
       );
 
+      await setup`UPDATE ea_audits SET status = 'Draft', completed_at = null WHERE id = 'eco-job'`;
+      await assert.rejects(
+        service.loadSchedulerInvoiceExportSnapshot(
+          admin,
+          eco.financeId,
+          ecoConcurrent.id,
+          ecoConcurrent.updatedAt,
+        ),
+        appErrorDetailIncludes('complete before generating an invoice'),
+      );
+      await assert.rejects(
+        service.issueSchedulerInvoiceByFinanceId(
+          admin,
+          eco.financeId,
+          ecoConcurrent.id,
+          ecoConcurrent.updatedAt,
+        ),
+        appErrorDetailIncludes('complete before generating an invoice'),
+      );
+      await setup`UPDATE ea_audits SET status = 'Completed', completed_at = now() WHERE id = 'eco-job'`;
+
+      await service.updateSchedulerFinanceById(admin, unscheduled.financeId, {
+        billableHoursOverride: null,
+        costHoursOverride: null,
+      });
+      await assert.rejects(
+        service.loadSchedulerInvoiceExportSnapshot(
+          admin,
+          unscheduled.financeId,
+          unscheduledConcurrent.id,
+          unscheduledConcurrent.updatedAt,
+        ),
+        appErrorDetailIncludes('Enter both billable and cost hours'),
+      );
+      await assert.rejects(
+        service.issueSchedulerInvoiceByFinanceId(
+          admin,
+          unscheduled.financeId,
+          unscheduledConcurrent.id,
+          unscheduledConcurrent.updatedAt,
+        ),
+        appErrorDetailIncludes('Enter both billable and cost hours'),
+      );
+      await service.updateSchedulerFinanceById(admin, unscheduled.financeId, {
+        billableHoursOverride: 0,
+        costHoursOverride: 0,
+        overrideReason: 'Reconfirmed expense-only job after invoice readiness review',
+      });
+      await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        eco.financeId,
+        ecoConcurrent.id,
+        ecoConcurrent.updatedAt,
+      );
+      await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        unscheduled.financeId,
+        unscheduledConcurrent.id,
+        unscheduledConcurrent.updatedAt,
+      );
+
       const oldCostCount = Number((await setup<{ count: string }[]>`
         SELECT count(*) AS count FROM ih_job_cost_lines WHERE installation_id = 'field-job'
       `)[0]!.count);
@@ -985,6 +1161,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       `)[0]!.count), oldInvoiceCount);
       assert.equal(legacyDraft.lines[0]?.costLineId, legacyLine.id);
 
+      await setup`UPDATE ih_installations SET status = 'Draft', completed_at = null WHERE id = 'field-job'`;
       await assert.rejects(
         purgeInstallHubInstallationTree('field-job'),
         appErrorDetailIncludes('installation_commercial_history_purge_blocked'),

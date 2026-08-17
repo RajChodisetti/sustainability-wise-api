@@ -16,6 +16,18 @@ import type {
 export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v2';
 export const MAX_CONSOLIDATED_INVOICE_JOBS = 50;
 
+/**
+ * A 4xx response proves the API rejected the request before accepting it.
+ * Network failures and 5xx responses are ambiguous, so the portal must retry
+ * with the exact same idempotency key and payload.
+ */
+export function invoiceEmailAttemptNeedsSameIdempotencyKey(error: unknown): boolean {
+  const status = error && typeof error === 'object' && 'status' in error
+    ? Number((error as { status?: unknown }).status)
+    : Number.NaN;
+  return !(Number.isInteger(status) && status >= 400 && status < 500);
+}
+
 export async function persistExpenseBeforeAttachment<TExpense>(input: {
   create: () => Promise<TExpense>;
   onPersisted: (expense: TExpense) => void;
@@ -152,6 +164,7 @@ export function financeOverviewFromSummary(
     invoiceCount: summary.invoices.filter((invoice) => invoice.status !== 'void').length,
     hasOverdueInvoice: summary.invoices.some((invoice) => invoice.overdue),
     needsHoursReview: summary.time.needsHoursReview,
+    invoiceReadiness: summary.invoiceReadiness,
   };
 }
 
@@ -195,6 +208,16 @@ export function resolveHourOverrideValues(
   explicit?: { billableHoursOverride: number | null; costHoursOverride: number | null },
 ): { billableHoursOverride: number | null; costHoursOverride: number | null } {
   return explicit ?? current;
+}
+
+export function manualHoursEntryIssue(input: {
+  actualHours: number;
+  billableHoursOverride: number | null;
+  costHoursOverride: number | null;
+}): string | null {
+  if (input.actualHours > 0) return null;
+  if (input.billableHoursOverride !== null && input.costHoursOverride !== null) return null;
+  return 'No app time was recorded. Enter both billable hours and cost hours before invoicing this job.';
 }
 
 export function shouldAttachHourOverrideReason(input: {

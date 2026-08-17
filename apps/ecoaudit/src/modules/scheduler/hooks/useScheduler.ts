@@ -17,6 +17,7 @@ import {
   fetchSchedulerFinancialSummary,
   fetchSchedulerFinanceOverview,
   fetchSchedulerInvoice,
+  fetchSchedulerInvoiceEmailDeliveries,
   fetchSchedulerInvoices,
   fetchSchedulerPortfolioSummary,
   fetchPortalAssignees,
@@ -28,6 +29,7 @@ import {
   markGlobalSchedulerInvoicePaid,
   markSchedulerInvoicePaid,
   searchJobOptions,
+  sendSchedulerInvoiceEmail,
   sendScheduleEventReminder,
   updateGlobalSchedulerInvoice,
   updateSchedulerExpense,
@@ -45,6 +47,7 @@ import type {
   FinanceSourceApp,
   QuickSchedulerInvoiceInput,
   ScheduleSourceApp,
+  SendSchedulerInvoiceEmailInput,
   UpdateSchedulerFinanceInput,
   UpdateSchedulerInvoiceInput,
   UpdateScheduleEventInput,
@@ -80,6 +83,8 @@ export const schedulerKeys = {
   invoices: (financeId: string) => [...schedulerKeys.finance(), 'invoices', financeId] as const,
   invoice: (financeId: string, invoiceId: string) =>
     [...schedulerKeys.invoices(financeId), invoiceId] as const,
+  invoiceEmailDeliveries: (invoiceId: string) =>
+    [...schedulerKeys.finance(), 'invoice-email-deliveries', invoiceId] as const,
 };
 
 export function useScheduleSummary() {
@@ -271,6 +276,47 @@ export function useGlobalSchedulerInvoice(invoiceId: string | null) {
   });
 }
 
+export function useSchedulerInvoiceEmailDeliveries(
+  invoiceId: string,
+  enabled: boolean,
+) {
+  return useQuery({
+    queryKey: schedulerKeys.invoiceEmailDeliveries(invoiceId),
+    queryFn: async () => (await fetchSchedulerInvoiceEmailDeliveries(invoiceId)).items ?? [],
+    enabled,
+    refetchInterval: (query) => {
+      const deliveries = query.state.data;
+      return Array.isArray(deliveries)
+        && deliveries.some((delivery) => (
+          delivery.status === 'queued' || delivery.status === 'processing'
+        ))
+        ? 5_000
+        : false;
+    },
+  });
+}
+
+export function useSendSchedulerInvoiceEmail(invoiceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SendSchedulerInvoiceEmailInput) => (
+      sendSchedulerInvoiceEmail(invoiceId, input)
+    ),
+    onSuccess: async ({ delivery }) => {
+      qc.setQueryData(
+        schedulerKeys.invoiceEmailDeliveries(invoiceId),
+        (current: typeof delivery[] | undefined) => {
+          const withoutCurrent = (current ?? []).filter((item) => item.id !== delivery.id);
+          return [delivery, ...withoutCurrent];
+        },
+      );
+      await qc.invalidateQueries({
+        queryKey: schedulerKeys.invoiceEmailDeliveries(invoiceId),
+      });
+    },
+  });
+}
+
 export function useUpdateSchedulerFinance(financeId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -371,23 +417,29 @@ export function useDeleteGlobalSchedulerExpense() {
   });
 }
 
-export function useUploadSchedulerExpenseAttachment() {
+export function useUploadSchedulerExpenseAttachment(financeId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ expenseId, file }: { expenseId: string; file: File }) => (
       uploadSchedulerExpenseAttachment(expenseId, file)
     ),
-    onSuccess: async () => invalidateGlobalSchedulerCommercialData(qc),
+    onSuccess: async () => invalidateGlobalSchedulerCommercialData(
+      qc,
+      financeId ? [financeId] : [],
+    ),
   });
 }
 
-export function useDeleteSchedulerExpenseAttachment() {
+export function useDeleteSchedulerExpenseAttachment(financeId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ expenseId, attachmentId }: { expenseId: string; attachmentId: string }) => (
       deleteSchedulerExpenseAttachment(expenseId, attachmentId)
     ),
-    onSuccess: async () => invalidateGlobalSchedulerCommercialData(qc),
+    onSuccess: async () => invalidateGlobalSchedulerCommercialData(
+      qc,
+      financeId ? [financeId] : [],
+    ),
   });
 }
 

@@ -2,6 +2,7 @@
 
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
+import { ExpenseLedger } from '@/modules/scheduler/components/ExpenseLedger';
 import { FinanceSettingsPanel } from '@/modules/scheduler/components/FinanceSettingsPanel';
 import { useSchedulerFinancialSummary } from '@/modules/scheduler/hooks/useScheduler';
 import { draftReservedAmount, financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
@@ -94,8 +95,9 @@ export function SchedulerFinanceDetail({
         />
       </section>
 
-      {(summary.time.needsHoursReview || overdueCount > 0 || summary.time.overbilledHours > 0 || summary.totals.unbilledQuoteBalance > 0) ? (
+      {(!summary.invoiceReadiness.completionSatisfied || summary.time.needsHoursReview || overdueCount > 0 || summary.time.overbilledHours > 0 || summary.totals.unbilledQuoteBalance > 0) ? (
         <section className="grid gap-2 sm:grid-cols-2" aria-label="Finance attention items">
+          {!summary.invoiceReadiness.completionSatisfied ? <Cue tone="warning" title="Complete the job before invoicing" detail="The source audit, assessment, or installation must be marked Completed before a draft can be created or issued." /> : null}
           {summary.time.needsHoursReview ? <Cue tone="warning" title="Hours need review" detail="No confirmed app time or the effective hours still use a migrated legacy estimate." /> : null}
           {overdueCount > 0 ? <Cue tone="danger" title={`${overdueCount} overdue invoice${overdueCount === 1 ? '' : 's'}`} detail="Follow up or mark paid once payment is confirmed." /> : null}
           {summary.time.overbilledHours > 0 ? <Cue tone="danger" title={`${summary.time.overbilledHours.toFixed(2)} overbilled hours`} detail="Invoiced labour exceeds the current effective billable hours." /> : null}
@@ -123,6 +125,12 @@ export function SchedulerFinanceDetail({
         ].join(':')}
         financeId={financeId}
         summary={summary}
+      />
+
+      <ExpenseLedger
+        financeId={financeId}
+        currency={summary.currency}
+        expenses={summary.expenses}
       />
 
     </div>

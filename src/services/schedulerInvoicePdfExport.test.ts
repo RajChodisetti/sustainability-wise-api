@@ -5,6 +5,8 @@ import {
   persistSchedulerInvoicePdfArtifact,
   schedulerInvoicePdfJobParams,
   schedulerInvoicePdfReportVariantKey,
+  startSchedulerInvoicePdfWorker,
+  type ClaimedSchedulerInvoicePdfJob,
   type SchedulerInvoicePdfArtifactDependencies,
 } from './schedulerInvoicePdfExport.js';
 import { conflict } from '../utils/errors.js';
@@ -45,6 +47,21 @@ const artifactInput = {
   pdfUrl: '/v1/files/ecoaudit/scheduler-invoice/pdf-job-42/invoice.pdf',
   buffer: Buffer.from('%PDF-test'),
 };
+
+const claimedJob: ClaimedSchedulerInvoicePdfJob = {
+  id: artifactInput.jobId,
+  claimToken: 'claim-token-42',
+  app: artifactInput.user.app,
+  entityId: artifactInput.invoiceId,
+  userId: artifactInput.user.userId,
+  params: schedulerInvoicePdfJobParams(invoice),
+};
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 function artifactTestDependencies(input: {
   events: string[];
@@ -223,4 +240,80 @@ test('an uninspectable completion outcome never drains potentially attached byte
     { name: 'AmbiguousSchedulerInvoicePdfPublicationError' },
   );
   assert.equal(events.includes('drain-cleanup'), false);
+});
+
+test('durable worker claims on startup, prevents duplicate local execution, and stops gracefully', async () => {
+  const executionStarted = deferred();
+  const releaseExecution = deferred();
+  let offered = false;
+  let executions = 0;
+  let activeExecutions = 0;
+  let maximumActive = 0;
+  const worker = startSchedulerInvoicePdfWorker({
+    pollIntervalMs: 2,
+    dependencies: {
+      async claimNext() {
+        if (offered) return null;
+        offered = true;
+        return claimedJob;
+      },
+      async execute() {
+        executions += 1;
+        activeExecutions += 1;
+        maximumActive = Math.max(maximumActive, activeExecutions);
+        executionStarted.resolve();
+        await releaseExecution.promise;
+        activeExecutions -= 1;
+      },
+      logCycleError(error) {
+        assert.fail(error instanceof Error ? error : String(error));
+      },
+    },
+  });
+
+  await executionStarted.promise;
+  worker.wake();
+  worker.wake();
+  let stopped = false;
+  const stopping = worker.stop().then(() => { stopped = true; });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(stopped, false, 'stop waits for the already-claimed execution');
+  releaseExecution.resolve();
+  await stopping;
+
+  assert.equal(executions, 1);
+  assert.equal(maximumActive, 1);
+});
+
+test('durable worker wake discovers a job persisted after an empty startup probe', async () => {
+  const startupProbeFinished = deferred();
+  const executionFinished = deferred();
+  let available = false;
+  let claimed = false;
+  let executions = 0;
+  const worker = startSchedulerInvoicePdfWorker({
+    pollIntervalMs: 60_000,
+    dependencies: {
+      async claimNext() {
+        startupProbeFinished.resolve();
+        if (!available || claimed) return null;
+        claimed = true;
+        return claimedJob;
+      },
+      async execute() {
+        executions += 1;
+        executionFinished.resolve();
+      },
+      logCycleError(error) {
+        assert.fail(error instanceof Error ? error : String(error));
+      },
+    },
+  });
+
+  await startupProbeFinished.promise;
+  available = true;
+  worker.wake();
+  await executionFinished.promise;
+  await worker.stop();
+  assert.equal(executions, 1);
 });

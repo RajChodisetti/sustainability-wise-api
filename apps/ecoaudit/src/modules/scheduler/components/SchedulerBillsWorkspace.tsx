@@ -415,7 +415,7 @@ export function SchedulerBillsWorkspace({
       {!formMode && error ? <ErrorBanner message={error} /> : null}
 
       {expenses.length === 0 ? (
-        <EmptyState title="No bills or expenses yet" description="Add a job cost manually or upload a supplier bill to build the job cost base." icon="clipboard" actions={<div className="flex flex-wrap justify-center gap-2"><Button variant="secondary" onClick={() => openNew('manual')}>Add manually</Button><Button onClick={() => openNew('upload')}>Upload bill</Button></div>} />
+        <EmptyState title="No bills or expenses yet" description="Use the actions above to add a job cost manually or upload a supplier bill." icon="clipboard" />
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No costs match these filters"
@@ -609,7 +609,7 @@ function AttachmentList(props: BillActions) {
           <div className="mt-1 flex flex-wrap gap-1"><button type="button" aria-label={`Download ${attachment.filename}`} className="min-h-11 px-2 font-bold text-[var(--primary)] hover:underline" disabled={busy} onClick={() => void onDownload(expense, attachment.id, attachment.filename)}>Download</button><button type="button" aria-label={`Delete ${attachment.filename}`} className="min-h-11 px-2 font-bold text-[var(--red)] hover:underline disabled:cursor-not-allowed disabled:opacity-50" disabled={busy || locked} onClick={() => void onDeleteAttachment(expense, attachment.id, attachment.filename)}>Delete</button></div>
         </div>
       ))}
-      <label className={buttonClassName('ghost', `w-full !px-2 ${locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`)}>
+      <label className={buttonClassName('ghost', `w-full !px-2 focus-within:outline focus-within:outline-3 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`)}>
         {busy ? 'Uploading…' : attachments.length ? 'Add attachment' : 'Attach bill'}
         <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" className="sr-only" disabled={busy || locked} onChange={(event) => { void onUpload(expense, event.target.files?.[0]); event.currentTarget.value = ''; }} />
       </label>

@@ -4,12 +4,14 @@ import {
   checkConsolidatedSchedulerInvoiceEligibility,
   createConsolidatedSchedulerInvoice,
   downloadSchedulerInvoicePdfExport,
+  fetchSchedulerInvoiceEmailDeliveries,
   fetchGlobalSchedulerExpenses,
   fetchGlobalSchedulerInvoices,
   getLatestSchedulerInvoicePdfExport,
   getSchedulerInvoicePdfExportStatus,
   issueSchedulerInvoice,
   markGlobalSchedulerInvoicePaid,
+  sendSchedulerInvoiceEmail,
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
   uploadSchedulerExpenseAttachment,
@@ -197,6 +199,19 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     if (url.endsWith('/void') || url.endsWith('/mark-paid')) {
       return Response.json({ id: 'invoice-1', financeId: 'finance-1', financeIds: ['finance-1', 'finance-2'] });
     }
+    if (url.endsWith('/email-deliveries')) {
+      return Response.json({ items: [] });
+    }
+    if (url.endsWith('/email')) {
+      return Response.json({
+        delivery: {
+          id: 'delivery-1',
+          invoiceId: 'invoice/1',
+          status: 'queued',
+        },
+        reused: false,
+      }, { status: 202 });
+    }
     return Response.json({ items: [], nextCursor: null });
   };
 
@@ -223,6 +238,14 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     });
     await voidGlobalSchedulerInvoice('invoice/1', '2026-08-16T01:00:00.000Z');
     await markGlobalSchedulerInvoicePaid('invoice/1', '2026-08-16T02:00:00.000Z');
+    await fetchSchedulerInvoiceEmailDeliveries('invoice/1');
+    await sendSchedulerInvoiceEmail('invoice/1', {
+      expectedUpdatedAt: '2026-08-16T02:00:00.000Z',
+      idempotencyKey: 'email-request-1',
+      to: 'accounts@example.test',
+      subject: 'Invoice INV-1',
+      message: 'Please find the invoice attached.',
+    });
     const file = Object.assign(
       new Blob(['%PDF-1.7\ncontent'], { type: 'application/pdf' }),
       { name: 'supplier bill.pdf', lastModified: 0 },
@@ -245,6 +268,18 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     assert.deepEqual(JSON.parse(String(voidRequest?.body)), { expectedUpdatedAt: '2026-08-16T01:00:00.000Z' });
     const paidRequest = requests.find((request) => request.url.endsWith('/mark-paid'));
     assert.deepEqual(JSON.parse(String(paidRequest?.body)), { expectedUpdatedAt: '2026-08-16T02:00:00.000Z' });
+    const emailHistory = requests.find((request) => request.url.endsWith('/email-deliveries'));
+    assert.equal(emailHistory?.method, 'GET');
+    assert.equal(emailHistory?.headers.get('Authorization'), `Bearer ${admin}`);
+    const emailRequest = requests.find((request) => request.url.endsWith('/email'));
+    assert.equal(emailRequest?.method, 'POST');
+    assert.deepEqual(JSON.parse(String(emailRequest?.body)), {
+      expectedUpdatedAt: '2026-08-16T02:00:00.000Z',
+      idempotencyKey: 'email-request-1',
+      to: 'accounts@example.test',
+      subject: 'Invoice INV-1',
+      message: 'Please find the invoice attached.',
+    });
     const upload = requests.find((request) => request.url.endsWith('/attachments'));
     assert.equal(upload?.headers.get('Authorization'), `Bearer ${admin}`);
     assert.equal(upload?.headers.get('Content-Type'), 'application/octet-stream');

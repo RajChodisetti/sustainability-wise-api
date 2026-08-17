@@ -171,6 +171,8 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/void' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/mark-paid' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs' },
+    { method: 'GET', url: '/v1/portal/scheduler/invoices/:invoiceId/email-deliveries' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/email' },
     { method: 'GET', url: '/v1/portal/scheduler/expenses' },
     { method: 'POST', url: '/v1/portal/scheduler/expenses/:expenseId/attachments' },
     {
@@ -215,6 +217,32 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
       });
       assert.equal(missingCas.statusCode, 400, `${suffix}: ${missingCas.body}`);
     }
+
+    const missingEmailIdempotency = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/invoices/invoice-1/email',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { expectedUpdatedAt: '2026-08-16T12:00:00.000Z' },
+    });
+    assert.equal(missingEmailIdempotency.statusCode, 400, missingEmailIdempotency.body);
+
+    const inspectorEmail = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/invoices/invoice-1/email',
+      headers: { authorization: `Bearer ${inspectorToken}` },
+      payload: {
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        idempotencyKey: 'inspector-must-not-send',
+      },
+    });
+    assert.equal(inspectorEmail.statusCode, 403, inspectorEmail.body);
+
+    const inspectorEmailHistory = await app.inject({
+      method: 'GET',
+      url: '/v1/portal/scheduler/invoices/invoice-1/email-deliveries',
+      headers: { authorization: `Bearer ${inspectorToken}` },
+    });
+    assert.equal(inspectorEmailHistory.statusCode, 403, inspectorEmailHistory.body);
 
     const manualLineEdit = await app.inject({
       method: 'PATCH',

@@ -165,7 +165,7 @@ export function SchedulerInvoicesWorkspace({
       ) : null}
 
       {invoices.length === 0 && !builderMinimum ? (
-        <EmptyState title="No invoices yet" description="Create a single-job invoice or consolidate two or more compatible jobs for the same customer." icon="clipboard" actions={<Button onClick={() => setBuilderMinimum(2)}>New consolidated invoice</Button>} />
+        <EmptyState title="No invoices yet" description="Use the actions above to create a single-job invoice or consolidate two or more compatible jobs for the same customer." icon="clipboard" />
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No invoices match these filters"
@@ -195,7 +195,7 @@ export function SchedulerInvoicesWorkspace({
           </nav>
           <main className="min-w-0">
             {selectedInvoiceId ? (
-              <GlobalInvoiceDetail invoiceId={selectedInvoiceId} onClose={() => {
+              <GlobalInvoiceDetail key={selectedInvoiceId} invoiceId={selectedInvoiceId} onClose={() => {
                 setSelectedInvoiceId(null);
                 if (typeof window !== 'undefined') {
                   window.history.replaceState(null, '', schedulerFinanceHref({ view: 'invoices' }));

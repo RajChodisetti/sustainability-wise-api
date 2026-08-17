@@ -38,12 +38,15 @@ import type {
   SchedulerFinancialSummary,
   SchedulerExpensePage,
   SchedulerInvoiceEligibility,
+  SchedulerInvoiceEmailDelivery,
   SchedulerInvoice,
   SchedulerInvoicePage,
   SchedulerInvoiceListItem,
   SchedulerPortfolioSummary,
   ScheduleSummary,
   ScheduleSourceApp,
+  SendSchedulerInvoiceEmailInput,
+  SendSchedulerInvoiceEmailResponse,
   UpdateSchedulerFinanceInput,
   UpdateSchedulerInvoiceInput,
   UpdateScheduleEventInput,
@@ -497,6 +500,26 @@ export function markGlobalSchedulerInvoicePaid(
     'POST',
     `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/mark-paid`,
     { expectedUpdatedAt, ...(paidAt ? { paidAt } : {}) },
+  );
+}
+
+export function fetchSchedulerInvoiceEmailDeliveries(
+  invoiceId: string,
+): Promise<{ items: SchedulerInvoiceEmailDelivery[] }> {
+  return portalRequest(true)<{ items: SchedulerInvoiceEmailDelivery[] }>(
+    'GET',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/email-deliveries`,
+  );
+}
+
+export function sendSchedulerInvoiceEmail(
+  invoiceId: string,
+  input: SendSchedulerInvoiceEmailInput,
+): Promise<SendSchedulerInvoiceEmailResponse> {
+  return portalRequest(true)<SendSchedulerInvoiceEmailResponse>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/email`,
+    input,
   );
 }
 

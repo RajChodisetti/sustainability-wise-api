@@ -74,6 +74,76 @@ export function parseSchedulerInvoiceGstRate(value: string | undefined): number 
   return parsed;
 }
 
+export function resolveInvoiceEmailFromEmail(
+  fromEmail: string | undefined,
+  smtpUser: string | undefined,
+): string {
+  return fromEmail?.trim() || smtpUser?.trim() || '';
+}
+
+export function isValidInvoiceEmailMailbox(value: string): boolean {
+  if (!value || value.length > 254 || /[\r\n,;<>"\s]/u.test(value)) return false;
+  const separator = value.indexOf('@');
+  if (separator <= 0 || separator !== value.lastIndexOf('@')) return false;
+  const local = value.slice(0, separator);
+  const domain = value.slice(separator + 1);
+  if (
+    local.length > 64
+    || local.startsWith('.')
+    || local.endsWith('.')
+    || local.includes('..')
+    || !/^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+$/iu.test(local)
+  ) return false;
+  if (domain.length > 253) return false;
+  const labels = domain.split('.');
+  return labels.length >= 2 && labels.every((label) => (
+    label.length >= 1
+    && label.length <= 63
+    && /^[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?$/iu.test(label)
+  ));
+}
+
+export function isInvoiceEmailRuntimeConfigured(input: {
+  deliveryMethod: string;
+  gmailClientId: string;
+  gmailClientSecret: string;
+  gmailRefreshToken: string;
+  fromEmail: string;
+}): boolean {
+  return input.deliveryMethod === 'gmail_api'
+    && Boolean(input.gmailClientId)
+    && Boolean(input.gmailClientSecret)
+    && Boolean(input.gmailRefreshToken)
+    && isValidInvoiceEmailMailbox(input.fromEmail);
+}
+
+export function parseInvoiceEmailEnabled(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+export function deriveInvoiceEmailStaleClaimMs(
+  configuredMs: number,
+  requestTimeoutMs: number,
+): number {
+  // One attempt can include attachment IO, an OAuth request, and a Gmail send.
+  // Keep a further 30-second IO margin beyond both provider timeouts.
+  return Math.max(30_000, configuredMs, (2 * requestTimeoutMs) + 30_000);
+}
+
+export const MAX_SCHEDULER_INVOICE_EMAIL_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+
+export function resolveInvoiceEmailMaxAttachmentBytes(value: string | undefined): number {
+  const parsed = value ? Number.parseInt(value, 10) : MAX_SCHEDULER_INVOICE_EMAIL_ATTACHMENT_BYTES;
+  const requested = Number.isFinite(parsed)
+    ? parsed
+    : MAX_SCHEDULER_INVOICE_EMAIL_ATTACHMENT_BYTES;
+  return Math.min(
+    MAX_SCHEDULER_INVOICE_EMAIL_ATTACHMENT_BYTES,
+    Math.max(1, requested),
+  );
+}
+
 function optionalList(name: string): string[] {
   return optional(name)
     .split(',')
@@ -114,6 +184,34 @@ const fileCapabilitySecret = optional(
 const fileCapabilityTtlSeconds = parseFileCapabilityTtlSeconds(
   process.env.FILE_CAPABILITY_TTL_SECONDS,
 );
+const invoiceEmailDeliveryMethod = optional('EMAIL_DELIVERY_METHOD', 'gmail_api')
+  .trim()
+  .toLowerCase();
+const invoiceEmailGmailClientId = optional('GMAIL_CLIENT_ID').trim();
+const invoiceEmailGmailClientSecret = optional('GMAIL_CLIENT_SECRET').trim();
+const invoiceEmailGmailRefreshToken = optional('GMAIL_REFRESH_TOKEN').trim();
+const invoiceEmailGmailUserId = optional('GMAIL_USER_ID', 'me').trim() || 'me';
+// Wattwatchers intentionally ships `FROM_EMAIL=` and falls back to SMTP_USER.
+// Nullish fallback alone would treat that explicit empty string as configured.
+const invoiceEmailFromEmail = resolveInvoiceEmailFromEmail(
+  process.env.FROM_EMAIL,
+  process.env.SMTP_USER,
+);
+const invoiceEmailRequestTimeoutMs = Math.max(1_000, optionalInt(
+  'SCHEDULER_INVOICE_EMAIL_REQUEST_TIMEOUT_MS',
+  20_000,
+));
+const invoiceEmailStaleClaimMs = deriveInvoiceEmailStaleClaimMs(
+  optionalInt('SCHEDULER_INVOICE_EMAIL_STALE_CLAIM_MS', 2 * 60_000),
+  invoiceEmailRequestTimeoutMs,
+);
+const invoiceEmailConfigured = isInvoiceEmailRuntimeConfigured({
+  deliveryMethod: invoiceEmailDeliveryMethod,
+  gmailClientId: invoiceEmailGmailClientId,
+  gmailClientSecret: invoiceEmailGmailClientSecret,
+  gmailRefreshToken: invoiceEmailGmailRefreshToken,
+  fromEmail: invoiceEmailFromEmail,
+});
 
 if (isProduction && !publicBaseUrl) {
   throw new Error('PUBLIC_BASE_URL is required in production');
@@ -321,6 +419,42 @@ export const config = {
         'SCHEDULER_INVOICE_GST_RATE',
         optional('IH_INVOICE_GST_RATE', '0.10'),
       )),
+  },
+  /**
+   * Scheduler invoice mail reuses the Wattwatchers monitor's Gmail OAuth
+   * environment variable names. Secrets remain process-only and are never
+   * returned by an API response or written to the database.
+   */
+  schedulerInvoiceEmail: {
+    // External email is always an explicit operational opt-in, even after the
+    // shared Wattwatchers credentials have been provisioned successfully.
+    enabled: parseInvoiceEmailEnabled(process.env.SCHEDULER_INVOICE_EMAIL_ENABLED),
+    configured: invoiceEmailConfigured,
+    deliveryMethod: invoiceEmailDeliveryMethod,
+    fromEmail: invoiceEmailFromEmail,
+    gmailUserId: invoiceEmailGmailUserId,
+    gmailClientId: invoiceEmailGmailClientId,
+    gmailClientSecret: invoiceEmailGmailClientSecret,
+    gmailRefreshToken: invoiceEmailGmailRefreshToken,
+    pollIntervalMs: Math.max(1_000, optionalInt(
+      'SCHEDULER_INVOICE_EMAIL_POLL_INTERVAL_MS',
+      5_000,
+    )),
+    claimBatchSize: Math.min(20, Math.max(1, optionalInt(
+      'SCHEDULER_INVOICE_EMAIL_CLAIM_BATCH_SIZE',
+      5,
+    ))),
+    staleClaimMs: invoiceEmailStaleClaimMs,
+    requestTimeoutMs: invoiceEmailRequestTimeoutMs,
+    maxAttempts: Math.min(10, Math.max(1, optionalInt(
+      'SCHEDULER_INVOICE_EMAIL_MAX_ATTEMPTS',
+      5,
+    ))),
+    // Gmail's API request contains attachment base64 inside whole-message
+    // base64url. 18 MiB keeps the expanded JSON request below 35 MB.
+    maxAttachmentBytes: resolveInvoiceEmailMaxAttachmentBytes(
+      process.env.SCHEDULER_INVOICE_EMAIL_MAX_ATTACHMENT_BYTES,
+    ),
   },
   rateLimit: {
     max: optionalInt('RATE_LIMIT_MAX', 300),

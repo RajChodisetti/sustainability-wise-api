@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   availableInvoiceExpenses,
@@ -12,7 +13,9 @@ import {
   financeTargetLookupFailed,
   financeTargetFromPages,
   financeTargetRequiresJobLookup,
+  invoiceEmailAttemptNeedsSameIdempotencyKey,
   invoiceDraftIsDirty,
+  manualHoursEntryIssue,
   invoiceFilenameFromContentDisposition,
   isFinanceScheduleEvent,
   marginTone,
@@ -34,6 +37,19 @@ import type {
   SchedulerFinancialSummary,
   SchedulerInvoiceEligibilityJob,
 } from '../types/domain';
+
+test('invoice email retries preserve identity only for ambiguous outcomes', () => {
+  assert.equal(invoiceEmailAttemptNeedsSameIdempotencyKey(new Error('network')), true);
+  assert.equal(invoiceEmailAttemptNeedsSameIdempotencyKey({ status: 503 }), true);
+  assert.equal(invoiceEmailAttemptNeedsSameIdempotencyKey({ status: 409 }), false);
+});
+
+test('job and invoice selection boundaries remount stateful commercial editors', () => {
+  const workspace = readFileSync(new URL('../components/SchedulerFinanceWorkspace.tsx', import.meta.url), 'utf8');
+  const invoices = readFileSync(new URL('../components/SchedulerInvoicesWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(workspace, /<SchedulerFinanceDetail key=\{selected\.financeId\}/);
+  assert.match(invoices, /<GlobalInvoiceDetail key=\{selectedInvoiceId\}/);
+});
 
 test('finance events are limited to exact mobile source pairs', () => {
   assert.equal(isFinanceScheduleEvent({ sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a1' }), true);
@@ -149,6 +165,10 @@ test('hours review uses the audited backend state even when recorded hours are z
     jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: 'planned', currency: 'AUD', actualHours: 0, billableHours: 2, costHours: 2,
     billableAmount: 0, totalCost: 0, invoicedAmount: 0, unbilledAmount: 0, grossProfit: 0,
     marginPct: null, invoiceCount: 0, hasOverdueInvoice: false,
+    invoiceReadiness: {
+      completionSatisfied: false, completionBasis: null,
+      hoursSatisfied: false, hoursBasis: null, ready: false,
+    },
   } as const;
   assert.equal(financeJobNeedsReview({ ...base, needsHoursReview: false }), false);
   assert.equal(financeJobNeedsReview({ ...base, needsHoursReview: true }), true);
@@ -175,6 +195,13 @@ test('consolidated invoice previews use quote balance for quoted jobs and labour
     job: { jobName: 'Audit', jobDate: '2026-08-16', clientName: 'Client', siteName: 'Site', siteAddress: null, status: 'complete' },
     currency: 'AUD',
     billing: { name: 'Client', address: null, email: null, abn: null, reference: null },
+    invoiceReadiness: {
+      completionSatisfied: true,
+      completionBasis: 'job',
+      hoursSatisfied: true,
+      hoursBasis: 'app_time',
+      ready: true,
+    },
     availableLabourHours: 2,
     billableRate: 150,
     availableLabourAmount: 300,
@@ -260,6 +287,24 @@ test('explicit null hour overrides are preserved for clear-all requests', () => 
   );
 });
 
+test('jobs without app time require both audited accounting hour values', () => {
+  assert.equal(manualHoursEntryIssue({
+    actualHours: 0,
+    billableHoursOverride: null,
+    costHoursOverride: null,
+  }), 'No app time was recorded. Enter both billable hours and cost hours before invoicing this job.');
+  assert.equal(manualHoursEntryIssue({
+    actualHours: 0,
+    billableHoursOverride: 0,
+    costHoursOverride: 0,
+  }), null);
+  assert.equal(manualHoursEntryIssue({
+    actualHours: 1.25,
+    billableHoursOverride: null,
+    costHoursOverride: null,
+  }), null);
+});
+
 test('a migrated legacy estimate can be confirmed unchanged with a fresh audited reason', () => {
   assert.equal(shouldAttachHourOverrideReason({
     overrideSource: 'legacy_estimate',
@@ -300,6 +345,10 @@ test('deep-linked finance targets are found beyond the first cursor page', () =>
     billableAmount: 100, totalCost: 50, invoicedAmount: 0, unbilledAmount: 100,
     grossProfit: 50, marginPct: 50, invoiceCount: 0, hasOverdueInvoice: false,
     needsHoursReview: false,
+    invoiceReadiness: {
+      completionSatisfied: false, completionBasis: null,
+      hoursSatisfied: true, hoursBasis: 'app_time', ready: false,
+    },
   };
   const target: FinanceOverviewItem = {
     ...first,
@@ -374,6 +423,10 @@ test('direct finance summaries produce selectable overview rows without cursor s
     event: null,
     job: { jobName: 'Warehouse solar', jobDate: '2026-08-16', clientName: null, siteName: 'Warehouse', siteAddress: null, status: 'Draft' },
     currency: 'AUD',
+    invoiceReadiness: {
+      completionSatisfied: false, completionBasis: null,
+      hoursSatisfied: true, hoursBasis: 'admin_override', ready: false,
+    },
     time: { actualHours: 0, billableHours: 4, costHours: 3, needsHoursReview: false },
     totals: { billableAmount: 800, totalCost: 300, invoicedAmount: 400, unbilledAmount: 400, grossProfit: 500, marginPct: 62.5 },
     invoices: [{ status: 'issued', overdue: true }, { status: 'void', overdue: false }],
@@ -384,5 +437,9 @@ test('direct finance summaries produce selectable overview rows without cursor s
     currency: 'AUD', actualHours: 0, billableHours: 4, costHours: 3, billableAmount: 800, totalCost: 300,
     invoicedAmount: 400, unbilledAmount: 400, grossProfit: 500, marginPct: 62.5, invoiceCount: 1,
     hasOverdueInvoice: true, needsHoursReview: false,
+    invoiceReadiness: {
+      completionSatisfied: false, completionBasis: null,
+      hoursSatisfied: true, hoursBasis: 'admin_override', ready: false,
+    },
   });
 });

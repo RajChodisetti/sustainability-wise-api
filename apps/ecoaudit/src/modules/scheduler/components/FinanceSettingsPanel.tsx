@@ -8,6 +8,7 @@ import { FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/
 import { useToast } from '@/contexts/ToastContext';
 import { useUpdateSchedulerFinance } from '@/modules/scheduler/hooks/useScheduler';
 import {
+  manualHoursEntryIssue,
   resolveHourOverrideValues,
   shouldAttachHourOverrideReason,
 } from '@/modules/scheduler/lib/finance';
@@ -111,6 +112,17 @@ export function FinanceSettingsPanel({
     if ((effectiveBillableOverride != null && effectiveBillableOverride < 0) || (effectiveCostOverride != null && effectiveCostOverride < 0)) {
       setError('Hour overrides cannot be negative.');
       return null;
+    }
+    if (!options && (billableOverride.trim() || costOverride.trim())) {
+      const hoursIssue = manualHoursEntryIssue({
+        actualHours: summary.time.actualHours,
+        billableHoursOverride: effectiveBillableOverride,
+        costHoursOverride: effectiveCostOverride,
+      });
+      if (hoursIssue) {
+        setError(hoursIssue);
+        return null;
+      }
     }
     const effectiveChanged = effectiveBillableOverride !== summary.time.billableHoursOverride
       || effectiveCostOverride !== summary.time.costHoursOverride;
@@ -259,6 +271,14 @@ export function FinanceSettingsPanel({
       <div className="mt-5 grid gap-x-4 lg:grid-cols-2">
         <div>
           <h3 className="text-sm font-extrabold text-[var(--text)]">Pricing & rates</h3>
+          {summary.time.actualHours <= 0 ? (
+            <div className="mt-3 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm leading-5 text-[var(--text)]">
+              <strong className="text-[var(--amber)]">
+                {summary.invoiceReadiness.hoursSatisfied ? 'Manual time basis recorded.' : 'Manual time entry required.'}
+              </strong>{' '}
+              This job has no recorded app time. Enter both billing and cost hours, then add a reason so the invoice has an auditable time basis.
+            </div>
+          ) : null}
           <FieldLabel htmlFor="finance-pricing-mode">Pricing mode</FieldLabel>
           <Select id="finance-pricing-mode" value={pricingMode} onChange={(event) => setPricingMode(event.target.value as FinancePricingMode)}>
             <option value="quoted">Quoted</option>
@@ -282,12 +302,12 @@ export function FinanceSettingsPanel({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <FieldLabel htmlFor="finance-billable-hours">Billable hours override</FieldLabel>
-              <Input id="finance-billable-hours" type="number" min="0" step="0.01" inputMode="decimal" value={billableOverride} onChange={(event) => setBillableOverride(event.target.value)} placeholder="Use recorded" />
+              <FieldLabel htmlFor="finance-billable-hours">Billing hours{summary.time.actualHours <= 0 ? ' (required)' : ' override'}</FieldLabel>
+              <Input id="finance-billable-hours" type="number" min="0" step="0.01" inputMode="decimal" value={billableOverride} onChange={(event) => setBillableOverride(event.target.value)} placeholder={summary.time.actualHours <= 0 ? 'Enter hours' : 'Use recorded'} aria-required={summary.time.actualHours <= 0} />
             </div>
             <div>
-              <FieldLabel htmlFor="finance-cost-hours">Cost hours override</FieldLabel>
-              <Input id="finance-cost-hours" type="number" min="0" step="0.01" inputMode="decimal" value={costOverride} onChange={(event) => setCostOverride(event.target.value)} placeholder="Use recorded" />
+              <FieldLabel htmlFor="finance-cost-hours">Cost hours{summary.time.actualHours <= 0 ? ' (required)' : ' override'}</FieldLabel>
+              <Input id="finance-cost-hours" type="number" min="0" step="0.01" inputMode="decimal" value={costOverride} onChange={(event) => setCostOverride(event.target.value)} placeholder={summary.time.actualHours <= 0 ? 'Enter hours' : 'Use recorded'} aria-required={summary.time.actualHours <= 0} />
             </div>
           </div>
           <FieldLabel htmlFor="finance-override-reason">Override reason</FieldLabel>
