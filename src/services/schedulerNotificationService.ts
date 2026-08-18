@@ -24,6 +24,10 @@ import {
 } from '../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import {
+  assertSchedulerSourceAppVisible,
+  isSchedulerSourceAppVisible,
+} from './schedulerVisibility.js';
 
 export type MobileScheduleSourceApp = 'ecoaudit' | 'solarsense' | 'installhub';
 export type SchedulerNotificationKind = SchedulerNotificationData['notificationKind'];
@@ -77,6 +81,7 @@ export function isMobileScheduleNotificationTarget(
   event: Pick<ScheduleEventRow, 'sourceApp' | 'sourceType' | 'sourceId'>,
 ): boolean {
   if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
+  if (!isSchedulerSourceAppVisible(event.sourceApp)) return false;
   return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
     || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
     || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
@@ -740,6 +745,7 @@ export async function queueManualSchedulerReminder(
       .for('update')
       .limit(1);
     if (!event) throw notFound('Schedule event');
+    assertSchedulerSourceAppVisible(event.sourceApp);
     if (!isMobileScheduleNotificationTarget(event)) {
       throw badRequest('Scheduler event does not have a supported mobile notification target');
     }

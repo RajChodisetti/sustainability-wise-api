@@ -11,8 +11,10 @@ import { SchedulerDashboard } from '@/modules/scheduler/components/SchedulerDash
 import { SchedulerFinanceWorkspace } from '@/modules/scheduler/components/SchedulerFinanceWorkspace';
 import { UserFilter } from '@/modules/scheduler/components/UserFilter';
 import { schedulerFinanceHref, schedulerTabTransition } from '@/modules/scheduler/lib/finance';
+import { schedulerIsFieldOnly } from '@/modules/scheduler/lib/visibility';
 import type {
   ScheduleEvent,
+  ScheduleSourceApp,
   SchedulerFinanceTarget,
 } from '@/modules/scheduler/types/domain';
 
@@ -31,9 +33,11 @@ function isFinanceTab(tab: SchedulerTab): tab is 'financial-summary' | 'bills' |
 export default function SchedulerPage({
   initialTab = 'calendar',
   initialFinanceTarget,
+  visibleSourceApps,
 }: {
   initialTab?: SchedulerTab;
   initialFinanceTarget?: SchedulerFinanceTarget;
+  visibleSourceApps: ScheduleSourceApp[];
 }) {
   const { eaUser, ssUser, ihUser } = usePortalAuth();
   const isAdmin = Boolean(
@@ -50,6 +54,7 @@ export default function SchedulerPage({
   const [financeTarget, setFinanceTarget] = useState<SchedulerFinanceTarget | undefined>(initialFinanceTarget);
   const tabRefs = useRef<Partial<Record<SchedulerTab, HTMLButtonElement | null>>>({});
   const activeTab: SchedulerTab = isFinanceTab(tab) && !isAdmin ? 'calendar' : tab;
+  const fieldOnly = schedulerIsFieldOnly(visibleSourceApps);
 
   const tabs = useMemo(
     () => [
@@ -110,11 +115,15 @@ export default function SchedulerPage({
         title="Scheduler"
         subtitle={isFinanceTab(activeTab)
           ? activeTab === 'financial-summary'
-            ? 'Portfolio position, recorded hours, rates, and job profitability across all three apps.'
+            ? fieldOnly
+              ? 'Field App portfolio position, recorded hours, rates, and job profitability.'
+              : 'Portfolio position, recorded hours, rates, and job profitability across all three apps.'
             : activeTab === 'bills'
               ? 'Add, upload, and reconcile job costs and supplier evidence in one ledger.'
               : 'Create single or consolidated invoices, then issue, export, and track payment.'
-          : 'Assign audits, solar work, field jobs, and custom tasks — calendar + deadline board.'}
+          : fieldOnly
+            ? 'Assign Field App jobs and custom tasks — calendar + deadline board.'
+            : 'Assign audits, solar work, field jobs, and custom tasks — calendar + deadline board.'}
         actions={
           isAdmin ? (
             <Button onClick={() => openCreate()}>+ Schedule job</Button>
@@ -158,8 +167,9 @@ export default function SchedulerPage({
       {activeTab === 'overview' ? (
         <div id="scheduler-panel-overview" role="tabpanel" aria-labelledby="scheduler-tab-overview" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerDashboard
-          onOpenDeadlines={() => activateTab('deadlines')}
-          onCreate={() => openCreate()}
+            visibleSourceApps={visibleSourceApps}
+            onOpenDeadlines={() => activateTab('deadlines')}
+            onCreate={() => openCreate()}
           />
         </div>
       ) : null}
@@ -168,6 +178,7 @@ export default function SchedulerPage({
         <div id="scheduler-panel-calendar" role="tabpanel" aria-labelledby="scheduler-tab-calendar" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <DynamicSchedulerBoard
             isAdmin={isAdmin}
+            visibleSourceApps={visibleSourceApps}
             onSlotCreate={(day) => {
               if (isAdmin) openCreate(day);
             }}
@@ -180,6 +191,7 @@ export default function SchedulerPage({
         <div id="scheduler-panel-deadlines" role="tabpanel" aria-labelledby="scheduler-tab-deadlines" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <DeadlineTable
             assigneeFieldUserId={assigneeFilter || undefined}
+            visibleSourceApps={visibleSourceApps}
             onSelect={openEdit}
           />
         </div>
@@ -187,7 +199,11 @@ export default function SchedulerPage({
 
       {isFinanceTab(activeTab) && isAdmin ? (
         <div id={`scheduler-panel-${activeTab}`} role="tabpanel" aria-labelledby={`scheduler-tab-${activeTab}`} tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
-          <SchedulerFinanceWorkspace view={activeTab} initialTarget={financeTarget} />
+          <SchedulerFinanceWorkspace
+            view={activeTab}
+            initialTarget={financeTarget}
+            visibleSourceApps={visibleSourceApps}
+          />
         </div>
       ) : null}
 
@@ -206,6 +222,7 @@ export default function SchedulerPage({
         initialDay={slotDay}
         event={editing}
         isAdmin={isAdmin}
+        visibleSourceApps={visibleSourceApps}
         onOpenFinance={(event) => {
           const target: SchedulerFinanceTarget = {
             eventId: event.id,

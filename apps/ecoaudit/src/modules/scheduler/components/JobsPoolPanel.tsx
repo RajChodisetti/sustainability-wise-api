@@ -21,7 +21,13 @@ const APP_FILTERS: Array<{ value: '' | Exclude<ScheduleSourceApp, 'custom'>; lab
   { value: 'installhub', label: 'Field App' },
 ];
 
-export function JobsPoolPanel({ enabled }: { enabled: boolean }) {
+export function JobsPoolPanel({
+  enabled,
+  visibleSourceApps,
+}: {
+  enabled: boolean;
+  visibleSourceApps: ScheduleSourceApp[];
+}) {
   const [q, setQ] = useState('');
   const [app, setApp] = useState<'' | Exclude<ScheduleSourceApp, 'custom'>>('');
   const query = useUnscheduledJobs(
@@ -49,7 +55,9 @@ export function JobsPoolPanel({ enabled }: { enabled: boolean }) {
             onChange={(e) => setApp(e.target.value as typeof app)}
             aria-label="Filter by app"
           >
-            {APP_FILTERS.map((f) => (
+            {APP_FILTERS.filter((filter) => (
+              !filter.value || visibleSourceApps.includes(filter.value)
+            )).map((f) => (
               <option key={f.value || 'all'} value={f.value}>
                 {f.label}
               </option>

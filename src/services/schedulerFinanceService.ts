@@ -9,8 +9,10 @@ import {
   isNull,
   lt,
   ne,
+  notInArray,
   or,
   sql,
+  type SQL,
 } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
 import { config } from '../config.js';
@@ -45,6 +47,12 @@ import {
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { renderInvoicePdf, type InvoicePdfOutput } from './invoicePdf.js';
 import { drainStorageDeletionTasks } from './storageDeletionService.js';
+import {
+  areSchedulerSourceAppsVisible,
+  assertSchedulerSourceAppVisible,
+  isSchedulerSourceAppVisible,
+  schedulerVisibleFinanceSourceApps,
+} from './schedulerVisibility.js';
 
 export type FinanceSourceApp = 'ecoaudit' | 'solarsense' | 'installhub';
 export type FinanceSourceType = 'audit' | 'assessment' | 'installation';
@@ -681,7 +689,32 @@ function sourceFromEvent(event: ScheduleEventRow): FinanceSource {
   if (!isSupportedSource(source as FinanceSource)) {
     throw badRequest('Scheduler event does not have a supported commercial source job');
   }
+  assertSchedulerSourceAppVisible(source.sourceApp);
   return source as FinanceSource;
+}
+
+function schedulerInvoiceVisibilityConditions(): SQL[] {
+  const visibleApps = schedulerVisibleFinanceSourceApps();
+  const hiddenApps = (['ecoaudit', 'solarsense', 'installhub'] as const)
+    .filter((app) => !visibleApps.includes(app));
+  if (hiddenApps.length === 0) return [];
+  return [
+    notInArray(schedulerInvoices.jobSourceApp, hiddenApps),
+    notInArray(
+      schedulerInvoices.id,
+      db.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
+        .from(schedulerInvoiceJobs)
+        .where(inArray(schedulerInvoiceJobs.jobSourceApp, hiddenApps)),
+    ),
+  ];
+}
+
+function invoiceJobsAreVisible(jobs: InvoiceJobRow[]): boolean {
+  return areSchedulerSourceAppsVisible(jobs.map((job) => job.jobSourceApp));
+}
+
+function assertInvoiceJobsVisible(jobs: InvoiceJobRow[]): void {
+  if (!invoiceJobsAreVisible(jobs)) throw notFound('Invoice');
 }
 
 async function requireGlobalFinanceAdmin(
@@ -1467,6 +1500,7 @@ async function buildFinancialSummary(
   event: ScheduleEventRow | null,
   executor: FinanceExecutor = db,
 ): Promise<SchedulerFinancialSummaryDto> {
+  assertSchedulerSourceAppVisible(source.sourceApp);
   const metadata = await loadJobMetadata(source, event, executor);
   const finance = await ensureFinance(source, metadata, executor);
   const [
@@ -1490,14 +1524,15 @@ async function buildFinancialSummary(
       .where(eq(schedulerInvoiceJobs.financeId, finance.id)),
   ]);
   const participatingInvoiceIds = invoiceJobRefs.map((row) => row.invoiceId);
-  const invoiceRows = await executor.select().from(schedulerInvoices).where(
+  const invoiceRows = await executor.select().from(schedulerInvoices).where(and(
     participatingInvoiceIds.length > 0
       ? or(
           eq(schedulerInvoices.financeId, finance.id),
           inArray(schedulerInvoices.id, participatingInvoiceIds),
         )
       : eq(schedulerInvoices.financeId, finance.id),
-  ).orderBy(desc(schedulerInvoices.createdAt));
+    ...schedulerInvoiceVisibilityConditions(),
+  )).orderBy(desc(schedulerInvoices.createdAt));
   const financeInvoiceLines = invoiceRows.length === 0 ? [] : await executor.select({
     invoiceId: schedulerInvoiceLines.invoiceId,
     lineTotalCents: schedulerInvoiceLines.lineTotalExGstCents,
@@ -2113,10 +2148,7 @@ async function loadInvoiceDto(
   const [invoice] = await executor.select().from(schedulerInvoices)
     .where(eq(schedulerInvoices.id, invoiceId)).limit(1);
   if (!invoice) throw notFound('Invoice');
-  const loadedJobs = await executor.select().from(schedulerInvoiceJobs)
-    .where(eq(schedulerInvoiceJobs.invoiceId, invoice.id))
-    .orderBy(asc(schedulerInvoiceJobs.sortOrder));
-  const jobs = loadedJobs.length > 0 ? loadedJobs : [legacyInvoiceJobRow(invoice)];
+  const jobs = await invoiceJobsForRow(invoice, executor);
   if (financeId && !jobs.some((job) => job.financeId === financeId)) throw notFound('Invoice');
   const lines = await executor.select().from(schedulerInvoiceLines)
     .where(eq(schedulerInvoiceLines.invoiceId, invoice.id))
@@ -2138,7 +2170,10 @@ async function invoiceListItems(
     grouped.push(job);
     jobsByInvoice.set(job.invoiceId, grouped);
   }
-  return rows.map((row) => invoiceListItem(row, jobsByInvoice.get(row.id)));
+  return rows.flatMap((row) => {
+    const invoiceJobs = jobsByInvoice.get(row.id) ?? [legacyInvoiceJobRow(row)];
+    return invoiceJobsAreVisible(invoiceJobs) ? [invoiceListItem(row, invoiceJobs)] : [];
+  });
 }
 
 async function financeForEvent(
@@ -2177,6 +2212,7 @@ async function financeById(
     sourceId: finance.sourceId,
   } as FinanceSource;
   if (!isSupportedSource(source)) throw badRequest('Unsupported commercial source job');
+  assertSchedulerSourceAppVisible(source.sourceApp);
   const event = await latestEventForSource(source, executor);
   const metadata = await loadJobMetadata(source, event, executor);
   return { finance, source, event, metadata };
@@ -2189,7 +2225,22 @@ async function invoiceJobsForRow(
   const rows = await executor.select().from(schedulerInvoiceJobs)
     .where(eq(schedulerInvoiceJobs.invoiceId, invoice.id))
     .orderBy(asc(schedulerInvoiceJobs.sortOrder));
-  return rows.length > 0 ? rows : [legacyInvoiceJobRow(invoice)];
+  const jobs = rows.length > 0 ? rows : [legacyInvoiceJobRow(invoice)];
+  assertInvoiceJobsVisible(jobs);
+  return jobs;
+}
+
+/** Shared by generic export status/download routes that only know the invoice ID. */
+export async function assertSchedulerInvoiceVisible(
+  invoiceId: string,
+  executor: FinanceExecutor = db,
+): Promise<void> {
+  if (schedulerVisibleFinanceSourceApps().length === 3) return;
+  const [invoice] = await executor.select().from(schedulerInvoices)
+    .where(eq(schedulerInvoices.id, invoiceId))
+    .limit(1);
+  if (!invoice) throw notFound('Invoice');
+  await invoiceJobsForRow(invoice, executor);
 }
 
 async function lockInvoiceFinances(
@@ -2244,6 +2295,7 @@ export async function assertSchedulerInvoicePdfStartReady(
     .where(eq(schedulerInvoices.id, invoiceId))
     .limit(1);
   if (!invoice) throw notFound('Invoice');
+  await invoiceJobsForRow(invoice, executor);
   await assertDraftInvoiceReady(invoice, executor);
 }
 
@@ -2628,9 +2680,12 @@ async function listInvoicesForFinance(
     .where(eq(schedulerInvoiceJobs.financeId, financeId));
   const ids = refs.map((row) => row.invoiceId);
   const rows = await executor.select().from(schedulerInvoices)
-    .where(ids.length > 0
+    .where(and(
+      ids.length > 0
       ? or(eq(schedulerInvoices.financeId, financeId), inArray(schedulerInvoices.id, ids))
-      : eq(schedulerInvoices.financeId, financeId))
+      : eq(schedulerInvoices.financeId, financeId),
+      ...schedulerInvoiceVisibilityConditions(),
+    ))
     .orderBy(desc(schedulerInvoices.createdAt));
   return invoiceListItems(rows, executor);
 }
@@ -3011,6 +3066,7 @@ export async function createConsolidatedSchedulerInvoice(
         sourceId: finance.sourceId,
       } as FinanceSource;
       if (!isSupportedSource(source)) throw badRequest('Unsupported commercial source job');
+      assertSchedulerSourceAppVisible(source.sourceApp);
       const event = await latestEventForSource(source, tx);
       const initialMetadata = await loadJobMetadata(source, event, tx);
       readinessByFinance.set(finance.id, await requireInvoiceReady(
@@ -3683,12 +3739,15 @@ export async function listSchedulerInvoicePortfolio(
   await requireGlobalFinanceAdmin(user);
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 25)));
   const cursor = decodePortfolioCursor(options.cursor);
-  const conditions = [];
+  const conditions: SQL[] = [...schedulerInvoiceVisibilityConditions()];
   if (options.status) conditions.push(eq(schedulerInvoices.status, options.status));
-  if (cursor) conditions.push(or(
-    lt(schedulerInvoices.createdAt, cursor.createdAt),
-    and(eq(schedulerInvoices.createdAt, cursor.createdAt), lt(schedulerInvoices.id, cursor.id)),
-  ));
+  if (cursor) {
+    const cursorCondition = or(
+      lt(schedulerInvoices.createdAt, cursor.createdAt),
+      and(eq(schedulerInvoices.createdAt, cursor.createdAt), lt(schedulerInvoices.id, cursor.id)),
+    );
+    if (cursorCondition) conditions.push(cursorCondition);
+  }
   if (options.financeId) conditions.push(inArray(
     schedulerInvoices.id,
     db.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
@@ -3704,7 +3763,7 @@ export async function listSchedulerInvoicePortfolio(
   const search = optionalText(options.search, 200);
   if (search) {
     const pattern = `%${search.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
-    conditions.push(or(
+    const searchCondition = or(
       ilike(schedulerInvoices.invoiceNumber, pattern),
       ilike(schedulerInvoices.billToName, pattern),
       inArray(
@@ -3717,7 +3776,8 @@ export async function listSchedulerInvoicePortfolio(
             ilike(schedulerInvoiceJobs.jobSourceId, pattern),
           )),
       ),
-    ));
+    );
+    if (searchCondition) conditions.push(searchCondition);
   }
   const rows = await db.select().from(schedulerInvoices)
     .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -3749,7 +3809,10 @@ export async function listSchedulerExpensePortfolio(
   await requireGlobalFinanceAdmin(user);
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 25)));
   const cursor = decodePortfolioCursor(options.cursor);
-  const conditions = [isNull(schedulerJobExpenses.deletedAt)];
+  const conditions = [
+    isNull(schedulerJobExpenses.deletedAt),
+    inArray(schedulerJobFinance.sourceApp, schedulerVisibleFinanceSourceApps()),
+  ];
   if (options.kind) conditions.push(eq(schedulerJobExpenses.kind, options.kind));
   if (options.financeId) conditions.push(eq(schedulerJobExpenses.financeId, options.financeId));
   if (options.sourceApp) conditions.push(eq(schedulerJobFinance.sourceApp, options.sourceApp));
@@ -3875,6 +3938,22 @@ const BILL_ATTACHMENT_TYPES = new Map<string, string>([
   ['image/webp', '.webp'],
 ]);
 
+async function assertSchedulerExpenseVisible(
+  expenseId: string,
+  executor: FinanceExecutor = db,
+): Promise<void> {
+  const [row] = await executor.select({ sourceApp: schedulerJobFinance.sourceApp })
+    .from(schedulerJobExpenses)
+    .innerJoin(schedulerJobFinance, eq(schedulerJobFinance.id, schedulerJobExpenses.financeId))
+    .where(and(
+      eq(schedulerJobExpenses.id, expenseId),
+      isNull(schedulerJobExpenses.deletedAt),
+    ))
+    .limit(1);
+  if (!row) throw notFound('Expense');
+  assertSchedulerSourceAppVisible(row.sourceApp);
+}
+
 function detectedBillAttachmentType(body: Buffer): string | null {
   if (body.length >= 5 && body.subarray(0, 5).toString('ascii') === '%PDF-') {
     return 'application/pdf';
@@ -3995,6 +4074,7 @@ export async function uploadSchedulerExpenseAttachment(
 ): Promise<SchedulerExpenseAttachmentDto> {
   const actor = await requireGlobalFinanceAdmin(user);
   const expenseId = requireText(expenseIdInput, 'expenseId', 100);
+  await assertSchedulerExpenseVisible(expenseId);
   if (!Buffer.isBuffer(input.body) || input.body.length === 0) {
     throw badRequest('Bill attachment must contain file bytes');
   }
@@ -4025,6 +4105,7 @@ export async function uploadSchedulerExpenseAttachment(
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, locator.financeId)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
+    assertSchedulerSourceAppVisible(finance.sourceApp);
     const [expense] = await tx.select().from(schedulerJobExpenses)
       .where(and(
         eq(schedulerJobExpenses.id, expenseId),
@@ -4075,6 +4156,7 @@ export async function uploadSchedulerExpenseAttachment(
         .for('update')
         .limit(1);
       if (!finance) throw notFound('Job finance');
+      assertSchedulerSourceAppVisible(finance.sourceApp);
       const [expense] = await tx.select().from(schedulerJobExpenses)
         .where(and(
           eq(schedulerJobExpenses.id, expenseId),
@@ -4161,6 +4243,7 @@ export async function downloadSchedulerExpenseAttachment(
   contentType: string;
 }> {
   await requireGlobalFinanceAdmin(user);
+  await assertSchedulerExpenseVisible(requireText(expenseId, 'expenseId', 100));
   const attachment = await loadConfirmedExpenseAttachment(expenseId, attachmentId);
   const storedSize = await localFileSize(attachment.storageKey);
   if (storedSize !== attachment.sizeBytes) throw conflict('Bill attachment storage is incomplete');
@@ -4188,6 +4271,7 @@ export async function deleteSchedulerExpenseAttachment(
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, expense.financeId)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
+    assertSchedulerSourceAppVisible(finance.sourceApp);
     const [row] = await tx.select().from(schedulerExpenseAttachments).where(and(
       eq(schedulerExpenseAttachments.id, attachmentId),
       eq(schedulerExpenseAttachments.expenseId, expense.id),
@@ -4297,12 +4381,15 @@ export async function listSchedulerFinanceOverview(
   } = {},
 ): Promise<{ items: SchedulerFinanceOverviewItemDto[]; nextCursor: string | null }> {
   await requireGlobalFinanceAdmin(user);
+  const visibleApps = schedulerVisibleFinanceSourceApps();
   const [eventRows, financeRows, auditRows, assessmentRows, installationRows] = await Promise.all([
     db.select().from(portalScheduleEvents).where(and(
-      inArray(portalScheduleEvents.sourceApp, ['ecoaudit', 'solarsense', 'installhub']),
+      inArray(portalScheduleEvents.sourceApp, visibleApps),
       inArray(portalScheduleEvents.sourceType, ['audit', 'assessment', 'installation']),
     )).orderBy(desc(portalScheduleEvents.updatedAt)),
-    db.select().from(schedulerJobFinance).orderBy(desc(schedulerJobFinance.updatedAt)),
+    db.select().from(schedulerJobFinance)
+      .where(inArray(schedulerJobFinance.sourceApp, visibleApps))
+      .orderBy(desc(schedulerJobFinance.updatedAt)),
     db.select({ id: eaAudits.id }).from(eaAudits).where(isNull(eaAudits.deletedAt)),
     db.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments)
       .where(isNull(ssRooftopAssessments.deletedAt)),
@@ -4347,12 +4434,14 @@ export async function listSchedulerFinanceOverview(
       sourceId: row.id,
     })),
   ]) {
+    if (!isSchedulerSourceAppVisible(source.sourceApp)) continue;
     const key = `${source.sourceApp}:${source.sourceType}:${source.sourceId}`;
     if (!sourceMap.has(key)) sourceMap.set(key, { source, event: null });
   }
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 25)));
   const candidates = [...sourceMap.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
+    .filter(([, entry]) => isSchedulerSourceAppVisible(entry.source.sourceApp))
     .filter(([, entry]) => !options.sourceApp || entry.source.sourceApp === options.sourceApp)
     .filter(([, entry]) => !options.sourceId || entry.source.sourceId === options.sourceId)
     .filter(([key]) => !options.cursor || key > options.cursor)
@@ -4493,7 +4582,7 @@ export async function getSchedulerFinancePortfolioSummary(
     aggregate.grossProfitCents = nextGrossProfit;
     byCurrency.set(item.currency, aggregate);
   }
-  const invoiceConditions = [];
+  const invoiceConditions: SQL[] = [...schedulerInvoiceVisibilityConditions()];
   if (currencyFilter) invoiceConditions.push(eq(schedulerInvoices.currency, currencyFilter));
   if (options.sourceApp || options.sourceId) {
     const membershipConditions = [];

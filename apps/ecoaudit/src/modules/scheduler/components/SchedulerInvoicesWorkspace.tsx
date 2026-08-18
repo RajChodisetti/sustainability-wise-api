@@ -65,6 +65,7 @@ function StatusBadge({ invoice }: { invoice: Pick<SchedulerGlobalInvoiceListItem
 
 export function SchedulerInvoicesWorkspace({
   jobs,
+  visibleSourceApps,
   initialFinanceId,
   initialInvoiceId,
   hasMoreJobs,
@@ -72,6 +73,7 @@ export function SchedulerInvoicesWorkspace({
   onLoadMoreJobs,
 }: {
   jobs: FinanceOverviewItem[];
+  visibleSourceApps: FinanceSourceApp[];
   initialFinanceId?: string;
   initialInvoiceId?: string;
   hasMoreJobs: boolean;
@@ -97,6 +99,7 @@ export function SchedulerInvoicesWorkspace({
   const filtered = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
     return invoices.filter((invoice) => {
+      if (!invoice.sourceApps.every((app) => visibleSourceApps.includes(app))) return false;
       if (status === 'overdue' && !(invoice.overdue && invoice.status === 'issued')) return false;
       if (status !== 'all' && status !== 'overdue' && invoice.status !== status) return false;
       if (sourceApp !== 'all' && !invoice.sourceApps.includes(sourceApp)) return false;
@@ -105,7 +108,7 @@ export function SchedulerInvoicesWorkspace({
         .toLocaleLowerCase()
         .includes(needle);
     });
-  }, [invoices, search, sourceApp, status]);
+  }, [invoices, search, sourceApp, status, visibleSourceApps]);
 
   function selectInvoice(invoiceId: string, financeId?: string) {
     setSelectedInvoiceId(invoiceId);
@@ -146,7 +149,10 @@ export function SchedulerInvoicesWorkspace({
           </div>
           <div>
             <FieldLabel className="!mt-0" htmlFor="invoice-register-product">Product</FieldLabel>
-            <Select id="invoice-register-product" value={sourceApp} onChange={(event) => setSourceApp(event.target.value as FinanceSourceApp | 'all')}><option value="all">All products</option><option value="ecoaudit">Eco Audit</option><option value="solarsense">Solar Sense</option><option value="installhub">Field App</option></Select>
+            <Select id="invoice-register-product" value={sourceApp} onChange={(event) => setSourceApp(event.target.value as FinanceSourceApp | 'all')}>
+              <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
+              {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
+            </Select>
           </div>
         </div>
       </section>

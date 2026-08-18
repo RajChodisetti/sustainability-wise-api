@@ -9,12 +9,14 @@ import {
   sortEventsByDeadlineUrgency,
 } from '@/modules/scheduler/lib/deadline';
 import { useScheduleEvents, useScheduleSummary } from '@/modules/scheduler/hooks/useScheduler';
-import type { ScheduleEvent } from '@/modules/scheduler/types/domain';
+import type { ScheduleEvent, ScheduleSourceApp } from '@/modules/scheduler/types/domain';
 
 export function SchedulerDashboard({
+  visibleSourceApps,
   onOpenDeadlines,
   onCreate,
 }: {
+  visibleSourceApps: ScheduleSourceApp[];
   onOpenDeadlines: () => void;
   onCreate: () => void;
 }) {
@@ -39,6 +41,7 @@ export function SchedulerDashboard({
 
   const s = summary.data!;
   const upcoming = sortEventsByDeadlineUrgency(events.data ?? [])
+    .filter((event) => visibleSourceApps.includes(event.sourceApp))
     .filter((e) => e.status !== 'done' && e.status !== 'cancelled')
     .slice(0, 5);
 
@@ -55,7 +58,9 @@ export function SchedulerDashboard({
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {(Object.keys(s.byApp) as Array<keyof typeof s.byApp>).map((app) => (
+        {(Object.keys(s.byApp) as Array<keyof typeof s.byApp>)
+          .filter((app) => visibleSourceApps.includes(app))
+          .map((app) => (
           <div
             key={app}
             className={`rounded-2xl px-4 py-3 text-sm font-bold ${appChipClass(app)}`}
@@ -63,9 +68,9 @@ export function SchedulerDashboard({
             <p className="text-[11px] font-extrabold uppercase tracking-[0.08em] opacity-80">
               {SOURCE_APP_LABEL[app]}
             </p>
-            <p className="mt-1 text-2xl font-extrabold tracking-[-0.03em]">{s.byApp[app]}</p>
+            <p className="mt-1 text-2xl font-extrabold tracking-[-0.03em]">{s.byApp[app] ?? 0}</p>
           </div>
-        ))}
+          ))}
       </div>
 
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 sm:p-5">

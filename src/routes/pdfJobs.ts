@@ -11,7 +11,10 @@ import {
   signedFileUrl,
 } from '../storage/localFiles.js';
 import { exportJobParams, type ExportArtifactType } from '../services/pdfJobService.js';
-import { assertGlobalFinanceAdmin } from '../services/schedulerFinanceService.js';
+import {
+  assertGlobalFinanceAdmin,
+  assertSchedulerInvoiceVisible,
+} from '../services/schedulerFinanceService.js';
 
 type ExportJob = typeof pdfJobs.$inferSelect;
 const MAX_EXPORT_FILENAME_BYTES = 180;
@@ -200,6 +203,7 @@ async function assertJobAccess(job: ExportJob, request: FastifyRequest): Promise
       throw forbidden('Scheduler invoice export belongs to another administrator');
     }
     await assertGlobalFinanceAdmin(request.user);
+    await assertSchedulerInvoiceVisible(job.entityId);
     return;
   }
   if (job.userId !== request.user.userId && request.user.role !== 'admin') {

@@ -29,7 +29,7 @@ export type ScheduleSummary = {
   overdue: number;
   planned: number;
   inProgress: number;
-  byApp: Record<ScheduleSourceApp, number>;
+  byApp: Partial<Record<ScheduleSourceApp, number>>;
 };
 
 export type JobOption = {
