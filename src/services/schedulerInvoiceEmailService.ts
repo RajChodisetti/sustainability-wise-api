@@ -280,6 +280,7 @@ export async function queueSchedulerInvoiceEmail(
   const invoiceId = requireText(invoiceIdInput, 'invoiceId', 100);
   const idempotencyKey = requireText(input.idempotencyKey, 'idempotencyKey', 200);
   const actor = await emailActor(user);
+  const invoice = await getConsolidatedSchedulerInvoice(user, invoiceId);
 
   const replay = await existingDelivery(invoiceId, idempotencyKey);
   if (replay) {
@@ -288,7 +289,6 @@ export async function queueSchedulerInvoiceEmail(
   }
 
   assertEmailRuntimeReady();
-  const invoice = await getConsolidatedSchedulerInvoice(user, invoiceId);
   if (invoice.status !== 'issued' && invoice.status !== 'paid') {
     throw conflict('Only issued or paid invoices can be emailed');
   }

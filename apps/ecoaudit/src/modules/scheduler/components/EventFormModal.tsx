@@ -19,6 +19,7 @@ import {
   fromDatetimeLocalValue,
   toDatetimeLocalValue,
 } from '@/modules/scheduler/lib/deadline';
+import { schedulerDefaultSourceApp } from '@/modules/scheduler/lib/visibility';
 import type {
   ScheduleEvent,
   ScheduleSourceApp,
@@ -32,6 +33,7 @@ type Props = {
   initialDay?: Date | null;
   event?: ScheduleEvent | null;
   isAdmin: boolean;
+  visibleSourceApps: ScheduleSourceApp[];
   onOpenFinance?: (event: ScheduleEvent) => void;
 };
 
@@ -58,7 +60,11 @@ function supportsMobileSchedulerNotifications(event: ScheduleEvent): boolean {
     || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
 }
 
-function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | null) {
+function initialFormValues(
+  event?: ScheduleEvent | null,
+  initialDay?: Date | null,
+  defaultSourceApp: ScheduleSourceApp = 'ecoaudit',
+) {
   if (event) {
     return {
       sourceApp: event.sourceApp,
@@ -93,8 +99,8 @@ function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | nul
   deadline.setHours(17, 0, 0, 0);
 
   return {
-    sourceApp: 'ecoaudit' as ScheduleSourceApp,
-    sourceType: 'audit' as ScheduleSourceType,
+    sourceApp: defaultSourceApp,
+    sourceType: defaultTypeForApp(defaultSourceApp),
     sourceId: '',
     creationMode: 'new' as CreationMode,
     jobQuery: '',
@@ -113,7 +119,15 @@ function initialFormValues(event?: ScheduleEvent | null, initialDay?: Date | nul
   };
 }
 
-export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOpenFinance }: Props) {
+export function EventFormModal({
+  open,
+  onClose,
+  initialDay,
+  event,
+  isAdmin,
+  visibleSourceApps,
+  onOpenFinance,
+}: Props) {
   const toast = useToast();
   const create = useCreateScheduleEvent();
   const dispatch = useCreateSchedulerDispatch();
@@ -122,7 +136,14 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOp
   const remind = useSendScheduleEventReminder();
   const assignees = usePortalAssignees(open && isAdmin);
   const editing = Boolean(event);
-  const initial = initialFormValues(event, initialDay);
+  const initial = initialFormValues(
+    event,
+    initialDay,
+    schedulerDefaultSourceApp(visibleSourceApps),
+  );
+  const visibleAppOptions = appOptions.filter((option) => (
+    visibleSourceApps.includes(option.value)
+  ));
 
   const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>(initial.sourceApp);
   const [sourceType, setSourceType] = useState<ScheduleSourceType>(initial.sourceType);
@@ -238,7 +259,7 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOp
     if (error) errorRef.current?.focus();
   }, [error]);
 
-  if (!open) return null;
+  if (!open || (event && !visibleSourceApps.includes(event.sourceApp))) return null;
 
   async function handleSubmit() {
     if (!canSubmit) return;
@@ -374,7 +395,7 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOp
                     setTitle('');
                   }}
                 >
-                  {appOptions.map((o) => (
+                  {visibleAppOptions.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </Select>
@@ -564,8 +585,8 @@ export function EventFormModal({ open, onClose, initialDay, event, isAdmin, onOp
               </p>
             ) : editing && sourceApp !== 'custom' ? (
               <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">
-                Mobile reminders are available for Eco Audit audits, Solar Sense assessments,
-                and Field App installations. This legacy calendar link is planning-only.
+                Mobile reminders are available for supported product jobs. This legacy calendar
+                link is planning-only.
               </p>
             ) : (
               <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">

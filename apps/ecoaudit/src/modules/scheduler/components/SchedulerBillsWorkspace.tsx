@@ -111,12 +111,14 @@ function saveBlob(blob: Blob, filename: string) {
 
 export function SchedulerBillsWorkspace({
   jobs,
+  visibleSourceApps,
   initialFinanceId,
   hasMoreJobs,
   loadingMoreJobs,
   onLoadMoreJobs,
 }: {
   jobs: FinanceOverviewItem[];
+  visibleSourceApps: FinanceSourceApp[];
   initialFinanceId?: string;
   hasMoreJobs: boolean;
   loadingMoreJobs: boolean;
@@ -156,6 +158,7 @@ export function SchedulerBillsWorkspace({
   const filtered = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
     return expenses.filter((expense) => {
+      if (!visibleSourceApps.includes(expense.source.sourceApp)) return false;
       if (sourceApp !== 'all' && expense.source.sourceApp !== sourceApp) return false;
       if (kind !== 'all' && expense.kind !== kind) return false;
       if (state === 'open' && (expense.invoiced || expense.reserved)) return false;
@@ -172,7 +175,7 @@ export function SchedulerBillsWorkspace({
         .toLocaleLowerCase()
         .includes(needle);
     });
-  }, [attachmentState, dateFrom, dateTo, expenses, kind, search, sourceApp, state]);
+  }, [attachmentState, dateFrom, dateTo, expenses, kind, search, sourceApp, state, visibleSourceApps]);
 
   function openNew(mode: 'manual' | 'upload') {
     setEditing(null);
@@ -352,10 +355,8 @@ export function SchedulerBillsWorkspace({
           <div>
             <FieldLabel className="!mt-0" htmlFor="bill-app-filter">Product</FieldLabel>
             <Select id="bill-app-filter" value={sourceApp} onChange={(event) => setSourceApp(event.target.value as FinanceSourceApp | 'all')}>
-              <option value="all">All products</option>
-              <option value="ecoaudit">Eco Audit</option>
-              <option value="solarsense">Solar Sense</option>
-              <option value="installhub">Field App</option>
+              <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
+              {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
             </Select>
           </div>
           <div>

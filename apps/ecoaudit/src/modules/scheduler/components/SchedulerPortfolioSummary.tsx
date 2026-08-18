@@ -4,7 +4,8 @@ import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { useSchedulerPortfolioSummary } from '@/modules/scheduler/hooks/useScheduler';
-import { draftReservedAmount, marginTone } from '@/modules/scheduler/lib/finance';
+import { draftReservedAmount, financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
+import type { FinanceSourceApp } from '@/modules/scheduler/types/domain';
 
 function money(value: number, currency: string): string {
   try {
@@ -25,7 +26,11 @@ const toneClass = {
   neutral: 'text-[var(--text)]',
 };
 
-export function SchedulerPortfolioSummary() {
+export function SchedulerPortfolioSummary({
+  visibleSourceApps,
+}: {
+  visibleSourceApps: FinanceSourceApp[];
+}) {
   const query = useSchedulerPortfolioSummary();
 
   if (query.isLoading) return <Spinner label="Loading portfolio financial summary…" />;
@@ -42,6 +47,10 @@ export function SchedulerPortfolioSummary() {
   if (!query.data) return null;
 
   const summary = query.data;
+  const visibleProductLabels = visibleSourceApps.map(financeAppLabel);
+  const visibleProducts = visibleProductLabels.length < 2
+    ? visibleProductLabels[0] ?? 'Scheduler'
+    : `${visibleProductLabels.slice(0, -1).join(', ')}, and ${visibleProductLabels.at(-1)}`;
   return (
     <section aria-labelledby="portfolio-finance-heading" className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -50,7 +59,7 @@ export function SchedulerPortfolioSummary() {
             Portfolio position
           </h2>
           <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-            {summary.jobCount} job{summary.jobCount === 1 ? '' : 's'} across Eco Audit, Solar Sense, and Field App. Amounts are ex GST.
+            {summary.jobCount} job{summary.jobCount === 1 ? '' : 's'} across {visibleProducts}. Amounts are ex GST.
           </p>
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-bold">

@@ -33,7 +33,11 @@ import {
   startOfWeekMonday,
   weekDays,
 } from '@/modules/scheduler/lib/weekGrid';
-import type { JobOption, ScheduleEvent } from '@/modules/scheduler/types/domain';
+import type {
+  JobOption,
+  ScheduleEvent,
+  ScheduleSourceApp,
+} from '@/modules/scheduler/types/domain';
 
 type PendingAssign = {
   job: JobOption;
@@ -43,10 +47,12 @@ type PendingAssign = {
 
 export function DynamicSchedulerBoard({
   isAdmin,
+  visibleSourceApps,
   onSlotCreate,
   onEventEdit,
 }: {
   isAdmin: boolean;
+  visibleSourceApps: ScheduleSourceApp[];
   onSlotCreate: (day: Date) => void;
   onEventEdit: (event: ScheduleEvent) => void;
 }) {
@@ -75,7 +81,9 @@ export function DynamicSchedulerBoard({
   );
 
   const staff = useMemo(() => assignees.data ?? [], [assignees.data]);
-  const allEvents = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
+  const allEvents = useMemo(() => (
+    (eventsQuery.data ?? []).filter((event) => visibleSourceApps.includes(event.sourceApp))
+  ), [eventsQuery.data, visibleSourceApps]);
   const visibleEvents = useMemo(() => {
     if (staffFilter.length === 0) return allEvents;
     return allEvents.filter((e) => staffFilter.includes(e.assigneeFieldUserId));
@@ -271,7 +279,9 @@ export function DynamicSchedulerBoard({
             onEventClick={onEventEdit}
           />
 
-          {isAdmin ? <JobsPoolPanel enabled={isAdmin} /> : null}
+          {isAdmin ? (
+            <JobsPoolPanel enabled={isAdmin} visibleSourceApps={visibleSourceApps} />
+          ) : null}
         </div>
 
         <DragOverlay>

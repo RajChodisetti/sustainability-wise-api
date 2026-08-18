@@ -6,6 +6,7 @@ import {
   eq,
   gte,
   ilike,
+  inArray,
   isNull,
   lte,
   ne,
@@ -29,6 +30,11 @@ import {
   isMobileScheduleSourceApp,
   isSchedulerNotificationEligible,
 } from './schedulerNotificationService.js';
+import {
+  assertSchedulerSourceAppVisible,
+  schedulerVisibleFinanceSourceApps,
+  schedulerVisibleSourceApps,
+} from './schedulerVisibility.js';
 
 export type ScheduleSourceApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'custom';
 export type ScheduleSourceType = 'audit' | 'site' | 'assessment' | 'installation' | 'custom';
@@ -61,7 +67,7 @@ export type ScheduleSummary = {
   overdue: number;
   planned: number;
   inProgress: number;
-  byApp: Record<ScheduleSourceApp, number>;
+  byApp: Partial<Record<ScheduleSourceApp, number>>;
 };
 
 export type JobOption = {
@@ -598,6 +604,8 @@ export async function listScheduleEvents(
   assertPortalSchedulerApp(user);
   const conditions: SQL[] = [];
 
+  conditions.push(inArray(portalScheduleEvents.sourceApp, schedulerVisibleSourceApps()));
+
   if (!filters.includeCancelled) {
     conditions.push(ne(portalScheduleEvents.status, 'cancelled'));
   }
@@ -642,6 +650,7 @@ export async function getScheduleEvent(user: AuthUser, id: string): Promise<Sche
     .where(eq(portalScheduleEvents.id, id))
     .limit(1);
   if (!row) throw notFound('Schedule event');
+  assertSchedulerSourceAppVisible(row.sourceApp);
 
   if (!isSchedulerAdmin(user)) {
     const fieldUserId = await resolveCallerFieldUserId(user);
@@ -676,6 +685,7 @@ export async function createScheduleEvent(
   }
 
   const sourceApp = parseSourceApp(input.sourceApp);
+  assertSchedulerSourceAppVisible(sourceApp);
   const sourceType = parseSourceType(input.sourceType);
   validateAppTypePair(sourceApp, sourceType);
 
@@ -973,6 +983,7 @@ export async function createSchedulerDispatch(
   if (!isSchedulerAdmin(user)) throw forbidden('Only admins can create scheduler dispatches');
   if (input.status !== undefined) throw badRequest('New scheduler dispatches are always planned');
   const sourceApp = parseSourceApp(input.sourceApp);
+  assertSchedulerSourceAppVisible(sourceApp);
   if (sourceApp === 'custom') throw badRequest('Create custom work with the standard scheduler event endpoint');
   if (typeof input.assigneeFieldUserId !== 'string' || !input.assigneeFieldUserId.trim()) {
     throw badRequest('assigneeFieldUserId is required');
@@ -1092,6 +1103,7 @@ export async function updateScheduleEvent(
       .for('update')
       .limit(1);
     if (!existing) throw notFound('Schedule event');
+    assertSchedulerSourceAppVisible(existing.sourceApp);
 
     const existingGlobalUserId = isMobileScheduleNotificationTarget(existing)
       ? await resolveSchedulerGlobalUserId(tx, existing.assigneeFieldUserId)
@@ -1333,12 +1345,9 @@ export async function getScheduleSummary(user: AuthUser): Promise<ScheduleSummar
 
   const events = await listScheduleEvents(user, { includeCancelled: false });
 
-  const byApp: Record<ScheduleSourceApp, number> = {
-    ecoaudit: 0,
-    solarsense: 0,
-    installhub: 0,
-    custom: 0,
-  };
+  const byApp: Partial<Record<ScheduleSourceApp, number>> = Object.fromEntries(
+    schedulerVisibleSourceApps().map((sourceApp) => [sourceApp, 0]),
+  );
 
   let today = 0;
   let thisWeek = 0;
@@ -1347,7 +1356,7 @@ export async function getScheduleSummary(user: AuthUser): Promise<ScheduleSummar
   let inProgress = 0;
 
   for (const event of events) {
-    byApp[event.sourceApp] += 1;
+    byApp[event.sourceApp] = (byApp[event.sourceApp] ?? 0) + 1;
     const start = new Date(event.scheduledStartAt).getTime();
     if (start >= startOfToday.getTime() && start < endOfToday.getTime()) today += 1;
     if (start >= startOfToday.getTime() && start < endOfWeek.getTime()) thisWeek += 1;
@@ -1377,9 +1386,12 @@ export async function searchJobOptions(
   const q = query.trim();
   const pattern = q ? `%${q.replace(/%/g, '')}%` : '%';
   const results: JobOption[] = [];
+  const visibleApps = schedulerVisibleFinanceSourceApps();
   const apps = appFilter && appFilter !== 'custom'
-    ? [appFilter]
-    : (['ecoaudit', 'solarsense', 'installhub'] as const);
+    ? visibleApps.includes(appFilter)
+      ? [appFilter]
+      : []
+    : visibleApps;
 
   if (apps.includes('ecoaudit')) {
     const rows = await db
@@ -1531,9 +1543,12 @@ export async function listUnscheduledJobs(
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100);
   const q = (opts.q ?? '').trim();
   const pattern = q ? `%${q.replace(/%/g, '')}%` : '%';
+  const visibleApps = schedulerVisibleFinanceSourceApps();
   const apps = opts.sourceApp && opts.sourceApp !== 'custom'
-    ? [opts.sourceApp as Exclude<ScheduleSourceApp, 'custom'>]
-    : (['ecoaudit', 'solarsense', 'installhub'] as const);
+    ? visibleApps.includes(opts.sourceApp as Exclude<ScheduleSourceApp, 'custom'>)
+      ? [opts.sourceApp as Exclude<ScheduleSourceApp, 'custom'>]
+      : []
+    : visibleApps;
 
   const scheduled = await activeScheduledSourceKeys(apps);
   const results: JobOption[] = [];

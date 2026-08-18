@@ -367,6 +367,11 @@ export const config = {
     'INSTALLHUB_UPLOAD_REVISION_CAS_REQUIRED',
     !isProduction,
   ),
+  /** Hide Eco Audit and Solar Sense work from every Scheduler surface. */
+  schedulerHideEcoAuditSolarSenseJobs: optionalBool(
+    'SCHEDULER_HIDE_ECOAUDIT_SOLARSENSE_JOBS',
+    false,
+  ),
   /** Seller branding + GST for InstallHub tax invoices. */
   installhubInvoice: {
     sellerName: optional('IH_INVOICE_SELLER_NAME', 'Sustainability Wise'),

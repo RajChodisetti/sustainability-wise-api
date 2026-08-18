@@ -25,9 +25,11 @@ import {
   marginTone,
   schedulerFinanceHref,
 } from '@/modules/scheduler/lib/finance';
+import { schedulerVisibleFinanceSourceApps } from '@/modules/scheduler/lib/visibility';
 import type {
   FinanceOverviewItem,
   FinanceSourceApp,
+  ScheduleSourceApp,
   SchedulerFinanceTarget,
   SchedulerFinanceView,
 } from '@/modules/scheduler/types/domain';
@@ -61,9 +63,11 @@ const toneClasses = {
 export function SchedulerFinanceWorkspace({
   view,
   initialTarget,
+  visibleSourceApps,
 }: {
   view: SchedulerFinanceView;
   initialTarget?: SchedulerFinanceTarget;
+  visibleSourceApps: ScheduleSourceApp[];
 }) {
   const overview = useSchedulerFinanceOverview(true);
   const requestedJobTarget = financeTargetRequiresJobLookup(initialTarget) ? initialTarget : undefined;
@@ -77,6 +81,10 @@ export function SchedulerFinanceWorkspace({
   const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const appliedTargetRef = useRef<string | null>(null);
+  const visibleFinanceSourceApps = useMemo(
+    () => schedulerVisibleFinanceSourceApps(visibleSourceApps),
+    [visibleSourceApps],
+  );
 
   const items = useMemo(() => {
     const byFinanceId = new Map<string, FinanceOverviewItem>();
@@ -88,11 +96,13 @@ export function SchedulerFinanceWorkspace({
       const job = financeOverviewFromSummary(directTarget.data);
       byFinanceId.set(job.financeId, job);
     }
-    return [...byFinanceId.values()].sort(
+    return [...byFinanceId.values()]
+      .filter((job) => visibleFinanceSourceApps.includes(job.sourceApp))
+      .sort(
       (left, right) => right.jobDate.localeCompare(left.jobDate)
         || left.financeId.localeCompare(right.financeId),
-    );
-  }, [directTarget.data, exactSourceTarget.data, overview.data]);
+      );
+  }, [directTarget.data, exactSourceTarget.data, overview.data, visibleFinanceSourceApps]);
   const initialTargetJob = financeTargetFromPages([{ items, nextCursor: null }], requestedJobTarget);
   const initialTargetFailed = financeTargetLookupFailed({
     target: requestedJobTarget,
@@ -203,6 +213,7 @@ export function SchedulerFinanceWorkspace({
     return (
       <SchedulerBillsWorkspace
         jobs={items}
+        visibleSourceApps={visibleFinanceSourceApps}
         initialFinanceId={initialTargetJob?.financeId}
         hasMoreJobs={Boolean(overview.hasNextPage)}
         loadingMoreJobs={overview.isFetchingNextPage}
@@ -215,6 +226,7 @@ export function SchedulerFinanceWorkspace({
     return (
       <SchedulerInvoicesWorkspace
         jobs={items}
+        visibleSourceApps={visibleFinanceSourceApps}
         initialFinanceId={initialTargetJob?.financeId}
         initialInvoiceId={initialTarget?.invoiceId}
         hasMoreJobs={Boolean(overview.hasNextPage)}
@@ -231,9 +243,15 @@ export function SchedulerFinanceWorkspace({
 
   return (
     <div className="space-y-5">
-      <SchedulerPortfolioSummary />
+      <SchedulerPortfolioSummary visibleSourceApps={visibleFinanceSourceApps} />
       {items.length === 0 ? (
-        <EmptyState title="No jobs are ready for finance" description="Create an Eco Audit, Solar Sense assessment, or Field App installation in Scheduler to start tracking its commercial position." icon="gauge" />
+        <EmptyState
+          title="No jobs are ready for finance"
+          description={visibleFinanceSourceApps.length === 1 && visibleFinanceSourceApps[0] === 'installhub'
+            ? 'Create a Field App installation in Scheduler to start tracking its commercial position.'
+            : 'Create an Eco Audit, Solar Sense assessment, or Field App installation in Scheduler to start tracking its commercial position.'}
+          icon="gauge"
+        />
       ) : (
         <div className="grid min-w-0 gap-5 xl:grid-cols-[19rem_minmax(0,1fr)]">
           <FinanceJobPicker
@@ -242,6 +260,7 @@ export function SchedulerFinanceWorkspace({
             selectedJobKey={selectedJobKey}
             search={search}
             sourceApp={sourceApp}
+            visibleSourceApps={visibleFinanceSourceApps}
             needsReviewOnly={needsReviewOnly}
             hasNextPage={Boolean(overview.hasNextPage)}
             fetchingNextPage={overview.isFetchingNextPage}
@@ -278,6 +297,7 @@ function FinanceJobPicker({
   selectedJobKey,
   search,
   sourceApp,
+  visibleSourceApps,
   needsReviewOnly,
   hasNextPage,
   fetchingNextPage,
@@ -293,6 +313,7 @@ function FinanceJobPicker({
   selectedJobKey: string | null;
   search: string;
   sourceApp: FinanceSourceApp | 'all';
+  visibleSourceApps: FinanceSourceApp[];
   needsReviewOnly: boolean;
   hasNextPage: boolean;
   fetchingNextPage: boolean;
@@ -310,7 +331,10 @@ function FinanceJobPicker({
       <label className="mt-4 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-job-search">Search jobs</label>
       <Input id="finance-job-search" type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Job name or ID" className="mt-1" />
       <label className="mt-3 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-app-filter">Product</label>
-      <Select id="finance-app-filter" value={sourceApp} onChange={(event) => onSourceApp(event.target.value as FinanceSourceApp | 'all')} className="mt-1"><option value="all">All products</option><option value="ecoaudit">Eco Audit</option><option value="solarsense">Solar Sense</option><option value="installhub">Field App</option></Select>
+      <Select id="finance-app-filter" value={sourceApp} onChange={(event) => onSourceApp(event.target.value as FinanceSourceApp | 'all')} className="mt-1">
+        <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
+        {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
+      </Select>
       <Checkbox label="Needs hours review only" checked={needsReviewOnly} onChange={onNeedsReview} />
       {hasNextPage && (search.trim() || sourceApp !== 'all' || needsReviewOnly) ? <p className="mb-2 text-xs leading-5 text-[var(--text-sub)]">Filters apply to loaded jobs. Load more to continue the search.</p> : null}
       <nav className="mt-3 space-y-2" aria-label="Financial summary jobs">

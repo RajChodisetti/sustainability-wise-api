@@ -10,6 +10,8 @@ import {
   unifiedUsers,
 } from '../db/schema/shared.js';
 import { localFileSize, localFileStream } from '../storage/localFiles.js';
+import { AppError } from '../utils/errors.js';
+import { assertSchedulerInvoiceVisible } from './schedulerFinanceService.js';
 
 type DeliveryRow = typeof schedulerInvoiceEmailDeliveries.$inferSelect;
 
@@ -379,6 +381,14 @@ export async function claimDueSchedulerInvoiceEmails(
 }
 
 async function loadAttachment(delivery: ClaimedSchedulerInvoiceEmail): Promise<Buffer> {
+  try {
+    await assertSchedulerInvoiceVisible(delivery.invoiceId);
+  } catch (error) {
+    if (error instanceof AppError && error.statusCode === 404) {
+      throw new TerminalEmailError('invoice_hidden_by_scheduler_policy');
+    }
+    throw error;
+  }
   const [snapshot] = await db.select({
     invoiceStatus: schedulerInvoices.status,
     requesterActive: globalUsers.isActive,

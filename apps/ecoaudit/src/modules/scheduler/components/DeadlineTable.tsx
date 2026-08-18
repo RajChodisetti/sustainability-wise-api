@@ -14,7 +14,7 @@ import {
   sortEventsByDeadlineUrgency,
 } from '@/modules/scheduler/lib/deadline';
 import { useScheduleEvents } from '@/modules/scheduler/hooks/useScheduler';
-import type { ScheduleEvent } from '@/modules/scheduler/types/domain';
+import type { ScheduleEvent, ScheduleSourceApp } from '@/modules/scheduler/types/domain';
 
 /** Stable day-level window so React Query keys don't change every render. */
 function deadlineRange() {
@@ -26,9 +26,11 @@ function deadlineRange() {
 
 export function DeadlineTable({
   assigneeFieldUserId,
+  visibleSourceApps,
   onSelect,
 }: {
   assigneeFieldUserId?: string;
+  visibleSourceApps: ScheduleSourceApp[];
   onSelect?: (event: ScheduleEvent) => void;
 }) {
   // Memoize once per mount — new Date() in the key would re-fetch forever while loading.
@@ -46,7 +48,7 @@ export function DeadlineTable({
   }
 
   const rows = sortEventsByDeadlineUrgency(query.data ?? []).filter(
-    (e) => e.status !== 'cancelled',
+    (event) => visibleSourceApps.includes(event.sourceApp) && event.status !== 'cancelled',
   );
 
   if (rows.length === 0) {
