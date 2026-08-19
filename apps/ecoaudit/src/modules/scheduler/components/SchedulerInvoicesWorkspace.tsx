@@ -20,7 +20,6 @@ import {
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
   consolidatedInvoiceJobSubtotal,
-  consolidatedInvoiceJobsWithoutCharges,
   financeAppLabel,
   invoiceStatusLabel,
   MAX_CONSOLIDATED_INVOICE_JOBS,
@@ -49,6 +48,10 @@ function dateLabel(value: string | null): string {
   const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   if (Number.isNaN(date.valueOf())) return value;
   return date.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function isCompletedJobStatus(status: string): boolean {
+  return status.trim().toLocaleLowerCase('en-AU') === 'completed';
 }
 
 const statusClasses = {
@@ -95,6 +98,9 @@ export function SchedulerInvoicesWorkspace({
     () => query.data?.pages.flatMap((page) => page.items) ?? [],
     [query.data],
   );
+  const currentJobStatuses = useMemo<Record<string, string>>(() => Object.fromEntries(
+    jobs.map((job) => [job.financeId, job.jobStatus]),
+  ), [jobs]);
 
   const filtered = useMemo(() => {
     const needle = search.trim().toLocaleLowerCase();
@@ -199,9 +205,9 @@ export function SchedulerInvoicesWorkspace({
             {query.hasNextPage ? <Button className="w-full" variant="secondary" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>{query.isFetchingNextPage ? 'Loading more…' : 'Load more invoices'}</Button> : null}
             {query.isFetchNextPageError ? <ErrorBanner message={cloudConnectionErrorMessage(query.error)} /> : null}
           </nav>
-          <main className="min-w-0">
+          <section className="min-w-0" aria-label="Selected invoice">
             {selectedInvoiceId ? (
-              <GlobalInvoiceDetail key={selectedInvoiceId} invoiceId={selectedInvoiceId} onClose={() => {
+              <GlobalInvoiceDetail key={selectedInvoiceId} invoiceId={selectedInvoiceId} currentJobStatuses={currentJobStatuses} onClose={() => {
                 setSelectedInvoiceId(null);
                 if (typeof window !== 'undefined') {
                   window.history.replaceState(null, '', schedulerFinanceHref({ view: 'invoices' }));
@@ -210,14 +216,22 @@ export function SchedulerInvoicesWorkspace({
             ) : (
               <EmptyState title="Select an invoice" description="Choose an invoice to review its jobs, billing details, lifecycle, and PDF export." icon="clipboard" />
             )}
-          </main>
+          </section>
         </div>
       )}
     </div>
   );
 }
 
-function GlobalInvoiceDetail({ invoiceId, onClose }: { invoiceId: string; onClose: () => void }) {
+function GlobalInvoiceDetail({
+  invoiceId,
+  currentJobStatuses,
+  onClose,
+}: {
+  invoiceId: string;
+  currentJobStatuses: Readonly<Record<string, string>>;
+  onClose: () => void;
+}) {
   const query = useGlobalSchedulerInvoice(invoiceId);
   const update = useUpdateGlobalSchedulerInvoice();
   const issue = useIssueGlobalSchedulerInvoice();
@@ -236,6 +250,7 @@ function GlobalInvoiceDetail({ invoiceId, onClose }: { invoiceId: string; onClos
       key={`${invoice.id}:${invoice.updatedAt}`}
       financeId={invoice.financeIds?.[0] ?? invoice.financeId}
       invoice={invoice}
+      currentJobStatuses={currentJobStatuses}
       busy={update.isPending || issue.isPending || markPaid.isPending || voidInvoice.isPending}
       error={error}
       onClose={onClose}
@@ -311,7 +326,13 @@ function ConsolidatedInvoiceBuilder({
   const eligibilityMutation = useCheckConsolidatedSchedulerInvoiceEligibility();
   const create = useCreateConsolidatedSchedulerInvoice();
   const toast = useToast();
-  const [selectedIds, setSelectedIds] = useState<string[]>(initialFinanceId ? [initialFinanceId] : []);
+  const [selectedIds, setSelectedIds] = useState<string[]>(() => (
+    initialFinanceId && jobs.some((job) => (
+      job.financeId === initialFinanceId && isCompletedJobStatus(job.jobStatus)
+    ))
+      ? [initialFinanceId]
+      : []
+  ));
   const [jobSearch, setJobSearch] = useState('');
   const [eligibility, setEligibility] = useState<SchedulerInvoiceEligibility | null>(null);
   const [selections, setSelections] = useState<Record<string, JobSelection>>({});
@@ -325,12 +346,19 @@ function ConsolidatedInvoiceBuilder({
   const [error, setError] = useState<string | null>(null);
   const matchingJobs = useMemo(() => {
     const needle = jobSearch.trim().toLocaleLowerCase();
-    return jobs.filter((job) => !needle || `${job.jobName} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle));
+    return jobs.filter((job) => !needle || `${job.jobName} ${job.siteName} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle));
   }, [jobSearch, jobs]);
 
   async function review() {
     if (selectedIds.length < minimumJobs) {
       setError(minimumJobs === 2 ? 'Select at least two jobs for a consolidated invoice.' : 'Select one job to invoice.');
+      return;
+    }
+    const incompleteJobs = jobs.filter((job) => (
+      selectedIds.includes(job.financeId) && !isCompletedJobStatus(job.jobStatus)
+    ));
+    if (incompleteJobs.length > 0) {
+      setError(`Complete ${incompleteJobs.map((job) => job.jobName).join(', ')} before creating an invoice.`);
       return;
     }
     setError(null);
@@ -363,21 +391,9 @@ function ConsolidatedInvoiceBuilder({
   const gstRate = eligibility?.gstRate ?? 0.1;
   const gst = Math.round((subtotal * gstRate + Number.EPSILON) * 100) / 100;
   const total = subtotal + gst;
-  const selectedChargeCount = eligibility?.jobs.reduce((count, job) => {
-    const selection = selections[job.financeId];
-    return count + (selection?.includeLabour ? 1 : 0) + (selection?.expenseIds.length ?? 0);
-  }, 0) ?? 0;
-  const jobsWithoutCharges = eligibility
-    ? consolidatedInvoiceJobsWithoutCharges(eligibility.jobs, selections)
-    : [];
-
   async function createDraft() {
     if (!eligibility?.eligible) {
       setError('Resolve the eligibility issues before creating this draft.');
-      return;
-    }
-    if (jobsWithoutCharges.length > 0) {
-      setError(`Every included job needs a positive charge. Add labour, quote, or expense value for ${jobsWithoutCharges.map((job) => job.job.jobName).join(', ')}, or go back and deselect the job.`);
       return;
     }
     if (!billToName.trim()) {
@@ -419,20 +435,26 @@ function ConsolidatedInvoiceBuilder({
       {!eligibility ? (
         <>
           <FieldLabel htmlFor="invoice-job-search">Find jobs</FieldLabel>
-          <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="Job name, product, or ID" />
+          <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="Job, site, product, or ID" />
           <p className="mt-2 text-sm font-bold text-[var(--text)]" aria-live="polite">{selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} selected {minimumJobs === 2 ? '· minimum 2' : ''}</p>
           <fieldset className="mt-2 grid min-w-0 max-h-[28rem] w-full gap-2 overflow-y-auto rounded-xl border border-[var(--border)] p-2 sm:grid-cols-2 xl:grid-cols-3">
             <legend className="sr-only">Jobs to invoice</legend>
             {matchingJobs.map((job) => {
               const selected = selectedIds.includes(job.financeId);
+              const completed = isCompletedJobStatus(job.jobStatus);
               return (
-                <label key={job.financeId} className={`flex min-h-24 min-w-0 cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-[var(--border)] hover:bg-[var(--surface2)]'}`}>
-                  <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} onChange={(event) => {
+                <label key={job.financeId} className={`flex min-h-28 min-w-0 items-start gap-3 rounded-xl border p-3 transition-colors ${!completed ? 'cursor-not-allowed border-[var(--border)] bg-[var(--surface2)] opacity-70' : selected ? 'cursor-pointer border-[var(--primary)] bg-[var(--primary-soft)]' : 'cursor-pointer border-[var(--border)] hover:bg-[var(--surface2)]'}`}>
+                  <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
                     const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
                     setSelectedIds(result.financeIds);
                     setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
                   }} />
-                  <span className="min-w-0"><strong className="block truncate text-sm text-[var(--text)]">{job.jobName}</strong><span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.unbilledAmount, job.currency)} unbilled</span>{job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Hours need review</span> : null}</span>
+                  <span className="min-w-0">
+                    <strong className="block truncate text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
+                    <span className="block truncate text-xs leading-5 text-[var(--text-sub)]">{job.siteName || 'Site not set'}</span>
+                    <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.unbilledAmount, job.currency)} unbilled</span>
+                    {!completed ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span> : job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Internal billing setup needs review</span> : null}
+                  </span>
                 </label>
               );
             })}
@@ -453,11 +475,13 @@ function ConsolidatedInvoiceBuilder({
               const labourAmount = job.pricingMode === 'quoted' ? job.availableQuotedAmount : job.availableLabourAmount ?? 0;
               return (
                 <fieldset key={job.financeId} className="rounded-xl border border-[var(--border)] p-4">
-                  <legend className="px-1 text-sm font-extrabold text-[var(--text)]">{job.job.jobName}</legend>
-                  <div className="flex flex-wrap justify-between gap-2 text-xs text-[var(--text-sub)]"><span>{financeAppLabel(job.source.sourceApp)} · {job.currency}</span><strong className="text-sm text-[var(--text)]">{money(consolidatedInvoiceJobSubtotal(job, selection), job.currency)} selected</strong></div>
-                  <Checkbox label={`${job.pricingMode === 'quoted' ? 'Remaining quote' : `${job.availableLabourHours.toFixed(2)} labour hours`} · ${money(labourAmount, job.currency)}`} checked={selection.includeLabour} disabled={labourAmount <= 0} onChange={(includeLabour) => setSelections((current) => ({ ...current, [job.financeId]: { ...selection, includeLabour } }))} />
+                  <legend className="px-1 text-base font-extrabold leading-6 text-[var(--text)]">{job.job.jobName}</legend>
+                  <p className="truncate text-xs leading-5 text-[var(--text-sub)]">{job.job.siteName || 'Site not set'}</p>
+                  <div className="mt-1 flex flex-wrap justify-between gap-2 text-xs text-[var(--text-sub)]"><span>{financeAppLabel(job.source.sourceApp)} · {job.currency}</span><strong className="text-sm text-[var(--text)]">{money(consolidatedInvoiceJobSubtotal(job, selection), job.currency)} selected</strong></div>
+                  <Checkbox label={`${job.pricingMode === 'quoted' ? 'Remaining quote' : 'Suggested labour charge'} · ${money(labourAmount, job.currency)}`} checked={selection.includeLabour} disabled={labourAmount <= 0} onChange={(includeLabour) => setSelections((current) => ({ ...current, [job.financeId]: { ...selection, includeLabour } }))} />
+                  {job.pricingMode === 'charge_up' && labourAmount > 0 ? <FieldHint>The labour suggestion can be edited or removed in the draft. Quantity and rate are hidden by default.</FieldHint> : null}
                   {job.availableExpenses.length ? <div className="grid gap-x-4 sm:grid-cols-2">{job.availableExpenses.map((expense) => <Checkbox key={expense.id} label={`${expense.description} · ${money(expense.effectiveBillableAmount, job.currency)}`} checked={selection.expenseIds.includes(expense.id)} onChange={(checked) => setSelections((current) => ({ ...current, [job.financeId]: { ...selection, expenseIds: checked ? [...selection.expenseIds, expense.id] : selection.expenseIds.filter((id) => id !== expense.id) } }))} />)}</div> : <p className="mt-2 text-xs text-[var(--text-sub)]">No uninvoiced billable expenses.</p>}
-                  {consolidatedInvoiceJobSubtotal(job, selection) <= 0 ? <p className="mt-2 rounded-lg bg-[var(--red-soft)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--red)]">Choose at least one positive charge for this job, or go back and deselect it.</p> : null}
+                  {consolidatedInvoiceJobSubtotal(job, selection) <= 0 ? <p className="mt-2 rounded-lg bg-[var(--surface2)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text-sub)]">No suggested charge selected. You can add a custom charge for this job in the draft.</p> : null}
                 </fieldset>
               );
             })}
@@ -475,7 +499,7 @@ function ConsolidatedInvoiceBuilder({
             <aside className="h-fit rounded-xl border border-[var(--border-strong)] bg-[var(--surface2)] p-4" aria-label="Invoice total review"><h3 className="font-extrabold text-[var(--text)]">Invoice total</h3><dl className="mt-3 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-[var(--text-sub)]">Jobs</dt><dd className="font-bold">{eligibility.jobs.length}</dd></div><div className="flex justify-between gap-3"><dt className="text-[var(--text-sub)]">Subtotal ex GST</dt><dd className="font-bold">{money(subtotal, eligibility.commonCurrency ?? 'AUD')}</dd></div><div className="flex justify-between gap-3"><dt className="text-[var(--text-sub)]">GST ({(gstRate * 100).toFixed(0)}%)</dt><dd className="font-bold">{money(gst, eligibility.commonCurrency ?? 'AUD')}</dd></div><div className="flex justify-between gap-3 border-t border-[var(--border)] pt-3"><dt className="font-extrabold text-[var(--text)]">Total inc GST</dt><dd className="text-lg font-extrabold text-[var(--text)]">{money(total, eligibility.commonCurrency ?? 'AUD')}</dd></div></dl><FieldHint>The API recalculates and validates every amount when the draft is created.</FieldHint></aside>
           </div>
           {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
-          <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between"><Button className="w-full sm:w-auto" variant="secondary" disabled={create.isPending} onClick={() => { setEligibility(null); setError(null); }}>Back to jobs</Button><div className="flex flex-col-reverse gap-2 sm:flex-row"><Button className="w-full sm:w-auto" variant="secondary" disabled={create.isPending} onClick={onCancel}>Cancel</Button><Button className="w-full sm:w-auto" disabled={create.isPending || !eligibility.eligible || selectedChargeCount === 0 || jobsWithoutCharges.length > 0} aria-busy={create.isPending} onClick={() => void createDraft()}>{create.isPending ? 'Creating draft…' : `Create ${eligibility.jobs.length > 1 ? 'consolidated ' : ''}draft`}</Button></div></div>
+          <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-between"><Button className="w-full sm:w-auto" variant="secondary" disabled={create.isPending} onClick={() => { setEligibility(null); setError(null); }}>Back to jobs</Button><div className="flex flex-col-reverse gap-2 sm:flex-row"><Button className="w-full sm:w-auto" variant="secondary" disabled={create.isPending} onClick={onCancel}>Cancel</Button><Button className="w-full sm:w-auto" disabled={create.isPending || !eligibility.eligible} aria-busy={create.isPending} onClick={() => void createDraft()}>{create.isPending ? 'Creating draft…' : `Create ${eligibility.jobs.length > 1 ? 'consolidated ' : ''}draft`}</Button></div></div>
         </>
       )}
     </section>

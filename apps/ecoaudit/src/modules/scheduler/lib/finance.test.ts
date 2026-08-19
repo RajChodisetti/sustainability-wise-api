@@ -17,6 +17,7 @@ import {
   invoiceDraftIsDirty,
   manualHoursEntryIssue,
   invoiceFilenameFromContentDisposition,
+  invoiceQuantityRateForAmount,
   isFinanceScheduleEvent,
   marginTone,
   MAX_CONSOLIDATED_INVOICE_JOBS,
@@ -161,7 +162,7 @@ test('scheduler tab transitions keep URL and in-memory finance targets in parity
 
 test('hours review uses the audited backend state even when recorded hours are zero', () => {
   const base = {
-    financeId: 'f', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a', eventId: 'e', jobName: 'Job',
+    financeId: 'f', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a', eventId: 'e', jobName: 'Job', siteName: 'Site',
     jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: 'planned', currency: 'AUD', actualHours: 0, billableHours: 2, costHours: 2,
     billableAmount: 0, totalCost: 0, invoicedAmount: 0, unbilledAmount: 0, grossProfit: 0,
     marginPct: null, invoiceCount: 0, hasOverdueInvoice: false,
@@ -277,6 +278,33 @@ test('draft dirty detection blocks issuing stale invoice metadata', () => {
   assert.equal(invoiceDraftIsDirty(original, { ...original, notes: 'Updated' }), true);
 });
 
+test('invoice quantity and rate toggles preserve the current amount without discarding an unchanged breakdown', () => {
+  assert.deepEqual(invoiceQuantityRateForAmount({
+    amountExGst: '125',
+    quantity: '2',
+    unitAmountExGst: '50',
+  }), {
+    quantity: '1',
+    unitAmountExGst: '125',
+  });
+  assert.deepEqual(invoiceQuantityRateForAmount({
+    amountExGst: '100.00',
+    quantity: '2.00',
+    unitAmountExGst: '50.00',
+  }), {
+    quantity: '2.00',
+    unitAmountExGst: '50.00',
+  });
+  assert.deepEqual(invoiceQuantityRateForAmount({
+    amountExGst: '',
+    quantity: '2',
+    unitAmountExGst: '50',
+  }), {
+    quantity: '1',
+    unitAmountExGst: '',
+  });
+});
+
 test('explicit null hour overrides are preserved for clear-all requests', () => {
   assert.deepEqual(
     resolveHourOverrideValues(
@@ -340,7 +368,7 @@ test('exact source overview requests keep legacy Field deep links to one filtere
 test('deep-linked finance targets are found beyond the first cursor page', () => {
   const first: FinanceOverviewItem = {
     financeId: 'finance-1', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'audit-1',
-    eventId: 'event-1', jobName: 'First', jobDate: '2026-08-15', jobStatus: 'Draft',
+    eventId: 'event-1', jobName: 'First', siteName: 'First site', jobDate: '2026-08-15', jobStatus: 'Draft',
     eventStatus: 'planned', currency: 'AUD', actualHours: 1, billableHours: 1, costHours: 1,
     billableAmount: 100, totalCost: 50, invoicedAmount: 0, unbilledAmount: 100,
     grossProfit: 50, marginPct: 50, invoiceCount: 0, hasOverdueInvoice: false,
@@ -433,7 +461,7 @@ test('direct finance summaries produce selectable overview rows without cursor s
   } as unknown as SchedulerFinancialSummary;
   assert.deepEqual(financeOverviewFromSummary(summary), {
     financeId: 'finance-direct', sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'assessment-9',
-    eventId: null, jobName: 'Warehouse solar', jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: null,
+    eventId: null, jobName: 'Warehouse solar', siteName: 'Warehouse', jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: null,
     currency: 'AUD', actualHours: 0, billableHours: 4, costHours: 3, billableAmount: 800, totalCost: 300,
     invoicedAmount: 400, unbilledAmount: 400, grossProfit: 500, marginPct: 62.5, invoiceCount: 1,
     hasOverdueInvoice: true, needsHoursReview: false,

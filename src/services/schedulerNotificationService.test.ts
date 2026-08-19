@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   enqueueAutomatedSchedulerNotifications,
   isMobileScheduleNotificationTarget,
+  isMobileScheduleSourceApp,
   schedulerNotificationCopy,
   validateExpoPushToken,
   validateRegistrationGeneration,
@@ -119,6 +120,16 @@ test('only concrete mobile work pairs with a source ID are notification targets'
   assert.equal(isMobileScheduleNotificationTarget(event as never), true);
   assert.equal(isMobileScheduleNotificationTarget({
     ...event,
+    sourceApp: 'ecoaudit',
+    sourceType: 'audit',
+  } as never), false);
+  assert.equal(isMobileScheduleNotificationTarget({
+    ...event,
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+  } as never), true);
+  assert.equal(isMobileScheduleNotificationTarget({
+    ...event,
     sourceType: 'site',
   } as never), false);
   assert.equal(isMobileScheduleNotificationTarget({
@@ -130,6 +141,10 @@ test('only concrete mobile work pairs with a source ID are notification targets'
     sourceApp: 'custom',
     sourceType: 'custom',
   } as never), false);
+});
+
+test('Eco Audit remains a supported mobile device app', () => {
+  assert.equal(isMobileScheduleSourceApp('ecoaudit'), true);
 });
 
 test('scheduler payload contains routing IDs but no private description or credentials', async () => {

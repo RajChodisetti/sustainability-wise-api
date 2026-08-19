@@ -141,6 +141,35 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
   }
 });
 
+test('Scheduler finance routes reject fractional billable-hour overrides at the API boundary', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  try {
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/v1/portal/scheduler/finance/test-finance-id',
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'eco-admin',
+          app: 'ecoaudit',
+          role: 'admin',
+        })}`,
+      },
+      payload: {
+        billableHoursOverride: 1.25,
+        costHoursOverride: 1.25,
+        overrideReason: 'Fractional billable value',
+      },
+    });
+    assert.equal(response.statusCode, 400, response.body);
+    assert.match(response.body, /billableHoursOverride/);
+    assert.match(response.body, /integer/);
+  } finally {
+    await app.close();
+  }
+});
+
 test('global Scheduler finance routes are admin-only, CAS-bound, and parse private PDF uploads', async () => {
   const app = Fastify();
   app.addContentTypeParser(
@@ -244,7 +273,7 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
     });
     assert.equal(inspectorEmailHistory.statusCode, 403, inspectorEmailHistory.body);
 
-    const manualLineEdit = await app.inject({
+    const malformedLineEdit = await app.inject({
       method: 'PATCH',
       url: '/v1/portal/scheduler/invoices/invoice-1',
       headers: { authorization: `Bearer ${adminToken}` },
@@ -252,13 +281,13 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
         expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
         lines: [{
           kind: 'other',
-          description: 'Manual adjustment',
-          quantity: 1,
+          description: '',
+          quantity: 0,
           unitAmountExGst: 10,
         }],
       },
     });
-    assert.equal(manualLineEdit.statusCode, 400, manualLineEdit.body);
+    assert.equal(malformedLineEdit.statusCode, 400, malformedLineEdit.body);
   } finally {
     await app.close();
   }

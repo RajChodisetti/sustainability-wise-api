@@ -18,9 +18,9 @@ export function UserFilter({
 
   return (
     <div className="min-w-[14rem]">
-      <FieldLabel className="!mt-0">Calendar user</FieldLabel>
+      <FieldLabel className="!mt-0">Assignee</FieldLabel>
       <Select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">All users</option>
+        <option value="">All assignees</option>
         {(users.data ?? []).map((u) => (
           <option key={u.fieldUserId} value={u.fieldUserId}>
             {u.label}

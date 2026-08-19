@@ -10,7 +10,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
 }, async () => {
   const [
     { db, closeDb },
-    { eaAudits },
+    { ssRooftopAssessments, ssSites },
     {
       appPushDeviceFences,
       appPushDevices,
@@ -37,7 +37,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     { and, eq, inArray, sql },
   ] = await Promise.all([
     import('../db/client.js'),
-    import('../db/schema/ecoaudit.js'),
+    import('../db/schema/solarsense.js'),
     import('../db/schema/shared.js'),
     import('./scheduleService.js'),
     import('./schedulerNotificationService.js'),
@@ -69,7 +69,8 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     role: 'inspector',
   } as const;
   const subjects = [actor, first, second];
-  const auditId = `notification-audit-${runId}`;
+  const siteId = `notification-site-${runId}`;
+  const assessmentId = `notification-assessment-${runId}`;
   const legacySiteEventId = `notification-legacy-site-${runId}`;
   let eventId: string | null = null;
 
@@ -80,13 +81,19 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     authType: 'jwt' as const,
   };
   const firstUser = {
-    userId: first.userId,
-    app: 'ecoaudit' as const,
+    userId: `solarsense-${first.userId}`,
+    app: 'solarsense' as const,
     role: 'inspector' as const,
     authType: 'jwt' as const,
   };
   const secondUser = {
-    userId: second.userId,
+    userId: `solarsense-${second.userId}`,
+    app: 'solarsense' as const,
+    role: 'inspector' as const,
+    authType: 'jwt' as const,
+  };
+  const firstEcoUser = {
+    userId: first.userId,
     app: 'ecoaudit' as const,
     role: 'inspector' as const,
     authType: 'jwt' as const,
@@ -139,22 +146,48 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
         syncVersion: 1,
       }))
     )));
-    await db.insert(eaAudits).values({
-      id: auditId,
-      siteName: `Notification audit ${runId}`,
-      siteAddress: 'Private integration address',
-      inspectorName: first.email,
-      auditDate: now.toISOString().slice(0, 10),
+    await db.insert(ssSites).values({
+      id: siteId,
+      siteName: `Notification site ${runId}`,
+      location: 'Private integration location',
+      dateOfAssessment: now.toISOString().slice(0, 10),
       status: 'Draft',
-      createdByUserId: actor.userId,
+      createdByUserId: `solarsense-${actor.userId}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(ssRooftopAssessments).values({
+      id: assessmentId,
+      siteId,
+      siteName: `Notification site ${runId}`,
+      buildingIdName: 'Notification roof',
+      status: 'Draft',
+      createdByUserId: `solarsense-${actor.userId}`,
+      createdAt: now,
       updatedAt: now,
     });
 
+    // Eco Audit remains a supported mobile/device application even though its
+    // jobs are no longer Scheduler notification targets.
+    const ecoDeviceId = `eco-device-${runId}`;
+    await registerPushDevice(firstEcoUser, ecoDeviceId, {
+      expoPushToken: `ExpoPushToken[eco${runId.replaceAll('-', '')}]`,
+      platform: 'ios',
+      projectId: 'integration-project',
+      registrationGeneration: 1,
+    });
+    const [ecoDevice] = await db.select().from(appPushDevices).where(and(
+      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.deviceId, ecoDeviceId),
+    ));
+    assert.equal(ecoDevice.enabled, true);
+    await deregisterPushDevice(firstEcoUser, ecoDeviceId, 1);
+
     const start = new Date(now.getTime() + 3 * 24 * 60 * 60_000);
     const event = await createScheduleEvent(admin, {
-      sourceApp: 'ecoaudit',
-      sourceType: 'audit',
-      sourceId: auditId,
+      sourceApp: 'solarsense',
+      sourceType: 'assessment',
+      sourceId: assessmentId,
       assigneeFieldUserId: first.fieldId,
       scheduledStartAt: start.toISOString(),
       deadlineAt: new Date(start.getTime() + 60 * 60_000).toISOString(),
@@ -169,16 +202,19 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
 
     // A same-snapshot assignee save repairs an old scheduler/product mismatch,
     // replaces stale jobs, and emits assigned + future reminders (not changed).
-    await db.update(eaAudits).set({
-      assignedInspectorUserId: second.userId,
+    await db.update(ssRooftopAssessments).set({
+      assignedInspectorUserId: `solarsense-${second.userId}`,
       updatedAt: new Date(),
-    }).where(eq(eaAudits.id, auditId));
+    }).where(eq(ssRooftopAssessments.id, assessmentId));
     await updateScheduleEvent(admin, event.id, {
       assigneeFieldUserId: first.fieldId,
     });
-    const [afterRepairAudit] = await db.select().from(eaAudits)
-      .where(eq(eaAudits.id, auditId));
-    assert.equal(afterRepairAudit.assignedInspectorUserId, first.userId);
+    const [afterRepairAssessment] = await db.select().from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, assessmentId));
+    assert.equal(
+      afterRepairAssessment.assignedInspectorUserId,
+      `solarsense-${first.userId}`,
+    );
     jobs = await db.select().from(schedulerNotificationJobs)
       .where(eq(schedulerNotificationJobs.eventId, event.id));
     assert.equal(jobs.filter((job) => job.notificationKind === 'changed').length, 0);
@@ -201,8 +237,8 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       job.status === 'queued' && job.notificationKind === 'one_day_before'
     ));
     const claimedAutomatic = await claimJob(automaticToFence.id);
-    await db.update(eaAudits).set({ status: 'Completed', completedAt: new Date() })
-      .where(eq(eaAudits.id, auditId));
+    await db.update(ssRooftopAssessments).set({ status: 'Completed', completedAt: new Date() })
+      .where(eq(ssRooftopAssessments.id, assessmentId));
     let staleSourceSendCalls = 0;
     await processClaimedSchedulerNotificationJob(claimedAutomatic, {
       async send() {
@@ -218,8 +254,8 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       .where(eq(schedulerNotificationJobs.id, automaticToFence.id));
     assert.equal(fencedAutomatic.status, 'cancelled');
     assert.equal(fencedAutomatic.lastError, 'scheduler_target_no_longer_eligible');
-    await db.update(eaAudits).set({ status: 'Draft', completedAt: null })
-      .where(eq(eaAudits.id, auditId));
+    await db.update(ssRooftopAssessments).set({ status: 'Draft', completedAt: null })
+      .where(eq(ssRooftopAssessments.id, assessmentId));
 
     const firstManual = await queueManualSchedulerReminder(admin, event.id, 'manual-1');
     const repeatedManual = await queueManualSchedulerReminder(admin, event.id, 'manual-1');
@@ -264,8 +300,9 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
 
     // A misaligned legacy scheduler target never receives an inverse removal
     // notice for work it did not own.
-    await db.update(eaAudits).set({ assignedInspectorUserId: second.userId })
-      .where(eq(eaAudits.id, auditId));
+    await db.update(ssRooftopAssessments).set({
+      assignedInspectorUserId: `solarsense-${second.userId}`,
+    }).where(eq(ssRooftopAssessments.id, assessmentId));
     const removalCountBeforeMisalignedReassign = (await db.select()
       .from(schedulerNotificationJobs)
       .where(and(
@@ -331,8 +368,9 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
 
     // A legacy mismatch also cannot fabricate a cancellation notice for a
     // scheduler target that did not own the product before cancellation.
-    await db.update(eaAudits).set({ assignedInspectorUserId: second.userId })
-      .where(eq(eaAudits.id, auditId));
+    await db.update(ssRooftopAssessments).set({
+      assignedInspectorUserId: `solarsense-${second.userId}`,
+    }).where(eq(ssRooftopAssessments.id, assessmentId));
     const cancellationCountBeforeMisalignedCancel = (await db.select()
       .from(schedulerNotificationJobs)
       .where(and(
@@ -371,7 +409,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       }),
     ]);
     const enabledSharedToken = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.expoPushToken, sharedToken),
       eq(appPushDevices.enabled, true),
     ));
@@ -385,7 +423,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
 
     const disabledTransferredFences = await db.select().from(appPushDeviceFences)
       .where(and(
-        eq(appPushDeviceFences.app, 'ecoaudit'),
+        eq(appPushDeviceFences.app, 'solarsense'),
         eq(appPushDeviceFences.enabled, false),
       ));
     assert.ok(disabledTransferredFences.length >= 1);
@@ -422,7 +460,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     });
     await deregisterPushDevice(firstUser, 'first-device', 2);
     const [afterStaleLogout] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'first-device'),
     ));
     assert.equal(afterStaleLogout.enabled, true);
@@ -454,7 +492,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     )).orderBy(sql`${schedulerNotificationJobs.createdAt} DESC`);
     const claimed = await claimJob(jobs[0].id);
     const [deviceBeforeCancellation] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'first-device'),
     ));
     const pendingCancellationDeliveryId = randomUUID();
@@ -541,7 +579,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       },
     });
     const [disabled] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'first-device'),
     ));
     assert.equal(disabled.enabled, false);
@@ -549,7 +587,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     const [fenceAfterDeviceNotRegistered] = await db.select()
       .from(appPushDeviceFences)
       .where(and(
-        eq(appPushDeviceFences.app, 'ecoaudit'),
+        eq(appPushDeviceFences.app, 'solarsense'),
         eq(appPushDeviceFences.deviceId, 'first-device'),
         eq(appPushDeviceFences.globalUserId, first.globalId),
       ));
@@ -753,7 +791,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       availableAt: new Date(Date.now() + 60_000),
     }).where(eq(schedulerNotificationJobs.id, rateLimitedReminder.notificationId));
     const [disabledLifecycleDevice] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'logout-before-put-device'),
     ));
     await db.insert(schedulerNotificationDeliveries).values({
@@ -807,16 +845,19 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     const [eventAfterRejectedDoneReassignment] = await db.select()
       .from(portalScheduleEvents)
       .where(eq(portalScheduleEvents.id, event.id));
-    const [auditAfterRejectedDoneReassignment] = await db.select()
-      .from(eaAudits)
-      .where(eq(eaAudits.id, auditId));
+    const [assessmentAfterRejectedDoneReassignment] = await db.select()
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, assessmentId));
     assert.equal(eventAfterRejectedDoneReassignment.status, 'planned');
     assert.equal(eventAfterRejectedDoneReassignment.assigneeFieldUserId, first.fieldId);
-    assert.equal(auditAfterRejectedDoneReassignment.assignedInspectorUserId, first.userId);
+    assert.equal(
+      assessmentAfterRejectedDoneReassignment.assignedInspectorUserId,
+      `solarsense-${first.userId}`,
+    );
 
     await deregisterPushDevice(secondUser, 'first-device', 999);
     const [stillOwnedByFirst] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'first-device'),
     ));
     assert.equal(stillOwnedByFirst.enabled, true);
@@ -829,13 +870,13 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       .where(eq(unifiedUsers.globalUserId, first.globalId));
     await deregisterPushDevice(firstUser, 'first-device', 3);
     const [disabledAfterDeactivation] = await db.select().from(appPushDevices).where(and(
-      eq(appPushDevices.app, 'ecoaudit'),
+      eq(appPushDevices.app, 'solarsense'),
       eq(appPushDevices.deviceId, 'first-device'),
     ));
     assert.equal(disabledAfterDeactivation.enabled, false);
     assert.equal(disabledAfterDeactivation.disabledReason, 'logout');
-    await db.update(eaAudits).set({ status: 'Completed', completedAt: new Date() })
-      .where(eq(eaAudits.id, auditId));
+    await db.update(ssRooftopAssessments).set({ status: 'Completed', completedAt: new Date() })
+      .where(eq(ssRooftopAssessments.id, assessmentId));
     const completedSchedule = await updateScheduleEvent(admin, event.id, {
       status: 'done',
       assigneeFieldUserId: first.fieldId,
@@ -847,7 +888,8 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     }
     await db.delete(portalScheduleEvents)
       .where(eq(portalScheduleEvents.id, legacySiteEventId));
-    await db.delete(eaAudits).where(eq(eaAudits.id, auditId));
+    await db.delete(ssRooftopAssessments).where(eq(ssRooftopAssessments.id, assessmentId));
+    await db.delete(ssSites).where(eq(ssSites.id, siteId));
     await db.delete(globalUsers).where(inArray(
       globalUsers.id,
       subjects.map((subject) => subject.globalId),

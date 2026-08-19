@@ -32,6 +32,7 @@ import {
   sendSchedulerInvoiceEmail,
   sendScheduleEventReminder,
   updateGlobalSchedulerInvoice,
+  updatePortalUserBillingRate,
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
@@ -117,6 +118,22 @@ export function usePortalAssignees(enabled = true) {
     queryFn: fetchPortalAssignees,
     enabled,
     staleTime: 60_000,
+  });
+}
+
+export function useUpdatePortalUserBillingRate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ globalUserId, billingRate }: {
+      globalUserId: string;
+      billingRate: number | null;
+    }) => updatePortalUserBillingRate(globalUserId, billingRate),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: schedulerKeys.assignees() }),
+        qc.invalidateQueries({ queryKey: schedulerKeys.finance() }),
+      ]);
+    },
   });
 }
 

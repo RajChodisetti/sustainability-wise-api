@@ -11,6 +11,7 @@ import {
   releaseCopyReferencesForParent,
 } from '../../storage/photoCopyReferences.js';
 import { forbidden, notFound, badRequest } from '../../utils/errors.js';
+import { compareLockKeys } from '../../utils/lockOrder.js';
 
 export type JsonRecord = Record<string, unknown>;
 
@@ -192,10 +193,23 @@ export async function purgeSolarsenseSiteTree(siteId: string, reportPdfStorageKe
       .for('update')
       .limit(1);
     if (!site) throw badRequest('Site was already purged');
-    const assessments = await tx.select({ id: ssRooftopAssessments.id })
+    const assessmentIds = await tx.select({ id: ssRooftopAssessments.id })
       .from(ssRooftopAssessments)
-      .where(eq(ssRooftopAssessments.siteId, site.id))
-      .for('update');
+      .where(eq(ssRooftopAssessments.siteId, site.id));
+    const assessments: Array<{ id: string }> = [];
+    for (const assessmentId of assessmentIds
+      .map((assessment) => assessment.id)
+      .sort(compareLockKeys)) {
+      const [assessment] = await tx.select({ id: ssRooftopAssessments.id })
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, assessmentId),
+          eq(ssRooftopAssessments.siteId, site.id),
+        ))
+        .for('update')
+        .limit(1);
+      if (assessment) assessments.push(assessment);
+    }
     for (const assessment of assessments) {
       await assertNoSchedulerCommercialEvidenceBeforePurge(tx, {
         sourceApp: 'solarsense',

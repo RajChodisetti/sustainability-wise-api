@@ -9,6 +9,8 @@ export type InvoicePdfLine = {
   quantity: number;
   unitAmountExGst: number;
   lineTotalExGst: number;
+  /** Customer-facing quantity/rate columns are opt-in for this line. */
+  showQuantityAndRate?: boolean;
 };
 
 export type InvoicePdfJob = {
@@ -273,11 +275,16 @@ export function buildInvoiceHtml(
     const siteName = group.job.siteName?.trim();
     const siteAddress = group.job.siteAddress?.trim();
     const reference = group.reference?.trim();
+    const showQuantityAndRate = group.lines.some((line) => line.showQuantityAndRate === true);
+    const columnCount = showQuantityAndRate ? 4 : 2;
     const lineRows = group.lines.map((line) => `
         <tr>
           <td class="description">${esc(line.description)}</td>
-          <td class="num">${line.quantity}</td>
-          <td class="num">${esc(money(line.unitAmountExGst, model.currency))}</td>
+          ${showQuantityAndRate ? `
+          <td class="num">${line.showQuantityAndRate ? line.quantity : ''}</td>
+          <td class="num">${line.showQuantityAndRate
+            ? esc(money(line.unitAmountExGst, model.currency))
+            : ''}</td>` : ''}
           <td class="num">${esc(money(line.lineTotalExGst, model.currency))}</td>
         </tr>
     `).join('');
@@ -287,7 +294,7 @@ export function buildInvoiceHtml(
       <table class="job-table">
         <thead>
           <tr class="job-heading-row">
-            <th colspan="4">
+            <th colspan="${columnCount}">
               <div class="job-heading">
                 <div>
                   <span class="job-index">Job ${index + 1} of ${jobGroups.length}</span>
@@ -305,15 +312,16 @@ export function buildInvoiceHtml(
           </tr>
           <tr class="column-headings">
             <th>Description</th>
+            ${showQuantityAndRate ? `
             <th class="num">Qty</th>
-            <th class="num">Unit (ex GST)</th>
+            <th class="num">Unit (ex GST)</th>` : ''}
             <th class="num">Amount (ex GST)</th>
           </tr>
         </thead>
         <tbody>
-          ${lineRows || '<tr><td colspan="4" class="muted">No lines</td></tr>'}
+          ${lineRows || `<tr><td colspan="${columnCount}" class="muted">No lines</td></tr>`}
           <tr class="job-subtotal">
-            <td colspan="3">Job subtotal (ex GST)</td>
+            <td colspan="${columnCount - 1}">Job subtotal (ex GST)</td>
             <td class="num">${esc(money(group.subtotalExGst, model.currency))}</td>
           </tr>
         </tbody>
@@ -429,7 +437,7 @@ export function buildInvoiceHtml(
       text-transform: uppercase;
       letter-spacing: 0.06em;
     }
-    .job-name { color: #142f70; font-size: 13px; font-weight: 700; }
+    .job-name { color: #142f70; font-size: 16px; font-weight: 700; }
     .job-context {
       display: flex;
       flex-wrap: wrap;
@@ -439,7 +447,7 @@ export function buildInvoiceHtml(
       font-size: 9px;
       font-weight: 400;
     }
-    .job-site { margin-top: 2px; color: #5b6475; font-size: 9px; font-weight: 400; }
+    .job-site { margin-top: 2px; color: #5b6475; font-size: 10px; font-weight: 400; }
     .column-headings th { background: #f8fafc; }
     .job-subtotal td {
       padding-top: 9px;

@@ -41,7 +41,6 @@ type CreationMode = 'new' | 'existing';
 
 const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
   { value: 'custom', label: 'Custom job' },
-  { value: 'ecoaudit', label: 'Eco Audit' },
   { value: 'solarsense', label: 'Solar Sense' },
   { value: 'installhub', label: 'Field App installation' },
 ];
@@ -55,8 +54,7 @@ function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
 
 function supportsMobileSchedulerNotifications(event: ScheduleEvent): boolean {
   if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
-  return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
-    || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
+  return (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
     || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
 }
 
@@ -359,13 +357,13 @@ export function EventFormModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center" role="presentation">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] p-3 sm:items-center" role="presentation">
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="scheduler-event-title"
-        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-xl sm:p-6"
+        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-md)] sm:p-6"
       >
         <h2 id="scheduler-event-title" className="text-lg font-extrabold tracking-[-0.03em] text-[var(--text)]">
           {editing ? 'Edit scheduled job' : 'Schedule a job'}

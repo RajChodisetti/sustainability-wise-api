@@ -58,13 +58,21 @@ with the unchanged credential.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return one canonical person per entry with Eco Audit, Solar Sense, and Field App Complete memberships and the shared Field subject |
+| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return one canonical person per entry with Eco Audit, Solar Sense, and Field App Complete memberships, the shared Field subject, and nullable `billingRate` |
+| PATCH | `/v1/portal/users/:globalUserId/billing-rate` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Set the canonical user's non-negative hourly `billingRate`, or clear it with `null` |
 
 This endpoint selects public fields from `unified_users` and never returns or
 loads password hashes. `key`/`identityIds` identify `global_users`; each
 membership retains its product `userId` and includes the shared `fieldUserId`.
 Role and active state should be identical in all three memberships; missing or
 drifted projections are marked for attention.
+
+The billing-rate PATCH accepts exactly `{ "billingRate": number | null }` and
+returns `{ globalUserId, billingRate }`. The rate belongs to `global_users`, so
+all product memberships for that person use one administrative value. It is
+not inferred from a job, recorded time, or Scheduler defaults. A missing rate
+remains `null`; commercial labour calculation reports the affected user and
+requires an administrator to set the rate instead of guessing one.
 
 The 0030 backfill treats one pre-existing row per product with the same
 normalized real email or app-local username as one person. It prefers an
@@ -82,22 +90,29 @@ global projections never grant it.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
-| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft product job, or create a custom event |
-| POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
+| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Solar Sense or Field App Complete job, or create a custom event |
+| POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft Solar Sense or Field App Complete job, assign it, and create its planned event |
 | PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event and keep the product assignment aligned |
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
 | GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List active Draft jobs without an active event |
 
+Eco Audit remains a supported application, authentication namespace, sync
+surface, report source, and active-time source, but it is not an active
+Scheduler source. New Scheduler discovery, linking, dispatch, assignment, and
+notification work supports Solar Sense assessments and Field App Complete
+installations only. Existing Eco Audit Scheduler rows are hidden and
+terminalized without editing or deleting the underlying audits.
+
 New-work dispatch accepts `sourceApp`, the assignee's canonical
 `assigneeFieldUserId`, schedule/deadline timestamps, and a product-specific
-`job` object. Eco Audit requires `siteName` and `siteAddress`; SolarSense
-requires `siteName`, `location`, and `buildingIdName`; Field App Complete
-requires `clientName`, `siteName`, and `siteAddress`. `auditDate` is optional
-when calling the API directly and must use `YYYY-MM-DD`; the portal sends the
-locally selected calendar date. Field App Complete defaults to
-`Australia/Sydney` unless an explicit timezone is supplied.
+`job` object. SolarSense requires `siteName`, `location`, and
+`buildingIdName`; Field App Complete requires `clientName`, `siteName`, and
+`siteAddress`. `auditDate` is optional when calling the API directly and must
+use `YYYY-MM-DD`; the portal sends the locally selected calendar date. Field
+App Complete defaults to `Australia/Sydney` unless an explicit timezone is
+supplied.
 
 The server derives ownership and inspector display fields from authenticated
 canonical identities. Client-supplied IDs, assignment, sync state, deletion,
@@ -119,10 +134,10 @@ does not queue a completion push. Active mobile events also queue
 `one_day_before` exactly 24 hours before `scheduledStartAt` and `day_of` at
 `scheduledStartAt`; triggers already in the past are not replayed.
 
-A notification target must be exactly Eco Audit/`audit`, Solar
-Sense/`assessment`, or Field App Complete/`installation`, with a non-null linked
-source ID. Custom events and historical Solar `site` rows have no mobile push
-target. Before enqueue and again immediately before each Expo send batch, the
+A notification target must be exactly Solar Sense/`assessment` or Field App
+Complete/`installation`, with a non-null linked source ID. Eco Audit, custom
+events, and historical Solar `site` rows have no Scheduler mobile push target.
+Before enqueue and again immediately before each Expo send batch, the
 API verifies that the event is active, the linked product and (for Solar) parent
 site are non-deleted Draft rows, and the current product assignment matches the
 canonical scheduler assignee. A completed, deleted, rescheduled, or reassigned
@@ -321,13 +336,19 @@ Each type has identical CRUD. Replace `{type}` with one of:
 
 All commercial routes require an active canonical global administrator. Finance
 belongs to the immutable source identity, not a calendar event. Exact supported
-identities are EcoAudit `audit`, SolarSense `assessment`, and Field App Complete
-`installation`; custom events and legacy Solar site rows are excluded.
+active identities are SolarSense `assessment` and Field App Complete
+`installation`; custom events, EcoAudit audits, and legacy Solar site rows are
+excluded from Scheduler discovery. Retained Eco Audit invoice and ledger
+snapshots remain historical accounting records and do not reactivate Eco Audit
+as a Scheduler source. Global Scheduler bill, invoice, and portfolio discovery
+also excludes Eco Audit; a retained invoice can still be read or exported by its
+stable ID for accounting retention.
 
 `GET /v1/portal/scheduler/finance?limit=25&cursor=...` returns
-`{items,nextCursor}`. It includes every non-deleted product job (scheduled or
-not) plus retained ledgers for deleted historical work. Optional `sourceApp`
-and exact `sourceId` filters resolve a job directly. Each row exposes stable
+`{items,nextCursor}`. It includes every non-deleted Solar Sense and Field App
+Complete job (scheduled or not) plus retained ledgers for deleted historical
+work. Optional `sourceApp` and exact `sourceId` filters resolve a supported job
+directly. Each row exposes stable
 `financeId`, nullable `eventId`, explicit `jobStatus` and `eventStatus`, recorded
 and effective hours, currency, revenue/cost/profit/margin, invoice/overdue state,
 and `needsHoursReview`.
@@ -338,8 +359,8 @@ and `needsHoursReview`.
 | GET | `/v1/portal/scheduler/expenses` | Paginated global Bills/Expenses list; `limit`, `cursor`, `kind`, `sourceApp`, `financeId`, and `search` filters; search includes expense, vendor/reference, source id, and resolved job/client/site fields |
 | GET | `/v1/portal/scheduler/invoices` | Paginated global invoice list; `limit`, `cursor`, `status`, `sourceApp`, `financeId`, and `search` filters; each item exposes every participating finance/job/source |
 | POST | `/v1/portal/scheduler/invoices/eligibility` | Preview 1–50 unique finance IDs, per-job available labour/quote/expenses, common currency, GST rate, structured issues, and whether explicit bill-to is required |
-| POST | `/v1/portal/scheduler/invoices/quick` | Create one reservation-safe invoice for 1–50 unique jobs; each job must contribute a positive charge |
-| GET/PATCH | `/v1/portal/scheduler/invoices/:invoiceId` | Read any single/consolidated invoice or edit draft header fields only; PATCH requires `expectedUpdatedAt` |
+| POST | `/v1/portal/scheduler/invoices/quick` | Create one reservation-safe draft for 1–50 Completed jobs; auto labour is an editable suggestion |
+| GET/PATCH | `/v1/portal/scheduler/invoices/:invoiceId` | Read any single/consolidated invoice or edit its draft header and lines; PATCH requires `expectedUpdatedAt` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/issue` | Issue the immutable all-job snapshot using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/void` | Void an unpaid invoice and release every job reservation using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/mark-paid` | Mark an issued invoice paid using required `{expectedUpdatedAt}` and optional `{paidAt}` |
@@ -349,12 +370,12 @@ and `needsHoursReview`.
 | POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
 | GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
 | DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
-| GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, rates, billing contact, and audited hour override |
+| GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, internal cost rate, billing contact, and audited hour override; customer billing rates belong to canonical users |
 | POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
 | GET | `/v1/portal/scheduler/finance/:financeId/invoices` | List draft/issued/paid/void invoices |
-| POST | `/v1/portal/scheduler/finance/:financeId/invoices/quick` | Reserve remaining quote/labour and selected billable expenses in a draft |
-| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft bill-to, due date, notes, and PO reference only; PATCH requires displayed `expectedUpdatedAt` |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/quick` | Create a Completed job's draft with editable quote/labour and selected billable-expense suggestions |
+| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft bill-to, due date, notes, PO reference, and lines; PATCH requires displayed `expectedUpdatedAt` |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/issue` | Freeze current seller, bill-to, job, and line snapshots using `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/mark-paid` | Mark issued invoice paid; required `{expectedUpdatedAt}`, optional `{paidAt}` between issue and transition time |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/void` | Void unpaid invoice and release reservations using required `{expectedUpdatedAt}` |
@@ -413,14 +434,14 @@ lock. A stale portal intent receives HTTP 409 and refetches the latest snapshot
 instead of overwriting or issuing values reviewed in another session.
 Void, mark-paid, and PDF enqueue apply the same required revision contract.
 
-Invoice lines are server-derived accounting snapshots. Scheduler draft PATCH
-does not accept `lines`: recorded labour must be changed through an audited hour
-override, prices through the job ledger before creating a draft, and additional
-charges through structured expenses or supplier bills. Once a draft exists its
-line ids, job provenance, kind, description, quantity, unit price, and linked
-expense are read-only; void and recreate to change the selected charges.
-Pre-migration manual `other` lines remain readable, issueable by the current
-service, and PDF-compatible, but cannot be edited or newly introduced.
+Quick Invoice lines are suggestions, not a customer-facing derivation contract.
+While an invoice is a draft, PATCH may add, edit, or remove its lines, including
+manual `other` charges and suggested labour. Each line supplies description,
+quantity, ex-GST unit amount, optional job `financeId`, optional linked expense,
+and optional `showQuantityAndRate`. New lines default to amount-only display;
+quantity/hours and unit/billing rate appear in the PDF only when an
+administrator explicitly enables `showQuantityAndRate`. Issue freezes the
+reviewed lines as immutable accounting snapshots.
 
 Released Field clients retain the legacy direct download adapter at
 `GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
@@ -437,29 +458,50 @@ Every insert and revision is rejected when cumulative active time exceeds its
 `startedAt`→`lastActiveAt` wall span by more than the documented five-second
 monotonic/wall-clock tolerance; client time is therefore plausible evidence,
 not an unconstrained billable number.
-Billable/cost hour overrides never edit those sessions and require a reason;
-`overrideSource`, actor, timestamp, and monotonic revision retain provenance.
+App-recorded hours are evidence for an administrator to review, not assumed
+commercial hours. Effective billable and cost hours default to zero and remain
+directly editable through audited overrides; changing them never edits the raw
+sessions. Overrides require a reason, and `overrideSource`, actor, timestamp,
+and monotonic revision retain provenance. `billableHoursOverride` is a
+non-negative whole-hour integer; the finance update rejects fractional billing
+hours. App-recorded `actualHours` retains its fractional precision as evidence.
+When the portal's app-hours shortcut copies that evidence into Billing hours, it
+rounds to the nearest whole hour (`0.5` rounds up) and clamps the result at zero.
+The shortcut keeps the exact app value in Cost hours; the whole-hour constraint
+applies only to Billing hours.
+The focused Billing hours number input changes in one-hour steps: Arrow Up or a
+wheel/trackpad scroll up adds one, while Arrow Down or a scroll down subtracts
+one without crossing zero. Scrolling the page while the input is not focused
+does not change its value.
 `hoursVariance` means actual minus scheduled hours, while
 `commercialHoursVariance` means effective billable minus effective cost hours.
-An unchanged migrated estimate can be explicitly attested with a fresh reason,
-creating an admin revision and clearing `needsHoursReview`.
-An invoice containing labour derived from an unattested legacy estimate cannot
-be issued until an administrator confirms, replaces, or clears that estimate.
+Migration 0038 appends a zero-hour administrative revision wherever an existing
+explicit or migrated legacy override could otherwise remain nonzero; pristine
+ledgers evaluate to zero without creating purge-blocking evidence. Legacy estimated hours no
+longer block invoice creation, issue, or PDF generation; raw active-time
+evidence and already-issued invoice snapshots are preserved.
 
 Non-void draft, issued, and paid lines reserve their linked labour/quote/expense
 values, preventing Quick Invoice duplication. Voiding releases reservations;
 paid invoices cannot be voided. Issued and paid snapshots remain readable and
 downloadable even after operational job edits or deletion.
 Job currency is locked once any expense or invoice exists. Pricing mode is
-locked while any non-void invoice exists. Quote value plus billable and cost
-hourly rates are also locked while a non-void invoice exists; void drafts before
-changing the commercial basis.
+not locked by a non-void invoice, and later changes to pricing mode, quote,
+commercial hours, user billing rates, or job cost rate affect only internal
+calculations and future suggestions. Draft, issued, and paid invoice lines are
+independent snapshots and therefore do not need to be voided before those job
+settings change.
 Consolidated jobs must share one currency. Differing or missing normalized
 billing parties require an explicit immutable consolidated `billTo` snapshot.
-Every selected job must contribute a positive line both at draft creation and
-issue, and every line retains `financeId` plus its immutable job/source
+Drafts may be saved with suggestions removed while an administrator builds the
+customer-facing charges. At issue, every selected job must contribute a
+positive line, and every line retains `financeId` plus its immutable job/source
 provenance. A draft/issued/paid reservation is visible and enforced from every
 participating job, including secondary jobs.
+Every job must have current status `Completed` before draft creation and again
+before issue. A draft PDF also requires all live jobs to remain Completed;
+issued and paid historical snapshots remain exportable without reopening the
+operational job.
 Migration 0034 deliberately fails closed for pre-0034 line rewrites and
 consolidated lifecycle updates. Before multi-job creation is used, every old API
 process must be drained and the current API must pass health checks. Once any

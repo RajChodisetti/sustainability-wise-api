@@ -88,11 +88,13 @@ export type ScheduleReminderResponse = {
 };
 
 export type PortalDirectoryUser = {
+  /** Canonical global user id shared across product memberships. */
   key: string;
   fieldUserId: string;
   label: string;
   email: string;
   role: string;
+  billingRate: number | null;
   appMemberships: Array<'ecoaudit' | 'solarsense' | 'installhub'>;
 };
 
@@ -159,6 +161,7 @@ export type FinanceOverviewItem = {
   sourceId: string;
   eventId: string | null;
   jobName: string;
+  siteName: string;
   jobDate: string;
   jobStatus: string;
   eventStatus: string | null;
@@ -284,6 +287,7 @@ export type SchedulerInvoiceLine = {
   quantity: number;
   unitAmountExGst: number;
   lineTotalExGst: number;
+  showQuantityAndRate: boolean;
   expenseId: string | null;
   kind: SchedulerInvoiceLineKind;
   category: FinanceExpenseCategory | null;
@@ -306,6 +310,7 @@ export type SchedulerInvoiceJob = {
     siteAddress: string | null;
     status: string;
   };
+  currentStatus: string;
   billingReference: string | null;
   subtotalExGst: number;
   lines: SchedulerInvoiceLine[];
@@ -409,19 +414,18 @@ export type SchedulerFinancialSummary = {
     actualSource: 'active_sessions';
     billableHours: number;
     billableHoursOverride: number | null;
-    billableHoursSource: 'actual' | 'override';
+    billableHoursSource: 'default_zero' | 'override';
     costHours: number;
     costHoursOverride: number | null;
-    costHoursSource: 'actual' | 'override';
+    costHoursSource: 'default_zero' | 'override';
     overrideSource: 'admin' | 'legacy_estimate' | null;
     needsHoursReview: boolean;
-    billableRate: number;
+    billableRate: number | null;
     costRate: number;
     labourRevenue: number;
     labourCost: number;
     hoursVariance: number;
     commercialHoursVariance: number;
-    overbilledHours: number;
     overrideReason: string | null;
     overriddenAt: string | null;
     overriddenBy: { userId: string; displayName: string | null } | null;
@@ -430,6 +434,13 @@ export type SchedulerFinancialSummary = {
       displayName: string | null;
       activeMilliseconds: number;
       hours: number;
+      billingRate: number | null;
+      labourAmount: number | null;
+      billingRateEditable: boolean;
+    }>;
+    missingBillingRateUsers: Array<{
+      userId: string;
+      displayName: string | null;
     }>;
   };
   expenses: FinanceExpense[];
@@ -452,20 +463,19 @@ export type SchedulerFinancialSummary = {
 };
 
 export type UpdateSchedulerFinanceInput = {
-  pricingMode: FinancePricingMode;
-  quotedAmount: number | null;
-  currency: string;
+  pricingMode?: FinancePricingMode;
+  quotedAmount?: number | null;
+  currency?: string;
   notes?: string | null;
-  billableHoursOverride: number | null;
-  costHoursOverride: number | null;
-  billableRate: number;
-  costRate: number;
+  billableHoursOverride?: number | null;
+  costHoursOverride?: number | null;
+  costRate?: number;
   overrideReason?: string | null;
-  billingName: string | null;
-  billingAddress: string | null;
-  billingEmail: string | null;
-  billingAbn: string | null;
-  billingReference: string | null;
+  billingName?: string | null;
+  billingAddress?: string | null;
+  billingEmail?: string | null;
+  billingAbn?: string | null;
+  billingReference?: string | null;
 };
 
 export type QuickSchedulerInvoiceInput = {
@@ -488,6 +498,7 @@ export type UpdateSchedulerInvoiceInput = {
     description: string;
     quantity: number;
     unitAmountExGst: number;
+    showQuantityAndRate?: boolean;
     expenseId?: string | null;
     kind?: SchedulerInvoiceLineKind;
     financeId?: string;
@@ -501,6 +512,7 @@ export type SchedulerInvoiceEligibilityIssue = {
     | 'bill_to_override_required'
     | 'job_not_completed'
     | 'hours_entry_required'
+    | 'billing_rate_missing'
     | 'no_available_charges';
   message: string;
   financeId: string | null;
@@ -532,7 +544,7 @@ export type SchedulerInvoiceEligibilityJob = {
   pricingMode: FinancePricingMode;
   invoiceReadiness: SchedulerFinancialSummary['invoiceReadiness'];
   availableLabourHours: number;
-  billableRate: number;
+  billableRate: number | null;
   availableLabourAmount: number;
   availableQuotedAmount: number;
   availableExpenses: FinanceExpense[];

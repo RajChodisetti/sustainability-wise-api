@@ -17,6 +17,14 @@ test('every PDF equipment category has deterministic inline SVG markup', () => {
     'water',
     'electricity',
     'camera',
+    'meter',
+    'refrigeration',
+    'forklift',
+    'fan',
+    'hoist',
+    'compressed-air',
+    'site-asset',
+    'residual',
   ]);
 
   for (const name of PDF_EQUIPMENT_ICON_NAMES) {

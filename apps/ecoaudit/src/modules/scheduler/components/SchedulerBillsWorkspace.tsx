@@ -490,11 +490,33 @@ function CostEditor({
       </div>
       <div className="mt-2 grid gap-x-3 md:grid-cols-2 xl:grid-cols-3">
         <div className="md:col-span-2 xl:col-span-3">
-          <FieldLabel htmlFor="global-cost-job">Job</FieldLabel>
-          <Select id="global-cost-job" value={form.financeId} disabled={Boolean(editing)} onChange={(event) => setForm({ ...form, financeId: event.target.value })}>
-            <option value="">Choose a job</option>
-            {jobs.map((job) => <option key={job.financeId} value={job.financeId}>{job.jobName} · {financeAppLabel(job.sourceApp)} · {job.currency}</option>)}
-          </Select>
+          <p id="global-cost-job-label" className="mt-3 text-sm font-bold text-[var(--text)]">Job</p>
+          {editing ? (
+            <div className="mt-1 rounded-xl border border-[var(--border-strong)] bg-[var(--surface2)] px-4 py-3">
+              <strong className="block text-lg font-extrabold leading-tight text-[var(--text)]">{editing.job.jobName}</strong>
+              <span className="mt-1 block text-xs font-semibold text-[var(--text-sub)]">{editing.job.siteName || 'Site name not set'}</span>
+              <span className="mt-1 block text-[11px] uppercase tracking-wide text-[var(--text-sub)]">{financeAppLabel(editing.source.sourceApp)} · {editing.currency}</span>
+            </div>
+          ) : (
+            <div id="global-cost-job-picker" role="radiogroup" aria-labelledby="global-cost-job-label" className="mt-1 grid max-h-64 gap-2 overflow-y-auto rounded-xl border border-[var(--border)] p-2 sm:grid-cols-2">
+              {jobs.map((job) => (
+                <label key={job.financeId} className={`cursor-pointer rounded-lg border px-3 py-2.5 transition-colors focus-within:ring-2 focus-within:ring-[var(--focus)] ${form.financeId === job.financeId ? 'border-[var(--blue)] bg-[var(--blue-soft)]' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)]'}`}>
+                  <input
+                    className="sr-only"
+                    type="radio"
+                    name="global-cost-job"
+                    value={job.financeId}
+                    checked={form.financeId === job.financeId}
+                    onChange={() => setForm({ ...form, financeId: job.financeId })}
+                  />
+                  <strong className="block text-base font-extrabold leading-tight text-[var(--text)]">{job.jobName}</strong>
+                  <span className="mt-1 block text-xs font-semibold text-[var(--text-sub)]">{job.siteName || 'Site name not set'}</span>
+                  <span className="mt-1 block text-[10px] uppercase tracking-wide text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency}</span>
+                </label>
+              ))}
+              {jobs.length === 0 ? <p className="p-3 text-sm text-[var(--text-sub)]">No Scheduler jobs are available.</p> : null}
+            </div>
+          )}
           {hasMoreJobs ? <Button type="button" className="mt-2" variant="ghost" disabled={loadingMoreJobs} onClick={onLoadMoreJobs}>{loadingMoreJobs ? 'Loading jobs…' : 'Load more jobs'}</Button> : null}
         </div>
         {mode === 'upload' && !editing ? (

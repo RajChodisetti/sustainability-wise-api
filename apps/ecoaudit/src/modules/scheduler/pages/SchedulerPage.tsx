@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { PageHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { Icon, type IconName } from '@/components/ui/Icon';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { DeadlineTable } from '@/modules/scheduler/components/DeadlineTable';
 import { DynamicSchedulerBoard } from '@/modules/scheduler/components/DynamicSchedulerBoard';
@@ -25,6 +26,24 @@ export type SchedulerTab =
   | 'financial-summary'
   | 'bills'
   | 'invoices';
+
+type SchedulerTabItem = {
+  id: SchedulerTab;
+  label: string;
+  icon: IconName;
+};
+
+const PLANNING_TABS: SchedulerTabItem[] = [
+  { id: 'overview', label: 'Overview', icon: 'gauge' },
+  { id: 'calendar', label: 'Calendar', icon: 'calendar' },
+  { id: 'deadlines', label: 'Deadlines', icon: 'clipboard' },
+];
+
+const FINANCE_TABS: SchedulerTabItem[] = [
+  { id: 'financial-summary', label: 'Summary', icon: 'activity' },
+  { id: 'bills', label: 'Bills & expenses', icon: 'file-text' },
+  { id: 'invoices', label: 'Invoices', icon: 'file-text' },
+];
 
 function isFinanceTab(tab: SchedulerTab): tab is 'financial-summary' | 'bills' | 'invoices' {
   return tab === 'financial-summary' || tab === 'bills' || tab === 'invoices';
@@ -57,16 +76,7 @@ export default function SchedulerPage({
   const fieldOnly = schedulerIsFieldOnly(visibleSourceApps);
 
   const tabs = useMemo(
-    () => [
-      { id: 'overview' as const, label: 'Overview' },
-      { id: 'calendar' as const, label: 'Calendar' },
-      { id: 'deadlines' as const, label: 'Deadlines' },
-      ...(isAdmin ? [
-        { id: 'financial-summary' as const, label: 'Financial Summary' },
-        { id: 'bills' as const, label: 'Bills & Expenses' },
-        { id: 'invoices' as const, label: 'Invoices' },
-      ] : []),
-    ],
+    () => [...PLANNING_TABS, ...(isAdmin ? FINANCE_TABS : [])],
     [isAdmin],
   );
 
@@ -110,50 +120,68 @@ export default function SchedulerPage({
   }
 
   return (
-    <div className={`mx-auto w-full ${activeTab === 'calendar' || isFinanceTab(activeTab) ? 'max-w-[90rem]' : 'max-w-6xl'}`}>
+    <div className={`mx-auto w-full ${activeTab === 'calendar' || isFinanceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
       <PageHeader
         title="Scheduler"
-        subtitle={isFinanceTab(activeTab)
-          ? activeTab === 'financial-summary'
-            ? fieldOnly
-              ? 'Field App portfolio position, recorded hours, rates, and job profitability.'
-              : 'Portfolio position, recorded hours, rates, and job profitability across all three apps.'
-            : activeTab === 'bills'
-              ? 'Add, upload, and reconcile job costs and supplier evidence in one ledger.'
-              : 'Create single or consolidated invoices, then issue, export, and track payment.'
-          : fieldOnly
-            ? 'Assign Field App jobs and custom tasks — calendar + deadline board.'
-            : 'Assign audits, solar work, field jobs, and custom tasks — calendar + deadline board.'}
+        subtitle={schedulerSubtitle(activeTab, fieldOnly)}
         actions={
           isAdmin ? (
-            <Button onClick={() => openCreate()}>+ Schedule job</Button>
+            <Button onClick={() => openCreate()}>
+              <Icon name="plus" size={18} />
+              Schedule job
+            </Button>
           ) : undefined
         }
       />
 
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
-        <div className="flex max-w-full overflow-x-auto rounded-full bg-[var(--surface2)] p-1" role="tablist" aria-label="Scheduler views" aria-orientation="horizontal">
-          {tabs.map((t, index) => (
-            <button
-              key={t.id}
-              ref={(node) => { tabRefs.current[t.id] = node; }}
-              type="button"
-              role="tab"
-              id={`scheduler-tab-${t.id}`}
-              aria-selected={activeTab === t.id}
-              aria-controls={`scheduler-panel-${t.id}`}
-              tabIndex={activeTab === t.id ? 0 : -1}
-              onClick={() => activateTab(t.id)}
-              onKeyDown={(event) => handleTabKeyDown(event, index)}
-              className={`min-h-11 rounded-full px-4 py-2 text-sm font-extrabold transition-colors ${
-                activeTab === t.id
-                  ? 'bg-[var(--surface)] text-[var(--text)] shadow-sm'
-                  : 'text-[var(--text-sub)] hover:text-[var(--text)]'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
+      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div
+          className="subtle-scrollbar max-w-full overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-2 shadow-[var(--shadow-xs)]"
+          role="tablist"
+          aria-label="Scheduler views"
+          aria-orientation="horizontal"
+        >
+          <div className="flex min-w-max items-center gap-2">
+            {[
+              { label: 'Planning', items: PLANNING_TABS },
+              ...(isAdmin ? [{ label: 'Finance', items: FINANCE_TABS }] : []),
+            ].map((group, groupIndex) => (
+              <div
+                key={group.label}
+                role="presentation"
+                className={`flex items-center gap-1 ${groupIndex > 0 ? 'border-l border-[var(--border)] pl-2' : ''}`}
+              >
+                <span className="px-2 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">
+                  {group.label}
+                </span>
+                {group.items.map((item) => {
+                  const index = tabs.findIndex((candidate) => candidate.id === item.id);
+                  return (
+                    <button
+                      key={item.id}
+                      ref={(node) => { tabRefs.current[item.id] = node; }}
+                      type="button"
+                      role="tab"
+                      id={`scheduler-tab-${item.id}`}
+                      aria-selected={activeTab === item.id}
+                      aria-controls={`scheduler-panel-${item.id}`}
+                      tabIndex={activeTab === item.id ? 0 : -1}
+                      onClick={() => activateTab(item.id)}
+                      onKeyDown={(event) => handleTabKeyDown(event, index)}
+                      className={`inline-flex min-h-11 items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2 text-sm font-extrabold transition-colors ${
+                        activeTab === item.id
+                          ? 'bg-[var(--primary-soft)] text-[var(--primary)] shadow-[var(--shadow-xs)]'
+                          : 'text-[var(--text-sub)] hover:bg-[var(--surface2)] hover:text-[var(--text)]'
+                      }`}
+                    >
+                      <Icon name={item.icon} size={16} />
+                      {item.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
         </div>
         {activeTab === 'deadlines' && isAdmin ? (
           <UserFilter
@@ -167,6 +195,7 @@ export default function SchedulerPage({
       {activeTab === 'overview' ? (
         <div id="scheduler-panel-overview" role="tabpanel" aria-labelledby="scheduler-tab-overview" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerDashboard
+            canCreate={isAdmin}
             visibleSourceApps={visibleSourceApps}
             onOpenDeadlines={() => activateTab('deadlines')}
             onCreate={() => openCreate()}
@@ -237,4 +266,31 @@ export default function SchedulerPage({
       />
     </div>
   );
+}
+
+function schedulerSubtitle(tab: SchedulerTab, fieldOnly: boolean): string {
+  if (tab === 'financial-summary') {
+    return fieldOnly
+      ? 'Review Field App portfolio position, recorded hours, rates, and job profitability.'
+      : 'Review portfolio position, recorded hours, rates, and job profitability across all products.';
+  }
+  if (tab === 'bills') {
+    return 'Add, upload, and reconcile job costs and supplier evidence in one ledger.';
+  }
+  if (tab === 'invoices') {
+    return 'Create single or consolidated invoices, then issue, export, and track payment.';
+  }
+  if (tab === 'overview') {
+    return fieldOnly
+      ? 'See today’s Field App workload, upcoming deadlines, and scheduled work at a glance.'
+      : 'See today’s workload, upcoming deadlines, and scheduled work at a glance.';
+  }
+  if (tab === 'deadlines') {
+    return fieldOnly
+      ? 'Review Field App due dates in urgency order and open a job for full details.'
+      : 'Review every due date in urgency order and open a job for full details.';
+  }
+  return fieldOnly
+    ? 'Plan Field App jobs and custom tasks in one weekly workspace.'
+    : 'Plan audits, solar work, field jobs, and custom tasks in one weekly workspace.';
 }

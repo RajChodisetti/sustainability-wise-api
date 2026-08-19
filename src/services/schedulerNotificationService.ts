@@ -81,6 +81,7 @@ export function isMobileScheduleNotificationTarget(
   event: Pick<ScheduleEventRow, 'sourceApp' | 'sourceType' | 'sourceId'>,
 ): boolean {
   if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
+  if (event.sourceApp === 'ecoaudit') return false;
   if (!isSchedulerSourceAppVisible(event.sourceApp)) return false;
   return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
     || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')

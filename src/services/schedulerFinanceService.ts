@@ -45,6 +45,7 @@ import {
   writeLocalFile,
 } from '../storage/localFiles.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import { compareLockKeys } from '../utils/lockOrder.js';
 import { renderInvoicePdf, type InvoicePdfOutput } from './invoicePdf.js';
 import { drainStorageDeletionTasks } from './storageDeletionService.js';
 import {
@@ -113,6 +114,9 @@ export type RecordedActorHoursDto = {
   displayName: string | null;
   activeMilliseconds: number;
   hours: number;
+  billingRate: number | null;
+  labourAmount: number | null;
+  billingRateEditable: boolean;
 };
 
 export type SchedulerExpenseDto = {
@@ -165,6 +169,7 @@ export type SchedulerInvoiceLineDto = {
   quantity: number;
   unitAmountExGst: number;
   lineTotalExGst: number;
+  showQuantityAndRate: boolean;
   expenseId: string | null;
   category: ExpenseCategory | null;
 };
@@ -174,6 +179,7 @@ export type SchedulerInvoiceJobDto = {
   sortOrder: number;
   source: FinanceSource;
   job: JobMetadata;
+  currentStatus: string;
   billingReference: string | null;
   subtotalExGst: number;
   lines: SchedulerInvoiceLineDto[];
@@ -263,11 +269,12 @@ export type SchedulerFinancialSummaryDto = {
     actors: RecordedActorHoursDto[];
     billableHours: number;
     billableHoursOverride: number | null;
-    billableHoursSource: 'actual' | 'override';
+    billableHoursSource: 'default_zero' | 'override';
     costHours: number;
     costHoursOverride: number | null;
-    costHoursSource: 'actual' | 'override';
-    billableRate: number;
+    costHoursSource: 'default_zero' | 'override';
+    /** Weighted canonical per-user rate; null until every billed person has a rate. */
+    billableRate: number | null;
     costRate: number;
     labourRevenue: number;
     labourCost: number;
@@ -275,12 +282,12 @@ export type SchedulerFinancialSummaryDto = {
     hoursVariance: number;
     /** Effective customer-billable hours minus effective internal-cost hours. */
     commercialHoursVariance: number;
-    overbilledHours: number;
     overrideReason: string | null;
     overrideSource: 'admin' | 'legacy_estimate' | null;
     overriddenAt: string | null;
     overriddenBy: { userId: string; displayName: string | null } | null;
     needsHoursReview: boolean;
+    missingBillingRateUsers: Array<{ userId: string; displayName: string | null }>;
   };
   expenses: SchedulerExpenseDto[];
   invoices: SchedulerInvoiceListItemDto[];
@@ -308,6 +315,7 @@ export type SchedulerFinanceOverviewItemDto = {
   sourceType: FinanceSourceType;
   sourceId: string;
   jobName: string;
+  siteName: string;
   jobDate: string;
   jobStatus: string;
   eventStatus: string | null;
@@ -341,7 +349,6 @@ export type FinanceUpdateInput = {
   billableHoursOverride?: number | null;
   costHoursOverride?: number | null;
   overrideReason?: string | null;
-  billableRate?: number;
   costRate?: number;
 };
 
@@ -362,6 +369,7 @@ export type InvoiceLineInput = {
   description: string;
   quantity: number;
   unitAmountExGst: number;
+  showQuantityAndRate?: boolean;
   expenseId?: string | null;
   kind?: InvoiceLineKind;
   /** Required for every line on a consolidated invoice; single-job adapters may omit it. */
@@ -384,7 +392,7 @@ export type UpdateDraftInvoiceInput = {
   billToAddress?: string | null;
   billToEmail?: string | null;
   purchaseOrderReference?: string | null;
-  /** Internal compatibility validator; Scheduler HTTP routes reject this field. */
+  /** Draft-only customer-facing charges and their optional quantity/rate presentation. */
   lines?: InvoiceLineInput[];
 };
 
@@ -417,7 +425,7 @@ export type ConsolidatedInvoiceEligibilityJobDto = {
   billing: SchedulerFinancialSummaryDto['billing'];
   invoiceReadiness: SchedulerFinancialSummaryDto['invoiceReadiness'];
   availableLabourHours: number;
-  billableRate: number;
+  billableRate: number | null;
   availableLabourAmount: number;
   availableQuotedAmount: number;
   availableExpenses: SchedulerExpenseDto[];
@@ -435,6 +443,7 @@ export type ConsolidatedInvoiceEligibilityDto = {
       | 'bill_to_override_required'
       | 'job_not_completed'
       | 'hours_entry_required'
+      | 'billing_rate_missing'
       | 'no_available_charges';
     message: string;
     financeId: string | null;
@@ -498,8 +507,13 @@ export function schedulerInvoiceCompletionReadiness(input: {
   jobStatus: string | null;
   parentStatus?: string | null;
 }): InvoiceCompletionReadiness {
-  if (input.jobStatus === 'Completed') return { satisfied: true, basis: 'job' };
-  if (input.sourceApp === 'solarsense' && input.parentStatus === 'Completed') {
+  if (isCompletedSchedulerJobStatus(input.jobStatus ?? '')) {
+    return { satisfied: true, basis: 'job' };
+  }
+  if (
+    input.sourceApp === 'solarsense'
+    && isCompletedSchedulerJobStatus(input.parentStatus ?? '')
+  ) {
     return { satisfied: true, basis: 'parent_site' };
   }
   return { satisfied: false, basis: null };
@@ -593,6 +607,22 @@ function hoursToMilliseconds(value: unknown, field: string): number {
   return milliseconds;
 }
 
+export function billableHoursToMilliseconds(value: unknown): number {
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || value < 0
+    || !Number.isInteger(value)
+  ) {
+    throw badRequest('billableHoursOverride must be a nonnegative integer');
+  }
+  const milliseconds = value * 3_600_000;
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw badRequest('billableHoursOverride is too large');
+  }
+  return milliseconds;
+}
+
 function optionalText(value: string | null | undefined, maximum: number): string | null {
   if (value === null || value === undefined) return null;
   return value.trim().slice(0, maximum) || null;
@@ -680,6 +710,10 @@ function isSupportedSource(
     );
 }
 
+export function isCompletedSchedulerJobStatus(status: string): boolean {
+  return status.trim().toLocaleLowerCase('en-AU') === 'completed';
+}
+
 function sourceFromEvent(event: ScheduleEventRow): FinanceSource {
   const source = {
     sourceApp: event.sourceApp,
@@ -689,12 +723,25 @@ function sourceFromEvent(event: ScheduleEventRow): FinanceSource {
   if (!isSupportedSource(source as FinanceSource)) {
     throw badRequest('Scheduler event does not have a supported commercial source job');
   }
-  assertSchedulerSourceAppVisible(source.sourceApp);
+  assertSchedulerFinanceSourceAppVisible(source.sourceApp);
   return source as FinanceSource;
 }
 
+function schedulerVisibleCommercialSourceApps(): FinanceSourceApp[] {
+  return schedulerVisibleFinanceSourceApps().filter((app) => app !== 'ecoaudit');
+}
+
+function isSchedulerFinanceSourceAppVisible(sourceApp: string): boolean {
+  return sourceApp !== 'ecoaudit' && isSchedulerSourceAppVisible(sourceApp);
+}
+
+function assertSchedulerFinanceSourceAppVisible(sourceApp: string): void {
+  if (sourceApp === 'ecoaudit') throw notFound('Scheduler job');
+  assertSchedulerSourceAppVisible(sourceApp);
+}
+
 function schedulerInvoiceVisibilityConditions(): SQL[] {
-  const visibleApps = schedulerVisibleFinanceSourceApps();
+  const visibleApps = schedulerVisibleCommercialSourceApps();
   const hiddenApps = (['ecoaudit', 'solarsense', 'installhub'] as const)
     .filter((app) => !visibleApps.includes(app));
   if (hiddenApps.length === 0) return [];
@@ -710,7 +757,8 @@ function schedulerInvoiceVisibilityConditions(): SQL[] {
 }
 
 function invoiceJobsAreVisible(jobs: InvoiceJobRow[]): boolean {
-  return areSchedulerSourceAppsVisible(jobs.map((job) => job.jobSourceApp));
+  return areSchedulerSourceAppsVisible(jobs.map((job) => job.jobSourceApp))
+    && jobs.every((job) => job.jobSourceApp !== 'ecoaudit');
 }
 
 function assertInvoiceJobsVisible(jobs: InvoiceJobRow[]): void {
@@ -968,7 +1016,21 @@ async function sourceCompletionReadiness(
   });
 }
 
-async function requireInvoiceReady(
+function assertInvoiceCompletionReady(
+  source: FinanceSource,
+  jobName: string,
+  completion: InvoiceCompletionReadiness,
+): void {
+  if (completion.satisfied) return;
+  const instruction = source.sourceApp === 'solarsense'
+    ? 'Mark the assessment or its SolarSense site complete'
+    : 'Mark the job complete';
+  throw conflict(
+    `${jobName} must be completed before an invoice can be generated. ${instruction} before generating an invoice`,
+  );
+}
+
+async function requireInvoiceHoursReady(
   source: FinanceSource,
   financeId: string,
   jobName: string,
@@ -977,13 +1039,6 @@ async function requireInvoiceReady(
   recorded: Awaited<ReturnType<typeof recordedHoursForSource>>;
   currentOverride: Awaited<ReturnType<typeof latestHourOverride>>;
 }> {
-  const completion = await sourceCompletionReadiness(source, executor, true);
-  if (!completion.satisfied) {
-    const instruction = source.sourceApp === 'solarsense'
-      ? 'Mark the assessment or its SolarSense site complete'
-      : 'Mark the job complete';
-    throw conflict(`${instruction} before generating an invoice for ${jobName}`);
-  }
   const [recorded, currentOverride] = await Promise.all([
     recordedHoursForSource(source, executor),
     latestHourOverride(financeId, executor),
@@ -1000,6 +1055,68 @@ async function requireInvoiceReady(
   return { recorded, currentOverride };
 }
 
+async function requireInvoiceReady(
+  source: FinanceSource,
+  financeId: string,
+  jobName: string,
+  executor: FinanceExecutor,
+): Promise<{
+  recorded: Awaited<ReturnType<typeof recordedHoursForSource>>;
+  currentOverride: Awaited<ReturnType<typeof latestHourOverride>>;
+}> {
+  const completion = await sourceCompletionReadiness(source, executor, true);
+  assertInvoiceCompletionReady(source, jobName, completion);
+  return requireInvoiceHoursReady(source, financeId, jobName, executor);
+}
+
+async function currentJobStatusForSource(
+  source: FinanceSource,
+  executor: FinanceExecutor = db,
+  lock = false,
+): Promise<string> {
+  if (source.sourceApp === 'ecoaudit') {
+    const query = executor.select({
+      status: eaAudits.status,
+      deletedAt: eaAudits.deletedAt,
+    }).from(eaAudits).where(eq(eaAudits.id, source.sourceId)).limit(1);
+    const [job] = lock ? await query.for('update') : await query;
+    return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+  }
+  if (source.sourceApp === 'solarsense') {
+    const query = executor.select({
+      status: ssRooftopAssessments.status,
+      deletedAt: ssRooftopAssessments.deletedAt,
+    }).from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, source.sourceId)).limit(1);
+    const [job] = lock ? await query.for('update') : await query;
+    return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+  }
+  const query = executor.select({
+    status: ihInstallations.status,
+    deletedAt: ihInstallations.deletedAt,
+  }).from(ihInstallations).where(eq(ihInstallations.id, source.sourceId)).limit(1);
+  const [job] = lock ? await query.for('update') : await query;
+  return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+}
+
+function financeSourceKey(source: FinanceSource): string {
+  return `${source.sourceApp}\u0000${source.sourceType}\u0000${source.sourceId}`;
+}
+
+async function lockCurrentCompletionReadiness(
+  sources: FinanceSource[],
+  executor: FinanceExecutor,
+): Promise<Map<string, InvoiceCompletionReadiness>> {
+  const uniqueSources = new Map(sources.map((source) => [financeSourceKey(source), source]));
+  const readiness = new Map<string, InvoiceCompletionReadiness>();
+  for (const [key, source] of [...uniqueSources.entries()].sort(([left], [right]) => (
+    compareLockKeys(left, right)
+  ))) {
+    readiness.set(key, await sourceCompletionReadiness(source, executor, true));
+  }
+  return readiness;
+}
+
 async function scheduledHoursForSource(
   source: FinanceSource,
   executor: FinanceExecutor = db,
@@ -1014,7 +1131,7 @@ async function scheduledHoursForSource(
     ne(portalScheduleEvents.status, 'cancelled'),
   ));
   return round(rows.reduce((hours, row) => {
-    if (!row.end) return hours + 1;
+    if (!row.end) return hours;
     return hours + Math.max(0, (row.end.getTime() - row.start.getTime()) / 3_600_000);
   }, 0), 4);
 }
@@ -1058,6 +1175,7 @@ async function recordedHoursForSource(
     globalUserId: globalUsers.id,
     fullName: globalUsers.fullName,
     displayEmail: globalUsers.displayEmail,
+    billingRateCents: globalUsers.billingRateCents,
   }).from(unifiedUsers)
     .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
     .where(and(
@@ -1074,6 +1192,7 @@ async function recordedHoursForSource(
   }
   const actors = [...byActor.entries()].map(([actorUserId, activeMilliseconds]) => {
     const membership = memberByActor.get(actorUserId);
+    const billingRateCents = membership?.billingRateCents ?? null;
     return {
       userId: membership?.globalUserId ?? actorUserId,
       displayName: membership
@@ -1081,6 +1200,15 @@ async function recordedHoursForSource(
         : null,
       activeMilliseconds,
       hours: millisecondsToHours(activeMilliseconds),
+      billingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
+      labourAmount: billingRateCents === null
+        ? null
+        : centsToMoney(hoursAtRateCents(
+            millisecondsToHours(activeMilliseconds),
+            billingRateCents,
+            'Recorded labour',
+          )),
+      billingRateEditable: Boolean(membership),
     };
   }).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
   const activeMilliseconds = actors.reduce((total, actor) => {
@@ -1091,6 +1219,112 @@ async function recordedHoursForSource(
     return next;
   }, 0);
   return { activeMilliseconds, actors };
+}
+
+async function billingActorsForSource(
+  source: FinanceSource,
+  recorded: { activeMilliseconds: number; actors: RecordedActorHoursDto[] },
+  event: ScheduleEventRow | null,
+  executor: FinanceExecutor,
+): Promise<RecordedActorHoursDto[]> {
+  if (recorded.actors.length > 0) return recorded.actors;
+  let fieldUserId = event?.assigneeFieldUserId ?? null;
+  let originUserId: string | null = null;
+  if (!fieldUserId) {
+    if (source.sourceApp === 'ecoaudit') {
+      const [job] = await executor.select({
+        assignedInspectorUserId: eaAudits.assignedInspectorUserId,
+      }).from(eaAudits).where(eq(eaAudits.id, source.sourceId)).limit(1);
+      originUserId = job?.assignedInspectorUserId ?? null;
+    } else if (source.sourceApp === 'solarsense') {
+      const [job] = await executor.select({
+        assignedInspectorUserId: ssRooftopAssessments.assignedInspectorUserId,
+      }).from(ssRooftopAssessments)
+        .where(eq(ssRooftopAssessments.id, source.sourceId))
+        .limit(1);
+      originUserId = job?.assignedInspectorUserId ?? null;
+    } else {
+      const [job] = await executor.select({
+        assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
+      }).from(ihInstallations).where(eq(ihInstallations.id, source.sourceId)).limit(1);
+      fieldUserId = job?.assignedInspectorUserId ?? null;
+    }
+  }
+  if (!fieldUserId && !originUserId) return [];
+  const [assignee] = await executor.select({
+    id: globalUsers.id,
+    fullName: globalUsers.fullName,
+    displayEmail: globalUsers.displayEmail,
+    billingRateCents: globalUsers.billingRateCents,
+  }).from(unifiedUsers)
+    .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
+    .where(and(
+      eq(unifiedUsers.originApp, source.sourceApp),
+      fieldUserId
+        ? eq(unifiedUsers.fieldUserId, fieldUserId)
+        : eq(unifiedUsers.originUserId, originUserId!),
+    ))
+    .limit(1);
+  if (!assignee) return [];
+  return [{
+    userId: assignee.id,
+    displayName: assignee.fullName?.trim() || assignee.displayEmail,
+    activeMilliseconds: 0,
+    hours: 0,
+    billingRate: assignee.billingRateCents === null
+      ? null
+      : centsToMoney(assignee.billingRateCents),
+    labourAmount: assignee.billingRateCents === null ? null : 0,
+    billingRateEditable: true,
+  }];
+}
+
+export function effectiveUserLabourBilling(
+  actors: RecordedActorHoursDto[],
+  effectiveHours: number,
+): {
+  labourRevenueCents: number;
+  weightedRateCents: number | null;
+  missingBillingRateUsers: Array<{ userId: string; displayName: string | null }>;
+} {
+  const configuredMissingRates = actors
+    .filter((actor) => actor.billingRate === null)
+    .map((actor) => ({ userId: actor.userId, displayName: actor.displayName }));
+  if (effectiveHours <= 0) {
+    return {
+      labourRevenueCents: 0,
+      weightedRateCents: null,
+      missingBillingRateUsers: configuredMissingRates,
+    };
+  }
+  const recordedHours = actors.reduce((total, actor) => total + actor.hours, 0);
+  const allocations = actors.length === 1 && recordedHours <= 0
+    ? [{ actor: actors[0]!, hours: effectiveHours }]
+    : actors
+        .filter((actor) => actor.hours > 0)
+        .map((actor) => ({
+          actor,
+          hours: recordedHours > 0 ? effectiveHours * (actor.hours / recordedHours) : 0,
+        }));
+  const missingBillingRateUsers = allocations.length === 0
+    ? configuredMissingRates.length > 0
+      ? configuredMissingRates
+      : [{ userId: 'unassigned', displayName: 'Unassigned billing user' }]
+    : configuredMissingRates;
+  if (allocations.length === 0 || missingBillingRateUsers.length > 0) {
+    return { labourRevenueCents: 0, weightedRateCents: null, missingBillingRateUsers };
+  }
+  const labourRevenueCents = allocations.reduce((total, { actor, hours }) => (
+    addAccountingCents(
+      total,
+      hoursAtRateCents(hours, moneyToCents(actor.billingRate!, 'billingRate'), 'Labour revenue'),
+      'Labour revenue',
+    )
+  ), 0);
+  const weightedRateCents = effectiveHours > 0
+    ? Math.round(labourRevenueCents / effectiveHours)
+    : null;
+  return { labourRevenueCents, weightedRateCents, missingBillingRateUsers: [] };
 }
 
 async function ensureFinance(
@@ -1251,6 +1485,7 @@ function invoiceLineDto(row: InvoiceLineRow): SchedulerInvoiceLineDto {
     quantity: row.quantity,
     unitAmountExGst: centsToMoney(row.unitAmountExGstCents),
     lineTotalExGst: centsToMoney(row.lineTotalExGstCents),
+    showQuantityAndRate: row.showQuantityAndRate,
     expenseId: row.expenseId,
     category: row.category as ExpenseCategory | null,
   };
@@ -1374,13 +1609,12 @@ async function reservationRollup(
   financeId: string,
   executor: FinanceExecutor = db,
 ): Promise<{
-  reservedLabourHours: number;
+  reservedLabourCents: number;
   reservedQuoteCents: number;
   issuedQuoteCents: number;
 }> {
   const rows = await executor.select({
     kind: schedulerInvoiceLines.kind,
-    quantity: schedulerInvoiceLines.quantity,
     lineTotalCents: schedulerInvoiceLines.lineTotalExGstCents,
     status: schedulerInvoices.status,
   }).from(schedulerInvoiceLines)
@@ -1389,19 +1623,15 @@ async function reservationRollup(
       eq(schedulerInvoiceLines.financeId, financeId),
       inArray(schedulerInvoices.status, ACTIVE_INVOICE_STATUSES),
     ));
-  let reservedLabourUnits = 0;
+  let reservedLabourCents = 0;
   let reservedQuoteCents = 0;
   let issuedQuoteCents = 0;
   for (const row of rows) {
     if (row.kind === 'labour') {
-      const units = Math.round(row.quantity * 10_000);
-      if (!Number.isSafeInteger(units) || units < 0) {
-        throw conflict('Reserved labour exceeds the supported accounting range');
-      }
-      reservedLabourUnits = addAccountingCents(
-        reservedLabourUnits,
-        units,
-        'Reserved labour',
+      reservedLabourCents = addAccountingCents(
+        reservedLabourCents,
+        row.lineTotalCents,
+        'Reserved labour value',
       );
     }
     if (row.kind === 'quoted') {
@@ -1420,7 +1650,7 @@ async function reservationRollup(
     }
   }
   return {
-    reservedLabourHours: reservedLabourUnits / 10_000,
+    reservedLabourCents,
     reservedQuoteCents,
     issuedQuoteCents,
   };
@@ -1432,6 +1662,8 @@ export function computeSchedulerCommercialTotals(input: {
   billableHours: number;
   costHours: number;
   billableRateCents: number;
+  /** Canonical per-user labour result. Falls back to the legacy job rate for adapters/tests. */
+  labourRevenueCents?: number;
   costRateCents: number;
   expenseCostCents: number;
   expenseRevenueCents: number;
@@ -1444,11 +1676,13 @@ export function computeSchedulerCommercialTotals(input: {
   expenseRevenue: number;
   expenseCost: number;
 } {
-  const labourRevenueCents = hoursAtRateCents(
-    input.billableHours,
-    input.billableRateCents,
-    'Labour revenue',
-  );
+  const labourRevenueCents = input.labourRevenueCents === undefined
+    ? hoursAtRateCents(
+        input.billableHours,
+        input.billableRateCents,
+        'Labour revenue',
+      )
+    : accountingCents(input.labourRevenueCents, 'Labour revenue');
   const labourCostCents = hoursAtRateCents(
     input.costHours,
     input.costRateCents,
@@ -1500,7 +1734,7 @@ async function buildFinancialSummary(
   event: ScheduleEventRow | null,
   executor: FinanceExecutor = db,
 ): Promise<SchedulerFinancialSummaryDto> {
-  assertSchedulerSourceAppVisible(source.sourceApp);
+  assertSchedulerFinanceSourceAppVisible(source.sourceApp);
   const metadata = await loadJobMetadata(source, event, executor);
   const finance = await ensureFinance(source, metadata, executor);
   const [
@@ -1565,8 +1799,13 @@ async function buildFinancialSummary(
   const costHoursOverride = currentOverride?.costMilliseconds == null
     ? null
     : millisecondsToHours(currentOverride.costMilliseconds);
-  const billableHours = billableHoursOverride ?? actualHours;
-  const costHours = costHoursOverride ?? actualHours;
+  // App-recorded time is evidence and an editable suggestion. It must never
+  // silently become the commercial quantity used by internal calculations.
+  const billableHours = billableHoursOverride ?? 0;
+  const costHours = costHoursOverride ?? 0;
+  const effectiveEvent = event ?? await latestEventForSource(source, executor);
+  const billingActors = await billingActorsForSource(source, recorded, effectiveEvent, executor);
+  const userLabourBilling = effectiveUserLabourBilling(billingActors, billableHours);
   const expenseCostCents = expenseRows.reduce((total, expense) => (
     addAccountingCents(total, expense.costAmountCents, 'Expense cost')
   ), 0);
@@ -1595,6 +1834,7 @@ async function buildFinancialSummary(
     billableHours,
     costHours,
     billableRateCents: finance.billableRateCents,
+    labourRevenueCents: userLabourBilling.labourRevenueCents,
     costRateCents: finance.costRateCents,
     expenseCostCents,
     expenseRevenueCents,
@@ -1602,7 +1842,6 @@ async function buildFinancialSummary(
     reservedCents,
     issuedQuoteCents: reserved.issuedQuoteCents,
   });
-  const effectiveEvent = event ?? await latestEventForSource(source, executor);
   const eventId = effectiveEvent?.id ?? null;
   const overrideSource = currentOverride?.source as 'admin' | 'legacy_estimate' | undefined;
   const hoursReadiness = schedulerInvoiceHoursReadiness(
@@ -1650,20 +1889,21 @@ async function buildFinancialSummary(
       actualHours,
       actualMilliseconds: recorded.activeMilliseconds,
       actualSource: 'active_sessions',
-      actors: recorded.actors,
+      actors: billingActors,
       billableHours,
       billableHoursOverride,
-      billableHoursSource: billableHoursOverride === null ? 'actual' : 'override',
+      billableHoursSource: billableHoursOverride === null ? 'default_zero' : 'override',
       costHours,
       costHoursOverride,
-      costHoursSource: costHoursOverride === null ? 'actual' : 'override',
-      billableRate: centsToMoney(finance.billableRateCents),
+      costHoursSource: costHoursOverride === null ? 'default_zero' : 'override',
+      billableRate: userLabourBilling.weightedRateCents === null
+        ? null
+        : centsToMoney(userLabourBilling.weightedRateCents),
       costRate: centsToMoney(finance.costRateCents),
       labourRevenue: totals.labourRevenue,
       labourCost: totals.labourCost,
       hoursVariance: round(actualHours - scheduledHours, 4),
       commercialHoursVariance: round(billableHours - costHours, 4),
-      overbilledHours: round(Math.max(0, reserved.reservedLabourHours - billableHours), 4),
       overrideReason: currentOverride?.reason ?? null,
       overrideSource: overrideSource ?? null,
       overriddenAt: currentOverride?.createdAt.toISOString() ?? null,
@@ -1673,7 +1913,9 @@ async function buildFinancialSummary(
             displayName: currentOverride.actorDisplayName,
           }
         : null,
-      needsHoursReview: !hoursReadiness.satisfied,
+      needsHoursReview: !hoursReadiness.satisfied
+        || userLabourBilling.missingBillingRateUsers.length > 0,
+      missingBillingRateUsers: userLabourBilling.missingBillingRateUsers,
     },
     expenses: expenseRows.map((expense) => expenseDto(
       expense,
@@ -1769,9 +2011,6 @@ async function updateSchedulerFinanceForContext(
     if (input.billingReference !== undefined) {
       patch.billingReference = optionalText(input.billingReference, 200);
     }
-    if (input.billableRate !== undefined) {
-      patch.billableRateCents = moneyToCents(input.billableRate, 'billableRate');
-    }
     if (input.costRate !== undefined) patch.costRateCents = moneyToCents(input.costRate, 'costRate');
 
     const mergedPricingMode = (patch.pricingMode ?? finance.pricingMode) as PricingMode;
@@ -1781,48 +2020,8 @@ async function updateSchedulerFinanceForContext(
     if (mergedPricingMode === 'quoted' && mergedQuotedAmount === null) {
       throw badRequest('quotedAmount is required when pricingMode is quoted');
     }
-    const pricingModeChanged = mergedPricingMode !== finance.pricingMode;
-    const commercialRatesChanged = pricingModeChanged
-      || (
-        patch.quotedAmountCents !== undefined
-        && patch.quotedAmountCents !== finance.quotedAmountCents
-      )
-      || (
-        patch.billableRateCents !== undefined
-        && patch.billableRateCents !== finance.billableRateCents
-      )
-      || (
-        patch.costRateCents !== undefined
-        && patch.costRateCents !== finance.costRateCents
-      );
-    if (commercialRatesChanged) {
-      const [activeInvoice] = await tx.select({ id: schedulerInvoices.id })
-        .from(schedulerInvoices)
-        .where(and(
-          or(
-            eq(schedulerInvoices.financeId, finance.id),
-            inArray(
-              schedulerInvoices.id,
-              tx.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
-                .from(schedulerInvoiceJobs)
-                .where(eq(schedulerInvoiceJobs.financeId, finance.id)),
-            ),
-          ),
-          inArray(schedulerInvoices.status, ACTIVE_INVOICE_STATUSES),
-        ))
-        .limit(1);
-      if (activeInvoice) {
-        throw conflict(
-          'Pricing mode, quote, and hourly rates cannot change while a non-void invoice exists',
-        );
-      }
-    }
-    if (mergedPricingMode === 'quoted') {
-      const reserved = await reservationRollup(finance.id, tx);
-      if ((mergedQuotedAmount ?? 0) < reserved.reservedQuoteCents) {
-        throw conflict('Quoted amount cannot be less than reserved invoice value');
-      }
-    }
+    // Existing invoices are immutable commercial snapshots. Editing the job's
+    // current settings must not rewrite or be blocked by those snapshots.
 
     const latestOverrideRecord = await latestHourOverrideRecord(finance.id, tx);
     const currentOverride = latestOverrideRecord?.action === 'set' ? latestOverrideRecord : null;
@@ -1832,7 +2031,7 @@ async function updateSchedulerFinanceForContext(
       ? currentBillable
       : input.billableHoursOverride === null
         ? null
-        : hoursToMilliseconds(input.billableHoursOverride, 'billableHoursOverride');
+        : billableHoursToMilliseconds(input.billableHoursOverride);
     const nextCost = input.costHoursOverride === undefined
       ? currentCost
       : input.costHoursOverride === null
@@ -2081,6 +2280,7 @@ function invoiceDto(
   row: InvoiceRow,
   lines: InvoiceLineRow[],
   jobRows: InvoiceJobRow[] = [legacyInvoiceJobRow(row)],
+  currentJobStatuses: ReadonlyMap<string, string> = new Map(),
 ): SchedulerInvoiceDto {
   const orderedJobs = [...jobRows].sort((left, right) => left.sortOrder - right.sortOrder);
   return {
@@ -2111,8 +2311,11 @@ function invoiceDto(
       sourceId: row.jobSourceId,
     },
     jobs: orderedJobs.map((invoiceJob) => {
-      const jobLines = lines.filter((line) => line.financeId === invoiceJob.financeId)
-        .map(invoiceLineDto);
+      const rawJobLines = lines.filter((line) => line.financeId === invoiceJob.financeId);
+      const jobSubtotalCents = rawJobLines.reduce((total, line) => (
+        addAccountingCents(total, line.lineTotalExGstCents, 'Job subtotal')
+      ), 0);
+      const jobLines = rawJobLines.map(invoiceLineDto);
       return {
         financeId: invoiceJob.financeId,
         sortOrder: invoiceJob.sortOrder,
@@ -2129,10 +2332,9 @@ function invoiceDto(
           siteAddress: invoiceJob.jobSiteAddress,
           status: invoiceJob.jobStatus,
         },
+        currentStatus: currentJobStatuses.get(invoiceJob.financeId) ?? invoiceJob.jobStatus,
         billingReference: invoiceJob.billingReference,
-        subtotalExGst: centsToMoney(jobLines.reduce((total, line) => (
-          addAccountingCents(total, moneyToCents(line.lineTotalExGst, 'lineTotalExGst'), 'Job subtotal')
-        ), 0)),
+        subtotalExGst: centsToMoney(jobSubtotalCents),
         lines: jobLines,
       };
     }),
@@ -2153,7 +2355,15 @@ async function loadInvoiceDto(
   const lines = await executor.select().from(schedulerInvoiceLines)
     .where(eq(schedulerInvoiceLines.invoiceId, invoice.id))
     .orderBy(asc(schedulerInvoiceLines.sortOrder), asc(schedulerInvoiceLines.createdAt));
-  return invoiceDto(invoice, lines, jobs);
+  const currentJobStatuses = new Map<string, string>();
+  for (const job of jobs) {
+    currentJobStatuses.set(job.financeId, await currentJobStatusForSource({
+      sourceApp: job.jobSourceApp as FinanceSourceApp,
+      sourceType: job.jobSourceType as FinanceSourceType,
+      sourceId: job.jobSourceId,
+    }, executor));
+  }
+  return invoiceDto(invoice, lines, jobs, currentJobStatuses);
 }
 
 async function invoiceListItems(
@@ -2212,7 +2422,7 @@ async function financeById(
     sourceId: finance.sourceId,
   } as FinanceSource;
   if (!isSupportedSource(source)) throw badRequest('Unsupported commercial source job');
-  assertSchedulerSourceAppVisible(source.sourceApp);
+  assertSchedulerFinanceSourceAppVisible(source.sourceApp);
   const event = await latestEventForSource(source, executor);
   const metadata = await loadJobMetadata(source, event, executor);
   return { finance, source, event, metadata };
@@ -2235,7 +2445,6 @@ export async function assertSchedulerInvoiceVisible(
   invoiceId: string,
   executor: FinanceExecutor = db,
 ): Promise<void> {
-  if (schedulerVisibleFinanceSourceApps().length === 3) return;
   const [invoice] = await executor.select().from(schedulerInvoices)
     .where(eq(schedulerInvoices.id, invoiceId))
     .limit(1);
@@ -2358,6 +2567,27 @@ function invoiceTotalsFromCents(
   return { subtotal, gst, total };
 }
 
+export function invoiceLineTotalCents(
+  quantityUnits: number,
+  unitAmountCents: number,
+): number {
+  if (
+    !Number.isSafeInteger(quantityUnits)
+    || quantityUnits <= 0
+    || !Number.isSafeInteger(unitAmountCents)
+    || unitAmountCents < 0
+  ) {
+    throw badRequest('Invoice line values exceed the supported accounting range');
+  }
+  const exact = (
+    BigInt(quantityUnits) * BigInt(unitAmountCents) + 5_000n
+  ) / 10_000n;
+  if (exact > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw badRequest('Invoice line total is too large');
+  }
+  return Number(exact);
+}
+
 async function replaceDraftLines(
   finances: FinanceRow | FinanceRow[],
   invoice: InvoiceRow,
@@ -2374,56 +2604,8 @@ async function replaceDraftLines(
   const financeIds = [...financeById.keys()];
   const currentLines = await executor.select().from(schedulerInvoiceLines)
     .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
-  const currentById = new Map(currentLines.map((line) => [line.id, line]));
-  if (currentLines.length > 0) {
-    if (inputs.length !== currentLines.length) {
-      throw conflict('Derived invoice lines cannot be added or removed; void and recreate the draft');
-    }
-    const requestedIds = inputs.map((input, index) => (
-      requireText(input.id, `lines[${index}].id`, 100)
-    ));
-    if (
-      new Set(requestedIds).size !== currentLines.length
-      || requestedIds.some((id) => !currentById.has(id))
-    ) {
-      throw conflict('Derived invoice lines cannot be added or removed; void and recreate the draft');
-    }
-  }
-  const availability = new Map<string, {
-    effectiveBillableUnits: number;
-    otherReservedLabourUnits: number;
-    otherReservedQuoteCents: number;
-  }>();
-  for (const finance of financeRows) {
-    const [currentOverride, recorded] = await Promise.all([
-      latestHourOverride(finance.id, executor),
-      recordedHoursForSource({
-        sourceApp: finance.sourceApp as FinanceSourceApp,
-        sourceType: finance.sourceType as FinanceSourceType,
-        sourceId: finance.sourceId,
-      }, executor),
-    ]);
-    const effectiveBillableMilliseconds = currentOverride?.billableMilliseconds
-      ?? recorded.activeMilliseconds;
-    const effectiveBillableUnits = Math.round(
-      (effectiveBillableMilliseconds / 3_600_000) * 10_000,
-    );
-    if (!Number.isSafeInteger(effectiveBillableUnits) || effectiveBillableUnits < 0) {
-      throw conflict('Effective billable hours exceed the supported accounting range');
-    }
-    availability.set(finance.id, {
-      effectiveBillableUnits,
-      otherReservedLabourUnits: 0,
-      otherReservedQuoteCents: 0,
-    });
-  }
 
   const activeRows = await executor.select({
-    invoiceId: schedulerInvoices.id,
-    financeId: schedulerInvoiceLines.financeId,
-    kind: schedulerInvoiceLines.kind,
-    quantity: schedulerInvoiceLines.quantity,
-    lineTotalCents: schedulerInvoiceLines.lineTotalExGstCents,
     expenseId: schedulerInvoiceLines.expenseId,
   }).from(schedulerInvoiceLines)
     .innerJoin(schedulerInvoices, eq(schedulerInvoices.id, schedulerInvoiceLines.invoiceId))
@@ -2435,28 +2617,6 @@ async function replaceDraftLines(
   const reservedExpenseIds = new Set(activeRows.flatMap((row) => (
     row.expenseId ? [row.expenseId] : []
   )));
-  for (const row of activeRows) {
-    const reserved = availability.get(row.financeId);
-    if (!reserved) continue;
-    if (row.kind === 'labour') {
-      const units = Math.round(row.quantity * 10_000);
-      if (!Number.isSafeInteger(units) || units < 0) {
-        throw conflict('Reserved labour exceeds the supported accounting range');
-      }
-      reserved.otherReservedLabourUnits = addAccountingCents(
-        reserved.otherReservedLabourUnits,
-        units,
-        'Reserved labour',
-      );
-    }
-    if (row.kind === 'quoted') {
-      reserved.otherReservedQuoteCents = addAccountingCents(
-        reserved.otherReservedQuoteCents,
-        row.lineTotalCents,
-        'Reserved quote value',
-      );
-    }
-  }
 
   const requestedExpenseIds = inputs.flatMap((input) => (
     typeof input.expenseId === 'string' && input.expenseId.trim()
@@ -2487,8 +2647,6 @@ async function replaceDraftLines(
     ));
   const expenseById = new Map(expenseRows.map((row) => [row.id, row]));
 
-  const invoiceLabourUnits = new Map<string, number>();
-  const invoiceQuoteCents = new Map<string, number>();
   const values: Array<typeof schedulerInvoiceLines.$inferInsert> = [];
   const ids = new Set<string>();
   for (let index = 0; index < inputs.length; index += 1) {
@@ -2506,11 +2664,6 @@ async function replaceDraftLines(
     if ((kind === 'expense') !== Boolean(expenseId)) {
       throw badRequest('Expense invoice lines must have an expenseId, and other lines must not');
     }
-    if (currentLines.length === 0 && kind === 'other') {
-      throw badRequest(
-        'Manual invoice lines are not supported; add a structured expense or supplier bill',
-      );
-    }
     const rawQuantity = requiredNonnegativeNumber(input.quantity, `lines[${index}].quantity`);
     const quantityUnits = Math.round(rawQuantity * 10_000);
     if (quantityUnits <= 0) {
@@ -2524,27 +2677,11 @@ async function replaceDraftLines(
       input.unitAmountExGst,
       `lines[${index}].unitAmountExGst`,
     );
-    const lineTotalCents = Math.round(quantity * unitAmountCents);
-    if (!Number.isSafeInteger(lineTotalCents)) {
-      throw badRequest(`lines[${index}] total is too large`);
-    }
+    const lineTotalCents = invoiceLineTotalCents(quantityUnits, unitAmountCents);
     const description = requireText(input.description, `lines[${index}].description`, 500);
     const id = optionalText(input.id, 100) ?? randomUUID();
     if (ids.has(id)) throw badRequest('Invoice line ids must be unique');
     ids.add(id);
-    const current = currentById.get(id);
-    if (current && (
-      current.financeId !== financeId
-      || current.kind !== kind
-      || current.description !== description
-      || current.quantity !== quantity
-      || current.unitAmountExGstCents !== unitAmountCents
-      || current.expenseId !== expenseId
-    )) {
-      throw conflict(
-        'Derived invoice lines are read-only; change hours, rates, or expenses before recreating the draft',
-      );
-    }
     let category: string | null = null;
     if (kind === 'expense') {
       const expense = expenseById.get(expenseId!);
@@ -2556,32 +2693,7 @@ async function replaceDraftLines(
       if (reservedExpenseIds.has(expense.id)) {
         throw conflict(`Expense ${expense.id} is already reserved by another invoice`);
       }
-      const expectedCents = expense.billableAmountCents ?? expense.costAmountCents;
-      if (quantity !== 1 || lineTotalCents !== expectedCents) {
-        throw badRequest('Linked expense lines must use quantity 1 and the expense billable amount');
-      }
       category = expense.category;
-    } else if (kind === 'labour') {
-      if (finance.pricingMode !== 'charge_up') {
-        throw badRequest('Labour lines are only valid for charge-up jobs');
-      }
-      if (unitAmountCents !== finance.billableRateCents) {
-        throw badRequest('Labour lines must use the job billable rate');
-      }
-      invoiceLabourUnits.set(financeId, addAccountingCents(
-        invoiceLabourUnits.get(financeId) ?? 0,
-        quantityUnits,
-        'Invoice labour',
-      ));
-    } else if (kind === 'quoted') {
-      if (finance.pricingMode !== 'quoted' || quantity !== 1) {
-        throw badRequest('Quoted lines must use quantity 1 on a quoted job');
-      }
-      invoiceQuoteCents.set(financeId, addAccountingCents(
-        invoiceQuoteCents.get(financeId) ?? 0,
-        lineTotalCents,
-        'Invoice quoted value',
-      ));
     }
     values.push({
       id,
@@ -2593,53 +2705,21 @@ async function replaceDraftLines(
       quantity,
       unitAmountExGstCents: unitAmountCents,
       lineTotalExGstCents: lineTotalCents,
+      showQuantityAndRate: input.showQuantityAndRate === true,
       expenseId,
       category,
       createdAt: new Date(),
     });
   }
-  for (const finance of financeRows) {
-    const available = availability.get(finance.id)!;
-    const totalReservedLabourUnits = addAccountingCents(
-      available.otherReservedLabourUnits,
-      invoiceLabourUnits.get(finance.id) ?? 0,
-      'Reserved labour',
-    );
-    if (totalReservedLabourUnits > available.effectiveBillableUnits) {
-      throw conflict(`Invoice labour exceeds ${finance.id}'s effective billable hours`);
-    }
-    const totalReservedQuoteCents = addAccountingCents(
-      available.otherReservedQuoteCents,
-      invoiceQuoteCents.get(finance.id) ?? 0,
-      'Reserved quote value',
-    );
-    if (
-      finance.pricingMode === 'quoted'
-      && totalReservedQuoteCents > (finance.quotedAmountCents ?? 0)
-    ) {
-      throw conflict(`Quoted invoice lines exceed ${finance.id}'s quoted amount`);
-    }
-  }
   const totals = invoiceTotalsFromCents(
     values.map((value) => value.lineTotalExGstCents ?? 0),
     invoice.gstRateBps,
   );
-  if (values.length === 0 || totals.subtotal <= 0) {
-    throw badRequest('An invoice must contain at least one positive-value line');
+  if (currentLines.length > 0) {
+    await executor.delete(schedulerInvoiceLines)
+      .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
   }
-  for (const finance of financeRows) {
-    const jobSubtotalCents = values
-      .filter((line) => line.financeId === finance.id)
-      .reduce((total, line) => addAccountingCents(
-        total,
-        line.lineTotalExGstCents ?? 0,
-        'Invoice job subtotal',
-      ), 0);
-    if (jobSubtotalCents <= 0) {
-      throw badRequest(`Every invoice job must contain a positive-value line (${finance.id})`);
-    }
-  }
-  if (currentLines.length === 0) {
+  if (values.length > 0) {
     await executor.insert(schedulerInvoiceLines).values(values);
   }
   await executor.update(schedulerInvoices).set({
@@ -2717,20 +2797,34 @@ async function createQuickSchedulerInvoiceForContext(
 ): Promise<SchedulerInvoiceDto> {
   const invoiceId = randomUUID();
   await db.transaction(async (tx) => {
+    const completionBySource = await lockCurrentCompletionReadiness([context.source], tx);
+    assertInvoiceCompletionReady(
+      context.source,
+      context.metadata.jobName,
+      completionBySource.get(financeSourceKey(context.source))
+        ?? { satisfied: false, basis: null },
+    );
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, context.finance.id)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
-    const { recorded, currentOverride } = await requireInvoiceReady(
+    if (financeSourceKey({
+      sourceApp: finance.sourceApp,
+      sourceType: finance.sourceType,
+      sourceId: finance.sourceId,
+    } as FinanceSource) !== financeSourceKey(context.source)) {
+      throw conflict('The selected job changed; retry invoice creation');
+    }
+    await requireInvoiceHoursReady(
       context.source,
       finance.id,
       context.metadata.jobName,
       tx,
     );
     const metadata = await loadJobMetadata(context.source, context.event, tx);
-    const reserved = await reservationRollup(finance.id, tx);
-    const effectiveBillableHours = currentOverride?.billableMilliseconds == null
-      ? recorded.activeMilliseconds / 3_600_000
-      : currentOverride.billableMilliseconds / 3_600_000;
+    const [summary, reserved] = await Promise.all([
+      buildFinancialSummary(context.source, context.event, tx),
+      reservationRollup(finance.id, tx),
+    ]);
     const reservations = await expenseReservations(finance.id, tx);
     const requestedExpenseIds = input.expenseIds === undefined
       ? null
@@ -2842,19 +2936,22 @@ async function createQuickSchedulerInvoiceForContext(
             description: `Quoted ${metadata.jobName}`,
             quantity: 1,
             unitAmountExGst: centsToMoney(remainingCents),
+            showQuantityAndRate: false,
           });
         }
       } else {
-        const remainingHours = round(Math.max(
+        const remainingCents = Math.max(
           0,
-          effectiveBillableHours - reserved.reservedLabourHours,
-        ), 4);
-        if (remainingHours > 0 && finance.billableRateCents > 0) {
+          moneyToCents(summary.time.labourRevenue, 'Labour suggestion')
+            - reserved.reservedLabourCents,
+        );
+        if (remainingCents > 0) {
           lines.push({
             kind: 'labour',
-            description: 'Recorded labour',
-            quantity: remainingHours,
-            unitAmountExGst: centsToMoney(finance.billableRateCents),
+            description: 'Labour suggestion',
+            quantity: 1,
+            unitAmountExGst: centsToMoney(remainingCents),
+            showQuantityAndRate: false,
           });
         }
       }
@@ -2867,6 +2964,7 @@ async function createQuickSchedulerInvoiceForContext(
         unitAmountExGst: centsToMoney(
           expense.billableAmountCents ?? expense.costAmountCents,
         ),
+        showQuantityAndRate: false,
         expenseId: expense.id,
       });
     }
@@ -2965,6 +3063,12 @@ export async function getConsolidatedInvoiceEligibility(
       message: 'This job needs a billing name or an explicit consolidated bill-to snapshot',
       financeId: summary.financeId,
     });
+    if (summary.time.missingBillingRateUsers.length > 0) issues.push({
+      code: 'billing_rate_missing',
+      message: `Ask an admin to set a billing rate for ${summary.time.missingBillingRateUsers
+        .map((entry) => entry.displayName ?? entry.userId).join(', ')}`,
+      financeId: summary.financeId,
+    });
   });
   if (billingPartyKeys.size > 1) issues.push({
     code: 'bill_to_override_required',
@@ -2976,8 +3080,15 @@ export async function getConsolidatedInvoiceEligibility(
     const context = contexts[index]!;
     const summary = summaries[index]!;
     const reservations = await reservationRollup(context.finance.id);
-    const availableLabourHours = context.finance.pricingMode === 'charge_up'
-      ? round(Math.max(0, summary.time.billableHours - reservations.reservedLabourHours), 4)
+    const availableLabourCents = context.finance.pricingMode === 'charge_up'
+      ? Math.max(
+          0,
+          moneyToCents(summary.time.labourRevenue, 'Available labour')
+            - reservations.reservedLabourCents,
+        )
+      : 0;
+    const availableLabourHours = availableLabourCents > 0
+      ? summary.time.billableHours
       : 0;
     const availableQuotedCents = context.finance.pricingMode === 'quoted'
       ? Math.max(0, (context.finance.quotedAmountCents ?? 0) - reservations.reservedQuoteCents)
@@ -2985,11 +3096,7 @@ export async function getConsolidatedInvoiceEligibility(
     const availableExpenses = summary.expenses.filter((expense) => (
       expense.billable && !expense.invoiced && !expense.reserved
     ));
-    const availableLabourAmount = centsToMoney(hoursAtRateCents(
-      availableLabourHours,
-      context.finance.billableRateCents,
-      'Available labour',
-    ));
+    const availableLabourAmount = centsToMoney(availableLabourCents);
     jobs.push({
       financeId: context.finance.id,
       source: context.source,
@@ -2999,7 +3106,7 @@ export async function getConsolidatedInvoiceEligibility(
       billing: summary.billing,
       invoiceReadiness: summary.invoiceReadiness,
       availableLabourHours,
-      billableRate: centsToMoney(context.finance.billableRateCents),
+      billableRate: summary.time.billableRate,
       availableLabourAmount,
       availableQuotedAmount: centsToMoney(availableQuotedCents),
       availableExpenses,
@@ -3039,11 +3146,34 @@ export async function createConsolidatedSchedulerInvoice(
   const invoiceId = randomUUID();
   await db.transaction(async (tx) => {
     const sortedFinanceIds = requestedJobs.map((job) => job.financeId).sort();
+    const candidateFinances = await tx.select().from(schedulerJobFinance)
+      .where(inArray(schedulerJobFinance.id, sortedFinanceIds))
+      .orderBy(asc(schedulerJobFinance.id));
+    if (candidateFinances.length !== sortedFinanceIds.length) throw notFound('Job finance');
+    const candidateSources = candidateFinances.map((finance) => ({
+      sourceApp: finance.sourceApp,
+      sourceType: finance.sourceType,
+      sourceId: finance.sourceId,
+    } as FinanceSource));
+    if (candidateSources.some((source) => !isSupportedSource(source))) {
+      throw badRequest('Unsupported commercial source job');
+    }
+    const candidateSourceByFinanceId = new Map(candidateFinances.map((finance, index) => (
+      [finance.id, financeSourceKey(candidateSources[index]!)]
+    )));
+    const completionBySource = await lockCurrentCompletionReadiness(candidateSources, tx);
     const lockedFinances = await tx.select().from(schedulerJobFinance)
       .where(inArray(schedulerJobFinance.id, sortedFinanceIds))
       .orderBy(asc(schedulerJobFinance.id))
       .for('update');
     if (lockedFinances.length !== sortedFinanceIds.length) throw notFound('Job finance');
+    if (lockedFinances.some((finance) => candidateSourceByFinanceId.get(finance.id) !== (
+      financeSourceKey({
+        sourceApp: finance.sourceApp,
+        sourceType: finance.sourceType,
+        sourceId: finance.sourceId,
+      } as FinanceSource)
+    ))) throw conflict('A selected job changed; retry invoice creation');
     const financeById = new Map(lockedFinances.map((finance) => [finance.id, finance]));
     const orderedFinances = requestedJobs.map((job) => financeById.get(job.financeId)!);
     const currencies = [...new Set(orderedFinances.map((finance) => finance.currency))];
@@ -3058,7 +3188,6 @@ export async function createConsolidatedSchedulerInvoice(
       : anchor.billToName?.trim();
     if (!billToName) throw badRequest('Set a billing name before creating an invoice');
     const contexts: FinanceContext[] = [];
-    const readinessByFinance = new Map<string, Awaited<ReturnType<typeof requireInvoiceReady>>>();
     for (const finance of orderedFinances) {
       const source = {
         sourceApp: finance.sourceApp,
@@ -3066,22 +3195,22 @@ export async function createConsolidatedSchedulerInvoice(
         sourceId: finance.sourceId,
       } as FinanceSource;
       if (!isSupportedSource(source)) throw badRequest('Unsupported commercial source job');
-      assertSchedulerSourceAppVisible(source.sourceApp);
+      assertSchedulerFinanceSourceAppVisible(source.sourceApp);
       const event = await latestEventForSource(source, tx);
-      const initialMetadata = await loadJobMetadata(source, event, tx);
-      readinessByFinance.set(finance.id, await requireInvoiceReady(
+      const metadata = await loadJobMetadata(source, event, tx);
+      assertInvoiceCompletionReady(
         source,
-        finance.id,
-        initialMetadata.jobName,
-        tx,
-      ));
-      const context = {
+        metadata.jobName,
+        completionBySource.get(financeSourceKey(source))
+          ?? { satisfied: false, basis: null },
+      );
+      await requireInvoiceHoursReady(source, finance.id, metadata.jobName, tx);
+      contexts.push({
         finance,
         source,
         event,
-        metadata: await loadJobMetadata(source, event, tx),
-      };
-      contexts.push(context);
+        metadata,
+      });
     }
     const now = new Date();
     const invoiceNumber = await allocateInvoiceNumber(now, tx);
@@ -3166,10 +3295,10 @@ export async function createConsolidatedSchedulerInvoice(
     for (let index = 0; index < contexts.length; index += 1) {
       const context = contexts[index]!;
       const request = requestedJobs[index]!;
-      const { recorded, currentOverride } = readinessByFinance.get(context.finance.id)!;
-      const reserved = await reservationRollup(context.finance.id, tx);
-      const effectiveBillableHours = (currentOverride?.billableMilliseconds
-        ?? recorded.activeMilliseconds) / 3_600_000;
+      const [summary, reserved] = await Promise.all([
+        buildFinancialSummary(context.source, context.event, tx),
+        reservationRollup(context.finance.id, tx),
+      ]);
       if (request.includeLabour !== false) {
         if (context.finance.pricingMode === 'quoted') {
           const remainingCents = Math.max(
@@ -3182,18 +3311,21 @@ export async function createConsolidatedSchedulerInvoice(
             description: `Quoted ${context.metadata.jobName}`,
             quantity: 1,
             unitAmountExGst: centsToMoney(remainingCents),
+            showQuantityAndRate: false,
           });
         } else {
-          const remainingHours = round(Math.max(
+          const remainingCents = Math.max(
             0,
-            effectiveBillableHours - reserved.reservedLabourHours,
-          ), 4);
-          if (remainingHours > 0 && context.finance.billableRateCents > 0) lines.push({
+            moneyToCents(summary.time.labourRevenue, 'Labour suggestion')
+              - reserved.reservedLabourCents,
+          );
+          if (remainingCents > 0) lines.push({
             financeId: context.finance.id,
             kind: 'labour',
-            description: `Recorded labour — ${context.metadata.jobName}`,
-            quantity: remainingHours,
-            unitAmountExGst: centsToMoney(context.finance.billableRateCents),
+            description: `Labour suggestion — ${context.metadata.jobName}`,
+            quantity: 1,
+            unitAmountExGst: centsToMoney(remainingCents),
+            showQuantityAndRate: false,
           });
         }
       }
@@ -3227,18 +3359,9 @@ export async function createConsolidatedSchedulerInvoice(
         description: expense.description,
         quantity: 1,
         unitAmountExGst: centsToMoney(expense.billableAmountCents ?? expense.costAmountCents),
+        showQuantityAndRate: false,
         expenseId: expense.id,
       });
-    }
-    for (const context of contexts) {
-      const hasPositiveCharge = lines.some((line) => (
-        line.financeId === context.finance.id
-        && line.quantity > 0
-        && line.unitAmountExGst > 0
-      ));
-      if (!hasPositiveCharge) {
-        throw conflict(`Selected job ${context.finance.id} has no positive available charges`);
-      }
     }
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId)).limit(1);
@@ -3335,7 +3458,25 @@ async function issueSchedulerInvoiceForContext(
     const [unlockedInvoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId)).limit(1);
     if (!unlockedInvoice) throw notFound('Invoice');
+    const candidateJobs = await invoiceJobsForRow(unlockedInvoice, tx);
+    const candidateSources = candidateJobs.map((job) => ({
+      sourceApp: job.jobSourceApp,
+      sourceType: job.jobSourceType,
+      sourceId: job.jobSourceId,
+    } as FinanceSource));
+    const candidateSourceByFinanceId = new Map(candidateJobs.map((job, index) => (
+      [job.financeId, financeSourceKey(candidateSources[index]!)]
+    )));
+    const completionBySource = await lockCurrentCompletionReadiness(candidateSources, tx);
     const { jobs, finances } = await lockInvoiceFinances(unlockedInvoice, tx);
+    if (
+      jobs.length !== candidateJobs.length
+      || jobs.some((job) => candidateSourceByFinanceId.get(job.financeId) !== financeSourceKey({
+        sourceApp: job.jobSourceApp,
+        sourceType: job.jobSourceType,
+        sourceId: job.jobSourceId,
+      } as FinanceSource))
+    ) throw conflict('Invoice jobs changed; refresh before issuing');
     if (context) assertInvoiceFinanceMembership(jobs, context.finance.id);
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId)).for('update').limit(1);
@@ -3365,10 +3506,17 @@ async function issueSchedulerInvoiceForContext(
         sourceType: finance.sourceType,
         sourceId: finance.sourceId,
       } as FinanceSource;
-      await requireInvoiceReady(
+      const jobName = invoiceJobByFinance.get(finance.id)?.jobName ?? finance.id;
+      assertInvoiceCompletionReady(
+        source,
+        jobName,
+        completionBySource.get(financeSourceKey(source))
+          ?? { satisfied: false, basis: null },
+      );
+      await requireInvoiceHoursReady(
         source,
         finance.id,
-        invoiceJobByFinance.get(finance.id)?.jobName ?? finance.id,
+        jobName,
         tx,
       );
     }
@@ -3381,6 +3529,7 @@ async function issueSchedulerInvoiceForContext(
       description: line.description,
       quantity: line.quantity,
       unitAmountExGst: centsToMoney(line.unitAmountExGstCents),
+      showQuantityAndRate: line.showQuantityAndRate,
       expenseId: line.expenseId,
     })), tx, updatedAt);
     lines = await tx.select().from(schedulerInvoiceLines)
@@ -3404,6 +3553,12 @@ async function issueSchedulerInvoiceForContext(
       } as FinanceSource;
       const event = await latestEventForSource(source, tx);
       const metadata = await loadJobMetadata(source, event, tx);
+      assertInvoiceCompletionReady(
+        source,
+        metadata.jobName,
+        completionBySource.get(financeSourceKey(source))
+          ?? { satisfied: false, basis: null },
+      );
       metadataByFinance.set(job.financeId, metadata);
       await tx.update(schedulerInvoiceJobs).set({
         billingReference: finances.find((finance) => finance.id === job.financeId)?.billingReference
@@ -3811,7 +3966,7 @@ export async function listSchedulerExpensePortfolio(
   const cursor = decodePortfolioCursor(options.cursor);
   const conditions = [
     isNull(schedulerJobExpenses.deletedAt),
-    inArray(schedulerJobFinance.sourceApp, schedulerVisibleFinanceSourceApps()),
+    inArray(schedulerJobFinance.sourceApp, schedulerVisibleCommercialSourceApps()),
   ];
   if (options.kind) conditions.push(eq(schedulerJobExpenses.kind, options.kind));
   if (options.financeId) conditions.push(eq(schedulerJobExpenses.financeId, options.financeId));
@@ -3951,7 +4106,7 @@ async function assertSchedulerExpenseVisible(
     ))
     .limit(1);
   if (!row) throw notFound('Expense');
-  assertSchedulerSourceAppVisible(row.sourceApp);
+  assertSchedulerFinanceSourceAppVisible(row.sourceApp);
 }
 
 function detectedBillAttachmentType(body: Buffer): string | null {
@@ -4105,7 +4260,7 @@ export async function uploadSchedulerExpenseAttachment(
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, locator.financeId)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
-    assertSchedulerSourceAppVisible(finance.sourceApp);
+    assertSchedulerFinanceSourceAppVisible(finance.sourceApp);
     const [expense] = await tx.select().from(schedulerJobExpenses)
       .where(and(
         eq(schedulerJobExpenses.id, expenseId),
@@ -4156,7 +4311,7 @@ export async function uploadSchedulerExpenseAttachment(
         .for('update')
         .limit(1);
       if (!finance) throw notFound('Job finance');
-      assertSchedulerSourceAppVisible(finance.sourceApp);
+      assertSchedulerFinanceSourceAppVisible(finance.sourceApp);
       const [expense] = await tx.select().from(schedulerJobExpenses)
         .where(and(
           eq(schedulerJobExpenses.id, expenseId),
@@ -4271,7 +4426,7 @@ export async function deleteSchedulerExpenseAttachment(
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, expense.financeId)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
-    assertSchedulerSourceAppVisible(finance.sourceApp);
+    assertSchedulerFinanceSourceAppVisible(finance.sourceApp);
     const [row] = await tx.select().from(schedulerExpenseAttachments).where(and(
       eq(schedulerExpenseAttachments.id, attachmentId),
       eq(schedulerExpenseAttachments.expenseId, expense.id),
@@ -4293,6 +4448,7 @@ export async function getSchedulerInvoicePdf(
   invoiceId: string,
 ): Promise<InvoicePdfOutput> {
   const invoice = await getSchedulerInvoice(user, eventId, invoiceId);
+  if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
   return renderSchedulerInvoicePdf(invoice);
 }
 
@@ -4302,7 +4458,21 @@ export async function getSchedulerInvoicePdfByFinanceId(
   invoiceId: string,
 ): Promise<InvoicePdfOutput> {
   const invoice = await getSchedulerInvoiceByFinanceId(user, financeId, invoiceId);
+  if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
   return renderSchedulerInvoicePdf(invoice);
+}
+
+export async function assertSchedulerInvoiceJobsCompleted(
+  invoice: Pick<SchedulerInvoiceDto, 'jobs'>,
+  executor: FinanceExecutor = db,
+): Promise<void> {
+  for (const group of invoice.jobs) {
+    assertInvoiceCompletionReady(
+      group.source,
+      group.job.jobName,
+      await sourceCompletionReadiness(group.source, executor),
+    );
+  }
 }
 
 export function renderSchedulerInvoicePdf(invoice: SchedulerInvoiceDto): Promise<InvoicePdfOutput> {
@@ -4346,6 +4516,7 @@ export function renderSchedulerInvoicePdf(invoice: SchedulerInvoiceDto): Promise
       quantity: line.quantity,
       unitAmountExGst: line.unitAmountExGst,
       lineTotalExGst: line.lineTotalExGst,
+      showQuantityAndRate: line.showQuantityAndRate,
     })),
     jobs: invoice.jobs.map((group) => ({
       financeId: group.financeId,
@@ -4366,6 +4537,7 @@ export function renderSchedulerInvoicePdf(invoice: SchedulerInvoiceDto): Promise
         quantity: line.quantity,
         unitAmountExGst: line.unitAmountExGst,
         lineTotalExGst: line.lineTotalExGst,
+        showQuantityAndRate: line.showQuantityAndRate,
       })),
     })),
   });
@@ -4381,8 +4553,8 @@ export async function listSchedulerFinanceOverview(
   } = {},
 ): Promise<{ items: SchedulerFinanceOverviewItemDto[]; nextCursor: string | null }> {
   await requireGlobalFinanceAdmin(user);
-  const visibleApps = schedulerVisibleFinanceSourceApps();
-  const [eventRows, financeRows, auditRows, assessmentRows, installationRows] = await Promise.all([
+  const visibleApps = schedulerVisibleCommercialSourceApps();
+  const [eventRows, financeRows, assessmentRows, installationRows] = await Promise.all([
     db.select().from(portalScheduleEvents).where(and(
       inArray(portalScheduleEvents.sourceApp, visibleApps),
       inArray(portalScheduleEvents.sourceType, ['audit', 'assessment', 'installation']),
@@ -4390,7 +4562,6 @@ export async function listSchedulerFinanceOverview(
     db.select().from(schedulerJobFinance)
       .where(inArray(schedulerJobFinance.sourceApp, visibleApps))
       .orderBy(desc(schedulerJobFinance.updatedAt)),
-    db.select({ id: eaAudits.id }).from(eaAudits).where(isNull(eaAudits.deletedAt)),
     db.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments)
       .where(isNull(ssRooftopAssessments.deletedAt)),
     db.select({ id: ihInstallations.id }).from(ihInstallations)
@@ -4413,16 +4584,11 @@ export async function listSchedulerFinanceOverview(
       sourceType: finance.sourceType,
       sourceId: finance.sourceId,
     } as FinanceSource;
-    if (!isSupportedSource(source)) continue;
+    if (!isSupportedSource(source) || source.sourceApp === 'ecoaudit') continue;
     const key = `${source.sourceApp}:${source.sourceType}:${source.sourceId}`;
     if (!sourceMap.has(key)) sourceMap.set(key, { source, event: null });
   }
   for (const source of [
-    ...auditRows.map((row) => ({
-      sourceApp: 'ecoaudit' as const,
-      sourceType: 'audit' as const,
-      sourceId: row.id,
-    })),
     ...assessmentRows.map((row) => ({
       sourceApp: 'solarsense' as const,
       sourceType: 'assessment' as const,
@@ -4434,14 +4600,14 @@ export async function listSchedulerFinanceOverview(
       sourceId: row.id,
     })),
   ]) {
-    if (!isSchedulerSourceAppVisible(source.sourceApp)) continue;
+    if (!isSchedulerFinanceSourceAppVisible(source.sourceApp)) continue;
     const key = `${source.sourceApp}:${source.sourceType}:${source.sourceId}`;
     if (!sourceMap.has(key)) sourceMap.set(key, { source, event: null });
   }
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 25)));
   const candidates = [...sourceMap.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
-    .filter(([, entry]) => isSchedulerSourceAppVisible(entry.source.sourceApp))
+    .filter(([, entry]) => isSchedulerFinanceSourceAppVisible(entry.source.sourceApp))
     .filter(([, entry]) => !options.sourceApp || entry.source.sourceApp === options.sourceApp)
     .filter(([, entry]) => !options.sourceId || entry.source.sourceId === options.sourceId)
     .filter(([key]) => !options.cursor || key > options.cursor)
@@ -4465,6 +4631,7 @@ export async function listSchedulerFinanceOverview(
     sourceType: summary.source.sourceType,
     sourceId: summary.source.sourceId,
     jobName: summary.job.jobName,
+    siteName: summary.job.siteName,
     jobDate: summary.job.jobDate,
     jobStatus: summary.job.status,
     eventStatus: summary.event?.status ?? null,

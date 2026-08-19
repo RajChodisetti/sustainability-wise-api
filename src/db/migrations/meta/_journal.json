@@ -267,6 +267,20 @@
       "when": 1786925202185,
       "tag": "0037_cultured_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1787110530356,
+      "tag": "0038_yielding_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1787110539326,
+      "tag": "0039_heavy_slayback",
+      "breakpoints": true
     }
   ]
 }

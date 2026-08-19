@@ -63,6 +63,14 @@ test('invoice PDF publication CAS and cleanup outbox are atomic on PostgreSQL', 
       )
     `);
     await setup.unsafe(`
+      INSERT INTO ea_audits (
+        id, site_name, site_address, inspector_name, audit_date, status, created_at
+      ) VALUES (
+        'audit-export', 'Export Site', '1 Export Road', 'PDF Worker',
+        '2026-08-16', 'Completed', now()
+      )
+    `);
+    await setup.unsafe(`
       INSERT INTO scheduler_job_finance (
         id, source_app, source_type, source_id, pricing_mode, currency,
         bill_to_name, billable_rate_cents, cost_rate_cents

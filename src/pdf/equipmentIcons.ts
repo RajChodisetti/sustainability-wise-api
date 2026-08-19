@@ -8,6 +8,14 @@ export const PDF_EQUIPMENT_ICON_NAMES = [
   'water',
   'electricity',
   'camera',
+  'meter',
+  'refrigeration',
+  'forklift',
+  'fan',
+  'hoist',
+  'compressed-air',
+  'site-asset',
+  'residual',
 ] as const;
 
 export type PdfEquipmentIconName = (typeof PDF_EQUIPMENT_ICON_NAMES)[number];
@@ -22,6 +30,14 @@ const ICON_MARKUP: Record<PdfEquipmentIconName, string> = {
   water: '<path d="M12 2s7 7.2 7 12a7 7 0 0 1-14 0c0-4.8 7-12 7-12Z"/><path d="M9 15a3 3 0 0 0 3 2"/>',
   electricity: '<path d="m13 2-8 12h7l-1 8 8-12h-7l1-8Z"/>',
   camera: '<path d="M4 7h3l1.5-2h7L17 7h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z"/><circle cx="12" cy="13" r="4"/>',
+  meter: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h3M14 15h2"/>',
+  refrigeration: '<rect x="5" y="2" width="14" height="20" rx="2"/><path d="M5 10h14M9 5v2M9 13v3"/>',
+  forklift: '<path d="M4 5h6v9H4zM4 14h10M17 4v10M17 14h4"/><circle cx="6" cy="18" r="2.5"/><circle cx="14" cy="18" r="2.5"/>',
+  fan: '<circle cx="12" cy="12" r="2"/><path d="M12 10c-1-5 1-7 3-7 3 0 4 4 1 7M14 12c5-1 7 1 7 3 0 3-4 4-7 1M12 14c1 5-1 7-3 7-3 0-4-4-1-7M10 12c-5 1-7-1-7-3 0-3 4-4 7-1"/>',
+  hoist: '<path d="M14.7 6.3a4 4 0 0 0-5-5L7 4l3 3 2.7-2.7a4 4 0 0 0 2 2ZM8.5 8.5 2 15v5h5l6.5-6.5"/>',
+  'compressed-air': '<path d="M4 18a8 8 0 1 1 16 0M12 18l4-6M6 18h12"/>',
+  'site-asset': '<path d="M4 21V5l8-3v19M12 8h8v13M8 7h1M8 11h1M8 15h1M16 11h1M16 15h1M3 21h18"/>',
+  residual: '<path d="M3 12h4l2-6 4 12 2-6h6"/>',
 };
 
 /**

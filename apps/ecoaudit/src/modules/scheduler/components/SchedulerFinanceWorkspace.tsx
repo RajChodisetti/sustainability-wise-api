@@ -282,9 +282,9 @@ export function SchedulerFinanceWorkspace({
               }
             }}
           />
-          <main className="min-w-0">
+          <section className="min-w-0" aria-label="Selected job financial summary">
             {selected ? <SchedulerFinanceDetail key={selected.financeId} financeId={selected.financeId} overview={selected} /> : <EmptyState title="Select a job" description="Choose a job to review active hours, billing settings, rates, and profitability." icon="gauge" />}
-          </main>
+          </section>
         </div>
       )}
     </div>
@@ -335,7 +335,7 @@ function FinanceJobPicker({
         <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
         {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
       </Select>
-      <Checkbox label="Needs hours review only" checked={needsReviewOnly} onChange={onNeedsReview} />
+      <Checkbox label="Needs setup or review only" checked={needsReviewOnly} onChange={onNeedsReview} />
       {hasNextPage && (search.trim() || sourceApp !== 'all' || needsReviewOnly) ? <p className="mb-2 text-xs leading-5 text-[var(--text-sub)]">Filters apply to loaded jobs. Load more to continue the search.</p> : null}
       <nav className="mt-3 space-y-2" aria-label="Financial summary jobs">
         {filtered.map((job) => {

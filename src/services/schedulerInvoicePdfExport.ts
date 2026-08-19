@@ -22,6 +22,7 @@ import {
   getSchedulerInvoice,
   getSchedulerInvoiceByFinanceId,
   getConsolidatedSchedulerInvoice,
+  assertSchedulerInvoiceJobsCompleted,
   loadSchedulerInvoiceExportSnapshot,
   renderSchedulerInvoicePdf,
   withSchedulerInvoiceExportRevisionLock,
@@ -34,7 +35,7 @@ import {
 } from './storageDeletionService.js';
 import { makePdfStorageKeyFromName } from './storageNaming.js';
 
-export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v2';
+export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v3';
 
 export type SchedulerInvoicePdfJobParams = ExportJobParams & {
   invoiceId: string;
@@ -504,6 +505,7 @@ async function runSchedulerInvoicePdfExport(args: {
       args.invoiceId,
       args.sourceUpdatedAt,
     );
+    if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
 
     await updateSchedulerInvoicePdfClaimPhase(claim, 'Rendering PDF');
     const pdf = await renderSchedulerInvoicePdf(invoice);
@@ -677,6 +679,7 @@ async function queueSchedulerInvoicePdfForSnapshot(
   if (invoice.updatedAt !== expectedUpdatedAt) {
     throw conflict('Invoice changed before its PDF export was queued. Refresh and try again.');
   }
+  if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
   const app = requireStorageApp(user.app);
   const params = schedulerInvoicePdfJobParams(invoice);
   const jobId = randomUUID();

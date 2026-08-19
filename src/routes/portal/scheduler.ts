@@ -100,10 +100,9 @@ const financeUpdateBodySchema = {
     billingAddress: { type: ['string', 'null'], maxLength: 1000 },
     billingEmail: { type: ['string', 'null'], maxLength: 320 },
     billingReference: { type: ['string', 'null'], maxLength: 200 },
-    billableHoursOverride: { type: ['number', 'null'], minimum: 0 },
+    billableHoursOverride: { type: ['integer', 'null'], minimum: 0 },
     costHoursOverride: { type: ['number', 'null'], minimum: 0 },
     overrideReason: { type: ['string', 'null'], maxLength: 1000 },
-    billableRate: { type: 'number', minimum: 0 },
     costRate: { type: 'number', minimum: 0 },
   },
 } as const;
@@ -136,9 +135,25 @@ const invoiceDraftBodySchema = {
     billToAddress: { type: ['string', 'null'], maxLength: 1000 },
     billToEmail: { type: ['string', 'null'], maxLength: 320 },
     purchaseOrderReference: { type: ['string', 'null'], maxLength: 200 },
-    // Keep this recognized-but-impossible so Fastify cannot silently strip a
-    // legacy client line edit and make the caller believe it was applied.
-    lines: { not: {} },
+    lines: {
+      type: 'array',
+      maxItems: 250,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['description', 'quantity', 'unitAmountExGst'],
+        properties: {
+          id: { type: 'string', minLength: 1, maxLength: 100 },
+          financeId: { type: 'string', minLength: 1, maxLength: 100 },
+          kind: { type: 'string', enum: ['labour', 'expense', 'quoted', 'other'] },
+          description: { type: 'string', minLength: 1, maxLength: 500 },
+          quantity: { type: 'number', minimum: 0.0001 },
+          unitAmountExGst: { type: 'number', minimum: 0 },
+          showQuantityAndRate: { type: 'boolean' },
+          expenseId: { type: ['string', 'null'], maxLength: 100 },
+        },
+      },
+    },
   },
 } as const;
 
@@ -920,7 +935,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit draft invoice header fields',
+        summary: 'Edit draft invoice fields, costs, and presentation',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },
@@ -1178,7 +1193,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit draft invoice header fields',
+        summary: 'Edit draft invoice fields, costs, and presentation',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },

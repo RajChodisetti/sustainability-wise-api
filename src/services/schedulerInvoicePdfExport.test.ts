@@ -104,7 +104,7 @@ test('scheduler invoice PDF params pin identity, revision, variant, and branded 
     invoiceId: 'invoice-42',
     financeId: 'finance-9',
     sourceUpdatedAt: '2026-08-16T18:15:00.000Z',
-    reportVariantKey: 'scheduler-invoice-pdf:v2:invoice-42:2026-08-16T18:15:00.000Z',
+    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
     rendererVersion: SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
   });
   assert.equal('clientName' in params, false);

@@ -5,6 +5,7 @@ import { useDraggable } from '@dnd-kit/core';
 import { CSS } from '@dnd-kit/utilities';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
+import { Icon } from '@/components/ui/Icon';
 import { useUnscheduledJobs } from '@/modules/scheduler/hooks/useScheduler';
 import { appChipClass, SOURCE_APP_LABEL } from '@/modules/scheduler/lib/colors';
 import type { JobOption, ScheduleSourceApp } from '@/modules/scheduler/types/domain';
@@ -16,7 +17,6 @@ export type JobDragData = {
 
 const APP_FILTERS: Array<{ value: '' | Exclude<ScheduleSourceApp, 'custom'>; label: string }> = [
   { value: '', label: 'All apps' },
-  { value: 'ecoaudit', label: 'Eco Audit' },
   { value: 'solarsense', label: 'Solar Sense' },
   { value: 'installhub', label: 'Field App' },
 ];
@@ -24,9 +24,11 @@ const APP_FILTERS: Array<{ value: '' | Exclude<ScheduleSourceApp, 'custom'>; lab
 export function JobsPoolPanel({
   enabled,
   visibleSourceApps,
+  className = '',
 }: {
   enabled: boolean;
   visibleSourceApps: ScheduleSourceApp[];
+  className?: string;
 }) {
   const [q, setQ] = useState('');
   const [app, setApp] = useState<'' | Exclude<ScheduleSourceApp, 'custom'>>('');
@@ -36,36 +38,57 @@ export function JobsPoolPanel({
   );
 
   return (
-    <aside className="flex h-full min-h-[28rem] w-full flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface)] lg:w-64 xl:w-72">
-      <div className="space-y-2 border-b border-[var(--border)] px-3 py-3">
-        <h3 className="text-sm font-extrabold text-[var(--text)]">Jobs</h3>
-        <p className="text-[11px] font-semibold text-[var(--text-sub)]">
-          Drag onto the calendar to assign day & time.
-        </p>
-        <Input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Search jobs"
-          aria-label="Search unscheduled jobs"
-        />
-        <div>
-          <FieldLabel className="!mt-0">Filter</FieldLabel>
-          <Select
-            value={app}
-            onChange={(e) => setApp(e.target.value as typeof app)}
-            aria-label="Filter by app"
-          >
-            {APP_FILTERS.filter((filter) => (
-              !filter.value || visibleSourceApps.includes(filter.value)
-            )).map((f) => (
-              <option key={f.value || 'all'} value={f.value}>
-                {f.label}
-              </option>
-            ))}
-          </Select>
+    <aside
+      id="scheduler-jobs-pool-panel"
+      className={`flex min-h-80 w-full flex-col overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)] ${className}`}
+      aria-labelledby="scheduler-jobs-pool-title"
+    >
+      <div className="border-b border-[var(--border)] p-3.5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Icon name="clipboard" size={18} className="text-[var(--primary)]" />
+              <h3 id="scheduler-jobs-pool-title" className="text-sm font-extrabold text-[var(--text)]">
+                Unscheduled jobs
+              </h3>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+              Drag a job onto an hour to schedule it.
+            </p>
+          </div>
+          {!query.isLoading && !query.error ? (
+            <span className="shrink-0 rounded-full bg-[var(--surface2)] px-2.5 py-1 text-xs font-extrabold text-[var(--text-sub)]">
+              {(query.data ?? []).length}
+            </span>
+          ) : null}
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_12rem] 2xl:grid-cols-1">
+          <Input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search jobs"
+            aria-label="Search unscheduled jobs"
+          />
+          <div>
+            <FieldLabel className="sr-only">Product</FieldLabel>
+            <Select
+              value={app}
+              onChange={(e) => setApp(e.target.value as typeof app)}
+              aria-label="Filter jobs by product"
+            >
+              {APP_FILTERS.filter((filter) => (
+                !filter.value || visibleSourceApps.includes(filter.value)
+              )).map((f) => (
+                <option key={f.value || 'all'} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
       </div>
-      <div className="flex-1 space-y-2 overflow-y-auto p-2">
+      <div className="grid flex-1 content-start gap-2 overflow-y-auto p-2.5 sm:grid-cols-2 lg:grid-cols-3 2xl:block 2xl:space-y-2">
         {query.isLoading ? <Spinner label="Loading jobs…" /> : null}
         {query.error ? (
           <ErrorBanner message={(query.error as Error).message || 'Failed to load jobs'} />
@@ -94,7 +117,7 @@ function DraggableJobCard({ job }: { job: JobOption }) {
     <div
       ref={setNodeRef}
       style={style}
-      className={`cursor-grab rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-2.5 active:cursor-grabbing ${
+      className={`cursor-grab rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)] p-2.5 shadow-[var(--shadow-xs)] transition-colors hover:border-[var(--primary)] hover:bg-[var(--primary-soft)] active:cursor-grabbing ${
         isDragging ? 'opacity-50 ring-2 ring-[var(--primary)]' : ''
       }`}
       {...listeners}

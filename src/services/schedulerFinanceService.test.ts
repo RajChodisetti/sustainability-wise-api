@@ -4,7 +4,11 @@ import test from 'node:test';
 import { AppError } from '../utils/errors.js';
 import { parseSchedulerInvoiceGstRate } from '../config.js';
 import {
+  billableHoursToMilliseconds,
   computeSchedulerCommercialTotals,
+  effectiveUserLabourBilling,
+  invoiceLineTotalCents,
+  isCompletedSchedulerJobStatus,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
 } from './schedulerFinanceService.js';
@@ -45,6 +49,100 @@ test('missing app time requires both explicit admin hour values, including valid
   assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, {
     source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
   }), { satisfied: false, basis: null });
+});
+
+test('billable hour overrides accept whole nonnegative hours only', () => {
+  assert.equal(billableHoursToMilliseconds(0), 0);
+  assert.equal(billableHoursToMilliseconds(3), 10_800_000);
+  for (const invalid of [-1, 1.25, Number.POSITIVE_INFINITY, Number.NaN, '2']) {
+    assert.throws(
+      () => billableHoursToMilliseconds(invalid),
+      (error: unknown) => error instanceof AppError
+        && error.statusCode === 400
+        && error.detail === 'billableHoursOverride must be a nonnegative integer',
+    );
+  }
+});
+
+test('user billing uses fixed canonical rates and proportionally editable hours', () => {
+  const actors = [
+    {
+      userId: 'user-a',
+      displayName: 'A',
+      activeMilliseconds: 7_200_000,
+      hours: 2,
+      billingRate: 100,
+      labourAmount: 200,
+      billingRateEditable: true,
+    },
+    {
+      userId: 'user-b',
+      displayName: 'B',
+      activeMilliseconds: 3_600_000,
+      hours: 1,
+      billingRate: 200,
+      labourAmount: 200,
+      billingRateEditable: true,
+    },
+  ];
+  assert.deepEqual(effectiveUserLabourBilling(actors, 6), {
+    labourRevenueCents: 80_000,
+    weightedRateCents: 13_333,
+    missingBillingRateUsers: [],
+  });
+});
+
+test('missing user rates fail closed, including while commercial hours remain zero', () => {
+  const actors = [{
+    userId: 'user-missing',
+    displayName: 'Needs admin',
+    activeMilliseconds: 0,
+    hours: 0,
+    billingRate: null,
+    labourAmount: null,
+    billingRateEditable: true,
+  }];
+  assert.deepEqual(effectiveUserLabourBilling(actors, 0), {
+    labourRevenueCents: 0,
+    weightedRateCents: null,
+    missingBillingRateUsers: [{ userId: 'user-missing', displayName: 'Needs admin' }],
+  });
+  assert.deepEqual(effectiveUserLabourBilling(actors, 4), {
+    labourRevenueCents: 0,
+    weightedRateCents: null,
+    missingBillingRateUsers: [{ userId: 'user-missing', displayName: 'Needs admin' }],
+  });
+});
+
+test('non-zero billing hours without a linked user fail closed', () => {
+  assert.deepEqual(effectiveUserLabourBilling([], 4), {
+    labourRevenueCents: 0,
+    weightedRateCents: null,
+    missingBillingRateUsers: [{
+      userId: 'unassigned',
+      displayName: 'Unassigned billing user',
+    }],
+  });
+});
+
+test('invoice completion checks are case and whitespace tolerant only', () => {
+  assert.equal(isCompletedSchedulerJobStatus('Completed'), true);
+  assert.equal(isCompletedSchedulerJobStatus(' completed '), true);
+  assert.equal(isCompletedSchedulerJobStatus('Draft'), false);
+  assert.equal(isCompletedSchedulerJobStatus('done'), false);
+});
+
+test('invoice line totals use exact fixed-point arithmetic at safe-integer bounds', () => {
+  assert.equal(
+    invoiceLineTotalCents(10_001, 9_006_298_624_875_991),
+    9_007_199_254_738_479,
+  );
+  assert.throws(
+    () => invoiceLineTotalCents(10_001, Number.MAX_SAFE_INTEGER),
+    (error: unknown) => error instanceof AppError
+      && error.statusCode === 400
+      && error.detail === 'Invoice line total is too large',
+  );
 });
 
 test('charge-up totals use effective labour sell, actual costs, and ex-GST expenses', () => {
@@ -140,6 +238,22 @@ test('legacy Field runtime adapters contain no ih finance writes or calendar-day
     assert.equal(source.includes('syncAutoLabourLine'), false);
     assert.equal(source.includes('nextInvoiceNumber'), false);
   }
+});
+
+test('invoice snapshots no longer lock job settings or require migrated legacy hours', () => {
+  const service = readFileSync(
+    new URL('./schedulerFinanceService.ts', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(
+    service,
+    /Pricing mode, quote, and hourly rates cannot change while a non-void invoice exists/,
+  );
+  assert.doesNotMatch(
+    service,
+    /Confirm or replace migrated legacy hours .* before issuing/,
+  );
+  assert.match(service, /Existing invoices are immutable commercial snapshots/);
 });
 
 test('0033 is append-only and declares the legacy review/counter migration', () => {

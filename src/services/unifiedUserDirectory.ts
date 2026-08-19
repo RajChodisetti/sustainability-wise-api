@@ -20,6 +20,7 @@ export interface UnifiedUserRegistryRow {
   globalUserId: string;
   globalLoginKey: string;
   globalDisplayEmail: string;
+  billingRateCents: number | null;
   originApp: UnifiedUserApp;
   originUserId: string;
   fieldUserId: string;
@@ -53,6 +54,7 @@ export interface UnifiedUserDirectoryEntry {
   identityIds: string[];
   fullName: string | null;
   displayEmail: string;
+  billingRate: number | null;
   candidateKey: string | null;
   possibleDuplicateCount: number;
   memberships: UnifiedUserMembership[];
@@ -113,6 +115,15 @@ function membership(
 function directoryEntry(users: readonly UnifiedUserRegistryRow[]): UnifiedUserDirectoryEntry {
   const [representative] = users;
   if (!representative) throw new Error('Cannot build an empty global identity');
+  if (
+    representative.billingRateCents !== null
+    && (
+      !Number.isSafeInteger(representative.billingRateCents)
+      || representative.billingRateCents < 0
+    )
+  ) {
+    throw new Error('Unified user billing rate is outside the supported accounting range');
+  }
   const memberships = users
     .map((user) => membership(user))
     .sort((left, right) => left.app.localeCompare(right.app));
@@ -128,6 +139,9 @@ function directoryEntry(users: readonly UnifiedUserRegistryRow[]): UnifiedUserDi
     identityIds: [representative.globalUserId],
     fullName: representative.fullName,
     displayEmail: representative.globalDisplayEmail,
+    billingRate: representative.billingRateCents === null
+      ? null
+      : representative.billingRateCents / 100,
     candidateKey: representative.globalLoginKey
       || canonicalCandidateKey(representative.globalDisplayEmail),
     possibleDuplicateCount: 0,

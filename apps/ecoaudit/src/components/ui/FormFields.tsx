@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef } from 'react';
 import type {
-  InputHTMLAttributes,
+  ComponentPropsWithRef,
   LabelHTMLAttributes,
   ReactNode,
   SelectHTMLAttributes,
@@ -12,7 +12,7 @@ import type {
 const controlClass =
   'w-full min-h-11 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3.5 py-2.5 text-base text-[var(--text)] shadow-[var(--shadow-xs)] outline-none hover:border-[var(--muted)] focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20 disabled:bg-[var(--surface2)] disabled:text-[var(--muted)] sm:text-sm';
 
-export function Input({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function Input({ className = '', ...props }: ComponentPropsWithRef<'input'>) {
   return <input className={`${controlClass} ${className}`} {...props} />;
 }
 

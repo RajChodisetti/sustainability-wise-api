@@ -162,6 +162,7 @@ type PortalUsersResponse = {
     key: string;
     fullName: string | null;
     displayEmail: string;
+    billingRate: number | null;
     memberships: Array<{
       app: string;
       userId: string;
@@ -269,6 +270,7 @@ export async function fetchPortalAssignees(): Promise<PortalDirectoryUser[]> {
       label: entry.fullName?.trim() || entry.displayEmail,
       email: entry.displayEmail,
       role: fieldMembership.role,
+      billingRate: entry.billingRate ?? null,
       appMemberships: entry.memberships
         .filter((membership) => membership.isActive)
         .map((membership) => membership.app)
@@ -284,6 +286,17 @@ export async function fetchPortalAssignees(): Promise<PortalDirectoryUser[]> {
     seen.add(u.fieldUserId);
     return true;
   });
+}
+
+export function updatePortalUserBillingRate(
+  globalUserId: string,
+  billingRate: number | null,
+): Promise<{ globalUserId: string; billingRate: number | null }> {
+  return portalRequest(true)<{ globalUserId: string; billingRate: number | null }>(
+    'PATCH',
+    `/v1/portal/users/${encodeURIComponent(globalUserId)}/billing-rate`,
+    { billingRate },
+  );
 }
 
 export async function fetchSchedulerFinanceOverview(

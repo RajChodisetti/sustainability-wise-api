@@ -148,6 +148,7 @@ export function financeOverviewFromSummary(
     sourceId: summary.source.sourceId,
     eventId: summary.event?.id ?? null,
     jobName: summary.job.jobName,
+    siteName: summary.job.siteName ?? '',
     jobDate: summary.job.jobDate,
     jobStatus: summary.job.status,
     eventStatus: summary.event?.status ?? null,
@@ -201,6 +202,38 @@ export function availableInvoiceExpenses(expenses: FinanceExpense[]): FinanceExp
 
 export function invoiceDraftIsDirty(initial: unknown, current: unknown): boolean {
   return JSON.stringify(initial) !== JSON.stringify(current);
+}
+
+export function invoiceQuantityRateForAmount(input: {
+  amountExGst: string;
+  quantity: string;
+  unitAmountExGst: string;
+}): { quantity: string; unitAmountExGst: string } {
+  const amountText = input.amountExGst.trim();
+  const quantityText = input.quantity.trim();
+  const unitAmountText = input.unitAmountExGst.trim();
+  const amount = amountText ? Number(amountText) : Number.NaN;
+  const quantity = quantityText ? Number(quantityText) : Number.NaN;
+  const unitAmount = unitAmountText ? Number(unitAmountText) : Number.NaN;
+  const existingTotal = quantity * unitAmount;
+  const existingBreakdownMatches = Number.isFinite(amount)
+    && amount >= 0
+    && Number.isFinite(quantity)
+    && quantity > 0
+    && Number.isFinite(unitAmount)
+    && unitAmount >= 0
+    && Math.round(existingTotal * 100) === Math.round(amount * 100);
+
+  if (existingBreakdownMatches) {
+    return {
+      quantity: input.quantity,
+      unitAmountExGst: input.unitAmountExGst,
+    };
+  }
+  return {
+    quantity: '1',
+    unitAmountExGst: Number.isFinite(amount) ? String(amount) : '',
+  };
 }
 
 export function resolveHourOverrideValues(

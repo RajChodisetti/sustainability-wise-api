@@ -18,7 +18,6 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       photoCopyReferences,
       photoRegistry,
       portalScheduleEvents,
-      recordVersions,
       unifiedUsers,
     },
     {
@@ -130,15 +129,6 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       scheduledStartAt: '2026-08-20T09:00:00.000Z',
       deadlineAt: '2026-08-22T17:00:00.000Z',
     };
-    const eco = await createSchedulerDispatch(admin, {
-      ...baseDispatch,
-      sourceApp: 'ecoaudit',
-      job: {
-        siteName: `Eco ${runId}`,
-        siteAddress: '1 Eco Street',
-        auditDate: '2026-08-20',
-      },
-    });
     const solar = await createSchedulerDispatch(admin, {
       ...baseDispatch,
       sourceApp: 'solarsense',
@@ -159,17 +149,14 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         auditDate: '2026-08-20',
       },
     });
-    createdProductIds.push(eco.sourceId!, solar.sourceId!, field.sourceId!);
+    createdProductIds.push(solar.sourceId!, field.sourceId!);
 
-    assert.equal(eco.sourceType, 'audit');
     assert.equal(solar.sourceType, 'assessment');
     assert.equal(field.sourceType, 'installation');
-    assert.equal(eco.status, 'planned');
     assert.equal(solar.status, 'planned');
     assert.equal(field.status, 'planned');
 
-    const [[ecoRow], [solarRow], [fieldRow], gridRows] = await Promise.all([
-      db.select().from(eaAudits).where(eq(eaAudits.id, eco.sourceId!)),
+    const [[solarRow], [fieldRow], gridRows] = await Promise.all([
       db.select().from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, solar.sourceId!)),
       db.select().from(ihInstallations)
@@ -177,11 +164,6 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       db.select().from(ihGridSupplies)
         .where(eq(ihGridSupplies.installationId, field.sourceId!)),
     ]);
-    assert.equal(ecoRow.status, 'Draft');
-    assert.equal(ecoRow.createdByUserId, actor.appUserIds.ecoaudit);
-    assert.equal(ecoRow.assignedInspectorUserId, firstAssignee.appUserIds.ecoaudit);
-    assert.equal(ecoRow.inspectorName, firstAssignee.name);
-    assert.equal(ecoRow.auditDate, '2026-08-20');
     assert.equal(solarRow.status, 'Draft');
     assert.equal(solarRow.createdByUserId, actor.appUserIds.solarsense);
     assert.equal(solarRow.assignedInspectorUserId, firstAssignee.appUserIds.solarsense);
@@ -192,128 +174,6 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(fieldRow.timezone, 'Australia/Sydney');
     assert.equal(gridRows.length, 1);
     assert.equal(gridRows[0].isDefault, true);
-
-    await updateScheduleEvent(admin, eco.id, {
-      assigneeFieldUserId: secondAssignee.fieldUserId,
-    });
-    const apiApp = await buildApp();
-    try {
-      const secondAssigneeToken = signAccessToken({
-        userId: secondAssignee.appUserIds.ecoaudit,
-        app: 'ecoaudit',
-        role: 'inspector',
-      });
-      const completionObservedFrom = Date.now();
-      const directCompletedResponse = await apiApp.inject({
-        method: 'POST',
-        url: '/v1/ecoaudit/audits',
-        headers: { authorization: `Bearer ${secondAssigneeToken}` },
-        payload: {
-          siteName: `Direct completed ${runId}`,
-          siteAddress: '6 Direct Street',
-          inspectorName: secondAssignee.name,
-          auditDate: '2026-08-20',
-          status: 'Completed',
-          assignedInspectorUserId: firstAssignee.appUserIds.ecoaudit,
-          completedAt: '2099-01-01T00:00:00.000Z',
-        },
-      });
-      assert.equal(directCompletedResponse.statusCode, 201, directCompletedResponse.body);
-      const directCompleted = directCompletedResponse.json() as {
-        id: string;
-        assignedInspectorUserId: string | null;
-        completedAt: string;
-      };
-      createdProductIds.push(directCompleted.id);
-      assert.equal(directCompleted.assignedInspectorUserId, null);
-      const firstCompletionBoundary = new Date(directCompleted.completedAt);
-      assert.ok(firstCompletionBoundary.getTime() >= completionObservedFrom);
-      assert.ok(firstCompletionBoundary.getTime() <= Date.now());
-
-      const completedResend = await apiApp.inject({
-        method: 'POST',
-        url: '/v1/ecoaudit/sync/push',
-        headers: { authorization: `Bearer ${secondAssigneeToken}` },
-        payload: {
-          audit: {
-            id: directCompleted.id,
-            siteName: `Direct completed ${runId}`,
-            siteAddress: '6 Direct Street',
-            inspectorName: secondAssignee.name,
-            auditDate: '2026-08-20',
-            status: 'Completed',
-            completedAt: '2099-01-01T00:00:00.000Z',
-            updatedAt: '2099-01-01T00:00:00.000Z',
-          },
-        },
-      });
-      assert.equal(completedResend.statusCode, 200, completedResend.body);
-      const [afterCompletedResend] = await db.select().from(eaAudits)
-        .where(eq(eaAudits.id, directCompleted.id));
-      assert.equal(
-        afterCompletedResend.completedAt?.getTime(),
-        firstCompletionBoundary.getTime(),
-      );
-
-      const genericReopen = await apiApp.inject({
-        method: 'POST',
-        url: '/v1/ecoaudit/sync/push',
-        headers: { authorization: `Bearer ${secondAssigneeToken}` },
-        payload: {
-          audit: {
-            id: directCompleted.id,
-            siteName: `Direct completed ${runId}`,
-            siteAddress: '6 Direct Street',
-            inspectorName: secondAssignee.name,
-            auditDate: '2026-08-20',
-            status: 'Draft',
-            updatedAt: '2099-01-02T00:00:00.000Z',
-          },
-        },
-      });
-      assert.equal(genericReopen.statusCode, 409, genericReopen.body);
-
-      const staleAssignmentPayload = {
-        audit: {
-          id: eco.sourceId,
-          siteName: ecoRow.siteName,
-          siteAddress: ecoRow.siteAddress,
-          inspectorName: ecoRow.inspectorName,
-          auditDate: ecoRow.auditDate,
-          status: 'Draft',
-          assignedInspectorUserId: firstAssignee.appUserIds.ecoaudit,
-          updatedAt: '2026-08-20T10:00:00.000Z',
-        },
-      };
-      const stalePushAfterReassign = await apiApp.inject({
-        method: 'POST',
-        url: '/v1/ecoaudit/sync/push',
-        headers: { authorization: `Bearer ${secondAssigneeToken}` },
-        payload: staleAssignmentPayload,
-      });
-      assert.equal(stalePushAfterReassign.statusCode, 200, stalePushAfterReassign.body);
-      const [afterStaleReassignPush] = await db.select().from(eaAudits)
-        .where(eq(eaAudits.id, eco.sourceId!));
-      assert.equal(
-        afterStaleReassignPush.assignedInspectorUserId,
-        secondAssignee.appUserIds.ecoaudit,
-      );
-
-      await cancelScheduleEvent(admin, eco.id);
-      const stalePushAfterCancel = await apiApp.inject({
-        method: 'POST',
-        url: '/v1/ecoaudit/sync/push',
-        headers: { authorization: `Bearer ${secondAssigneeToken}` },
-        payload: staleAssignmentPayload,
-      });
-      assert.equal(stalePushAfterCancel.statusCode, 403, stalePushAfterCancel.body);
-      const [afterCancel] = await db.select().from(eaAudits)
-        .where(eq(eaAudits.id, eco.sourceId!));
-      assert.ok(afterCancel);
-      assert.equal(afterCancel.assignedInspectorUserId, null);
-    } finally {
-      await apiApp.close();
-    }
 
     const [solarSite] = await db.select().from(ssSites)
       .where(eq(ssSites.id, solarRow.siteId!));
@@ -409,63 +269,65 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       await solarApp.close();
     }
 
-    const completedAuditId = `completed-${runId}`;
-    createdProductIds.push(completedAuditId);
+    const disabledEcoAuditId = `disabled-eco-${runId}`;
+    createdProductIds.push(disabledEcoAuditId);
     await db.insert(eaAudits).values({
-      id: completedAuditId,
-      siteName: `Completed ${runId}`,
-      siteAddress: '4 Completed Street',
-      inspectorName: firstAssignee.name,
-      auditDate: '2026-08-20',
-      status: 'Completed',
-      completedAt: now,
-      createdByUserId: actor.appUserIds.ecoaudit,
-      updatedAt: now,
-    });
-    const completedOptions = await searchJobOptions(admin, `Completed ${runId}`, 'ecoaudit');
-    assert.equal(completedOptions.some((option) => option.id === completedAuditId), false);
-    await assert.rejects(
-      createScheduleEvent(admin, {
-        sourceApp: 'ecoaudit',
-        sourceType: 'audit',
-        sourceId: completedAuditId,
-        assigneeFieldUserId: firstAssignee.fieldUserId,
-        scheduledStartAt: baseDispatch.scheduledStartAt,
-        deadlineAt: baseDispatch.deadlineAt,
-      }),
-      (error: unknown) => Boolean(
-        error
-        && typeof error === 'object'
-        && 'statusCode' in error
-        && error.statusCode === 404,
-      ),
-    );
-
-    const raceAuditId = `race-${runId}`;
-    createdProductIds.push(raceAuditId);
-    await db.insert(eaAudits).values({
-      id: raceAuditId,
-      siteName: `Race ${runId}`,
-      siteAddress: '5 Race Street',
+      id: disabledEcoAuditId,
+      siteName: `Disabled Eco ${runId}`,
+      siteAddress: '4 Disabled Street',
       inspectorName: firstAssignee.name,
       auditDate: '2026-08-20',
       status: 'Draft',
       createdByUserId: actor.appUserIds.ecoaudit,
       updatedAt: now,
     });
-    const concurrent = await Promise.allSettled([
+    assert.deepEqual(
+      await searchJobOptions(admin, `Disabled Eco ${runId}`, 'ecoaudit'),
+      [],
+    );
+    const isDisabledEcoSourceError = (error: unknown) => (
+      (error as { statusCode?: number; detail?: string }).statusCode === 400
+      && (error as { detail?: string }).detail === 'Eco Audit jobs are not available in Scheduler'
+    );
+    await assert.rejects(
       createScheduleEvent(admin, {
         sourceApp: 'ecoaudit',
         sourceType: 'audit',
-        sourceId: raceAuditId,
+        sourceId: disabledEcoAuditId,
+        assigneeFieldUserId: firstAssignee.fieldUserId,
+        scheduledStartAt: baseDispatch.scheduledStartAt,
+        deadlineAt: baseDispatch.deadlineAt,
+      }),
+      isDisabledEcoSourceError,
+    );
+    await assert.rejects(
+      createSchedulerDispatch(admin, {
+        ...baseDispatch,
+        sourceApp: 'ecoaudit',
+        job: {
+          siteName: `Rejected Eco ${runId}`,
+          siteAddress: '5 Rejected Street',
+          auditDate: '2026-08-20',
+        },
+      }),
+      isDisabledEcoSourceError,
+    );
+
+    // A cancelled Solar event can be rescheduled, but two concurrent attempts
+    // still serialize on the product row and produce only one active event.
+    const concurrent = await Promise.allSettled([
+      createScheduleEvent(admin, {
+        sourceApp: 'solarsense',
+        sourceType: 'assessment',
+        sourceId: solar.sourceId,
         assigneeFieldUserId: firstAssignee.fieldUserId,
         scheduledStartAt: baseDispatch.scheduledStartAt,
         deadlineAt: baseDispatch.deadlineAt,
       }),
       createScheduleEvent(admin, {
-        sourceApp: 'ecoaudit',
-        sourceType: 'audit',
-        sourceId: raceAuditId,
+        sourceApp: 'solarsense',
+        sourceType: 'assessment',
+        sourceId: solar.sourceId,
         assigneeFieldUserId: secondAssignee.fieldUserId,
         scheduledStartAt: baseDispatch.scheduledStartAt,
         deadlineAt: baseDispatch.deadlineAt,
@@ -482,16 +344,16 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     const winner = (fulfilled[0] as PromiseFulfilledResult<{
       assigneeFieldUserId: string;
     }>).value;
-    const [raceAudit] = await db.select().from(eaAudits)
-      .where(eq(eaAudits.id, raceAuditId));
+    const [raceAssessment] = await db.select().from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, solar.sourceId!));
     const expectedProductAssignee = winner.assigneeFieldUserId === firstAssignee.fieldUserId
-      ? firstAssignee.appUserIds.ecoaudit
-      : secondAssignee.appUserIds.ecoaudit;
-    assert.equal(raceAudit.assignedInspectorUserId, expectedProductAssignee);
+      ? firstAssignee.appUserIds.solarsense
+      : secondAssignee.appUserIds.solarsense;
+    assert.equal(raceAssessment.assignedInspectorUserId, expectedProductAssignee);
     const activeRaceEvents = await db.select().from(portalScheduleEvents).where(and(
-      eq(portalScheduleEvents.sourceApp, 'ecoaudit'),
-      eq(portalScheduleEvents.sourceType, 'audit'),
-      eq(portalScheduleEvents.sourceId, raceAuditId),
+      eq(portalScheduleEvents.sourceApp, 'solarsense'),
+      eq(portalScheduleEvents.sourceType, 'assessment'),
+      eq(portalScheduleEvents.sourceId, solar.sourceId!),
       ne(portalScheduleEvents.status, 'cancelled'),
     ));
     assert.equal(activeRaceEvents.length, 1);
@@ -503,10 +365,6 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         .where(inArray(photoCopyReferences.photoId, copiedPhotoIds));
       await db.delete(photoRegistry).where(inArray(photoRegistry.id, copiedPhotoIds));
     }
-    await db.delete(recordVersions).where(and(
-      eq(recordVersions.app, 'ecoaudit'),
-      inArray(recordVersions.entityId, createdProductIds),
-    ));
     await db.delete(ihGridSupplies)
       .where(inArray(ihGridSupplies.installationId, createdProductIds));
     await db.delete(ihInstallations)

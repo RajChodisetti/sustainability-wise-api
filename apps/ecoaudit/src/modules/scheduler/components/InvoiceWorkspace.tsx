@@ -5,7 +5,7 @@ import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
-import { Checkbox, FieldHint, FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
+import { Checkbox, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { useExportJob } from '@/hooks/useExportJob';
 import {
@@ -31,15 +31,18 @@ import {
   financeAppLabel,
   invoiceDraftIsDirty,
   invoiceEmailAttemptNeedsSameIdempotencyKey,
+  invoiceQuantityRateForAmount,
   invoiceStatusLabel,
-  schedulerFinanceHref,
   schedulerInvoicePdfFallbackFilename,
   schedulerInvoicePdfReportVariantKey,
 } from '@/modules/scheduler/lib/finance';
 import type {
   SchedulerFinancialSummary,
   SchedulerInvoice,
+  SchedulerInvoiceLine,
+  SchedulerInvoiceLineKind,
   SchedulerInvoiceListItem,
+  UpdateSchedulerInvoiceInput,
 } from '@/modules/scheduler/types/domain';
 
 function money(value: number, currency: string): string {
@@ -128,6 +131,96 @@ function StatusBadge({ invoice }: { invoice: Pick<SchedulerInvoiceListItem, 'sta
   return <span className={`rounded-full px-2.5 py-1 text-xs font-extrabold ${statusClasses[invoice.status]}`}>{invoiceStatusLabel(invoice.status)}</span>;
 }
 
+type InvoiceDraftSaveInput = Omit<UpdateSchedulerInvoiceInput, 'expectedUpdatedAt'>;
+
+type EditableInvoiceLine = {
+  clientKey: string;
+  id?: string;
+  description: string;
+  quantity: string;
+  unitAmountExGst: string;
+  amountExGst: string;
+  showQuantityAndRate: boolean;
+  expenseId: string | null;
+  kind: SchedulerInvoiceLineKind;
+  financeId: string;
+};
+
+let editableLineSequence = 0;
+
+function isCompletedJobStatus(status: string): boolean {
+  return status.trim().toLocaleLowerCase('en-AU') === 'completed';
+}
+
+function numericInputValue(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  return String(value);
+}
+
+function editableInvoiceLine(line: SchedulerInvoiceLine): EditableInvoiceLine {
+  return {
+    clientKey: line.id,
+    id: line.id,
+    description: line.description,
+    quantity: numericInputValue(line.quantity),
+    unitAmountExGst: numericInputValue(line.unitAmountExGst),
+    amountExGst: numericInputValue(line.lineTotalExGst),
+    showQuantityAndRate: line.showQuantityAndRate,
+    expenseId: line.expenseId,
+    kind: line.kind,
+    financeId: line.financeId,
+  };
+}
+
+function newEditableInvoiceLine(financeId: string): EditableInvoiceLine {
+  editableLineSequence += 1;
+  return {
+    clientKey: `new-line-${editableLineSequence}`,
+    description: '',
+    quantity: '1',
+    unitAmountExGst: '',
+    amountExGst: '',
+    showQuantityAndRate: false,
+    expenseId: null,
+    kind: 'other',
+    financeId,
+  };
+}
+
+function editableLineTotal(line: EditableInvoiceLine): number {
+  if (!line.showQuantityAndRate) {
+    return line.amountExGst.trim() ? Number(line.amountExGst) : Number.NaN;
+  }
+  if (!line.quantity.trim() || !line.unitAmountExGst.trim()) return Number.NaN;
+  return Number(line.quantity) * Number(line.unitAmountExGst);
+}
+
+function editableLinePayload(line: EditableInvoiceLine): NonNullable<UpdateSchedulerInvoiceInput['lines']>[number] {
+  const quantity = line.showQuantityAndRate ? Number(line.quantity) : 1;
+  const unitAmountExGst = line.showQuantityAndRate
+    ? Number(line.unitAmountExGst)
+    : Number(line.amountExGst);
+  return {
+    ...(line.id ? { id: line.id } : {}),
+    description: line.description.trim(),
+    quantity,
+    unitAmountExGst,
+    showQuantityAndRate: line.showQuantityAndRate,
+    expenseId: line.expenseId,
+    kind: line.kind,
+    financeId: line.financeId,
+  };
+}
+
+function invoiceLinesAreDirty(
+  original: SchedulerInvoiceLine[],
+  editableLines: EditableInvoiceLine[],
+): boolean {
+  const originalPayload = original.map((line) => editableLinePayload(editableInvoiceLine(line)));
+  const nextPayload = editableLines.map(editableLinePayload);
+  return JSON.stringify(originalPayload) !== JSON.stringify(nextPayload);
+}
+
 export function InvoiceWorkspace({
   financeId,
   summary,
@@ -147,12 +240,20 @@ export function InvoiceWorkspace({
     [summary.expenses],
   );
   const [selectedExpenseIds, setSelectedExpenseIds] = useState<string[]>([]);
-  const [includeLabour, setIncludeLabour] = useState(true);
+  const [includeLabour, setIncludeLabour] = useState(
+    summary.pricing.mode === 'quoted' || summary.time.labourRevenue > 0,
+  );
   const [draftNotes, setDraftNotes] = useState('');
   const [quickOpen, setQuickOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const jobCompleted = isCompletedJobStatus(summary.job.status);
+  const missingBillingRateUsers = summary.time.missingBillingRateUsers;
 
   async function createDraft() {
+    if (!jobCompleted) {
+      setError(`Complete ${summary.job.jobName} before creating an invoice.`);
+      return;
+    }
     setError(null);
     try {
       const invoice = await create.mutateAsync({
@@ -178,13 +279,24 @@ export function InvoiceWorkspace({
           <h2 id="invoice-workspace-heading" className="font-extrabold text-[var(--text)]">Invoices</h2>
           <p className="mt-1 text-sm text-[var(--text-sub)]">Draft, issue, download, mark paid, and retain immutable issued snapshots.</p>
         </div>
-        <Button type="button" onClick={() => {
+        <Button type="button" disabled={!jobCompleted} title={!jobCompleted ? 'Complete this job before creating an invoice' : undefined} onClick={() => {
           if (!quickOpen) setSelectedExpenseIds(availableExpenses.map((expense) => expense.id));
           setQuickOpen(!quickOpen);
         }}>
           {quickOpen ? 'Close draft setup' : '+ New invoice'}
         </Button>
       </div>
+
+      {!jobCompleted ? (
+        <p className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
+          Complete this job before creating an invoice or preparing its PDF.
+        </p>
+      ) : null}
+      {summary.pricing.mode === 'charge_up' && missingBillingRateUsers.length > 0 ? (
+        <p className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
+          Ask an admin to add a billing rate for {missingBillingRateUsers.map((user) => user.displayName ?? user.userId).join(', ')} before adding a labour suggestion.
+        </p>
+      ) : null}
 
       {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
 
@@ -194,17 +306,16 @@ export function InvoiceWorkspace({
           <p className="mt-1 text-sm text-[var(--text-sub)]">
             {summary.pricing.mode === 'quoted'
               ? 'Include the remaining quote balance and any selected billable expenses.'
-              : 'Include effective billable labour and any selected billable expenses.'}
+              : 'Start with an optional labour suggestion and selected billable expenses.'}
           </p>
           <Checkbox
-            label={summary.pricing.mode === 'quoted' ? 'Include remaining quote balance' : 'Include billable labour'}
+            label={summary.pricing.mode === 'quoted' ? 'Include remaining quote balance' : 'Add suggested labour charge'}
             checked={includeLabour}
+            disabled={summary.pricing.mode === 'charge_up' && summary.time.labourRevenue <= 0}
             onChange={setIncludeLabour}
           />
-          {summary.time.needsHoursReview && summary.pricing.mode === 'charge_up' && includeLabour ? (
-            <p className="rounded-lg bg-[var(--amber-soft)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--amber)]">
-              Hours need review. Confirm recorded time or add an audited override before issuing this draft.
-            </p>
+          {summary.pricing.mode === 'charge_up' ? (
+            <FieldHint>The labour charge is only a suggestion. You can edit or remove it in the draft; internal hours and rates stay off the invoice unless you explicitly show them.</FieldHint>
           ) : null}
 
           <fieldset className="mt-3">
@@ -230,7 +341,7 @@ export function InvoiceWorkspace({
           <Textarea id="quick-invoice-notes" rows={3} value={draftNotes} onChange={(event) => setDraftNotes(event.target.value)} />
           <div className="mt-4 flex justify-end gap-2">
             <Button type="button" variant="secondary" disabled={create.isPending} onClick={() => setQuickOpen(false)}>Cancel</Button>
-            <Button type="button" disabled={create.isPending || (!includeLabour && selectedExpenseIds.length === 0)} onClick={() => void createDraft()}>
+            <Button type="button" disabled={create.isPending || !jobCompleted} onClick={() => void createDraft()}>
               {create.isPending ? 'Creating…' : 'Create draft'}
             </Button>
           </div>
@@ -268,6 +379,7 @@ export function InvoiceWorkspace({
               key={selectedInvoiceId}
               financeId={financeId}
               invoiceId={selectedInvoiceId}
+              currentJobStatus={summary.job.status}
               onClose={() => onSelectInvoice(null)}
             />
           ) : (
@@ -282,10 +394,12 @@ export function InvoiceWorkspace({
 function InvoiceDetail({
   financeId,
   invoiceId,
+  currentJobStatus,
   onClose,
 }: {
   financeId: string;
   invoiceId: string;
+  currentJobStatus: string;
   onClose: () => void;
 }) {
   const query = useSchedulerInvoice(financeId, invoiceId);
@@ -305,6 +419,7 @@ function InvoiceDetail({
       key={`${query.data.id}:${query.data.updatedAt}`}
       financeId={financeId}
       invoice={query.data}
+      currentJobStatuses={{ [financeId]: currentJobStatus }}
       busy={update.isPending || issue.isPending || markPaid.isPending || voidInvoice.isPending}
       error={error}
       onClose={onClose}
@@ -369,6 +484,7 @@ export function InvoiceDocument({
   onMarkPaid,
   onVoid,
   onStartPdf,
+  currentJobStatuses,
 }: {
   financeId: string;
   invoice: SchedulerInvoice;
@@ -376,19 +492,12 @@ export function InvoiceDocument({
   error: string | null;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onSave: (input: {
-    notes: string | null;
-    dueDate: string | null;
-    billToName: string;
-    billToAddress: string | null;
-    billToEmail: string | null;
-    billToAbn: string | null;
-    purchaseOrderReference: string | null;
-  }) => Promise<void>;
+  onSave: (input: InvoiceDraftSaveInput) => Promise<void>;
   onIssue: () => Promise<void>;
   onMarkPaid: () => Promise<void>;
   onVoid: () => Promise<void>;
   onStartPdf?: () => ReturnType<typeof startSchedulerInvoicePdfExport>;
+  currentJobStatuses?: Readonly<Record<string, string>>;
 }) {
   const editable = invoice.status === 'draft';
   const [notes, setNotes] = useState(invoice.notes ?? '');
@@ -398,6 +507,9 @@ export function InvoiceDocument({
   const [billToEmail, setBillToEmail] = useState(invoice.billToEmail ?? '');
   const [billToAbn, setBillToAbn] = useState(invoice.billToAbn ?? '');
   const [purchaseOrderReference, setPurchaseOrderReference] = useState(invoice.purchaseOrderReference ?? '');
+  const [draftLines, setDraftLines] = useState<EditableInvoiceLine[]>(() => (
+    invoice.lines.map(editableInvoiceLine)
+  ));
   const [validation, setValidation] = useState<string | null>(null);
   const [emailOpen, setEmailOpen] = useState(false);
   const emailSessionKey = useMemo(
@@ -424,6 +536,31 @@ export function InvoiceDocument({
   const toast = useToast();
   const sendEmail = useSendSchedulerInvoiceEmail(invoice.id);
   const emailDeliveries = useSchedulerInvoiceEmailDeliveries(invoice.id, true);
+  const lineJobOptions = useMemo(() => {
+    if (invoice.jobs?.length) {
+      return invoice.jobs.map((job) => ({
+        financeId: job.financeId,
+        jobName: job.job.jobName,
+        siteName: job.job.siteName,
+        status: currentJobStatuses?.[job.financeId] ?? job.currentStatus,
+      }));
+    }
+    return [{
+      financeId,
+      jobName: invoice.job.jobName,
+      siteName: invoice.job.siteName,
+      status: currentJobStatuses?.[financeId] ?? invoice.job.status,
+    }];
+  }, [currentJobStatuses, financeId, invoice.job, invoice.jobs]);
+  const incompleteJobs = lineJobOptions.filter((job) => !isCompletedJobStatus(job.status));
+  const allJobsCompleted = incompleteJobs.length === 0;
+  const hasVisibleQuantityAndRate = invoice.lines.some((line) => line.showQuantityAndRate);
+  const everyJobHasPositiveDraftCharge = lineJobOptions.every((job) => draftLines
+    .filter((line) => line.financeId === job.financeId)
+    .reduce((total, line) => {
+      const lineTotal = editableLineTotal(line);
+      return Number.isFinite(lineTotal) ? total + lineTotal : total;
+    }, 0) > 0);
   const reportVariantKey = schedulerInvoicePdfReportVariantKey(invoice);
   const pdfExport = useExportJob({
     scopeKey: ['scheduler', 'invoice-pdf', invoice.id, invoice.updatedAt],
@@ -442,7 +579,7 @@ export function InvoiceDocument({
     || pdfExport.downloading
     || sendEmail.isPending;
   const invoiceLifecycleBusy = invoiceActionBusy || emailRetryLocked;
-  const dirty = editable && invoiceDraftIsDirty({
+  const headerDirty = editable && invoiceDraftIsDirty({
     notes: invoice.notes ?? '',
     dueDate: dateInput(invoice.dueDate),
     billToName: invoice.billToName ?? '',
@@ -451,11 +588,36 @@ export function InvoiceDocument({
     billToAbn: invoice.billToAbn ?? '',
     purchaseOrderReference: invoice.purchaseOrderReference ?? '',
   }, { notes, dueDate, billToName, billToAddress, billToEmail, billToAbn, purchaseOrderReference });
+  const linesDirty = editable && invoiceLinesAreDirty(invoice.lines, draftLines);
+  const dirty = headerDirty || linesDirty;
 
   async function saveDraft() {
     if (!billToName.trim()) {
       setValidation('Billing name is required before this draft can be saved or issued.');
       return;
+    }
+    for (let index = 0; index < draftLines.length; index += 1) {
+      const line = draftLines[index]!;
+      if (!line.description.trim()) {
+        setValidation(`Charge ${index + 1} needs a description.`);
+        return;
+      }
+      if (!lineJobOptions.some((job) => job.financeId === line.financeId)) {
+        setValidation(`Charge ${index + 1} is not assigned to an invoice job.`);
+        return;
+      }
+      const quantity = Number(line.quantity);
+      const rate = Number(line.unitAmountExGst);
+      const amount = editableLineTotal(line);
+      if (
+        !Number.isFinite(amount)
+        || amount < 0
+        || (line.showQuantityAndRate && (!Number.isFinite(quantity) || quantity <= 0))
+        || (line.showQuantityAndRate && (!Number.isFinite(rate) || rate < 0))
+      ) {
+        setValidation(`Charge ${index + 1} needs a nonnegative amount${line.showQuantityAndRate ? ', positive quantity, and valid rate' : ''}.`);
+        return;
+      }
     }
     setValidation(null);
     await onSave({
@@ -466,10 +628,15 @@ export function InvoiceDocument({
       billToEmail: billToEmail.trim() || null,
       billToAbn: billToAbn.trim() || null,
       purchaseOrderReference: purchaseOrderReference.trim() || null,
+      lines: draftLines.map(editableLinePayload),
     });
   }
 
   async function preparePdf() {
+    if (editable && !allJobsCompleted) {
+      setValidation(`Complete ${incompleteJobs.map((job) => job.jobName).join(', ')} before preparing the invoice PDF.`);
+      return;
+    }
     try {
       await pdfExport.start(() => onStartPdf
         ? onStartPdf()
@@ -491,6 +658,14 @@ export function InvoiceDocument({
   }
 
   async function issueInvoice() {
+    if (!allJobsCompleted) {
+      setValidation(`Complete ${incompleteJobs.map((job) => job.jobName).join(', ')} before issuing this invoice.`);
+      return;
+    }
+    if (!everyJobHasPositiveDraftCharge) {
+      setValidation('Add at least one positive charge for every included job before issuing. You can still save an empty or zero-value draft.');
+      return;
+    }
     const recipientIssue = consolidatedInvoiceRecipientIssue({
       name: invoice.billToName,
     });
@@ -556,6 +731,28 @@ export function InvoiceDocument({
     }
   }
 
+  function updateDraftLine(clientKey: string, change: Partial<EditableInvoiceLine>) {
+    setDraftLines((current) => current.map((line) => (
+      line.clientKey === clientKey ? { ...line, ...change } : line
+    )));
+  }
+
+  function setLineQuantityVisibility(line: EditableInvoiceLine, showQuantityAndRate: boolean) {
+    if (showQuantityAndRate) {
+      const quantityRate = invoiceQuantityRateForAmount(line);
+      updateDraftLine(line.clientKey, {
+        showQuantityAndRate: true,
+        ...quantityRate,
+      });
+      return;
+    }
+    const total = editableLineTotal(line);
+    updateDraftLine(line.clientKey, {
+      showQuantityAndRate: false,
+      amountExGst: Number.isFinite(total) ? numericInputValue(total) : '',
+    });
+  }
+
   return (
     <article className="min-w-0 rounded-xl border border-[var(--border)] p-4" aria-labelledby={`invoice-${invoice.id}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -564,7 +761,14 @@ export function InvoiceDocument({
             <h3 id={`invoice-${invoice.id}`} className="text-lg font-extrabold text-[var(--text)]">{invoice.invoiceNumber}</h3>
             <StatusBadge invoice={invoice} />
           </div>
-          <p className="mt-1 text-xs text-[var(--text-sub)]">{invoice.jobCount && invoice.jobCount > 1 ? `${invoice.jobCount} jobs · ${(invoice.jobNames ?? []).join(', ')}` : `${invoice.job.jobName} · ${displayDate(invoice.job.jobDate)}`}</p>
+          {lineJobOptions.length === 1 ? (
+            <div className="mt-1">
+              <p className="text-base font-extrabold leading-6 text-[var(--text)]">{lineJobOptions[0]!.jobName}</p>
+              <p className="text-xs leading-5 text-[var(--text-sub)]">{lineJobOptions[0]!.siteName || 'Site not set'} · {displayDate(invoice.job.jobDate)}</p>
+            </div>
+          ) : (
+            <p className="mt-1 text-xs text-[var(--text-sub)]">{invoice.jobCount} jobs · {(invoice.jobNames ?? []).join(', ')}</p>
+          )}
         </div>
         <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Close</Button>
       </div>
@@ -575,6 +779,12 @@ export function InvoiceDocument({
           {invoice.issuedAt
             ? 'Bill-to, seller, job, and line details are retained from issuance and cannot be edited.'
             : 'This voided draft is retained as an audit record and cannot be edited.'}
+        </div>
+      ) : null}
+
+      {editable && !allJobsCompleted ? (
+        <div className="mt-3 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
+          Complete {incompleteJobs.map((job) => job.jobName).join(', ')} before issuing this invoice or preparing its PDF.
         </div>
       ) : null}
 
@@ -612,8 +822,9 @@ export function InvoiceDocument({
               <article key={job.financeId} className="min-w-0 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h5 className="truncate text-sm font-extrabold text-[var(--text)]">{job.job.jobName}</h5>
-                    <p className="mt-0.5 text-xs text-[var(--text-sub)]">{financeAppLabel(job.source.sourceApp)} · {displayDate(job.job.jobDate)}</p>
+                    <h5 className="truncate text-base font-extrabold leading-6 text-[var(--text)]">{job.job.jobName}</h5>
+                    <p className="truncate text-xs leading-5 text-[var(--text-sub)]">{job.job.siteName || 'Site not set'}</p>
+                    <p className="text-xs text-[var(--text-sub)]">{financeAppLabel(job.source.sourceApp)} · {displayDate(job.job.jobDate)}</p>
                   </div>
                   <strong className="shrink-0 text-sm text-[var(--text)]">{money(job.subtotalExGst, invoice.currency)}</strong>
                 </div>
@@ -663,32 +874,131 @@ export function InvoiceDocument({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h4 id={`invoice-charges-${invoice.id}`} className="font-extrabold text-[var(--text)]">Invoice charges</h4>
-            <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--text-sub)]">Charges are read-only here so audited hours, job costs, margins, and invoice reservations stay aligned.</p>
+            <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--text-sub)]">
+              {editable
+                ? 'Edit the customer-facing description and amount. Quantity and rate stay hidden unless you choose to show them.'
+                : 'These charges are retained as part of the immutable invoice snapshot.'}
+            </p>
           </div>
           {editable ? (
-            <nav className="flex flex-wrap gap-2" aria-label="Change invoice source charges">
-              <a className="inline-flex min-h-11 items-center rounded-lg px-3 text-xs font-extrabold text-[var(--primary)] hover:bg-[var(--primary-soft)]" href={schedulerFinanceHref({ view: 'financial-summary', financeId })}>Edit hours</a>
-              <a className="inline-flex min-h-11 items-center rounded-lg px-3 text-xs font-extrabold text-[var(--primary)] hover:bg-[var(--primary-soft)]" href={schedulerFinanceHref({ view: 'bills', financeId })}>Manage bills & expenses</a>
-            </nav>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setDraftLines((current) => [
+                ...current,
+                newEditableInvoiceLine(lineJobOptions[0]?.financeId ?? financeId),
+              ])}
+            >
+              Add charge
+            </Button>
           ) : null}
         </div>
-        {invoice.jobs && invoice.jobs.length > 1 ? (
-          <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">The job-attributed charge breakdown is shown in Included jobs above.</p>
+
+        {editable ? (
+          draftLines.length === 0 ? (
+            <div className="mt-4 rounded-xl border border-dashed border-[var(--border-strong)] px-4 py-8 text-center">
+              <p className="text-sm font-bold text-[var(--text)]">No invoice charges</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Add a customer-facing charge now, or save the empty draft and return later.</p>
+            </div>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {draftLines.map((line, index) => {
+                const total = editableLineTotal(line);
+                const prefix = `invoice-line-${index}`;
+                return (
+                  <article key={line.clientKey} className="rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 sm:p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <strong className="text-sm text-[var(--text)]">Charge {index + 1}</strong>
+                          {line.kind === 'labour' ? (
+                            <span className="rounded-full bg-[var(--amber-soft)] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-[var(--amber)]">Labour suggestion</span>
+                          ) : line.kind === 'expense' ? (
+                            <span className="rounded-full bg-[var(--primary-soft)] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide text-[var(--primary)]">Bill / expense</span>
+                          ) : null}
+                        </div>
+                        {line.kind === 'labour' ? (
+                          <p className="mt-1 max-w-xl text-xs leading-5 text-[var(--text-sub)]">This is an editable suggestion from internal calculations. Change it or remove it without changing stored billing hours.</p>
+                        ) : null}
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="!text-[var(--red)] hover:!bg-[var(--red-soft)]"
+                        aria-label={`Remove charge ${index + 1}`}
+                        onClick={() => setDraftLines((current) => current.filter((item) => item.clientKey !== line.clientKey))}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+
+                    <div className="grid gap-x-3 sm:grid-cols-2">
+                      <div className={lineJobOptions.length > 1 ? '' : 'sm:col-span-2'}>
+                        <FieldLabel htmlFor={`${prefix}-description`}>Description</FieldLabel>
+                        <Input
+                          id={`${prefix}-description`}
+                          value={line.description}
+                          maxLength={500}
+                          onChange={(event) => updateDraftLine(line.clientKey, { description: event.target.value })}
+                        />
+                      </div>
+                      {lineJobOptions.length > 1 ? (
+                        <div>
+                          <FieldLabel htmlFor={`${prefix}-job`}>Job</FieldLabel>
+                          <Select id={`${prefix}-job`} value={line.financeId} onChange={(event) => updateDraftLine(line.clientKey, { financeId: event.target.value })}>
+                            {lineJobOptions.map((job) => <option key={job.financeId} value={job.financeId}>{job.jobName} — {job.siteName || 'Site not set'}</option>)}
+                          </Select>
+                        </div>
+                      ) : null}
+                      <div className="sm:col-span-2">
+                        <Checkbox
+                          label="Show quantity and rate on the invoice"
+                          checked={line.showQuantityAndRate}
+                          onChange={(checked) => setLineQuantityVisibility(line, checked)}
+                        />
+                        <FieldHint>Leave this off to show only the description and total amount.</FieldHint>
+                      </div>
+                      {line.showQuantityAndRate ? (
+                        <>
+                          <div>
+                            <FieldLabel htmlFor={`${prefix}-quantity`}>Quantity</FieldLabel>
+                            <Input id={`${prefix}-quantity`} type="number" min="0.0001" step="any" inputMode="decimal" value={line.quantity} onChange={(event) => updateDraftLine(line.clientKey, { quantity: event.target.value })} />
+                          </div>
+                          <div>
+                            <FieldLabel htmlFor={`${prefix}-rate`}>Rate ex GST</FieldLabel>
+                            <Input id={`${prefix}-rate`} type="number" min="0" step="0.01" inputMode="decimal" value={line.unitAmountExGst} onChange={(event) => updateDraftLine(line.clientKey, { unitAmountExGst: event.target.value })} />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="sm:col-span-2 sm:max-w-sm">
+                          <FieldLabel htmlFor={`${prefix}-amount`}>Amount ex GST</FieldLabel>
+                          <Input id={`${prefix}-amount`} type="number" min="0" step="0.01" inputMode="decimal" value={line.amountExGst} onChange={(event) => updateDraftLine(line.clientKey, { amountExGst: event.target.value })} />
+                        </div>
+                      )}
+                    </div>
+                    <p className="mt-3 border-t border-[var(--border)] pt-3 text-right text-sm text-[var(--text-sub)]">
+                      Line total <strong className="ml-2 text-[var(--text)]">{Number.isFinite(total) ? money(total, invoice.currency) : '—'}</strong>
+                    </p>
+                  </article>
+                );
+              })}
+            </div>
+          )
         ) : (
           <>
             <div className="mt-4 space-y-2 md:hidden">
             {invoice.lines.map((line) => (
               <div key={line.id} className="rounded-xl border border-[var(--border)] p-3 text-sm">
                 <p className="font-bold text-[var(--text)]">{line.description}</p>
-                <p className="mt-1 text-[var(--text-sub)]">{line.quantity} × {money(line.unitAmountExGst, invoice.currency)}</p>
+                {line.showQuantityAndRate ? <p className="mt-1 text-[var(--text-sub)]">{line.quantity} × {money(line.unitAmountExGst, invoice.currency)}</p> : null}
                 <p className="mt-1 font-extrabold text-[var(--text)]">{money(line.lineTotalExGst, invoice.currency)}</p>
               </div>
             ))}
             </div>
             <div className="mt-4 hidden overflow-x-auto md:block">
-            <table className="w-full min-w-[560px] text-left text-sm">
-              <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--text-sub)]"><th className="py-2 pr-2">Description</th><th className="py-2 pr-2 text-right">Qty</th><th className="py-2 pr-2 text-right">Unit ex GST</th><th className="py-2 text-right">Amount</th></tr></thead>
-              <tbody>{invoice.lines.map((line) => <tr key={line.id} className="border-b border-[var(--border)]/70"><td className="py-3 pr-2 font-semibold">{line.description}</td><td className="py-3 pr-2 text-right">{line.quantity}</td><td className="py-3 pr-2 text-right">{money(line.unitAmountExGst, invoice.currency)}</td><td className="py-3 text-right font-extrabold">{money(line.lineTotalExGst, invoice.currency)}</td></tr>)}</tbody>
+            <table className={`w-full text-left text-sm ${hasVisibleQuantityAndRate ? 'min-w-[560px]' : 'min-w-[360px]'}`}>
+              <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--text-sub)]"><th className="py-2 pr-2">Description</th>{hasVisibleQuantityAndRate ? <><th className="py-2 pr-2 text-right">Qty</th><th className="py-2 pr-2 text-right">Unit ex GST</th></> : null}<th className="py-2 text-right">Amount</th></tr></thead>
+              <tbody>{invoice.lines.map((line) => <tr key={line.id} className="border-b border-[var(--border)]/70"><td className="py-3 pr-2 font-semibold">{line.description}</td>{hasVisibleQuantityAndRate ? <><td className="py-3 pr-2 text-right">{line.showQuantityAndRate ? line.quantity : '—'}</td><td className="py-3 pr-2 text-right">{line.showQuantityAndRate ? money(line.unitAmountExGst, invoice.currency) : '—'}</td></> : null}<td className="py-3 text-right font-extrabold">{money(line.lineTotalExGst, invoice.currency)}</td></tr>)}</tbody>
             </table>
             </div>
           </>
@@ -699,7 +1009,7 @@ export function InvoiceDocument({
         <>
           <FieldLabel htmlFor={`invoice-notes-${invoice.id}`}>Invoice notes</FieldLabel>
           <Textarea id={`invoice-notes-${invoice.id}`} rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} />
-          <FieldHint>Update hours in Financial Summary and add other charges in Bills & Expenses before creating a replacement draft.</FieldHint>
+          <FieldHint>These notes and the customer-facing charges above are saved together as one draft revision.</FieldHint>
         </>
       ) : invoice.notes ? <div className="mt-4 rounded-xl bg-[var(--surface2)] p-3 text-sm"><strong>Notes</strong><p className="mt-1 whitespace-pre-line text-[var(--text-sub)]">{invoice.notes}</p></div> : null}
 
@@ -708,6 +1018,9 @@ export function InvoiceDocument({
       {pdfExport.error ? <div className="mt-4"><ErrorBanner message={cloudConnectionErrorMessage(pdfExport.error)} /></div> : null}
       {editable && dirty ? (
         <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save draft changes before issuing or preparing a PDF so the invoice uses the values shown here.</p>
+      ) : null}
+      {editable && !everyJobHasPositiveDraftCharge ? (
+        <p className="mt-3 text-xs font-semibold leading-5 text-[var(--amber)]">This draft can be saved, but every included job needs a positive charge before the invoice can be issued.</p>
       ) : null}
       <ExportJobStatus
         job={pdfExport.job}
@@ -785,11 +1098,13 @@ export function InvoiceDocument({
         <Button
           type="button"
           variant="secondary"
-          disabled={invoiceActionBusy || dirty}
+          disabled={invoiceActionBusy || dirty || (editable && !allJobsCompleted)}
           aria-busy={pdfExport.starting || pdfExport.active}
           onClick={() => void preparePdf()}
         >
-          {dirty
+          {editable && !allJobsCompleted
+            ? 'Complete jobs before PDF'
+            : dirty
             ? 'Save draft before PDF'
             : pdfExport.starting || pdfExport.active
             ? 'Preparing PDF…'
@@ -800,7 +1115,7 @@ export function InvoiceDocument({
                 : 'Prepare PDF'}
         </Button>
         {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save draft'}</Button> : null}
-        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty} onClick={() => void issueInvoice()}>{dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
+        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
         {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
         {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>

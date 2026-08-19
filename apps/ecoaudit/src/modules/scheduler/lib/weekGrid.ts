@@ -4,6 +4,17 @@ export const GRID_HOUR_START = 5;
 export const GRID_HOUR_END = 21; // exclusive end display through 20:00–21:00
 export const HOUR_HEIGHT_PX = 56;
 
+export type TimedGridItem = {
+  id: string;
+  scheduledStartAt: string;
+  scheduledEndAt: string | null;
+};
+
+export type EventLaneLayout = {
+  leftPercent: number;
+  widthPercent: number;
+};
+
 export function startOfWeekMonday(date: Date): Date {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const day = d.getDay(); // 0 Sun
@@ -61,6 +72,60 @@ export function eventBlockStyle(startIso: string, endIso: string | null): {
     top: topMs * pxPerMs,
     height: Math.max(durMs * pxPerMs, 28),
   };
+}
+
+/**
+ * Assign overlapping events to side-by-side lanes instead of painting them on
+ * top of one another. Transitive overlaps share a stable lane width.
+ */
+export function eventLaneLayout<T extends TimedGridItem>(events: T[]): Map<string, EventLaneLayout> {
+  const normalized = events
+    .map((event) => {
+      const start = new Date(event.scheduledStartAt).getTime();
+      const proposedEnd = event.scheduledEndAt
+        ? new Date(event.scheduledEndAt).getTime()
+        : start + 60 * 60 * 1000;
+      return {
+        event,
+        start,
+        end: Math.max(proposedEnd, start + 15 * 60 * 1000),
+      };
+    })
+    .sort((left, right) => left.start - right.start || left.end - right.end || left.event.id.localeCompare(right.event.id));
+
+  const groups: Array<typeof normalized> = [];
+  let current: typeof normalized = [];
+  let currentEnd = Number.NEGATIVE_INFINITY;
+
+  for (const item of normalized) {
+    if (current.length > 0 && item.start >= currentEnd) {
+      groups.push(current);
+      current = [];
+      currentEnd = Number.NEGATIVE_INFINITY;
+    }
+    current.push(item);
+    currentEnd = Math.max(currentEnd, item.end);
+  }
+  if (current.length > 0) groups.push(current);
+
+  const layout = new Map<string, EventLaneLayout>();
+  for (const group of groups) {
+    const laneEnds: number[] = [];
+    const placements = group.map((item) => {
+      let lane = laneEnds.findIndex((end) => end <= item.start);
+      if (lane === -1) lane = laneEnds.length;
+      laneEnds[lane] = item.end;
+      return { id: item.event.id, lane };
+    });
+    const laneCount = Math.max(laneEnds.length, 1);
+    for (const placement of placements) {
+      layout.set(placement.id, {
+        leftPercent: (placement.lane / laneCount) * 100,
+        widthPercent: 100 / laneCount,
+      });
+    }
+  }
+  return layout;
 }
 
 export function slotDateTime(day: Date, hour: number, minute = 0): Date {

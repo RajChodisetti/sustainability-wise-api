@@ -44,8 +44,8 @@ If Expo reports `DeviceNotRegistered`, the API disables that exact token but
 keeps the current lifecycle usable; register a replacement Expo token with the
 same `registrationGeneration`. Only logout or account transfer revokes it.
 
-Scheduler pushes are normal visible notifications. Eco Audit and Solar Sense
-use Android channel `scheduler-updates`; Field App Complete uses `scheduler`.
+Scheduler pushes are normal visible notifications. Solar Sense uses Android
+channel `scheduler-updates`; Field App Complete uses `scheduler`.
 The lock-screen title/body is deliberately generic (for example, “New job
 assigned” / “You were assigned a scheduled job”) and never contains an event
 title, site/client data, address, description, email, credential, or token. The
@@ -56,8 +56,8 @@ navigation payload is:
   "type": "scheduler",
   "notificationKind": "assigned | changed | assignment_removed | cancelled | manual_reminder | one_day_before | day_of",
   "eventId": "...",
-  "sourceApp": "ecoaudit | solarsense | installhub",
-  "sourceType": "audit | assessment | installation",
+  "sourceApp": "solarsense | installhub",
+  "sourceType": "assessment | installation",
   "sourceId": "...",
   "scheduledStartAt": "2026-08-20T09:00:00.000Z"
 }
@@ -68,12 +68,17 @@ show the operating-system popup only: they do not keep a notification history
 or deep-link a notification tap into the work record. A normal app launch/list
 and subsequent API/sync response remain authoritative for access.
 
-Only linked Eco Audit audits, Solar Sense rooftop assessments, and Field App
-Complete installations are notification targets. Legacy Solar site calendar
-rows, custom events, and rows without a linked source ID do not produce mobile
-pushes. Delivery rechecks the live scheduler row and linked Draft assignment at
-the Expo send boundary, so a completed, deleted, rescheduled, cancelled, or
-reassigned job cannot emit a stale active-work reminder.
+Only linked Solar Sense rooftop assessments and Field App Complete
+installations are Scheduler notification targets. Eco Audit remains a supported
+mobile application and may retain its app-scoped device registration, sync,
+active-time, and report behavior, but its audits are not discoverable or
+notifiable through Scheduler. Existing Eco Audit Scheduler notification work is
+terminalized without changing an audit or its product assignment. Legacy Solar
+site calendar rows, custom events, and rows without a linked source ID do not
+produce mobile pushes. Delivery rechecks the live scheduler row and linked
+Draft assignment at the Expo send boundary, so a completed, deleted,
+rescheduled, cancelled, or reassigned job cannot emit a stale active-work
+reminder.
 
 ## Active foreground audit time
 
@@ -118,6 +123,19 @@ ownership. Field App Complete installations with backup disabled therefore keep
 their session checkpoints queued locally until the installation is backed up.
 The checkpoint endpoint deliberately does not change parent sync watermarks,
 tree revisions, record versions, or full-snapshot payloads.
+
+These hours remain immutable app evidence when Scheduler finance reads them;
+they are never assumed to be billable or cost hours. Effective commercial hours
+default to zero, including an explicit migration reset for existing jobs, and an
+administrator may edit the separate audited commercial value. App evidence may
+remain fractional, but Billing hours accept only non-negative whole hours. The
+portal's app-hours shortcut rounds the evidence to the nearest whole hour
+(`0.5` rounds up) and clamps it at zero for Billing hours, while Cost hours keeps
+the exact value. A focused Billing hours input changes by one hour for each
+arrow-key or wheel/trackpad step. Customer labour uses the canonical nullable
+per-user billing rate configured in the portal; a
+missing rate is reported for administrator setup and is never inferred by a
+mobile client or from the job duration.
 
 Completed units never resume counting merely because they are opened in the app.
 A deliberate lifecycle transition back to `Draft` starts a fresh session; it

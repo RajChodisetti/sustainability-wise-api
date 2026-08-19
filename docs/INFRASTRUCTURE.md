@@ -94,6 +94,27 @@ Backups must include all `scheduler_job_*`, `scheduler_invoice_*`, and active-ti
 session tables because issued/paid invoice retention is independent of mutable
 operational source rows.
 
+0038 applies the current Scheduler billing and source-boundary contract after
+0037. It adds the nullable canonical `global_users.billing_rate_cents`, adds the
+per-line `show_quantity_and_rate` presentation flag, and preserves historical
+invoice rows with their existing detailed presentation while making new lines
+amount-only by default. It cancels active Eco Audit calendar links and
+terminalizes pending Eco Audit Scheduler notifications without modifying any
+`ea_audits` business row. A database write fence prevents rolling older API
+instances from recreating an active Eco Scheduler link after that cutover. It
+also supersedes every existing explicit or legacy
+hour override with a zero billable/cost-hours revision; pristine ledgers keep no
+override and now evaluate to zero in the application. Raw work sessions and
+issued invoice snapshots remain intact. Finally, its database fences allow draft invoice lines
+to be added, edited, or removed and retain only the existing currency lock on
+job commercial settings. Apply 0038 before deploying code that reads the new
+columns.
+
+0039 adds the non-negative whole-hour database fence for future Billing-hours
+writes. It is `NOT VALID` so historical fractional audit revisions remain
+append-only evidence; new and updated billable-hour revisions must be exact
+hour multiples. Cost hours and raw app-recorded time retain fractional precision.
+
 Scheduler invoice PDFs use the shared durable `pdf_jobs` queue rather than a
 browser-held render request. Jobs and stored artifacts are owned by the exact
 portal app/user credential that queued them, pin invoice `id` + `updatedAt` in
@@ -127,7 +148,17 @@ Configure Scheduler defaults with `SCHEDULER_LABOUR_COST_RATE`,
 `SCHEDULER_INVOICE_DUE_DAYS`, and the `SCHEDULER_INVOICE_SELLER_*` variables.
 Rates and expense/bill inputs are ex-GST. Invoice creation snapshots configured
 seller values; issue freezes current draft bill-to/PO fields and current job
-name/date/site fields. No receipt attachment upload is exposed in this release;
+name/date/site fields. Customer labour calculations use the nullable canonical
+per-user billing rate set by a portal administrator; the job-level billable
+default is retained for compatibility and must not be used to invent a missing
+user rate. App-recorded hours remain evidence, while effective commercial hours
+default to zero and are stored as audited editable overrides. Billing-hour
+overrides are non-negative whole-hour integers; app-recorded evidence may remain
+fractional, as may the separate cost-hours override. The portal adopts that
+evidence into Billing hours by rounding to the nearest whole hour (`0.5` rounds
+up), while preserving its exact value in Cost hours; the focused Billing hours
+input uses one-hour arrow and wheel/trackpad steps with a zero minimum. No
+receipt attachment upload is exposed in this release;
 supplier bills are structured vendor/reference/date/category/cost/sell records.
 `SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API
 fails startup for an invalid or out-of-range value instead of allowing a later
@@ -135,6 +166,12 @@ integer-column or invoice-total failure.
 Currency is normalized to uppercase during legacy conversion, and migration
 fails closed on mixed-currency Field ledgers rather than aggregating unlike
 amounts. Runtime currency changes are blocked once an expense or invoice exists.
+Invoice snapshots no longer lock later pricing mode, quote, hourly rate, or
+commercial-hours changes. Draft lines are editable suggestions and render as
+description plus amount unless `show_quantity_and_rate` is explicitly enabled;
+issued/paid lines remain immutable. Draft creation, issue, and draft PDF queueing
+require every live source job to be `Completed`; historical issued/paid PDF
+snapshots remain exportable. Legacy estimated hours do not gate those actions.
 
 Issued and paid Scheduler invoices can be emailed from the portal. Delivery
 reuses the Wattwatchers Fleet monitor's Gmail OAuth identity: provision the
@@ -175,7 +212,10 @@ claims are recovered, and timers are stopped during graceful shutdown. Expo send
 batches are capped at 100 and receipt requests at 1,000. Configure
 `EXPO_ACCESS_TOKEN` only when enhanced Expo push security is enabled; the Expo
 account/service-account token must have access to all three registered EAS
-projects. Never log or expose it. Each external send batch revalidates the current scheduler event,
+projects. Never log or expose it. Scheduler delivery targets only Solar Sense
+assessments and Field App Complete installations; Eco Audit device registration
+remains compatible but is not a Scheduler notification source. Each external
+send batch revalidates the current scheduler event,
 linked Draft product, canonical assignment, and automatic trigger timestamp;
 stale jobs are terminally cancelled. One-day jobs expire at event start and
 day-of jobs expire at event end or after 24 hours so outage recovery cannot emit misleading

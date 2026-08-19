@@ -3,16 +3,18 @@
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Select } from '@/components/ui/FormFields';
+import { Icon } from '@/components/ui/Icon';
 import { JobsPoolPanel, type JobDragData } from '@/modules/scheduler/components/JobsPoolPanel';
 import { StaffFilterPanel } from '@/modules/scheduler/components/StaffFilterPanel';
 import type { EventDragData } from '@/modules/scheduler/components/ScheduleEventBlock';
@@ -35,6 +37,7 @@ import {
 } from '@/modules/scheduler/lib/weekGrid';
 import type {
   JobOption,
+  PortalDirectoryUser,
   ScheduleEvent,
   ScheduleSourceApp,
 } from '@/modules/scheduler/types/domain';
@@ -62,6 +65,8 @@ export function DynamicSchedulerBoard({
   const [pendingAssign, setPendingAssign] = useState<PendingAssign | null>(null);
   const [pickAssignee, setPickAssignee] = useState('');
   const [boardError, setBoardError] = useState<string | null>(null);
+  const [staffPanelOpen, setStaffPanelOpen] = useState(false);
+  const [jobsPanelOpen, setJobsPanelOpen] = useState(false);
 
   const days = useMemo(() => weekDays(cursor), [cursor]);
   const range = useMemo(() => {
@@ -78,6 +83,13 @@ export function DynamicSchedulerBoard({
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, {
+      keyboardCodes: {
+        start: ['Space'],
+        cancel: ['Escape'],
+        end: ['Space', 'Enter', 'Tab'],
+      },
+    }),
   );
 
   const staff = useMemo(() => assignees.data ?? [], [assignees.data]);
@@ -86,12 +98,12 @@ export function DynamicSchedulerBoard({
   ), [eventsQuery.data, visibleSourceApps]);
   const visibleEvents = useMemo(() => {
     if (staffFilter.length === 0) return allEvents;
-    return allEvents.filter((e) => staffFilter.includes(e.assigneeFieldUserId));
+    return allEvents.filter((event) => staffFilter.includes(event.assigneeFieldUserId));
   }, [allEvents, staffFilter]);
 
   const filteredStaff = useMemo(() => {
     if (staffFilter.length === 0) return staff;
-    return staff.filter((s) => staffFilter.includes(s.fieldUserId));
+    return staff.filter((person) => staffFilter.includes(person.fieldUserId));
   }, [staff, staffFilter]);
 
   async function createFromJob(job: JobOption, day: Date, hour: number, assigneeFieldUserId: string) {
@@ -136,12 +148,12 @@ export function DynamicSchedulerBoard({
       }
 
       if (activeData.type === 'event' && overData.type === 'slot') {
-        const ev = activeData.event;
+        const scheduledEvent = activeData.event;
         const start = slotDateTime(overData.day, overData.hour);
-        const dur = durationMs(ev.scheduledStartAt, ev.scheduledEndAt);
-        const end = new Date(start.getTime() + dur);
+        const duration = durationMs(scheduledEvent.scheduledStartAt, scheduledEvent.scheduledEndAt);
+        const end = new Date(start.getTime() + duration);
         await update.mutateAsync({
-          id: ev.id,
+          id: scheduledEvent.id,
           input: {
             scheduledStartAt: start.toISOString(),
             scheduledEndAt: end.toISOString(),
@@ -156,13 +168,13 @@ export function DynamicSchedulerBoard({
           input: { assigneeFieldUserId: overData.fieldUserId },
         });
       }
-    } catch (err) {
-      setBoardError(err instanceof Error ? err.message : 'Calendar update failed');
+    } catch (error) {
+      setBoardError(error instanceof Error ? error.message : 'Calendar update failed');
     }
   }
 
-  function onDragStart(e: DragStartEvent) {
-    const data = e.active.data.current as JobDragData | EventDragData | undefined;
+  function onDragStart(event: DragStartEvent) {
+    const data = event.active.data.current as JobDragData | EventDragData | undefined;
     setActiveDrag(data ?? null);
   }
 
@@ -177,8 +189,8 @@ export function DynamicSchedulerBoard({
         pickAssignee,
       );
       setPendingAssign(null);
-    } catch (err) {
-      setBoardError(err instanceof Error ? err.message : 'Could not assign job');
+    } catch (error) {
+      setBoardError(error instanceof Error ? error.message : 'Could not assign job');
     }
   }
 
@@ -191,11 +203,11 @@ export function DynamicSchedulerBoard({
     );
   }
 
-  const rangeLabel = `${days[0].toLocaleDateString(undefined, {
+  const rangeLabel = `${days[0].toLocaleDateString('en-AU', {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
-  })} – ${days[6].toLocaleDateString(undefined, {
+  })} – ${days[6].toLocaleDateString('en-AU', {
     weekday: 'short',
     day: 'numeric',
     month: 'short',
@@ -203,90 +215,149 @@ export function DynamicSchedulerBoard({
   })}`;
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() =>
-              setCursor((c) => {
-                const n = new Date(c);
-                n.setDate(n.getDate() - 7);
-                return startOfWeekMonday(n);
-              })
-            }
-          >
-            ‹
-          </Button>
-          <p className="min-w-[14rem] text-center text-sm font-extrabold text-[var(--text)]">
-            {rangeLabel}
-          </p>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() =>
-              setCursor((c) => {
-                const n = new Date(c);
-                n.setDate(n.getDate() + 7);
-                return startOfWeekMonday(n);
-              })
-            }
-          >
-            ›
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setCursor(startOfWeekMonday(new Date()))}
-          >
-            Today
-          </Button>
+    <div className="space-y-4">
+      <section
+        className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-[var(--shadow-xs)] sm:p-4"
+        aria-label="Calendar controls"
+      >
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2">
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--primary-soft)] text-[var(--primary)]">
+                <Icon name="calendar" size={18} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[10px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">
+                  Weekly schedule
+                </p>
+                <p className="truncate text-sm font-extrabold text-[var(--text)]" aria-live="polite">
+                  {rangeLabel}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 sm:ml-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="!min-h-11 !px-3"
+                aria-label="Previous week"
+                onClick={() =>
+                  setCursor((value) => {
+                    const next = new Date(value);
+                    next.setDate(next.getDate() - 7);
+                    return startOfWeekMonday(next);
+                  })
+                }
+              >
+                <Icon name="chevron-right" size={17} className="rotate-180" />
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setCursor(startOfWeekMonday(new Date()))}
+              >
+                Today
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="!min-h-11 !px-3"
+                aria-label="Next week"
+                onClick={() =>
+                  setCursor((value) => {
+                    const next = new Date(value);
+                    next.setDate(next.getDate() + 7);
+                    return startOfWeekMonday(next);
+                  })
+                }
+              >
+                <Icon name="chevron-right" size={17} />
+              </Button>
+            </div>
+          </div>
+
+          {isAdmin ? (
+            <div className="flex flex-wrap items-center gap-2" aria-label="Calendar tools">
+              <Button
+                type="button"
+                variant={staffPanelOpen ? 'primary' : 'secondary'}
+                aria-expanded={staffPanelOpen}
+                aria-controls="scheduler-staff-filter-panel"
+                onClick={() => setStaffPanelOpen((open) => !open)}
+              >
+                <Icon name="users" size={17} />
+                Staff{staffFilter.length > 0 ? ` (${staffFilter.length})` : ''}
+                <Icon name="chevron-down" size={15} className={staffPanelOpen ? 'rotate-180' : ''} />
+              </Button>
+              <Button
+                type="button"
+                variant={jobsPanelOpen ? 'primary' : 'secondary'}
+                aria-expanded={jobsPanelOpen}
+                aria-controls="scheduler-jobs-pool-panel"
+                onClick={() => setJobsPanelOpen((open) => !open)}
+              >
+                <Icon name="clipboard" size={17} />
+                Unscheduled jobs
+                <Icon name="chevron-down" size={15} className={jobsPanelOpen ? 'rotate-180' : ''} />
+              </Button>
+            </div>
+          ) : null}
         </div>
-        <p className="text-xs font-semibold text-[var(--text-sub)]">
-          Week · drag jobs onto hours{isAdmin ? '' : ' (view only)'}
-        </p>
-      </div>
+
+        <div className="mt-3 flex items-start gap-2 border-t border-[var(--border)] pt-3 text-xs leading-5 text-[var(--text-sub)]">
+          <Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" />
+          <p>
+            {isAdmin
+              ? 'Open Unscheduled jobs to drag work onto a time. Drag scheduled events to move them, or drop one on a person to reassign it.'
+              : 'View your scheduled work for the week. Select an event to review its full details.'}
+          </p>
+        </div>
+      </section>
 
       {boardError ? <ErrorBanner message={boardError} /> : null}
 
       <DndContext
+        id="scheduler-week-board"
         sensors={sensors}
         onDragStart={onDragStart}
-        onDragEnd={(e) => {
-          void handleDragEnd(e);
+        onDragEnd={(event) => {
+          void handleDragEnd(event);
         }}
         onDragCancel={() => setActiveDrag(null)}
       >
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
-          {isAdmin ? (
-            <StaffFilterPanel
+        {isAdmin && staffPanelOpen ? (
+          <StaffFilterPanel
+            enabled={isAdmin}
+            selectedIds={staffFilter}
+            onChange={setStaffFilter}
+          />
+        ) : null}
+
+        <div className={`grid min-w-0 gap-3 ${jobsPanelOpen ? '2xl:grid-cols-[minmax(0,1fr)_18rem]' : ''}`}>
+          {isAdmin && jobsPanelOpen ? (
+            <JobsPoolPanel
               enabled={isAdmin}
-              selectedIds={staffFilter}
-              onChange={setStaffFilter}
+              visibleSourceApps={visibleSourceApps}
+              className="order-1 max-h-[30rem] 2xl:order-2 2xl:max-h-[calc(100vh-8rem)] 2xl:self-start"
             />
           ) : null}
 
           <WeekTimeGrid
+            className="order-2 2xl:order-1"
             days={days}
             events={visibleEvents}
             staff={filteredStaff.length > 0 ? filteredStaff : staff}
             canDrag={isAdmin}
             onSlotClick={(day, hour) => {
-              const d = slotDateTime(day, hour);
-              onSlotCreate(d);
+              onSlotCreate(slotDateTime(day, hour));
             }}
             onEventClick={onEventEdit}
           />
-
-          {isAdmin ? (
-            <JobsPoolPanel enabled={isAdmin} visibleSourceApps={visibleSourceApps} />
-          ) : null}
         </div>
 
         <DragOverlay>
           {activeDrag?.type === 'job' ? (
-            <div className="max-w-xs rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg">
+            <div className="max-w-xs rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-[var(--shadow-md)]">
               <p className="text-xs font-extrabold text-[var(--text)]">{activeDrag.job.label}</p>
               <span
                 className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[10px] font-extrabold ${appChipClass(activeDrag.job.sourceApp)}`}
@@ -296,7 +367,7 @@ export function DynamicSchedulerBoard({
             </div>
           ) : null}
           {activeDrag?.type === 'event' ? (
-            <div className="max-w-xs rounded-xl border border-[var(--border)] bg-[var(--surface)] p-3 shadow-lg">
+            <div className="max-w-xs rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface)] p-3 shadow-[var(--shadow-md)]">
               <p className="text-xs font-extrabold text-[var(--text)]">{activeDrag.event.title}</p>
             </div>
           ) : null}
@@ -304,48 +375,141 @@ export function DynamicSchedulerBoard({
       </DndContext>
 
       {pendingAssign ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5 shadow-xl">
-            <h3 className="text-base font-extrabold text-[var(--text)]">Assign staff</h3>
-            <p className="mt-1 text-sm text-[var(--text-sub)]">
+        <AssignStaffDialog
+          pendingAssign={pendingAssign}
+          pickAssignee={pickAssignee}
+          staff={staff}
+          busy={create.isPending}
+          onPickAssignee={setPickAssignee}
+          onCancel={() => setPendingAssign(null)}
+          onConfirm={() => {
+            void confirmPendingAssign();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function AssignStaffDialog({
+  pendingAssign,
+  pickAssignee,
+  staff,
+  busy,
+  onPickAssignee,
+  onCancel,
+  onConfirm,
+}: {
+  pendingAssign: PendingAssign;
+  pickAssignee: string;
+  staff: PortalDirectoryUser[];
+  busy: boolean;
+  onPickAssignee: (value: string) => void;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const cancelRef = useRef(onCancel);
+  const busyRef = useRef(busy);
+
+  useEffect(() => {
+    cancelRef.current = onCancel;
+    busyRef.current = busy;
+  }, [busy, onCancel]);
+
+  useEffect(() => {
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialogRef.current?.querySelector<HTMLSelectElement>('select:not(:disabled)')?.focus();
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !busyRef.current) {
+        event.preventDefault();
+        cancelRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex="-1"])',
+      ));
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-[var(--overlay)] p-3 sm:items-center" role="presentation">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="scheduler-assign-title"
+        aria-describedby="scheduler-assign-description"
+        aria-busy={busy}
+        className="w-full max-w-md rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-md)] sm:p-6"
+      >
+        <div className="flex items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-sm)] bg-[var(--primary-soft)] text-[var(--primary)]">
+            <Icon name="user" size={19} />
+          </span>
+          <div>
+            <h3 id="scheduler-assign-title" className="text-base font-extrabold text-[var(--text)]">
+              Assign staff
+            </h3>
+            <p id="scheduler-assign-description" className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
               Schedule <span className="font-bold text-[var(--text)]">{pendingAssign.job.label}</span>{' '}
-              on {dayKey(pendingAssign.day)} at {pendingAssign.hour}:00
+              on {dayKey(pendingAssign.day)} at {pendingAssign.hour}:00.
             </p>
-            <div className="mt-4">
-              <FieldLabel>Assignee</FieldLabel>
-              <Select
-                value={pickAssignee}
-                onChange={(e) => setPickAssignee(e.target.value)}
-              >
-                <option value="">Select…</option>
-                {staff.map((u) => (
-                  <option key={u.fieldUserId} value={u.fieldUserId}>
-                    {u.label}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={() => setPendingAssign(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                disabled={!pickAssignee || create.isPending}
-                onClick={() => {
-                  void confirmPendingAssign();
-                }}
-              >
-                {create.isPending ? 'Scheduling…' : 'Schedule'}
-              </Button>
-            </div>
           </div>
         </div>
-      ) : null}
+
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            onConfirm();
+          }}
+        >
+          <div className="mt-4">
+            <FieldLabel htmlFor="scheduler-pending-assignee">Assignee</FieldLabel>
+            <Select
+              id="scheduler-pending-assignee"
+              value={pickAssignee}
+              onChange={(event) => onPickAssignee(event.target.value)}
+            >
+              <option value="">Select…</option>
+              {staff.map((person) => (
+                <option key={person.fieldUserId} value={person.fieldUserId}>
+                  {person.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+          <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button type="button" variant="secondary" disabled={busy} onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!pickAssignee || busy}>
+              {busy ? 'Scheduling…' : 'Schedule'}
+            </Button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

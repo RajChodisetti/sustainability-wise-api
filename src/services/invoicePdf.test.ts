@@ -96,6 +96,37 @@ describe('invoice PDF branding and source context', () => {
     assert.match(html, /white-space: pre-line/);
   });
 
+  it('keeps internal hours and rates off the invoice unless explicitly enabled', () => {
+    const amountOnly = modelFor('installhub', 'installation');
+    const hiddenHtml = buildInvoiceHtml(amountOnly);
+    assert.doesNotMatch(hiddenHtml, />Qty</);
+    assert.doesNotMatch(hiddenHtml, /Unit \(ex GST\)/);
+    assert.match(hiddenHtml, /<th colspan="2">/);
+    assert.doesNotMatch(hiddenHtml, /<th colspan="4">/);
+
+    amountOnly.lines[0]!.showQuantityAndRate = true;
+    const detailedHtml = buildInvoiceHtml(amountOnly);
+    assert.match(detailedHtml, />Qty</);
+    assert.match(detailedHtml, /Unit \(ex GST\)/);
+    assert.match(detailedHtml, />2</);
+    assert.match(detailedHtml, /<th colspan="4">/);
+  });
+
+  it('leaves quantity and rate blank for amount-only rows in a mixed table', () => {
+    const model = modelFor('solarsense', 'assessment');
+    model.lines = [
+      { ...model.lines[0]!, showQuantityAndRate: true },
+      {
+        description: 'Adjusted labour suggestion',
+        quantity: 1,
+        unitAmountExGst: 987.65,
+        lineTotalExGst: 987.65,
+      },
+    ];
+    const html = buildInvoiceHtml(model);
+    assert.match(html, /Adjusted labour suggestion[\s\S]*?<td class="num"><\/td>[\s\S]*?<td class="num"><\/td>/);
+  });
+
   it('groups a consolidated invoice by job with references and job subtotals', () => {
     const model = modelFor('ecoaudit', 'audit');
     model.subtotalExGst = 1850;

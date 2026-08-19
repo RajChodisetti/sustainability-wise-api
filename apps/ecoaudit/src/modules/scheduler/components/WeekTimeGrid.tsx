@@ -1,12 +1,14 @@
 'use client';
 
 import { useDroppable } from '@dnd-kit/core';
-import { useMemo } from 'react';
+import { useMemo, useState, type KeyboardEvent } from 'react';
+import { Icon } from '@/components/ui/Icon';
 import { ScheduleEventBlock } from '@/modules/scheduler/components/ScheduleEventBlock';
 import { initials } from '@/modules/scheduler/lib/weekGrid';
 import {
   dayKey,
   eventBlockStyle,
+  eventLaneLayout,
   GRID_HOUR_START,
   GRID_HOUR_END,
   gridHeightPx,
@@ -34,6 +36,7 @@ export function WeekTimeGrid({
   canDrag,
   onSlotClick,
   onEventClick,
+  className = '',
 }: {
   days: Date[];
   events: ScheduleEvent[];
@@ -41,6 +44,7 @@ export function WeekTimeGrid({
   canDrag: boolean;
   onSlotClick: (day: Date, hour: number) => void;
   onEventClick: (event: ScheduleEvent) => void;
+  className?: string;
 }) {
   const byDay = useMemo(() => {
     const map = new Map<string, ScheduleEvent[]>();
@@ -56,71 +60,124 @@ export function WeekTimeGrid({
 
   const hours = hoursInGrid();
   const nowLine = useMemo(() => nowLineOffset(days), [days]);
+  const [focusedSlot, setFocusedSlot] = useState<string | null>(null);
+  const dayKeys = useMemo(() => days.map(dayKey), [days]);
+  const defaultSlotKey = useMemo(() => {
+    const todayIndex = days.findIndex((day) => dayKey(day) === dayKey(new Date()));
+    const dayIndex = todayIndex >= 0 ? todayIndex : 0;
+    const currentHour = new Date().getHours();
+    const hour = Math.min(Math.max(currentHour, GRID_HOUR_START), GRID_HOUR_END - 1);
+    return slotFocusKey(dayKeys[dayIndex] ?? '', hour);
+  }, [dayKeys, days]);
+  const activeSlotKey = focusedSlot && dayKeys.some((key) => focusedSlot.startsWith(`${key}:`))
+    ? focusedSlot
+    : defaultSlotKey;
+
+  function moveSlotFocus(event: KeyboardEvent<HTMLButtonElement>, dayIndex: number, hour: number) {
+    let nextDay = dayIndex;
+    let nextHour = hour;
+    if (event.key === 'ArrowLeft') nextDay = Math.max(0, dayIndex - 1);
+    else if (event.key === 'ArrowRight') nextDay = Math.min(days.length - 1, dayIndex + 1);
+    else if (event.key === 'ArrowUp') nextHour = Math.max(GRID_HOUR_START, hour - 1);
+    else if (event.key === 'ArrowDown') nextHour = Math.min(GRID_HOUR_END - 1, hour + 1);
+    else if (event.key === 'Home') nextHour = GRID_HOUR_START;
+    else if (event.key === 'End') nextHour = GRID_HOUR_END - 1;
+    else return;
+
+    event.preventDefault();
+    const nextKey = slotFocusKey(dayKeys[nextDay] ?? '', nextHour);
+    setFocusedSlot(nextKey);
+    requestAnimationFrame(() => {
+      document.getElementById(slotElementId(nextKey))?.focus();
+    });
+  }
 
   return (
-    <div className="min-w-0 flex-1 overflow-auto rounded-2xl border border-[var(--border)] bg-[var(--surface)]">
-      <div
-        className="grid min-w-[720px]"
-        style={{ gridTemplateColumns: `3.5rem repeat(${days.length}, minmax(0, 1fr))` }}
-      >
-        {/* Header */}
-        <div className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--surface)]" />
-        {days.map((day) => {
-          const key = dayKey(day);
-          const chips = staff.slice(0, 8);
-          return (
-            <div
-              key={key}
-              className="sticky top-0 z-20 border-b border-l border-[var(--border)] bg-[var(--surface)] px-1 py-2 text-center"
-            >
-              <p className="text-[11px] font-extrabold uppercase tracking-wide text-[var(--text-sub)]">
-                {day.toLocaleDateString(undefined, { weekday: 'short' })}
-              </p>
-              <p className="text-sm font-extrabold text-[var(--text)]">{day.getDate()}</p>
-              <div className="mt-1 flex flex-wrap justify-center gap-0.5">
-                {chips.map((c) => (
-                  <StaffChipDrop
-                    key={`${key}:${c.fieldUserId}`}
-                    id={`staff:${key}:${c.fieldUserId}`}
-                    user={c}
-                    enabled={canDrag}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Time gutter + day columns */}
-        <div className="relative border-r border-[var(--border)]" style={{ height: gridHeightPx() }}>
-          {hours.map((h) => (
-            <div
-              key={h}
-              className="absolute right-1 -translate-y-1/2 text-[10px] font-bold text-[var(--muted)]"
-              style={{ top: (h - GRID_HOUR_START) * HOUR_HEIGHT_PX }}
-            >
-              {formatHour(h)}
-            </div>
-          ))}
+    <div className={`min-w-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)] ${className}`}>
+      {canDrag && staff.length > 0 ? (
+        <div className="flex flex-col gap-2 border-b border-[var(--border)] bg-[var(--surface2)]/70 px-3 py-2.5 sm:flex-row sm:items-center">
+          <div className="flex shrink-0 items-center gap-2">
+            <Icon name="users" size={16} className="text-[var(--primary)]" />
+            <p id="scheduler-reassign-hint" className="text-xs font-bold text-[var(--text-sub)]">
+              Drop an event on a person to reassign
+            </p>
+          </div>
+          <div className="subtle-scrollbar flex min-w-0 flex-1 gap-1.5 overflow-x-auto pb-1 sm:justify-end sm:pb-0">
+            {staff.map((user) => (
+              <StaffChipDrop
+                key={user.fieldUserId}
+                id={`staff:${user.fieldUserId}`}
+                user={user}
+                enabled={canDrag}
+              />
+            ))}
+          </div>
         </div>
+      ) : null}
 
-        {days.map((day) => {
-          const key = dayKey(day);
-          const dayEvents = byDay.get(key) ?? [];
-          return (
-            <DayColumn
-              key={key}
-              day={day}
-              dayKeyStr={key}
-              hours={hours}
-              events={dayEvents}
-              canDrag={canDrag}
-              showNowLine={nowLine?.dayKey === key ? nowLine.top : null}
-              onSlotClick={onSlotClick}
-              onEventClick={onEventClick}
-            />
-          );
-        })}
+      <p id="scheduler-calendar-keyboard-hint" className="sr-only">
+        Use the arrow keys to move between time slots, then press Enter to schedule a job.
+      </p>
+      <div className="subtle-scrollbar overflow-auto" role="region" aria-label="Weekly calendar grid" tabIndex={0}>
+        <div
+          className="grid min-w-[800px]"
+          style={{ gridTemplateColumns: `3.75rem repeat(${days.length}, minmax(0, 1fr))` }}
+        >
+          {/* Header */}
+          <div className="sticky left-0 top-0 z-30 border-b border-r border-[var(--border)] bg-[var(--surface)]" />
+          {days.map((day) => {
+            const key = dayKey(day);
+            const isToday = key === dayKey(new Date());
+            return (
+              <div
+                key={key}
+                className={`sticky top-0 z-20 border-b border-l border-[var(--border)] px-1 py-2.5 text-center ${
+                  isToday ? 'bg-[var(--primary-soft)]' : 'bg-[var(--surface)]'
+                }`}
+              >
+                <p className={`text-[10px] font-extrabold uppercase tracking-[0.08em] ${isToday ? 'text-[var(--primary)]' : 'text-[var(--text-sub)]'}`}>
+                  {day.toLocaleDateString('en-AU', { weekday: 'short' })}
+                </p>
+                <p className="mt-0.5 text-base font-extrabold text-[var(--text)]">{day.getDate()}</p>
+              </div>
+            );
+          })}
+
+          {/* Time gutter + day columns */}
+          <div className="sticky left-0 z-10 border-r border-[var(--border)] bg-[var(--surface)]" style={{ height: gridHeightPx() }}>
+            {hours.map((h) => (
+              <div
+                key={h}
+                className="absolute right-2 -translate-y-1/2 text-[10px] font-bold text-[var(--muted)]"
+                style={{ top: (h - GRID_HOUR_START) * HOUR_HEIGHT_PX }}
+              >
+                {formatHour(h)}
+              </div>
+            ))}
+          </div>
+
+          {days.map((day, dayIndex) => {
+            const key = dayKey(day);
+            const dayEvents = byDay.get(key) ?? [];
+            return (
+              <DayColumn
+                key={key}
+                day={day}
+                dayIndex={dayIndex}
+                dayKeyStr={key}
+                hours={hours}
+                events={dayEvents}
+                canDrag={canDrag}
+                activeSlotKey={activeSlotKey}
+                showNowLine={nowLine?.dayKey === key ? nowLine.top : null}
+                onSlotClick={onSlotClick}
+                onSlotFocus={setFocusedSlot}
+                onSlotKeyDown={moveSlotFocus}
+                onEventClick={onEventClick}
+              />
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -128,23 +185,32 @@ export function WeekTimeGrid({
 
 function DayColumn({
   day,
+  dayIndex,
   dayKeyStr,
   hours,
   events,
   canDrag,
+  activeSlotKey,
   showNowLine,
   onSlotClick,
+  onSlotFocus,
+  onSlotKeyDown,
   onEventClick,
 }: {
   day: Date;
+  dayIndex: number;
   dayKeyStr: string;
   hours: number[];
   events: ScheduleEvent[];
   canDrag: boolean;
+  activeSlotKey: string;
   showNowLine: number | null;
   onSlotClick: (day: Date, hour: number) => void;
+  onSlotFocus: (key: string) => void;
+  onSlotKeyDown: (event: KeyboardEvent<HTMLButtonElement>, dayIndex: number, hour: number) => void;
   onEventClick: (event: ScheduleEvent) => void;
 }) {
+  const laneLayout = eventLaneLayout(events);
   return (
     <div
       className="relative border-l border-[var(--border)]"
@@ -157,7 +223,10 @@ function DayColumn({
           dayKeyStr={dayKeyStr}
           hour={h}
           canDrop={canDrag}
+          isTabStop={slotFocusKey(dayKeyStr, h) === activeSlotKey}
           onClick={() => onSlotClick(day, h)}
+          onFocus={() => onSlotFocus(slotFocusKey(dayKeyStr, h))}
+          onKeyDown={(event) => onSlotKeyDown(event, dayIndex, h)}
         />
       ))}
       {showNowLine != null ? (
@@ -166,15 +235,22 @@ function DayColumn({
           style={{ top: showNowLine }}
         />
       ) : null}
-      {events.map((event) => (
-        <ScheduleEventBlock
-          key={event.id}
-          event={event}
-          style={eventBlockStyle(event.scheduledStartAt, event.scheduledEndAt)}
-          canDrag={canDrag}
-          onClick={() => onEventClick(event)}
-        />
-      ))}
+      {events.map((event) => {
+        const lane = laneLayout.get(event.id) ?? { leftPercent: 0, widthPercent: 100 };
+        return (
+          <ScheduleEventBlock
+            key={event.id}
+            event={event}
+            style={{
+              ...eventBlockStyle(event.scheduledStartAt, event.scheduledEndAt),
+              left: `calc(${lane.leftPercent}% + 0.25rem)`,
+              width: `calc(${lane.widthPercent}% - 0.5rem)`,
+            }}
+            canDrag={canDrag}
+            onClick={() => onEventClick(event)}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -184,13 +260,19 @@ function HourSlot({
   dayKeyStr,
   hour,
   canDrop,
+  isTabStop,
   onClick,
+  onFocus,
+  onKeyDown,
 }: {
   day: Date;
   dayKeyStr: string;
   hour: number;
   canDrop: boolean;
+  isTabStop: boolean;
   onClick: () => void;
+  onFocus: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({
     id: `slot:${dayKeyStr}:${hour}`,
@@ -203,19 +285,32 @@ function HourSlot({
     disabled: !canDrop,
   });
 
+  const key = slotFocusKey(dayKeyStr, hour);
+  const sharedClassName = `absolute left-0 right-0 w-full border-t border-[var(--border)]/60 ${
+    isOver ? 'bg-[var(--primary-soft)]' : canDrop ? 'hover:bg-[var(--surface2)]/80' : ''
+  }`;
+  const style = {
+    top: (hour - GRID_HOUR_START) * HOUR_HEIGHT_PX,
+    height: HOUR_HEIGHT_PX,
+  };
+
+  if (!canDrop) {
+    return <div ref={setNodeRef} className={sharedClassName} style={style} aria-hidden="true" />;
+  }
+
   return (
     <button
+      id={slotElementId(key)}
       type="button"
       ref={setNodeRef}
       onClick={onClick}
-      className={`absolute left-0 right-0 w-full border-t border-[var(--border)]/60 ${
-        isOver ? 'bg-[var(--primary-soft)]' : 'hover:bg-[var(--surface2)]/80'
-      }`}
-      style={{
-        top: (hour - GRID_HOUR_START) * HOUR_HEIGHT_PX,
-        height: HOUR_HEIGHT_PX,
-      }}
+      onFocus={onFocus}
+      onKeyDown={onKeyDown}
+      tabIndex={isTabStop ? 0 : -1}
+      className={sharedClassName}
+      style={style}
       aria-label={`Schedule ${dayKeyStr} at ${formatHour(hour)}`}
+      aria-describedby="scheduler-calendar-keyboard-hint"
     />
   );
 }
@@ -238,16 +333,27 @@ function StaffChipDrop({
   return (
     <span
       ref={setNodeRef}
-      title={user.label}
-      className={`inline-flex h-6 w-6 items-center justify-center rounded-full text-[9px] font-extrabold ${
+      title={`Drop event to assign to ${user.label}`}
+      className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-full border px-1.5 py-1 text-[10px] font-extrabold ${
         isOver
-          ? 'bg-[var(--primary)] text-[var(--primary-fg)] ring-2 ring-[var(--primary)]'
-          : 'bg-[var(--surface2)] text-[var(--text-sub)]'
+          ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)] ring-2 ring-[var(--primary)]/30'
+          : 'border-[var(--border)] bg-[var(--surface)] text-[var(--text-sub)]'
       }`}
     >
-      {initials(user.label)}
+      <span className={`flex h-6 w-6 items-center justify-center rounded-full ${isOver ? 'bg-white/15' : 'bg-[var(--primary-soft)] text-[var(--primary)]'}`}>
+        {initials(user.label)}
+      </span>
+      <span className="max-w-28 truncate pr-1">{user.label}</span>
     </span>
   );
+}
+
+function slotFocusKey(dayKeyStr: string, hour: number): string {
+  return `${dayKeyStr}:${hour}`;
+}
+
+function slotElementId(key: string): string {
+  return `scheduler-slot-${key.replaceAll(':', '-')}`;
 }
 
 function formatHour(h: number): string {

@@ -5,6 +5,7 @@ import {
   createConsolidatedSchedulerInvoice,
   downloadSchedulerInvoicePdfExport,
   fetchSchedulerInvoiceEmailDeliveries,
+  fetchPortalAssignees,
   fetchGlobalSchedulerExpenses,
   fetchGlobalSchedulerInvoices,
   getLatestSchedulerInvoicePdfExport,
@@ -14,6 +15,7 @@ import {
   sendSchedulerInvoiceEmail,
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
+  updatePortalUserBillingRate,
   uploadSchedulerExpenseAttachment,
   voidGlobalSchedulerInvoice,
 } from './client';
@@ -104,6 +106,16 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     await updateSchedulerInvoice('finance/9', 'invoice/42', {
       expectedUpdatedAt: '2026-08-16T18:15:00.000Z',
       notes: 'Current intent',
+      lines: [{
+        id: 'line/1',
+        financeId: 'finance/9',
+        kind: 'labour',
+        description: 'Adjusted labour charge',
+        quantity: 1,
+        unitAmountExGst: 425,
+        showQuantityAndRate: false,
+        expenseId: null,
+      }],
     });
     await issueSchedulerInvoice(
       'finance/9',
@@ -128,6 +140,16 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     assert.deepEqual(JSON.parse(update?.body ?? ''), {
       expectedUpdatedAt: '2026-08-16T18:15:00.000Z',
       notes: 'Current intent',
+      lines: [{
+        id: 'line/1',
+        financeId: 'finance/9',
+        kind: 'labour',
+        description: 'Adjusted labour charge',
+        quantity: 1,
+        unitAmountExGst: 425,
+        showQuantityAndRate: false,
+        expenseId: null,
+      }],
     });
     const issue = requests.find((request) => request.url.endsWith('/issue'));
     assert.deepEqual(JSON.parse(issue?.body ?? ''), {
@@ -286,6 +308,66 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     assert.equal(upload?.headers.get('x-file-content-type'), 'application/pdf');
     assert.equal(upload?.headers.get('x-file-name'), 'supplier bill.pdf');
     assert.equal(upload?.body, file);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('portal assignees retain canonical user ids and billing-rate updates use that identity', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'directory-admin');
+  const values = new Map<string, string>([['ea_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; method: string; body: string | null }> = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? 'GET';
+    const body = typeof init?.body === 'string' ? init.body : null;
+    requests.push({ url, method, body });
+    if (method === 'PATCH') {
+      return Response.json({ globalUserId: 'global/user 1', billingRate: 185.5 });
+    }
+    return Response.json({
+      data: [{
+        key: 'global/user 1',
+        fullName: 'Alex Auditor',
+        displayEmail: 'alex@example.test',
+        billingRate: 175,
+        memberships: [{
+          app: 'ecoaudit',
+          userId: 'eco-1',
+          fieldUserId: 'field-1',
+          role: 'admin',
+          isActive: true,
+        }],
+      }],
+    });
+  };
+
+  try {
+    const users = await fetchPortalAssignees();
+    assert.equal(users[0]?.key, 'global/user 1');
+    assert.equal(users[0]?.billingRate, 175);
+
+    const updated = await updatePortalUserBillingRate(users[0]!.key, 185.5);
+    assert.deepEqual(updated, { globalUserId: 'global/user 1', billingRate: 185.5 });
+    const patchRequest = requests.find((request) => request.method === 'PATCH');
+    assert.match(patchRequest?.url ?? '', /\/v1\/portal\/users\/global%2Fuser%201\/billing-rate$/);
+    assert.deepEqual(JSON.parse(patchRequest?.body ?? ''), { billingRate: 185.5 });
   } finally {
     globalThis.fetch = priorFetch;
     if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);

@@ -24,6 +24,8 @@ export const globalUsers = pgTable('global_users', {
   primaryOriginUserId: text('primary_origin_user_id').notNull(),
   displayEmail: text('display_email').notNull(),
   fullName: text('full_name'),
+  /** Canonical customer billing rate for this person. Null means admin setup is required. */
+  billingRateCents: bigint('billing_rate_cents', { mode: 'number' }),
   role: text('role').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   fleetEntitled: boolean('fleet_entitled').notNull().default(false),
@@ -42,6 +44,12 @@ export const globalUsers = pgTable('global_users', {
   `),
   check('global_users_role_check', sql`
     ${table.role} IN ('admin', 'inspector')
+  `),
+  check('global_users_billing_rate_check', sql`
+    ${table.billingRateCents} IS NULL OR (
+      ${table.billingRateCents} >= 0
+      AND ${table.billingRateCents} <= 9007199254740991
+    )
   `),
 ]);
 
@@ -594,6 +602,10 @@ export const schedulerJobHourOverrides = pgTable('scheduler_job_hour_overrides',
       AND ${table.costMilliseconds} IS NULL
     )
   `),
+  check('scheduler_job_hour_overrides_billable_whole_hours_check', sql`
+    ${table.billableMilliseconds} IS NULL
+    OR mod(${table.billableMilliseconds}, 3600000) = 0
+  `),
   check('scheduler_job_hour_overrides_reason_check', sql`
     length(btrim(${table.reason})) > 0
   `),
@@ -797,6 +809,8 @@ export const schedulerInvoiceLines = pgTable('scheduler_invoice_lines', {
   quantity: real('quantity').notNull().default(1),
   unitAmountExGstCents: bigint('unit_amount_ex_gst_cents', { mode: 'number' }).notNull().default(0),
   lineTotalExGstCents: bigint('line_total_ex_gst_cents', { mode: 'number' }).notNull().default(0),
+  /** Customer-facing PDFs hide quantity/rate unless an admin explicitly enables them. */
+  showQuantityAndRate: boolean('show_quantity_and_rate').notNull().default(false),
   expenseId: text('expense_id').references(
     () => schedulerJobExpenses.id,
     { onDelete: 'restrict' },
