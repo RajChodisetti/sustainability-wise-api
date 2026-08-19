@@ -579,8 +579,8 @@ export function EventFormModal({
 
             {supportsMobileNotifications ? (
               <p className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text-sub)]">
-                The assignee is notified on assignment and changes, 24 hours before the start,
-                and again at the scheduled start time. Existing jobs also offer an extra reminder action.
+                The assignee is notified on assignment and changes, 24 hours and 1 hour before
+                the start, and again at the scheduled start time. Existing jobs also offer an extra reminder action.
               </p>
             ) : editing && sourceApp !== 'custom' ? (
               <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">
