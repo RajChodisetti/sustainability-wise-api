@@ -21,7 +21,7 @@ export type PortalApplicationSessions = Record<PortalApplicationAccess, boolean>
 export const PORTAL_APPLICATIONS: readonly PortalApplication[] = [
   {
     href: '/ecoaudit/dashboard',
-    title: 'Eco Audit',
+    title: 'EcoAudit Pro',
     eyebrow: 'Energy operations',
     description: 'Site energy audits, zones, equipment, photos, and PDF reports.',
     icon: 'leaf',
@@ -69,7 +69,11 @@ export function visiblePortalApplications(
     if (application.access === 'solarsense') {
       return solarSenseVisible && sessions.solarsense;
     }
-    if (application.access === 'installhub') {
+    if (
+      application.access === 'ecoaudit'
+      || application.access === 'installhub'
+      || application.access === 'wattwatchers'
+    ) {
       return true;
     }
     return sessions[application.access];

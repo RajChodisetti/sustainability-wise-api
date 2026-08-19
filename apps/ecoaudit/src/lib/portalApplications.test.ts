@@ -11,7 +11,7 @@ test('the portal directory contains every product workspace', () => {
   assert.deepEqual(
     PORTAL_APPLICATIONS.map(({ title, href }) => ({ title, href })),
     [
-      { title: 'Eco Audit', href: '/ecoaudit/dashboard' },
+      { title: 'EcoAudit Pro', href: '/ecoaudit/dashboard' },
       { title: 'Solar Sense', href: '/solar/dashboard' },
       { title: 'Wattwatchers Fleet', href: '/fleet/dashboard' },
       { title: 'Field App Complete', href: '/field' },
@@ -33,9 +33,26 @@ test('Field App Complete remains visible while Solar Sense stays hidden', () => 
 
   assert.deepEqual(
     visible.map(({ title }) => title),
-    ['Eco Audit', 'Wattwatchers Fleet', 'Field App Complete'],
+    ['EcoAudit Pro', 'Wattwatchers Fleet', 'Field App Complete'],
   );
   assert.equal(PORTAL_FEATURES.solarSenseVisible, false);
+});
+
+test('EcoAudit Pro and Wattwatchers remain visible without app-specific sessions', () => {
+  const visible = visiblePortalApplications(
+    {
+      ecoaudit: false,
+      solarsense: false,
+      installhub: false,
+      wattwatchers: false,
+    },
+    PORTAL_FEATURES.solarSenseVisible,
+  );
+
+  assert.deepEqual(
+    visible.map(({ title }) => title),
+    ['EcoAudit Pro', 'Wattwatchers Fleet', 'Field App Complete'],
+  );
 });
 
 test('all protected workspaces remain registered', () => {
