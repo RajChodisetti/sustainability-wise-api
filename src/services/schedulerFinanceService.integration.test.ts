@@ -1425,13 +1425,38 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           'Worker', '2026-08-30', 'Completed', 'worker-installhub', '2026-08-01'
         FROM generate_series(1, 105) AS ordinal
       `);
+      const portfolioIssuedDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        { includeLabour: false, expenseIds: [] },
+      );
+      const portfolioIssuedEditable = await service.updateSchedulerDraftInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        portfolioIssuedDraft.id,
+        {
+          expectedUpdatedAt: portfolioIssuedDraft.updatedAt,
+          lines: [{
+            financeId: solar.financeId,
+            kind: 'other',
+            description: 'Portfolio date boundary',
+            quantity: 1,
+            unitAmountExGst: 1,
+            showQuantityAndRate: false,
+          }],
+        },
+      );
+      const portfolioIssued = await service.issueSchedulerInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        portfolioIssuedEditable.id,
+        portfolioIssuedEditable.updatedAt,
+      );
       await setup`
         UPDATE scheduler_invoices
-        SET status = 'issued',
-          due_date = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
-          issued_at = CURRENT_TIMESTAMP,
+        SET due_date = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = ${solarDraft.id}
+        WHERE id = ${portfolioIssued.id}
       `;
       const portfolioSummary = await service.getSchedulerFinancePortfolioSummary(admin);
       assert.equal(portfolioSummary.complete, true);
