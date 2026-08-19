@@ -181,7 +181,7 @@ export type FinanceOverviewItem = {
   needsHoursReview: boolean;
   invoiceReadiness: {
     completionSatisfied: boolean;
-    completionBasis: 'job' | 'parent_site' | null;
+    completionBasis: 'job' | null;
     hoursSatisfied: boolean;
     hoursBasis: 'app_time' | 'admin_override' | null;
     ready: boolean;
@@ -402,7 +402,7 @@ export type SchedulerFinancialSummary = {
   };
   invoiceReadiness: {
     completionSatisfied: boolean;
-    completionBasis: 'job' | 'parent_site' | null;
+    completionBasis: 'job' | null;
     hoursSatisfied: boolean;
     hoursBasis: 'app_time' | 'admin_override' | null;
     ready: boolean;

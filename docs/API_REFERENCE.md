@@ -370,7 +370,7 @@ and `needsHoursReview`.
 | GET | `/v1/portal/scheduler/invoices/:invoiceId/email-deliveries` | List the newest 100 durable email delivery audit rows, including queued/sent/failed/unknown status and provider message identity |
 | POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
 | GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
-| DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
+| DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete evidence while its expense is unreserved or belongs only to a draft invoice; issued/paid evidence is immutable |
 | GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, internal cost rate, billing contact, and audited hour override; customer billing rates belong to canonical users |
 | POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
@@ -444,6 +444,16 @@ quantity/hours and unit/billing rate appear in the PDF only when an
 administrator explicitly enables `showQuantityAndRate`. Issue freezes the
 reviewed lines as immutable accounting snapshots.
 
+Creating a billable expense while its job belongs to exactly one draft invoice
+atomically appends an amount-only expense line to that draft. Its initial sell
+amount is `billableAmount` when supplied, otherwise the stored cost amount; the
+draft line can then be adjusted without rewriting the supplier cost. With no
+draft, the expense remains available for the next invoice. Multiple drafts for
+one job are ambiguous, so a billable expense write fails without persisting
+until the extra draft is voided or completed. Drafts with no automatic labour,
+quote, or expense suggestion are allowed so an administrator can add manual
+charges before issue.
+
 Released Field clients retain the legacy direct download adapter at
 `GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
 The Scheduler portal does not use that synchronous route.
@@ -479,7 +489,10 @@ Migration 0038 appends a zero-hour administrative revision wherever an existing
 explicit or migrated legacy override could otherwise remain nonzero; pristine
 ledgers evaluate to zero without creating purge-blocking evidence. Legacy estimated hours no
 longer block invoice creation, issue, or PDF generation; raw active-time
-evidence and already-issued invoice snapshots are preserved.
+evidence and already-issued invoice snapshots are preserved. Missing app time,
+missing billing rates, zero internal hours, and migrated legacy estimates never
+block a manual customer invoice; they only affect internal review and automatic
+labour suggestions.
 
 Non-void draft, issued, and paid lines reserve their linked labour/quote/expense
 values, preventing Quick Invoice duplication. Voiding releases reservations;
@@ -498,8 +511,10 @@ customer-facing charges. At issue, every selected job must contribute a
 positive line, and every line retains `financeId` plus its immutable job/source
 provenance. A draft/issued/paid reservation is visible and enforced from every
 participating job, including secondary jobs.
-Every job must have current status `Completed` before draft creation and again
-before issue. A draft PDF also requires all live jobs to remain Completed;
+Every exact linked source job must have current status `Completed` before draft
+creation and again before issue. A Completed SolarSense parent site does not
+make a Draft rooftop assessment invoiceable. A draft PDF also requires all live
+jobs to remain Completed;
 issued and paid historical snapshots remain exportable without reopening the
 operational job.
 Migration 0034 deliberately fails closed for pre-0034 line rewrites and
@@ -519,9 +534,11 @@ matching PDF/JPEG/PNG/WebP magic signature. Direct `Content-Type:
 application/pdf`, image types, and octet-stream plus `x-file-content-type` are
 accepted. The default maximum is 10 MiB (`SCHEDULER_BILL_ATTACHMENT_MAX_BYTES`,
 capped at 25 MiB). Metadata exposes checksum, size, type, safe filename, and an
-authenticated download path only. Upload and delete are rejected after the
-expense is reserved or invoiced. Expense deletion atomically removes attachment
-records and queues durable byte deletion; pending upload rows use a one-hour
+authenticated download path only. Upload and delete remain allowed while the
+expense belongs only to a draft invoice, which supports the create-then-upload
+bill workflow; they are rejected after issue or payment. Expense deletion itself
+still requires an unreserved expense. It atomically removes attachment records
+and queues durable byte deletion; pending upload rows use a one-hour
 lease plus startup/hourly reconciliation so crashes do not publish broken
 evidence or race a live upload.
 

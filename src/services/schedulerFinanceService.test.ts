@@ -11,6 +11,7 @@ import {
   isCompletedSchedulerJobStatus,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
+  schedulerInternalHoursNeedReview,
 } from './schedulerFinanceService.js';
 
 test('invoice completion readiness follows each product lifecycle fence', () => {
@@ -21,23 +22,20 @@ test('invoice completion readiness follows each product lifecycle fence', () => 
     sourceApp: 'installhub', jobStatus: 'Draft',
   }), { satisfied: false, basis: null });
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'solarsense', jobStatus: 'Completed', parentStatus: 'Draft',
+    sourceApp: 'solarsense', jobStatus: 'Completed',
   }), { satisfied: true, basis: 'job' });
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'solarsense', jobStatus: 'Draft', parentStatus: 'Completed',
-  }), { satisfied: true, basis: 'parent_site' });
-  assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'solarsense', jobStatus: 'Draft', parentStatus: 'Draft',
+    sourceApp: 'solarsense', jobStatus: 'Draft',
   }), { satisfied: false, basis: null });
 });
 
-test('missing app time requires both explicit admin hour values, including valid zeroes', () => {
+test('internal hours evidence never gates invoice readiness', () => {
   assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, null), {
     satisfied: true,
     basis: 'app_time',
   });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, null), {
-    satisfied: false,
+    satisfied: true,
     basis: null,
   });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
@@ -45,10 +43,25 @@ test('missing app time requires both explicit admin hour values, including valid
   }), { satisfied: true, basis: 'admin_override' });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
     source: 'admin', billableMilliseconds: 0, costMilliseconds: null,
-  }), { satisfied: false, basis: null });
+  }), { satisfied: true, basis: 'admin_override' });
   assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, {
     source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
-  }), { satisfied: false, basis: null });
+  }), { satisfied: true, basis: 'app_time' });
+  assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
+    source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
+  }), { satisfied: true, basis: null });
+
+  assert.equal(schedulerInternalHoursNeedReview(3_600_000, null), false);
+  assert.equal(schedulerInternalHoursNeedReview(0, null), true);
+  assert.equal(schedulerInternalHoursNeedReview(0, {
+    source: 'admin', billableMilliseconds: 0, costMilliseconds: 0,
+  }), false);
+  assert.equal(schedulerInternalHoursNeedReview(0, {
+    source: 'admin', billableMilliseconds: 0, costMilliseconds: null,
+  }), true);
+  assert.equal(schedulerInternalHoursNeedReview(3_600_000, {
+    source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
+  }), true);
 });
 
 test('billable hour overrides accept whole nonnegative hours only', () => {

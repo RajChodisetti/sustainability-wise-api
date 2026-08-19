@@ -432,7 +432,8 @@ function ExpenseAttachments({
   onDeleteAttachment: (expense: FinanceExpense, attachmentId: string, filename: string) => Promise<void>;
   showState?: boolean;
 }) {
-  const locked = expense.invoiced || expense.reserved;
+  // A draft reservation freezes the customer charge, not its private evidence.
+  const locked = expense.invoiced;
   return (
     <div className="min-w-[10rem] space-y-2">
       {showState ? <ExpenseState expense={expense} /> : null}
@@ -458,7 +459,7 @@ function ExpenseAttachments({
           }}
         />
       </label>
-      {locked ? <p className="text-[10px] leading-4 text-[var(--text-sub)]">Invoice-linked evidence is read-only.</p> : null}
+      {locked ? <p className="text-[10px] leading-4 text-[var(--text-sub)]">Evidence is read-only after invoice issue.</p> : null}
     </div>
   );
 }

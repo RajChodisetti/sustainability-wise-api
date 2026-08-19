@@ -157,9 +157,13 @@ overrides are non-negative whole-hour integers; app-recorded evidence may remain
 fractional, as may the separate cost-hours override. The portal adopts that
 evidence into Billing hours by rounding to the nearest whole hour (`0.5` rounds
 up), while preserving its exact value in Cost hours. Billing hours accept typed
-digits only; arrow keys and wheel/trackpad gestures do not step the value. No
-receipt attachment upload is exposed in this release;
-supplier bills are structured vendor/reference/date/category/cost/sell records.
+digits only; arrow keys and wheel/trackpad gestures do not step the value.
+Supplier bills are structured vendor/reference/date/category/cost/sell records
+with private PDF/image attachments. A billable expense is appended atomically
+to the job's sole existing draft invoice; if no draft exists it remains
+available for the next draft, and multiple drafts fail the bill write closed.
+Draft-only invoice lines and their attachments remain editable; issue freezes
+both the reviewed customer charge and bill evidence.
 `SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API
 fails startup for an invalid or out-of-range value instead of allowing a later
 integer-column or invoice-total failure.
@@ -170,8 +174,11 @@ Invoice snapshots no longer lock later pricing mode, quote, hourly rate, or
 commercial-hours changes. Draft lines are editable suggestions and render as
 description plus amount unless `show_quantity_and_rate` is explicitly enabled;
 issued/paid lines remain immutable. Draft creation, issue, and draft PDF queueing
-require every live source job to be `Completed`; historical issued/paid PDF
-snapshots remain exportable. Legacy estimated hours do not gate those actions.
+require every exact live source job to be `Completed`; a Completed SolarSense
+site does not substitute for a Draft assessment. Historical issued/paid PDF
+snapshots remain exportable. Internal hours, missing rates, and legacy estimates
+do not gate customer invoice creation, issue, or export; they only control
+internal review and automatic labour suggestions.
 
 Issued and paid Scheduler invoices can be emailed from the portal. Delivery
 reuses the Wattwatchers Fleet monitor's Gmail OAuth identity: provision the

@@ -266,7 +266,12 @@ export function SchedulerBillsWorkspace({
           toast.error('Bill saved; attachment failed.');
           return;
         }
-        toast.success(formMode === 'upload' ? 'Supplier bill and attachment saved.' : 'Cost added.');
+        const savedMessage = formMode === 'upload'
+          ? 'Supplier bill and attachment saved.'
+          : 'Cost added.';
+        toast.success(result.expense.invoiceId
+          ? `${savedMessage} Added to the existing draft invoice.`
+          : savedMessage);
       }
     } catch (cause) {
       setError(cloudConnectionErrorMessage(cause));
@@ -624,7 +629,8 @@ function CostState({ expense }: { expense: SchedulerGlobalExpense }) {
 function AttachmentList(props: BillActions) {
   const { expense, busy, onUpload, onDownload, onDeleteAttachment } = props;
   const attachments = expense.attachments ?? [];
-  const locked = expense.invoiced || expense.reserved;
+  // A draft reservation freezes the customer charge, not its private evidence.
+  const locked = expense.invoiced;
   return (
     <div className="min-w-[10rem] space-y-2">
       <CostState expense={expense} />
@@ -638,7 +644,7 @@ function AttachmentList(props: BillActions) {
         {busy ? 'Uploading…' : attachments.length ? 'Add attachment' : 'Attach bill'}
         <input type="file" accept="application/pdf,image/jpeg,image/png,image/webp" className="sr-only" disabled={busy || locked} onChange={(event) => { void onUpload(expense, event.target.files?.[0]); event.currentTarget.value = ''; }} />
       </label>
-      {locked ? <p className="text-[10px] leading-4 text-[var(--text-sub)]">Invoice-linked evidence is read-only.</p> : null}
+      {locked ? <p className="text-[10px] leading-4 text-[var(--text-sub)]">Evidence is read-only after invoice issue.</p> : null}
     </div>
   );
 }

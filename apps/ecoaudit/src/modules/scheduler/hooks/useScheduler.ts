@@ -351,6 +351,7 @@ async function invalidateSchedulerCommercialData(qc: ReturnType<typeof useQueryC
     qc.invalidateQueries({ queryKey: schedulerKeys.portfolioSummary() }),
     qc.invalidateQueries({ queryKey: schedulerKeys.globalExpenses() }),
     qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoices() }),
+    qc.invalidateQueries({ queryKey: [...schedulerKeys.finance(), 'invoice', 'global'] }),
     qc.invalidateQueries({ queryKey: schedulerKeys.financialSummary(financeId) }),
     qc.invalidateQueries({ queryKey: schedulerKeys.invoices(financeId) }),
   ]);
@@ -390,8 +391,12 @@ async function invalidateGlobalSchedulerCommercialData(
     qc.invalidateQueries({ queryKey: schedulerKeys.portfolioSummary() }),
     qc.invalidateQueries({ queryKey: schedulerKeys.globalExpenses() }),
     qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoices() }),
+    qc.invalidateQueries({ queryKey: [...schedulerKeys.finance(), 'invoice', 'global'] }),
     ...financeIds.map((financeId) => qc.invalidateQueries({
       queryKey: schedulerKeys.financialSummary(financeId),
+    })),
+    ...financeIds.map((financeId) => qc.invalidateQueries({
+      queryKey: schedulerKeys.invoices(financeId),
     })),
   ]);
 }

@@ -256,7 +256,7 @@ export type SchedulerFinancialSummaryDto = {
   };
   invoiceReadiness: {
     completionSatisfied: boolean;
-    completionBasis: 'job' | 'parent_site' | null;
+    completionBasis: 'job' | null;
     hoursSatisfied: boolean;
     hoursBasis: 'app_time' | 'admin_override' | null;
     ready: boolean;
@@ -485,7 +485,7 @@ const ISSUED_INVOICE_STATUSES: InvoiceStatus[] = ['issued', 'paid'];
 
 type InvoiceCompletionReadiness = {
   satisfied: boolean;
-  basis: 'job' | 'parent_site' | null;
+  basis: 'job' | null;
 };
 
 type InvoiceHoursReadiness = {
@@ -498,45 +498,46 @@ type HourOverrideForReadiness = Pick<
   'source' | 'billableMilliseconds' | 'costMilliseconds'
 > | null;
 
-/**
- * SolarSense assessments inherit the completion fence of their parent site.
- * The other Scheduler source types have no parent lifecycle boundary.
- */
+/** Invoice generation is gated by the exact linked source job, never its parent. */
 export function schedulerInvoiceCompletionReadiness(input: {
   sourceApp: FinanceSourceApp;
   jobStatus: string | null;
-  parentStatus?: string | null;
 }): InvoiceCompletionReadiness {
   if (isCompletedSchedulerJobStatus(input.jobStatus ?? '')) {
     return { satisfied: true, basis: 'job' };
   }
-  if (
-    input.sourceApp === 'solarsense'
-    && isCompletedSchedulerJobStatus(input.parentStatus ?? '')
-  ) {
-    return { satisfied: true, basis: 'parent_site' };
-  }
   return { satisfied: false, basis: null };
 }
 
-/** Zero is a valid reviewed value, but both accounting hour values must be explicit without app time. */
+/**
+ * Hours are internal operational evidence and never gate customer invoice work.
+ * The basis remains useful to explain which internal evidence is available.
+ */
 export function schedulerInvoiceHoursReadiness(
   activeMilliseconds: number,
   override: HourOverrideForReadiness,
 ): InvoiceHoursReadiness {
-  if (override?.source === 'legacy_estimate') return { satisfied: false, basis: null };
-  if (activeMilliseconds > 0) {
-    return {
-      satisfied: true,
-      basis: override?.source === 'admin' ? 'admin_override' : 'app_time',
-    };
+  if (override?.source === 'admin') {
+    return { satisfied: true, basis: 'admin_override' };
   }
-  if (
+  if (activeMilliseconds > 0) {
+    return { satisfied: true, basis: 'app_time' };
+  }
+  return { satisfied: true, basis: null };
+}
+
+/** Internal-review cue only; customer invoice readiness is completion-only. */
+export function schedulerInternalHoursNeedReview(
+  activeMilliseconds: number,
+  override: HourOverrideForReadiness,
+): boolean {
+  if (override?.source === 'legacy_estimate') return true;
+  if (activeMilliseconds > 0) return false;
+  return !(
     override?.source === 'admin'
     && override.billableMilliseconds !== null
     && override.costMilliseconds !== null
-  ) return { satisfied: true, basis: 'admin_override' };
-  return { satisfied: false, basis: null };
+  );
 }
 
 function round(value: number, places = 2): number {
@@ -977,7 +978,6 @@ async function sourceCompletionReadiness(
 
   const assessmentRows = lock
     ? await executor.select({
-        siteId: ssRooftopAssessments.siteId,
         status: ssRooftopAssessments.status,
         deletedAt: ssRooftopAssessments.deletedAt,
       }).from(ssRooftopAssessments)
@@ -985,32 +985,18 @@ async function sourceCompletionReadiness(
         .for('share')
         .limit(1)
     : await executor.select({
-        siteId: ssRooftopAssessments.siteId,
         status: ssRooftopAssessments.status,
         deletedAt: ssRooftopAssessments.deletedAt,
       }).from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, source.sourceId))
         .limit(1);
   const assessment = assessmentRows[0];
-  if (!assessment || assessment.deletedAt || !assessment.siteId) {
+  if (!assessment || assessment.deletedAt) {
     return { satisfied: false, basis: null };
   }
-  const siteRows = lock
-    ? await executor.select({ status: ssSites.status, deletedAt: ssSites.deletedAt })
-        .from(ssSites)
-        .where(eq(ssSites.id, assessment.siteId))
-        .for('share')
-        .limit(1)
-    : await executor.select({ status: ssSites.status, deletedAt: ssSites.deletedAt })
-        .from(ssSites)
-        .where(eq(ssSites.id, assessment.siteId))
-        .limit(1);
-  const site = siteRows[0];
-  if (!site || site.deletedAt) return { satisfied: false, basis: null };
   return schedulerInvoiceCompletionReadiness({
     sourceApp: source.sourceApp,
     jobStatus: assessment.status,
-    parentStatus: site.status,
   });
 }
 
@@ -1021,50 +1007,11 @@ function assertInvoiceCompletionReady(
 ): void {
   if (completion.satisfied) return;
   const instruction = source.sourceApp === 'solarsense'
-    ? 'Mark the assessment or its SolarSense site complete'
+    ? 'Mark the SolarSense assessment complete'
     : 'Mark the job complete';
   throw conflict(
     `${jobName} must be completed before an invoice can be generated. ${instruction} before generating an invoice`,
   );
-}
-
-async function requireInvoiceHoursReady(
-  source: FinanceSource,
-  financeId: string,
-  jobName: string,
-  executor: FinanceExecutor,
-): Promise<{
-  recorded: Awaited<ReturnType<typeof recordedHoursForSource>>;
-  currentOverride: Awaited<ReturnType<typeof latestHourOverride>>;
-}> {
-  const [recorded, currentOverride] = await Promise.all([
-    recordedHoursForSource(source, executor),
-    latestHourOverride(financeId, executor),
-  ]);
-  const hours = schedulerInvoiceHoursReadiness(recorded.activeMilliseconds, currentOverride);
-  if (!hours.satisfied) {
-    if (currentOverride?.source === 'legacy_estimate') {
-      throw conflict(`Confirm or replace migrated legacy hours for ${jobName} before generating an invoice`);
-    }
-    throw conflict(
-      `Enter both billable and cost hours for ${jobName} before generating an invoice because no active app time was recorded`,
-    );
-  }
-  return { recorded, currentOverride };
-}
-
-async function requireInvoiceReady(
-  source: FinanceSource,
-  financeId: string,
-  jobName: string,
-  executor: FinanceExecutor,
-): Promise<{
-  recorded: Awaited<ReturnType<typeof recordedHoursForSource>>;
-  currentOverride: Awaited<ReturnType<typeof latestHourOverride>>;
-}> {
-  const completion = await sourceCompletionReadiness(source, executor, true);
-  assertInvoiceCompletionReady(source, jobName, completion);
-  return requireInvoiceHoursReady(source, financeId, jobName, executor);
 }
 
 async function currentJobStatusForSource(
@@ -1494,6 +1441,15 @@ type ExpenseReservation = {
   status: InvoiceStatus;
 };
 
+function expenseAttachmentIsFrozen(
+  expense: Pick<ExpenseRow, 'invoiced'>,
+  reservation: ExpenseReservation | undefined,
+): boolean {
+  return expense.invoiced
+    || reservation?.status === 'issued'
+    || reservation?.status === 'paid';
+}
+
 async function expenseReservations(
   financeId: string,
   executor: FinanceExecutor = db,
@@ -1911,7 +1867,10 @@ async function buildFinancialSummary(
             displayName: currentOverride.actorDisplayName,
           }
         : null,
-      needsHoursReview: !hoursReadiness.satisfied
+      needsHoursReview: schedulerInternalHoursNeedReview(
+        recorded.activeMilliseconds,
+        currentOverride,
+      )
         || userLabourBilling.missingBillingRateUsers.length > 0,
       missingBillingRateUsers: userLabourBilling.missingBillingRateUsers,
     },
@@ -2082,6 +2041,84 @@ export async function updateSchedulerFinanceById(
   return updateSchedulerFinanceForContext(actor, await financeById(financeId), input);
 }
 
+async function draftInvoicesForFinance(
+  financeId: string,
+  executor: FinanceExecutor,
+): Promise<InvoiceRow[]> {
+  return executor.select().from(schedulerInvoices).where(and(
+    eq(schedulerInvoices.status, 'draft'),
+    or(
+      eq(schedulerInvoices.financeId, financeId),
+      inArray(
+        schedulerInvoices.id,
+        executor.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
+          .from(schedulerInvoiceJobs)
+          .where(eq(schedulerInvoiceJobs.financeId, financeId)),
+      ),
+    ),
+  )).orderBy(asc(schedulerInvoices.createdAt), asc(schedulerInvoices.id))
+    .for('update');
+}
+
+async function appendExpenseToDraftInvoice(
+  finance: FinanceRow,
+  expense: ExpenseRow,
+  invoice: InvoiceRow,
+  executor: FinanceExecutor,
+): Promise<void> {
+  const [membership] = await executor.select({ financeId: schedulerInvoiceJobs.financeId })
+    .from(schedulerInvoiceJobs)
+    .where(and(
+      eq(schedulerInvoiceJobs.invoiceId, invoice.id),
+      eq(schedulerInvoiceJobs.financeId, finance.id),
+    ))
+    .limit(1);
+  if (!membership) throw conflict('The draft invoice no longer contains this job');
+
+  const existingLines = await executor.select({
+    sortOrder: schedulerInvoiceLines.sortOrder,
+    lineTotalExGstCents: schedulerInvoiceLines.lineTotalExGstCents,
+  }).from(schedulerInvoiceLines)
+    .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
+  if (existingLines.length >= 250) {
+    throw conflict('The draft invoice already contains the maximum of 250 charges');
+  }
+  const lineAmountCents = expense.billableAmountCents ?? expense.costAmountCents;
+  const now = new Date();
+  await executor.insert(schedulerInvoiceLines).values({
+    id: randomUUID(),
+    invoiceId: invoice.id,
+    financeId: finance.id,
+    sortOrder: existingLines.reduce(
+      (highest, line) => Math.max(highest, line.sortOrder),
+      -1,
+    ) + 1,
+    kind: 'expense',
+    description: expense.description,
+    quantity: 1,
+    unitAmountExGstCents: lineAmountCents,
+    lineTotalExGstCents: lineAmountCents,
+    showQuantityAndRate: false,
+    expenseId: expense.id,
+    category: expense.category,
+    createdAt: now,
+  });
+  const totals = invoiceTotalsFromCents([
+    ...existingLines.map((line) => line.lineTotalExGstCents),
+    lineAmountCents,
+  ], invoice.gstRateBps);
+  const [updated] = await executor.update(schedulerInvoices).set({
+    subtotalExGstCents: totals.subtotal,
+    gstAmountCents: totals.gst,
+    totalIncGstCents: totals.total,
+    updatedAt: nextInvoiceUpdatedAt(invoice, now),
+  }).where(and(
+    eq(schedulerInvoices.id, invoice.id),
+    eq(schedulerInvoices.status, 'draft'),
+  )).returning({ id: schedulerInvoices.id });
+  if (!updated) throw conflict('The draft invoice changed before the bill could be added');
+}
+
 async function createSchedulerExpenseForContext(
   actor: FinanceActor,
   context: FinanceContext,
@@ -2092,13 +2129,23 @@ async function createSchedulerExpenseForContext(
   const category = parseExpenseCategory(input.category);
   const description = requireText(input.description, 'description', 500);
   const billable = input.billable !== false;
+  const costAmountCents = moneyToCents(input.costAmount, 'costAmount');
+  const billableAmountCents = billable && input.billableAmount != null
+    ? moneyToCents(input.billableAmount, 'billableAmount')
+    : null;
   const id = randomUUID();
   await db.transaction(async (tx) => {
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, context.finance.id)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
+    const draftInvoices = billable ? await draftInvoicesForFinance(finance.id, tx) : [];
+    if (draftInvoices.length > 1) {
+      throw conflict(
+        'This job belongs to multiple draft invoices. Void or finish the extra draft before adding a billable cost',
+      );
+    }
     const now = new Date();
-    await tx.insert(schedulerJobExpenses).values({
+    const [expense] = await tx.insert(schedulerJobExpenses).values({
       id,
       financeId: finance.id,
       kind,
@@ -2106,10 +2153,8 @@ async function createSchedulerExpenseForContext(
       description,
       vendor: optionalText(input.vendor, 300),
       reference: optionalText(input.reference, 200),
-      costAmountCents: moneyToCents(input.costAmount, 'costAmount'),
-      billableAmountCents: billable && input.billableAmount != null
-        ? moneyToCents(input.billableAmount, 'billableAmount')
-        : null,
+      costAmountCents,
+      billableAmountCents,
       billable,
       invoiced: false,
       incurredAt: parseDate(input.incurredAt, 'incurredAt'),
@@ -2117,11 +2162,16 @@ async function createSchedulerExpenseForContext(
       createdByDisplayName: actor.displayName,
       createdAt: now,
       updatedAt: now,
-    });
+    }).returning();
+    if (!expense) throw new Error('scheduler_expense_insert_failed');
+    if (billable && draftInvoices[0]) {
+      await appendExpenseToDraftInvoice(finance, expense, draftInvoices[0], tx);
+    }
   });
   const [row] = await db.select().from(schedulerJobExpenses)
     .where(eq(schedulerJobExpenses.id, id));
-  return expenseDto(row!, event?.id ?? null, undefined);
+  const reservation = (await expenseReservations(context.finance.id)).get(id);
+  return expenseDto(row!, event?.id ?? null, reservation);
 }
 
 export async function createSchedulerExpense(
@@ -2473,25 +2523,58 @@ async function assertDraftInvoiceReady(
   executor: FinanceExecutor,
 ): Promise<void> {
   if (invoice.status !== 'draft') return;
+  const candidateJobs = await invoiceJobsForRow(invoice, executor);
+  const candidateByFinance = new Map(candidateJobs.map((job) => [job.financeId, job]));
+  const candidateSources = candidateJobs.map((job) => ({
+    sourceApp: job.jobSourceApp,
+    sourceType: job.jobSourceType,
+    sourceId: job.jobSourceId,
+  } as FinanceSource));
+  // Product status writers lock the source before finance evidence. Keep that
+  // same order here so a PDF readiness check cannot deadlock a completion edit
+  // or purge.
+  const completionBySource = await lockCurrentCompletionReadiness(candidateSources, executor);
   const { jobs, finances } = await lockInvoiceFinances(invoice, executor);
   const jobByFinance = new Map(jobs.map((job) => [job.financeId, job]));
+  if (jobs.length !== candidateJobs.length) {
+    throw conflict('The invoice job set changed; retry PDF generation');
+  }
   for (const finance of finances) {
-    await requireInvoiceReady(
-      {
-        sourceApp: finance.sourceApp,
-        sourceType: finance.sourceType,
-        sourceId: finance.sourceId,
-      } as FinanceSource,
-      finance.id,
-      jobByFinance.get(finance.id)?.jobName ?? finance.id,
-      executor,
+    const source = {
+      sourceApp: finance.sourceApp,
+      sourceType: finance.sourceType,
+      sourceId: finance.sourceId,
+    } as FinanceSource;
+    const currentJob = jobByFinance.get(finance.id);
+    const candidateJob = candidateByFinance.get(finance.id);
+    const sourceKey = financeSourceKey(source);
+    if (
+      !currentJob
+      || !candidateJob
+      || financeSourceKey({
+        sourceApp: currentJob.jobSourceApp,
+        sourceType: currentJob.jobSourceType,
+        sourceId: currentJob.jobSourceId,
+      } as FinanceSource) !== sourceKey
+      || financeSourceKey({
+        sourceApp: candidateJob.jobSourceApp,
+        sourceType: candidateJob.jobSourceType,
+        sourceId: candidateJob.jobSourceId,
+      } as FinanceSource) !== sourceKey
+    ) {
+      throw conflict('The invoice job set changed; retry PDF generation');
+    }
+    assertInvoiceCompletionReady(
+      source,
+      currentJob.jobName,
+      completionBySource.get(sourceKey) ?? { satisfied: false, basis: null },
     );
   }
 }
 
 /**
  * Draft invoice PDFs are customer-facing generation, so queueing must use the
- * same live completion and reviewed-hours fence as draft creation and issue.
+ * same live completion fence as draft creation and issue.
  * Issued/paid/void snapshots stay exportable independently of later source edits.
  */
 export async function assertSchedulerInvoicePdfStartReady(
@@ -2812,12 +2895,6 @@ async function createQuickSchedulerInvoiceForContext(
     } as FinanceSource) !== financeSourceKey(context.source)) {
       throw conflict('The selected job changed; retry invoice creation');
     }
-    await requireInvoiceHoursReady(
-      context.source,
-      finance.id,
-      context.metadata.jobName,
-      tx,
-    );
     const metadata = await loadJobMetadata(context.source, context.event, tx);
     const [summary, reserved] = await Promise.all([
       buildFinancialSummary(context.source, context.event, tx),
@@ -3045,15 +3122,8 @@ export async function getConsolidatedInvoiceEligibility(
     if (!summary.invoiceReadiness.completionSatisfied) issues.push({
       code: 'job_not_completed',
       message: summary.source.sourceApp === 'solarsense'
-        ? 'Mark this assessment or its SolarSense site complete before generating an invoice'
+        ? 'Mark this SolarSense assessment complete before generating an invoice'
         : 'Mark this job complete before generating an invoice',
-      financeId: summary.financeId,
-    });
-    if (!summary.invoiceReadiness.hoursSatisfied) issues.push({
-      code: 'hours_entry_required',
-      message: summary.time.overrideSource === 'legacy_estimate'
-        ? 'Confirm or replace the migrated legacy hours before generating an invoice'
-        : 'Enter both billable and cost hours because no active app time was recorded',
       financeId: summary.financeId,
     });
     if (!summary.billing.name?.trim()) issues.push({
@@ -3123,8 +3193,6 @@ export async function getConsolidatedInvoiceEligibility(
     eligible: !issues.some((issue) => (
       issue.code === 'mixed_currency'
       || issue.code === 'job_not_completed'
-      || issue.code === 'hours_entry_required'
-      || issue.code === 'no_available_charges'
     )),
     commonCurrency: currencies.length === 1 ? currencies[0]! : null,
     gstRate: config.schedulerInvoice.gstRate,
@@ -3202,7 +3270,6 @@ export async function createConsolidatedSchedulerInvoice(
         completionBySource.get(financeSourceKey(source))
           ?? { satisfied: false, basis: null },
       );
-      await requireInvoiceHoursReady(source, finance.id, metadata.jobName, tx);
       contexts.push({
         finance,
         source,
@@ -3511,12 +3578,6 @@ async function issueSchedulerInvoiceForContext(
         completionBySource.get(financeSourceKey(source))
           ?? { satisfied: false, basis: null },
       );
-      await requireInvoiceHoursReady(
-        source,
-        finance.id,
-        jobName,
-        tx,
-      );
     }
     const transitionAt = new Date();
     const updatedAt = nextInvoiceUpdatedAt(invoice, transitionAt);
@@ -3811,7 +3872,7 @@ export async function loadSchedulerInvoiceExportSnapshot(
   return db.transaction(async (tx) => {
     await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
     await requireGlobalFinanceAdmin(user, tx);
-    // Preserve the finance -> source -> invoice lock order used by invoice mutations.
+    // Preserve the source -> finance -> invoice lock order used by invoice mutations.
     await assertSchedulerInvoicePdfStartReady(invoiceId, tx);
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId))
@@ -3838,7 +3899,7 @@ export async function withSchedulerInvoiceExportRevisionLock<T>(
 ): Promise<T> {
   return db.transaction(async (tx) => {
     await requireGlobalFinanceAdmin(user, tx);
-    // Preserve the finance -> source -> invoice lock order used by invoice mutations.
+    // Preserve the source -> finance -> invoice lock order used by invoice mutations.
     await assertSchedulerInvoicePdfStartReady(invoiceId, tx);
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId))
@@ -4267,8 +4328,8 @@ export async function uploadSchedulerExpenseAttachment(
       )).for('update').limit(1);
     if (!expense) throw notFound('Expense');
     const reservations = await expenseReservations(finance.id, tx);
-    if (expense.invoiced || reservations.has(expense.id)) {
-      throw conflict('Attachments cannot be added to reserved or invoiced expenses');
+    if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
+      throw conflict('Attachments cannot be added after the bill is issued or paid');
     }
     storageKey = makeLocalStorageKey({
       app: finance.sourceApp as FinanceSourceApp,
@@ -4328,8 +4389,8 @@ export async function uploadSchedulerExpenseAttachment(
         .limit(1);
       if (!pending) throw conflict('Bill attachment confirmation failed');
       const reservations = await expenseReservations(finance.id, tx);
-      if (expense.invoiced || reservations.has(expense.id)) {
-        throw conflict('Attachments cannot be added to reserved or invoiced expenses');
+      if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
+        throw conflict('Attachments cannot be added after the bill is issued or paid');
       }
       const [row] = await tx.update(schedulerExpenseAttachments).set({
         status: 'confirmed',
@@ -4432,8 +4493,8 @@ export async function deleteSchedulerExpenseAttachment(
     )).for('update').limit(1);
     if (!row) throw notFound('Bill attachment');
     const reservations = await expenseReservations(finance.id, tx);
-    if (expense.invoiced || reservations.has(expense.id)) {
-      throw conflict('Attachments for reserved or invoiced expenses cannot be deleted');
+    if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
+      throw conflict('Attachments cannot be deleted after the bill is issued or paid');
     }
     taskId = await queueExpenseAttachmentDeletion(row, tx);
   });
