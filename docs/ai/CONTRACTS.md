@@ -178,9 +178,11 @@ an administrator may reset another user's password without it.
 Scheduler finance summaries are restricted to active canonical global
 administrators. Product work-session rows are the sole authority for app-active
 time. Aggregate active time by the resolved named actor. This field remains
-internal evidence and must not feed billing or cost hours, labour calculations,
-invoice DTOs, invoice authoring UI, or PDFs. Billing hours remain a separately
-audited, editable non-negative integer.
+internal evidence: it must never automatically populate billing or cost hours,
+and it must not appear in invoice DTOs, invoice authoring UI, or PDFs. After an
+administrator sets billing hours, each actor's active-time share may apportion
+the editable internal labour suggestion across fixed user rates. Billing hours
+remain a separately audited, editable non-negative integer.
 
 ## Authentication and Ownership
 
