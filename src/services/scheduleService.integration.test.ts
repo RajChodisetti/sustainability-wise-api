@@ -24,6 +24,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       cancelScheduleEvent,
       createScheduleEvent,
       createSchedulerDispatch,
+      listUnscheduledJobs,
       searchJobOptions,
       updateScheduleEvent,
     },
@@ -129,6 +130,15 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       scheduledStartAt: '2026-08-20T09:00:00.000Z',
       deadlineAt: '2026-08-22T17:00:00.000Z',
     };
+    const eco = await createSchedulerDispatch(admin, {
+      ...baseDispatch,
+      sourceApp: 'ecoaudit',
+      job: {
+        siteName: `Eco ${runId}`,
+        siteAddress: '1 Eco Street',
+        auditDate: '2026-08-20',
+      },
+    });
     const solar = await createSchedulerDispatch(admin, {
       ...baseDispatch,
       sourceApp: 'solarsense',
@@ -149,14 +159,17 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         auditDate: '2026-08-20',
       },
     });
-    createdProductIds.push(solar.sourceId!, field.sourceId!);
+    createdProductIds.push(eco.sourceId!, solar.sourceId!, field.sourceId!);
 
+    assert.equal(eco.sourceType, 'audit');
     assert.equal(solar.sourceType, 'assessment');
     assert.equal(field.sourceType, 'installation');
+    assert.equal(eco.status, 'planned');
     assert.equal(solar.status, 'planned');
     assert.equal(field.status, 'planned');
 
-    const [[solarRow], [fieldRow], gridRows] = await Promise.all([
+    const [[ecoRow], [solarRow], [fieldRow], gridRows] = await Promise.all([
+      db.select().from(eaAudits).where(eq(eaAudits.id, eco.sourceId!)),
       db.select().from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, solar.sourceId!)),
       db.select().from(ihInstallations)
@@ -164,6 +177,11 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       db.select().from(ihGridSupplies)
         .where(eq(ihGridSupplies.installationId, field.sourceId!)),
     ]);
+    assert.equal(ecoRow.status, 'Draft');
+    assert.equal(ecoRow.createdByUserId, actor.appUserIds.ecoaudit);
+    assert.equal(ecoRow.assignedInspectorUserId, firstAssignee.appUserIds.ecoaudit);
+    assert.equal(ecoRow.inspectorName, firstAssignee.name);
+    assert.equal(ecoRow.auditDate, '2026-08-20');
     assert.equal(solarRow.status, 'Draft');
     assert.equal(solarRow.createdByUserId, actor.appUserIds.solarsense);
     assert.equal(solarRow.assignedInspectorUserId, firstAssignee.appUserIds.solarsense);
@@ -269,49 +287,44 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       await solarApp.close();
     }
 
-    const disabledEcoAuditId = `disabled-eco-${runId}`;
-    createdProductIds.push(disabledEcoAuditId);
+    const linkableEcoAuditId = `linkable-eco-${runId}`;
+    createdProductIds.push(linkableEcoAuditId);
     await db.insert(eaAudits).values({
-      id: disabledEcoAuditId,
-      siteName: `Disabled Eco ${runId}`,
-      siteAddress: '4 Disabled Street',
+      id: linkableEcoAuditId,
+      siteName: `Linkable Eco ${runId}`,
+      siteAddress: '4 Linkable Street',
       inspectorName: firstAssignee.name,
       auditDate: '2026-08-20',
       status: 'Draft',
       createdByUserId: actor.appUserIds.ecoaudit,
       updatedAt: now,
     });
-    assert.deepEqual(
-      await searchJobOptions(admin, `Disabled Eco ${runId}`, 'ecoaudit'),
-      [],
+    const ecoOptions = await searchJobOptions(admin, `Linkable Eco ${runId}`, 'ecoaudit');
+    assert.equal(
+      ecoOptions.some((option) => option.id === linkableEcoAuditId),
+      true,
     );
-    const isDisabledEcoSourceError = (error: unknown) => (
-      (error as { statusCode?: number; detail?: string }).statusCode === 400
-      && (error as { detail?: string }).detail === 'Eco Audit jobs are not available in Scheduler'
+    const unscheduledEco = await listUnscheduledJobs(admin, {
+      q: `Linkable Eco ${runId}`,
+      sourceApp: 'ecoaudit',
+    });
+    assert.equal(
+      unscheduledEco.some((option) => option.id === linkableEcoAuditId),
+      true,
     );
-    await assert.rejects(
-      createScheduleEvent(admin, {
-        sourceApp: 'ecoaudit',
-        sourceType: 'audit',
-        sourceId: disabledEcoAuditId,
-        assigneeFieldUserId: firstAssignee.fieldUserId,
-        scheduledStartAt: baseDispatch.scheduledStartAt,
-        deadlineAt: baseDispatch.deadlineAt,
-      }),
-      isDisabledEcoSourceError,
-    );
-    await assert.rejects(
-      createSchedulerDispatch(admin, {
-        ...baseDispatch,
-        sourceApp: 'ecoaudit',
-        job: {
-          siteName: `Rejected Eco ${runId}`,
-          siteAddress: '5 Rejected Street',
-          auditDate: '2026-08-20',
-        },
-      }),
-      isDisabledEcoSourceError,
-    );
+    const linkedEco = await createScheduleEvent(admin, {
+      sourceApp: 'ecoaudit',
+      sourceType: 'audit',
+      sourceId: linkableEcoAuditId,
+      assigneeFieldUserId: firstAssignee.fieldUserId,
+      scheduledStartAt: baseDispatch.scheduledStartAt,
+      deadlineAt: baseDispatch.deadlineAt,
+    });
+    assert.equal(linkedEco.sourceId, linkableEcoAuditId);
+    assert.equal(linkedEco.sourceApp, 'ecoaudit');
+    const [linkedEcoRow] = await db.select().from(eaAudits)
+      .where(eq(eaAudits.id, linkableEcoAuditId));
+    assert.equal(linkedEcoRow.assignedInspectorUserId, firstAssignee.appUserIds.ecoaudit);
 
     // A cancelled Solar event can be rescheduled, but two concurrent attempts
     // still serialize on the product row and produce only one active event.

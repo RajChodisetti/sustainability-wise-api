@@ -1,6 +1,6 @@
 import SchedulerPage, { type SchedulerTab } from '@/modules/scheduler/pages/SchedulerPage';
 import {
-  schedulerFlagEnabled,
+  schedulerSelectableSourceApps,
   schedulerVisibleFinanceSourceApps,
   schedulerVisibleSourceApps,
 } from '@/modules/scheduler/lib/visibility';
@@ -16,9 +16,8 @@ export default async function Page({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const params = await searchParams;
-  const visibleSourceApps = schedulerVisibleSourceApps(schedulerFlagEnabled(
-    process.env.SCHEDULER_HIDE_ECOAUDIT_SOLARSENSE_JOBS,
-  ));
+  const visibleSourceApps = schedulerVisibleSourceApps();
+  const selectableSourceApps = schedulerSelectableSourceApps();
   const visibleFinanceSourceApps = schedulerVisibleFinanceSourceApps(visibleSourceApps);
   const tabValue = value(params.tab);
   const invoiceId = value(params.invoiceId);
@@ -48,6 +47,7 @@ export default async function Page({
     <SchedulerPage
       initialTab={initialTab}
       visibleSourceApps={visibleSourceApps}
+      selectableSourceApps={selectableSourceApps}
       initialFinanceTarget={initialTab === 'financial-summary' || initialTab === 'bills' || initialTab === 'invoices' ? {
         financeId: value(params.financeId),
         eventId: value(params.eventId),

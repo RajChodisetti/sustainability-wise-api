@@ -6,12 +6,6 @@ const portalRoot = process.env.ECOSENSE_PORTAL_ROOT
 
 const registrationEnabled =
   process.env.PORTAL_REGISTRATION_ENABLED?.toLowerCase() === 'true' ? 'true' : 'false';
-const hideEcoAuditSolarSenseSchedulerJobs =
-  /^(?:1|true|yes|on)$/i.test(
-    process.env.SCHEDULER_HIDE_ECOAUDIT_SOLARSENSE_JOBS ?? '',
-  )
-    ? 'true'
-    : 'false';
 const portalPort = process.env.ECOSENSE_PORTAL_PORT ?? '3210';
 
 module.exports = {
@@ -36,7 +30,6 @@ module.exports = {
         PORT: portalPort,
         INTERNAL_API_URL: process.env.INTERNAL_API_URL ?? 'http://127.0.0.1:3000',
         PORTAL_REGISTRATION_ENABLED: registrationEnabled,
-        SCHEDULER_HIDE_ECOAUDIT_SOLARSENSE_JOBS: hideEcoAuditSolarSenseSchedulerJobs,
         ...(process.env.ECOAUDIT_REGISTRATION_SECRET
           ? { ECOAUDIT_REGISTRATION_SECRET: process.env.ECOAUDIT_REGISTRATION_SECRET }
           : {}),

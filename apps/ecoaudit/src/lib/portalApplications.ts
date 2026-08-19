@@ -61,21 +61,24 @@ export function isPortalApplicationListed(access: PortalApplicationAccess): bool
   return PORTAL_APPLICATIONS.some((application) => application.access === access);
 }
 
+export function portalApplicationIsVisible(
+  access: PortalApplicationAccess,
+  sessions: PortalApplicationSessions,
+  solarSenseVisible: boolean,
+): boolean {
+  if (access === 'solarsense') {
+    return solarSenseVisible && sessions.solarsense;
+  }
+  return true;
+}
+
 export function visiblePortalApplications(
   sessions: PortalApplicationSessions,
   solarSenseVisible: boolean,
 ): readonly PortalApplication[] {
-  return PORTAL_APPLICATIONS.filter((application) => {
-    if (application.access === 'solarsense') {
-      return solarSenseVisible && sessions.solarsense;
-    }
-    if (
-      application.access === 'ecoaudit'
-      || application.access === 'installhub'
-      || application.access === 'wattwatchers'
-    ) {
-      return true;
-    }
-    return sessions[application.access];
-  });
+  return PORTAL_APPLICATIONS.filter((application) => portalApplicationIsVisible(
+    application.access,
+    sessions,
+    solarSenseVisible,
+  ));
 }

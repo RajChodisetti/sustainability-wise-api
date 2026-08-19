@@ -167,8 +167,8 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       updatedAt: now,
     });
 
-    // Eco Audit remains a supported mobile/device application even though its
-    // jobs are no longer Scheduler notification targets.
+    // Eco Audit uses the same durable device registry as the other Scheduler
+    // notification targets.
     const ecoDeviceId = `eco-device-${runId}`;
     await registerPushDevice(firstEcoUser, ecoDeviceId, {
       expoPushToken: `ExpoPushToken[eco${runId.replaceAll('-', '')}]`,

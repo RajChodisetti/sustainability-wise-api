@@ -90,29 +90,32 @@ global projections never grant it.
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
-| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Solar Sense or Field App Complete job, or create a custom event |
-| POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft Solar Sense or Field App Complete job, assign it, and create its planned event |
+| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Eco Audit, Solar Sense, or Field App Complete job, or create a custom event |
+| POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
 | PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event and keep the product assignment aligned |
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
 | GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List active Draft jobs without an active event |
 
-Eco Audit remains a supported application, authentication namespace, sync
-surface, report source, and active-time source, but it is not an active
-Scheduler source. New Scheduler discovery, linking, dispatch, assignment, and
-notification work supports Solar Sense assessments and Field App Complete
-installations only. Existing Eco Audit Scheduler rows are hidden and
-terminalized without editing or deleting the underlying audits.
+Eco Audit audits and Solar Sense assessments remain supported Scheduler source
+records even though the portal does not offer either application in its source
+selector for new work. Existing rows remain visible in calendar and finance
+`All` views and through direct API filters; discovery, linking, assignment,
+active-time finance, and eligible mobile notifications continue to use the same
+product records. Migration 0040 removes the temporary Eco write fence installed
+by 0038 without rewriting historical rows. Events cancelled by the earlier
+cutover remain cancelled because the database cannot distinguish them safely
+from intentionally cancelled work.
 
 New-work dispatch accepts `sourceApp`, the assignee's canonical
 `assigneeFieldUserId`, schedule/deadline timestamps, and a product-specific
-`job` object. SolarSense requires `siteName`, `location`, and
-`buildingIdName`; Field App Complete requires `clientName`, `siteName`, and
-`siteAddress`. `auditDate` is optional when calling the API directly and must
-use `YYYY-MM-DD`; the portal sends the locally selected calendar date. Field
-App Complete defaults to `Australia/Sydney` unless an explicit timezone is
-supplied.
+`job` object. Eco Audit requires `siteName` and `siteAddress`; SolarSense
+requires `siteName`, `location`, and `buildingIdName`; Field App Complete
+requires `clientName`, `siteName`, and `siteAddress`. `auditDate` is optional
+when calling the API directly and must use `YYYY-MM-DD`; the portal sends the
+locally selected calendar date. Field App Complete defaults to
+`Australia/Sydney` unless an explicit timezone is supplied.
 
 The server derives ownership and inspector display fields from authenticated
 canonical identities. Client-supplied IDs, assignment, sync state, deletion,
@@ -134,9 +137,10 @@ does not queue a completion push. Active mobile events also queue
 `one_day_before` exactly 24 hours before `scheduledStartAt` and `day_of` at
 `scheduledStartAt`; triggers already in the past are not replayed.
 
-A notification target must be exactly Solar Sense/`assessment` or Field App
-Complete/`installation`, with a non-null linked source ID. Eco Audit, custom
-events, and historical Solar `site` rows have no Scheduler mobile push target.
+A notification target must be exactly Eco Audit/`audit`, Solar
+Sense/`assessment`, or Field App Complete/`installation`, with a non-null linked
+source ID. Custom events and historical Solar `site` rows have no Scheduler
+mobile push target.
 Before enqueue and again immediately before each Expo send batch, the
 API verifies that the event is active, the linked product and (for Solar) parent
 site are non-deleted Draft rows, and the current product assignment matches the
@@ -336,19 +340,16 @@ Each type has identical CRUD. Replace `{type}` with one of:
 
 All commercial routes require an active canonical global administrator. Finance
 belongs to the immutable source identity, not a calendar event. Exact supported
-active identities are SolarSense `assessment` and Field App Complete
-`installation`; custom events, EcoAudit audits, and legacy Solar site rows are
-excluded from Scheduler discovery. Retained Eco Audit invoice and ledger
-snapshots remain historical accounting records and do not reactivate Eco Audit
-as a Scheduler source. Global Scheduler bill, invoice, and portfolio discovery
-also excludes Eco Audit; a retained invoice can still be read or exported by its
-stable ID for accounting retention.
+active identities are EcoAudit `audit`, SolarSense `assessment`, and Field App
+Complete `installation`; custom events and legacy Solar site rows are excluded.
+This backend support is independent of which sources the portal offers when an
+administrator creates new work.
 
 `GET /v1/portal/scheduler/finance?limit=25&cursor=...` returns
-`{items,nextCursor}`. It includes every non-deleted Solar Sense and Field App
-Complete job (scheduled or not) plus retained ledgers for deleted historical
-work. Optional `sourceApp` and exact `sourceId` filters resolve a supported job
-directly. Each row exposes stable
+`{items,nextCursor}`. It includes every non-deleted Eco Audit, Solar Sense, and
+Field App Complete job (scheduled or not) plus retained ledgers for deleted
+historical work. Optional `sourceApp` and exact `sourceId` filters resolve a
+supported job directly. Each row exposes stable
 `financeId`, nullable `eventId`, explicit `jobStatus` and `eventStatus`, recorded
 and effective hours, currency, revenue/cost/profit/margin, invoice/overdue state,
 and `needsHoursReview`.

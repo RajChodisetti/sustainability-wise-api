@@ -122,7 +122,7 @@ test('only concrete mobile work pairs with a source ID are notification targets'
     ...event,
     sourceApp: 'ecoaudit',
     sourceType: 'audit',
-  } as never), false);
+  } as never), true);
   assert.equal(isMobileScheduleNotificationTarget({
     ...event,
     sourceApp: 'installhub',

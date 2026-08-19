@@ -34,15 +34,15 @@ type Props = {
   event?: ScheduleEvent | null;
   isAdmin: boolean;
   visibleSourceApps: ScheduleSourceApp[];
+  selectableSourceApps: ScheduleSourceApp[];
   onOpenFinance?: (event: ScheduleEvent) => void;
 };
 
 type CreationMode = 'new' | 'existing';
 
 const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
-  { value: 'custom', label: 'Custom job' },
-  { value: 'solarsense', label: 'Solar Sense' },
   { value: 'installhub', label: 'Field App installation' },
+  { value: 'custom', label: 'Custom job' },
 ];
 
 function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
@@ -61,7 +61,7 @@ function supportsMobileSchedulerNotifications(event: ScheduleEvent): boolean {
 function initialFormValues(
   event?: ScheduleEvent | null,
   initialDay?: Date | null,
-  defaultSourceApp: ScheduleSourceApp = 'ecoaudit',
+  defaultSourceApp: ScheduleSourceApp = 'installhub',
 ) {
   if (event) {
     return {
@@ -124,6 +124,7 @@ export function EventFormModal({
   event,
   isAdmin,
   visibleSourceApps,
+  selectableSourceApps,
   onOpenFinance,
 }: Props) {
   const toast = useToast();
@@ -137,10 +138,10 @@ export function EventFormModal({
   const initial = initialFormValues(
     event,
     initialDay,
-    schedulerDefaultSourceApp(visibleSourceApps),
+    schedulerDefaultSourceApp(selectableSourceApps),
   );
-  const visibleAppOptions = appOptions.filter((option) => (
-    visibleSourceApps.includes(option.value)
+  const selectableAppOptions = appOptions.filter((option) => (
+    selectableSourceApps.includes(option.value)
   ));
 
   const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>(initial.sourceApp);
@@ -393,7 +394,7 @@ export function EventFormModal({
                     setTitle('');
                   }}
                 >
-                  {visibleAppOptions.map((o) => (
+                  {selectableAppOptions.map((o) => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </Select>

@@ -53,10 +53,12 @@ export default function SchedulerPage({
   initialTab = 'calendar',
   initialFinanceTarget,
   visibleSourceApps,
+  selectableSourceApps,
 }: {
   initialTab?: SchedulerTab;
   initialFinanceTarget?: SchedulerFinanceTarget;
   visibleSourceApps: ScheduleSourceApp[];
+  selectableSourceApps: ScheduleSourceApp[];
 }) {
   const { eaUser, ssUser, ihUser } = usePortalAuth();
   const isAdmin = Boolean(
@@ -73,7 +75,7 @@ export default function SchedulerPage({
   const [financeTarget, setFinanceTarget] = useState<SchedulerFinanceTarget | undefined>(initialFinanceTarget);
   const tabRefs = useRef<Partial<Record<SchedulerTab, HTMLButtonElement | null>>>({});
   const activeTab: SchedulerTab = isFinanceTab(tab) && !isAdmin ? 'calendar' : tab;
-  const fieldOnly = schedulerIsFieldOnly(visibleSourceApps);
+  const fieldOnly = schedulerIsFieldOnly(selectableSourceApps);
 
   const tabs = useMemo(
     () => [...PLANNING_TABS, ...(isAdmin ? FINANCE_TABS : [])],
@@ -208,6 +210,7 @@ export default function SchedulerPage({
           <DynamicSchedulerBoard
             isAdmin={isAdmin}
             visibleSourceApps={visibleSourceApps}
+            selectableSourceApps={selectableSourceApps}
             onSlotCreate={(day) => {
               if (isAdmin) openCreate(day);
             }}
@@ -232,6 +235,7 @@ export default function SchedulerPage({
             view={activeTab}
             initialTarget={financeTarget}
             visibleSourceApps={visibleSourceApps}
+            selectableSourceApps={selectableSourceApps}
           />
         </div>
       ) : null}
@@ -252,6 +256,7 @@ export default function SchedulerPage({
         event={editing}
         isAdmin={isAdmin}
         visibleSourceApps={visibleSourceApps}
+        selectableSourceApps={selectableSourceApps}
         onOpenFinance={(event) => {
           const target: SchedulerFinanceTarget = {
             eventId: event.id,

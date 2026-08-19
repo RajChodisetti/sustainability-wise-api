@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const migrationUrl = new URL('./0038_yielding_wolfsbane.sql', import.meta.url);
 
-test('0038 delinks Eco from Scheduler without mutating Eco jobs', async () => {
+test('0038 historical cutover delinked Eco without mutating Eco jobs', async () => {
   const migration = await readFile(migrationUrl, 'utf8');
   assert.match(migration, /UPDATE "portal_schedule_events"[\s\S]*"source_app" = 'ecoaudit'/);
   assert.match(migration, /UPDATE "scheduler_notification_jobs"[\s\S]*"source_app" = 'ecoaudit'/);

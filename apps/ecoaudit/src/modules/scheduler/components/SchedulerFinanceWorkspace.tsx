@@ -64,10 +64,12 @@ export function SchedulerFinanceWorkspace({
   view,
   initialTarget,
   visibleSourceApps,
+  selectableSourceApps,
 }: {
   view: SchedulerFinanceView;
   initialTarget?: SchedulerFinanceTarget;
   visibleSourceApps: ScheduleSourceApp[];
+  selectableSourceApps: ScheduleSourceApp[];
 }) {
   const overview = useSchedulerFinanceOverview(true);
   const requestedJobTarget = financeTargetRequiresJobLookup(initialTarget) ? initialTarget : undefined;
@@ -84,6 +86,10 @@ export function SchedulerFinanceWorkspace({
   const visibleFinanceSourceApps = useMemo(
     () => schedulerVisibleFinanceSourceApps(visibleSourceApps),
     [visibleSourceApps],
+  );
+  const selectableFinanceSourceApps = useMemo(
+    () => schedulerVisibleFinanceSourceApps(selectableSourceApps),
+    [selectableSourceApps],
   );
 
   const items = useMemo(() => {
@@ -214,6 +220,7 @@ export function SchedulerFinanceWorkspace({
       <SchedulerBillsWorkspace
         jobs={items}
         visibleSourceApps={visibleFinanceSourceApps}
+        filterSourceApps={selectableFinanceSourceApps}
         initialFinanceId={initialTargetJob?.financeId}
         hasMoreJobs={Boolean(overview.hasNextPage)}
         loadingMoreJobs={overview.isFetchingNextPage}
@@ -227,6 +234,7 @@ export function SchedulerFinanceWorkspace({
       <SchedulerInvoicesWorkspace
         jobs={items}
         visibleSourceApps={visibleFinanceSourceApps}
+        filterSourceApps={selectableFinanceSourceApps}
         initialFinanceId={initialTargetJob?.financeId}
         initialInvoiceId={initialTarget?.invoiceId}
         hasMoreJobs={Boolean(overview.hasNextPage)}
@@ -260,7 +268,7 @@ export function SchedulerFinanceWorkspace({
             selectedJobKey={selectedJobKey}
             search={search}
             sourceApp={sourceApp}
-            visibleSourceApps={visibleFinanceSourceApps}
+            filterSourceApps={selectableFinanceSourceApps}
             needsReviewOnly={needsReviewOnly}
             hasNextPage={Boolean(overview.hasNextPage)}
             fetchingNextPage={overview.isFetchingNextPage}
@@ -297,7 +305,7 @@ function FinanceJobPicker({
   selectedJobKey,
   search,
   sourceApp,
-  visibleSourceApps,
+  filterSourceApps,
   needsReviewOnly,
   hasNextPage,
   fetchingNextPage,
@@ -313,7 +321,7 @@ function FinanceJobPicker({
   selectedJobKey: string | null;
   search: string;
   sourceApp: FinanceSourceApp | 'all';
-  visibleSourceApps: FinanceSourceApp[];
+  filterSourceApps: FinanceSourceApp[];
   needsReviewOnly: boolean;
   hasNextPage: boolean;
   fetchingNextPage: boolean;
@@ -332,8 +340,8 @@ function FinanceJobPicker({
       <Input id="finance-job-search" type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Job name or ID" className="mt-1" />
       <label className="mt-3 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-app-filter">Product</label>
       <Select id="finance-app-filter" value={sourceApp} onChange={(event) => onSourceApp(event.target.value as FinanceSourceApp | 'all')} className="mt-1">
-        <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
-        {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
+        <option value="all">All jobs</option>
+        {filterSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
       </Select>
       <Checkbox label="Needs setup or review only" checked={needsReviewOnly} onChange={onNeedsReview} />
       {hasNextPage && (search.trim() || sourceApp !== 'all' || needsReviewOnly) ? <p className="mb-2 text-xs leading-5 text-[var(--text-sub)]">Filters apply to loaded jobs. Load more to continue the search.</p> : null}

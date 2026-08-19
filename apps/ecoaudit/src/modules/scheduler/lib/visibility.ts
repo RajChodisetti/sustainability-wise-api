@@ -4,18 +4,21 @@ import type {
 } from '@/modules/scheduler/types/domain';
 
 const ALL_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
-const FIELD_ONLY_SOURCE_APPS = ['installhub', 'custom'] as const;
+const SELECTABLE_SOURCE_APPS = ['installhub', 'custom'] as const;
 
-export function schedulerFlagEnabled(value: string | undefined): boolean {
-  return /^(?:1|true|yes|on)$/i.test(value ?? '');
+/**
+ * Sources whose already-linked work can be rendered in Scheduler.
+ *
+ * EcoAudit and SolarSense remain displayable so historical and existing work
+ * does not disappear from calendar, deadline, and finance views.
+ */
+export function schedulerVisibleSourceApps(): ScheduleSourceApp[] {
+  return [...ALL_SOURCE_APPS];
 }
 
-export function schedulerVisibleSourceApps(
-  hideEcoAuditSolarSenseJobs: boolean,
-): ScheduleSourceApp[] {
-  return hideEcoAuditSolarSenseJobs
-    ? [...FIELD_ONLY_SOURCE_APPS]
-    : [...ALL_SOURCE_APPS];
+/** Sources that can appear as explicit choices in Scheduler controls. */
+export function schedulerSelectableSourceApps(): ScheduleSourceApp[] {
+  return [...SELECTABLE_SOURCE_APPS];
 }
 
 export function schedulerVisibleFinanceSourceApps(
@@ -33,11 +36,18 @@ export function schedulerSourceAppIsVisible(
   return sourceApps.includes(sourceApp);
 }
 
+export function schedulerSourceAppIsSelectable(
+  sourceApps: readonly ScheduleSourceApp[],
+  sourceApp: ScheduleSourceApp,
+): boolean {
+  return sourceApps.includes(sourceApp);
+}
+
 export function schedulerDefaultSourceApp(
   sourceApps: readonly ScheduleSourceApp[],
 ): ScheduleSourceApp {
-  if (sourceApps.includes('ecoaudit')) return 'ecoaudit';
   if (sourceApps.includes('installhub')) return 'installhub';
+  if (sourceApps.includes('custom')) return 'custom';
   return sourceApps[0] ?? 'custom';
 }
 

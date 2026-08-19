@@ -728,15 +728,14 @@ function sourceFromEvent(event: ScheduleEventRow): FinanceSource {
 }
 
 function schedulerVisibleCommercialSourceApps(): FinanceSourceApp[] {
-  return schedulerVisibleFinanceSourceApps().filter((app) => app !== 'ecoaudit');
+  return schedulerVisibleFinanceSourceApps();
 }
 
 function isSchedulerFinanceSourceAppVisible(sourceApp: string): boolean {
-  return sourceApp !== 'ecoaudit' && isSchedulerSourceAppVisible(sourceApp);
+  return isSchedulerSourceAppVisible(sourceApp);
 }
 
 function assertSchedulerFinanceSourceAppVisible(sourceApp: string): void {
-  if (sourceApp === 'ecoaudit') throw notFound('Scheduler job');
   assertSchedulerSourceAppVisible(sourceApp);
 }
 
@@ -757,8 +756,7 @@ function schedulerInvoiceVisibilityConditions(): SQL[] {
 }
 
 function invoiceJobsAreVisible(jobs: InvoiceJobRow[]): boolean {
-  return areSchedulerSourceAppsVisible(jobs.map((job) => job.jobSourceApp))
-    && jobs.every((job) => job.jobSourceApp !== 'ecoaudit');
+  return areSchedulerSourceAppsVisible(jobs.map((job) => job.jobSourceApp));
 }
 
 function assertInvoiceJobsVisible(jobs: InvoiceJobRow[]): void {
@@ -4554,7 +4552,7 @@ export async function listSchedulerFinanceOverview(
 ): Promise<{ items: SchedulerFinanceOverviewItemDto[]; nextCursor: string | null }> {
   await requireGlobalFinanceAdmin(user);
   const visibleApps = schedulerVisibleCommercialSourceApps();
-  const [eventRows, financeRows, assessmentRows, installationRows] = await Promise.all([
+  const [eventRows, financeRows, auditRows, assessmentRows, installationRows] = await Promise.all([
     db.select().from(portalScheduleEvents).where(and(
       inArray(portalScheduleEvents.sourceApp, visibleApps),
       inArray(portalScheduleEvents.sourceType, ['audit', 'assessment', 'installation']),
@@ -4562,6 +4560,7 @@ export async function listSchedulerFinanceOverview(
     db.select().from(schedulerJobFinance)
       .where(inArray(schedulerJobFinance.sourceApp, visibleApps))
       .orderBy(desc(schedulerJobFinance.updatedAt)),
+    db.select({ id: eaAudits.id }).from(eaAudits).where(isNull(eaAudits.deletedAt)),
     db.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments)
       .where(isNull(ssRooftopAssessments.deletedAt)),
     db.select({ id: ihInstallations.id }).from(ihInstallations)
@@ -4584,11 +4583,16 @@ export async function listSchedulerFinanceOverview(
       sourceType: finance.sourceType,
       sourceId: finance.sourceId,
     } as FinanceSource;
-    if (!isSupportedSource(source) || source.sourceApp === 'ecoaudit') continue;
+    if (!isSupportedSource(source)) continue;
     const key = `${source.sourceApp}:${source.sourceType}:${source.sourceId}`;
     if (!sourceMap.has(key)) sourceMap.set(key, { source, event: null });
   }
   for (const source of [
+    ...auditRows.map((row) => ({
+      sourceApp: 'ecoaudit' as const,
+      sourceType: 'audit' as const,
+      sourceId: row.id,
+    })),
     ...assessmentRows.map((row) => ({
       sourceApp: 'solarsense' as const,
       sourceType: 'assessment' as const,

@@ -251,7 +251,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       const overview = await service.listSchedulerFinanceOverview(admin, { limit: 100 });
       assert.equal(overview.items.some((item) => (
         item.sourceId === 'eco-unscheduled' && item.eventId === null
-      )), false);
+      )), true);
       assert.equal(overview.items.every((item) => typeof item.currency === 'string'), true);
       assert.equal(
         overview.items.find((item) => item.sourceId === 'solar-job')

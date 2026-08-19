@@ -89,11 +89,6 @@ type UnifiedSchedulerSubject = {
 };
 
 const PORTAL_APPS = new Set(['ecoaudit', 'solarsense', 'installhub']);
-export function isSchedulerSourceEnabled(
-  sourceApp: ScheduleSourceApp,
-): sourceApp is Exclude<ScheduleSourceApp, 'ecoaudit'> {
-  return sourceApp !== 'ecoaudit';
-}
 
 function toIso(value: Date | null | undefined): string | null {
   if (!value) return null;
@@ -607,7 +602,7 @@ export async function listScheduleEvents(
   filters: ListEventsFilters,
 ): Promise<ScheduleEventDto[]> {
   assertPortalSchedulerApp(user);
-  const conditions: SQL[] = [ne(portalScheduleEvents.sourceApp, 'ecoaudit')];
+  const conditions: SQL[] = [];
 
   conditions.push(inArray(portalScheduleEvents.sourceApp, schedulerVisibleSourceApps()));
 
@@ -652,10 +647,7 @@ export async function getScheduleEvent(user: AuthUser, id: string): Promise<Sche
   const [row] = await db
     .select()
     .from(portalScheduleEvents)
-    .where(and(
-      eq(portalScheduleEvents.id, id),
-      ne(portalScheduleEvents.sourceApp, 'ecoaudit'),
-    ))
+    .where(eq(portalScheduleEvents.id, id))
     .limit(1);
   if (!row) throw notFound('Schedule event');
   assertSchedulerSourceAppVisible(row.sourceApp);
@@ -693,9 +685,6 @@ export async function createScheduleEvent(
   }
 
   const sourceApp = parseSourceApp(input.sourceApp);
-  if (!isSchedulerSourceEnabled(sourceApp)) {
-    throw badRequest('Eco Audit jobs are not available in Scheduler');
-  }
   assertSchedulerSourceAppVisible(sourceApp);
   const sourceType = parseSourceType(input.sourceType);
   validateAppTypePair(sourceApp, sourceType);
@@ -994,9 +983,6 @@ export async function createSchedulerDispatch(
   if (!isSchedulerAdmin(user)) throw forbidden('Only admins can create scheduler dispatches');
   if (input.status !== undefined) throw badRequest('New scheduler dispatches are always planned');
   const sourceApp = parseSourceApp(input.sourceApp);
-  if (!isSchedulerSourceEnabled(sourceApp)) {
-    throw badRequest('Eco Audit jobs are not available in Scheduler');
-  }
   assertSchedulerSourceAppVisible(sourceApp);
   if (sourceApp === 'custom') throw badRequest('Create custom work with the standard scheduler event endpoint');
   if (typeof input.assigneeFieldUserId !== 'string' || !input.assigneeFieldUserId.trim()) {
@@ -1117,9 +1103,6 @@ export async function updateScheduleEvent(
       .for('update')
       .limit(1);
     if (!existing) throw notFound('Schedule event');
-    if (!isSchedulerSourceEnabled(existing.sourceApp as ScheduleSourceApp)) {
-      throw notFound('Schedule event');
-    }
     assertSchedulerSourceAppVisible(existing.sourceApp);
 
     const existingGlobalUserId = isMobileScheduleNotificationTarget(existing)
@@ -1399,7 +1382,6 @@ export async function searchJobOptions(
   if (!isSchedulerAdmin(user)) {
     throw forbidden('Only admins can search linkable jobs');
   }
-  if (appFilter === 'ecoaudit') return [];
 
   const q = query.trim();
   const pattern = q ? `%${q.replace(/%/g, '')}%` : '%';
@@ -1410,6 +1392,37 @@ export async function searchJobOptions(
       ? [appFilter]
       : []
     : visibleApps;
+
+  if (apps.includes('ecoaudit')) {
+    const rows = await db
+      .select({
+        id: eaAudits.id,
+        siteName: eaAudits.siteName,
+        siteAddress: eaAudits.siteAddress,
+        status: eaAudits.status,
+      })
+      .from(eaAudits)
+      .where(and(
+        isNull(eaAudits.deletedAt),
+        eq(eaAudits.status, 'Draft'),
+        or(
+          ilike(eaAudits.siteName, pattern),
+          ilike(eaAudits.siteAddress, pattern),
+          ilike(eaAudits.id, pattern),
+        ),
+      ))
+      .orderBy(desc(eaAudits.createdAt))
+      .limit(25);
+    for (const row of rows) {
+      results.push({
+        id: row.id,
+        label: row.siteName,
+        subtitle: `${row.status} · ${row.siteAddress}`,
+        sourceApp: 'ecoaudit',
+        sourceType: 'audit',
+      });
+    }
+  }
 
   if (apps.includes('solarsense')) {
     const assessments = await db
@@ -1526,7 +1539,6 @@ export async function listUnscheduledJobs(
   if (!isSchedulerAdmin(user)) {
     throw forbidden('Only admins can list unscheduled jobs');
   }
-  if (opts.sourceApp === 'ecoaudit') return [];
 
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 100);
   const q = (opts.q ?? '').trim();
@@ -1540,6 +1552,42 @@ export async function listUnscheduledJobs(
 
   const scheduled = await activeScheduledSourceKeys(apps);
   const results: JobOption[] = [];
+
+  if (apps.includes('ecoaudit')) {
+    const scheduledIds = [...scheduled]
+      .filter((k) => k.startsWith('ecoaudit:audit:'))
+      .map((k) => k.slice('ecoaudit:audit:'.length));
+    const rows = await db
+      .select({
+        id: eaAudits.id,
+        siteName: eaAudits.siteName,
+        siteAddress: eaAudits.siteAddress,
+        status: eaAudits.status,
+      })
+      .from(eaAudits)
+      .where(and(
+        isNull(eaAudits.deletedAt),
+        eq(eaAudits.status, 'Draft'),
+        or(
+          ilike(eaAudits.siteName, pattern),
+          ilike(eaAudits.siteAddress, pattern),
+          ilike(eaAudits.id, pattern),
+        ),
+        scheduledIds.length > 0 ? notInArray(eaAudits.id, scheduledIds) : undefined,
+      ))
+      .orderBy(desc(eaAudits.createdAt))
+      .limit(40);
+    for (const row of rows) {
+      if (scheduled.has(scheduleKey('ecoaudit', 'audit', row.id))) continue;
+      results.push({
+        id: row.id,
+        label: row.siteName,
+        subtitle: `${row.status} · ${row.siteAddress}`,
+        sourceApp: 'ecoaudit',
+        sourceType: 'audit',
+      });
+    }
+  }
 
   if (apps.includes('solarsense')) {
     const assessments = await db

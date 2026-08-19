@@ -26,6 +26,7 @@ import {
   useUpdateScheduleEvent,
 } from '@/modules/scheduler/hooks/useScheduler';
 import { appChipClass, SOURCE_APP_LABEL } from '@/modules/scheduler/lib/colors';
+import { schedulerSourceAppIsSelectable } from '@/modules/scheduler/lib/visibility';
 import {
   dayKey,
   defaultDeadlineFromStart,
@@ -51,11 +52,13 @@ type PendingAssign = {
 export function DynamicSchedulerBoard({
   isAdmin,
   visibleSourceApps,
+  selectableSourceApps,
   onSlotCreate,
   onEventEdit,
 }: {
   isAdmin: boolean;
   visibleSourceApps: ScheduleSourceApp[];
+  selectableSourceApps: ScheduleSourceApp[];
   onSlotCreate: (day: Date) => void;
   onEventEdit: (event: ScheduleEvent) => void;
 }) {
@@ -138,6 +141,7 @@ export function DynamicSchedulerBoard({
     try {
       if (activeData.type === 'job' && overData.type === 'slot') {
         const job = activeData.job;
+        if (!schedulerSourceAppIsSelectable(selectableSourceApps, job.sourceApp)) return;
         if (staffFilter.length === 1) {
           await createFromJob(job, overData.day, overData.hour, staffFilter[0]);
           return;
@@ -337,7 +341,7 @@ export function DynamicSchedulerBoard({
           {isAdmin && jobsPanelOpen ? (
             <JobsPoolPanel
               enabled={isAdmin}
-              visibleSourceApps={visibleSourceApps}
+              selectableSourceApps={selectableSourceApps}
               className="order-1 max-h-[30rem] 2xl:order-2 2xl:max-h-[calc(100vh-8rem)] 2xl:self-start"
             />
           ) : null}

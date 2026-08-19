@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   PORTAL_APPLICATIONS,
   isPortalApplicationListed,
+  portalApplicationIsVisible,
   visiblePortalApplications,
 } from './portalApplications';
 import { PORTAL_FEATURES } from './portalFeatures';
@@ -39,20 +40,22 @@ test('Field App Complete remains visible while Solar Sense stays hidden', () => 
 });
 
 test('EcoAudit Pro and Wattwatchers remain visible without app-specific sessions', () => {
-  const visible = visiblePortalApplications(
-    {
-      ecoaudit: false,
-      solarsense: false,
-      installhub: false,
-      wattwatchers: false,
-    },
-    PORTAL_FEATURES.solarSenseVisible,
-  );
+  const sessions = {
+    ecoaudit: false,
+    solarsense: false,
+    installhub: false,
+    wattwatchers: false,
+  };
+  const visible = visiblePortalApplications(sessions, PORTAL_FEATURES.solarSenseVisible);
 
   assert.deepEqual(
     visible.map(({ title }) => title),
     ['EcoAudit Pro', 'Wattwatchers Fleet', 'Field App Complete'],
   );
+  assert.equal(portalApplicationIsVisible('ecoaudit', sessions, false), true);
+  assert.equal(portalApplicationIsVisible('wattwatchers', sessions, false), true);
+  assert.equal(portalApplicationIsVisible('installhub', sessions, false), true);
+  assert.equal(portalApplicationIsVisible('solarsense', sessions, false), false);
 });
 
 test('all protected workspaces remain registered', () => {

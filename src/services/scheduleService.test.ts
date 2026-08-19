@@ -2,11 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assertPortalSchedulerApp,
-  createScheduleEvent,
-  createSchedulerDispatch,
-  isSchedulerSourceEnabled,
-  listUnscheduledJobs,
-  searchJobOptions,
   sortByDeadlineUrgency,
 } from './scheduleService.js';
 
@@ -16,32 +11,8 @@ const ecoAdmin = {
   userId: 'eco-admin-1',
 } as never;
 
-test('Eco Audit is disabled as scheduler work without disabling other sources', () => {
+test('Eco Audit administrators retain Scheduler access', () => {
   assert.doesNotThrow(() => assertPortalSchedulerApp(ecoAdmin));
-  assert.equal(isSchedulerSourceEnabled('ecoaudit'), false);
-  assert.equal(isSchedulerSourceEnabled('solarsense'), true);
-  assert.equal(isSchedulerSourceEnabled('installhub'), true);
-  assert.equal(isSchedulerSourceEnabled('custom'), true);
-});
-
-test('Eco Audit jobs cannot be searched, listed as unscheduled, linked, or dispatched', async () => {
-  assert.deepEqual(await searchJobOptions(ecoAdmin, 'site', 'ecoaudit'), []);
-  assert.deepEqual(await listUnscheduledJobs(ecoAdmin, { sourceApp: 'ecoaudit' }), []);
-  const isDisabledEcoSourceError = (error: unknown) => {
-    assert.equal(
-      (error as { detail?: string }).detail,
-      'Eco Audit jobs are not available in Scheduler',
-    );
-    return true;
-  };
-  await assert.rejects(
-    createScheduleEvent(ecoAdmin, { sourceApp: 'ecoaudit' } as never),
-    isDisabledEcoSourceError,
-  );
-  await assert.rejects(
-    createSchedulerDispatch(ecoAdmin, { sourceApp: 'ecoaudit' } as never),
-    isDisabledEcoSourceError,
-  );
 });
 
 test('sortByDeadlineUrgency puts overdue and soonest first; done last', () => {

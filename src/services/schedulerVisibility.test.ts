@@ -9,34 +9,28 @@ import {
   schedulerVisibleSourceApps,
 } from './schedulerVisibility.js';
 
-test('scheduler visibility preserves every source when the flag is false', () => {
+test('backend Scheduler visibility preserves every supported source', () => {
   assert.deepEqual(
-    schedulerVisibleSourceApps(false),
+    schedulerVisibleSourceApps(),
     ['ecoaudit', 'solarsense', 'installhub', 'custom'],
   );
   assert.deepEqual(
-    schedulerVisibleFinanceSourceApps(false),
+    schedulerVisibleFinanceSourceApps(),
     ['ecoaudit', 'solarsense', 'installhub'],
   );
-  assert.equal(isSchedulerSourceAppVisible('ecoaudit', false), true);
-  assert.equal(isSchedulerSourceAppVisible('solarsense', false), true);
+  assert.equal(isSchedulerSourceAppVisible('ecoaudit'), true);
+  assert.equal(isSchedulerSourceAppVisible('solarsense'), true);
+  assert.equal(isSchedulerSourceAppVisible('installhub'), true);
+  assert.equal(isSchedulerSourceAppVisible('custom'), true);
+  assert.equal(areSchedulerSourceAppsVisible(['installhub']), true);
+  assert.equal(areSchedulerSourceAppsVisible(['installhub', 'ecoaudit']), true);
 });
 
-test('scheduler visibility hides Eco Audit and Solar Sense only when the flag is true', () => {
-  assert.deepEqual(schedulerVisibleSourceApps(true), ['installhub', 'custom']);
-  assert.deepEqual(schedulerVisibleFinanceSourceApps(true), ['installhub']);
-  assert.equal(isSchedulerSourceAppVisible('ecoaudit', true), false);
-  assert.equal(isSchedulerSourceAppVisible('solarsense', true), false);
-  assert.equal(isSchedulerSourceAppVisible('installhub', true), true);
-  assert.equal(isSchedulerSourceAppVisible('custom', true), true);
-  assert.equal(areSchedulerSourceAppsVisible(['installhub'], true), true);
-  assert.equal(areSchedulerSourceAppsVisible(['installhub', 'ecoaudit'], true), false);
-});
-
-test('the runtime guard returns a non-discoverable response for hidden jobs', () => {
-  assert.doesNotThrow(() => assertSchedulerSourceAppVisible('installhub', true));
+test('the runtime guard accepts supported sources and rejects unknown applications', () => {
+  assert.doesNotThrow(() => assertSchedulerSourceAppVisible('installhub'));
+  assert.doesNotThrow(() => assertSchedulerSourceAppVisible('ecoaudit'));
   assert.throws(
-    () => assertSchedulerSourceAppVisible('ecoaudit', true),
+    () => assertSchedulerSourceAppVisible('unknown'),
     (error: unknown) => error instanceof AppError && error.statusCode === 404,
   );
 });

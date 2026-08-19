@@ -8,6 +8,7 @@ import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { useUnscheduledJobs } from '@/modules/scheduler/hooks/useScheduler';
 import { appChipClass, SOURCE_APP_LABEL } from '@/modules/scheduler/lib/colors';
+import { schedulerSourceAppIsSelectable } from '@/modules/scheduler/lib/visibility';
 import type { JobOption, ScheduleSourceApp } from '@/modules/scheduler/types/domain';
 
 export type JobDragData = {
@@ -17,25 +18,31 @@ export type JobDragData = {
 
 const APP_FILTERS: Array<{ value: '' | Exclude<ScheduleSourceApp, 'custom'>; label: string }> = [
   { value: '', label: 'All apps' },
-  { value: 'solarsense', label: 'Solar Sense' },
   { value: 'installhub', label: 'Field App' },
 ];
 
 export function JobsPoolPanel({
   enabled,
-  visibleSourceApps,
+  selectableSourceApps,
   className = '',
 }: {
   enabled: boolean;
-  visibleSourceApps: ScheduleSourceApp[];
+  selectableSourceApps: ScheduleSourceApp[];
   className?: string;
 }) {
   const [q, setQ] = useState('');
   const [app, setApp] = useState<'' | Exclude<ScheduleSourceApp, 'custom'>>('');
+  const linkableSourceApps = selectableSourceApps.filter(
+    (sourceApp): sourceApp is Exclude<ScheduleSourceApp, 'custom'> => sourceApp !== 'custom',
+  );
+  const requestedApp = app || (linkableSourceApps.length === 1 ? linkableSourceApps[0] : undefined);
   const query = useUnscheduledJobs(
-    { q, sourceApp: app || undefined },
+    { q, sourceApp: requestedApp },
     enabled,
   );
+  const jobs = (query.data ?? []).filter((job) => (
+    schedulerSourceAppIsSelectable(selectableSourceApps, job.sourceApp)
+  ));
 
   return (
     <aside
@@ -58,7 +65,7 @@ export function JobsPoolPanel({
           </div>
           {!query.isLoading && !query.error ? (
             <span className="shrink-0 rounded-full bg-[var(--surface2)] px-2.5 py-1 text-xs font-extrabold text-[var(--text-sub)]">
-              {(query.data ?? []).length}
+              {jobs.length}
             </span>
           ) : null}
         </div>
@@ -78,7 +85,7 @@ export function JobsPoolPanel({
               aria-label="Filter jobs by product"
             >
               {APP_FILTERS.filter((filter) => (
-                !filter.value || visibleSourceApps.includes(filter.value)
+                !filter.value || schedulerSourceAppIsSelectable(selectableSourceApps, filter.value)
               )).map((f) => (
                 <option key={f.value || 'all'} value={f.value}>
                   {f.label}
@@ -93,10 +100,10 @@ export function JobsPoolPanel({
         {query.error ? (
           <ErrorBanner message={(query.error as Error).message || 'Failed to load jobs'} />
         ) : null}
-        {(query.data ?? []).map((job) => (
+        {jobs.map((job) => (
           <DraggableJobCard key={`${job.sourceApp}:${job.sourceType}:${job.id}`} job={job} />
         ))}
-        {!query.isLoading && (query.data ?? []).length === 0 ? (
+        {!query.isLoading && jobs.length === 0 ? (
           <p className="px-2 py-6 text-center text-xs text-[var(--text-sub)]">
             No unscheduled jobs. Everything is on the calendar, or try another filter.
           </p>

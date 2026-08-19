@@ -69,6 +69,7 @@ function StatusBadge({ invoice }: { invoice: Pick<SchedulerGlobalInvoiceListItem
 export function SchedulerInvoicesWorkspace({
   jobs,
   visibleSourceApps,
+  filterSourceApps,
   initialFinanceId,
   initialInvoiceId,
   hasMoreJobs,
@@ -77,6 +78,7 @@ export function SchedulerInvoicesWorkspace({
 }: {
   jobs: FinanceOverviewItem[];
   visibleSourceApps: FinanceSourceApp[];
+  filterSourceApps: FinanceSourceApp[];
   initialFinanceId?: string;
   initialInvoiceId?: string;
   hasMoreJobs: boolean;
@@ -156,8 +158,8 @@ export function SchedulerInvoicesWorkspace({
           <div>
             <FieldLabel className="!mt-0" htmlFor="invoice-register-product">Product</FieldLabel>
             <Select id="invoice-register-product" value={sourceApp} onChange={(event) => setSourceApp(event.target.value as FinanceSourceApp | 'all')}>
-              <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
-              {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
+              <option value="all">All jobs</option>
+              {filterSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
             </Select>
           </div>
         </div>

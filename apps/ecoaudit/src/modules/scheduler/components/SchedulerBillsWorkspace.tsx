@@ -112,6 +112,7 @@ function saveBlob(blob: Blob, filename: string) {
 export function SchedulerBillsWorkspace({
   jobs,
   visibleSourceApps,
+  filterSourceApps,
   initialFinanceId,
   hasMoreJobs,
   loadingMoreJobs,
@@ -119,6 +120,7 @@ export function SchedulerBillsWorkspace({
 }: {
   jobs: FinanceOverviewItem[];
   visibleSourceApps: FinanceSourceApp[];
+  filterSourceApps: FinanceSourceApp[];
   initialFinanceId?: string;
   hasMoreJobs: boolean;
   loadingMoreJobs: boolean;
@@ -355,8 +357,8 @@ export function SchedulerBillsWorkspace({
           <div>
             <FieldLabel className="!mt-0" htmlFor="bill-app-filter">Product</FieldLabel>
             <Select id="bill-app-filter" value={sourceApp} onChange={(event) => setSourceApp(event.target.value as FinanceSourceApp | 'all')}>
-              <option value="all">{visibleSourceApps.length === 1 ? 'All jobs' : 'All products'}</option>
-              {visibleSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
+              <option value="all">All jobs</option>
+              {filterSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
             </Select>
           </div>
           <div>

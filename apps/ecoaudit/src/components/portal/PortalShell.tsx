@@ -10,7 +10,7 @@ import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
 import { PORTAL_FEATURES } from '@/lib/portalFeatures';
-import { isPortalApplicationListed } from '@/lib/portalApplications';
+import { portalApplicationIsVisible } from '@/lib/portalApplications';
 import { portalNavigationScopeForPath } from '@/lib/portalNavigation';
 
 function isActive(pathname: string, href: string, exact = false) {
@@ -322,7 +322,7 @@ function SidebarNavigation({
             <div id={appsRegionId} className="space-y-2">
               {showEcoNavigation ? (
                 <AppNavigationSection
-                  label="Eco Audit"
+                  label="EcoAudit Pro"
                   href="/ecoaudit/dashboard"
                   icon="leaf"
                   open={ecoOpen}
@@ -528,11 +528,32 @@ export function PortalShell({ children }: { children: ReactNode }) {
       ? [{ href: '/installhub/admin/users', label: 'User management', icon: 'shield' as IconName }]
       : []),
   ];
-  const showEcoNavigation = Boolean(eaUser);
-  const showSolarNavigation =
-    PORTAL_FEATURES.solarSenseVisible && Boolean(ssUser);
-  const showFieldNavigation = isPortalApplicationListed('installhub');
-  const showFleetNavigation = Boolean(wwUser);
+  const applicationSessions = {
+    ecoaudit: Boolean(eaUser),
+    solarsense: Boolean(ssUser),
+    installhub: Boolean(ihUser || eaUser || ssUser),
+    wattwatchers: Boolean(wwUser),
+  };
+  const showEcoNavigation = portalApplicationIsVisible(
+    'ecoaudit',
+    applicationSessions,
+    PORTAL_FEATURES.solarSenseVisible,
+  );
+  const showSolarNavigation = portalApplicationIsVisible(
+    'solarsense',
+    applicationSessions,
+    PORTAL_FEATURES.solarSenseVisible,
+  );
+  const showFieldNavigation = portalApplicationIsVisible(
+    'installhub',
+    applicationSessions,
+    PORTAL_FEATURES.solarSenseVisible,
+  );
+  const showFleetNavigation = portalApplicationIsVisible(
+    'wattwatchers',
+    applicationSessions,
+    PORTAL_FEATURES.solarSenseVisible,
+  );
   const navigationProps = {
     pathname,
     appsOpen,
