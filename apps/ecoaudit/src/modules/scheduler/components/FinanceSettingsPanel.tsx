@@ -175,12 +175,18 @@ export function FinanceSettingsPanel({
         ) : null}
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <HourMetric
-          label="App-recorded hours"
+          label="App-active hours"
           value={summary.time.actualHours}
           badge={summary.time.actualHours <= 0 ? 'No app time' : 'Suggestion'}
-          hint="Recorded by the source app. Never assumed for billing."
+          hint="Reported as active by the source app. Never assumed for billing."
+        />
+        <HourMetric
+          label="Resting / inactive hours"
+          value={summary.time.restingHours}
+          badge="Evidence only"
+          hint="Observed inside saved sessions but not reported as app-active."
         />
         <HourMetric
           label="Billing hours"
@@ -210,6 +216,9 @@ export function FinanceSettingsPanel({
             <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
               Rates belong to users, not jobs. They are used only for internal calculations and an editable labour suggestion.
             </p>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-sub)]">
+              Resting / inactive time includes only observed time inside a saved app session. Gaps between sessions and time after the last activity checkpoint are excluded.
+            </p>
           </div>
           <span className="text-sm font-extrabold text-[var(--text)]">
             Internal labour: {money(summary.time.labourRevenue, summary.currency)}
@@ -221,8 +230,9 @@ export function FinanceSettingsPanel({
               <BillingRateEditor
                 key={actor.userId}
                 userId={actor.userId}
-                displayName={actor.displayName || 'Unknown user'}
-                recordedHours={actor.hours}
+                displayName={actor.displayName || actor.userId}
+                activeHours={actor.hours}
+                restingHours={actor.restingHours}
                 billingRate={actor.billingRate}
                 billingRateEditable={actor.billingRateEditable}
               />
@@ -340,13 +350,15 @@ export function FinanceSettingsPanel({
 function BillingRateEditor({
   userId,
   displayName,
-  recordedHours,
+  activeHours,
+  restingHours,
   billingRate,
   billingRateEditable,
 }: {
   userId: string;
   displayName: string;
-  recordedHours: number;
+  activeHours: number;
+  restingHours: number;
   billingRate: number | null;
   billingRateEditable: boolean;
 }) {
@@ -379,7 +391,9 @@ function BillingRateEditor({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="text-sm font-extrabold text-[var(--text)]">{displayName}</p>
-          <p className="text-xs text-[var(--text-sub)]">{recordedHours.toFixed(2)} app-recorded hours</p>
+          <p className="text-xs leading-5 text-[var(--text-sub)]">
+            {activeHours.toFixed(2)}h app-active · {restingHours.toFixed(2)}h resting / inactive
+          </p>
         </div>
         {billingRate == null ? <span className="text-xs font-extrabold text-[var(--amber)]">Admin rate required</span> : null}
       </div>

@@ -17,8 +17,8 @@ import {
 import type { AuthUser } from '../auth/middleware.js';
 import { config } from '../config.js';
 import { db } from '../db/client.js';
-import { eaAudits, eaAuditWorkSessions } from '../db/schema/ecoaudit.js';
-import { ihInstallations, ihInstallationWorkSessions } from '../db/schema/installhub.js';
+import { eaAudits, eaAuditWorkSessions, eaUsers } from '../db/schema/ecoaudit.js';
+import { ihInstallations, ihInstallationWorkSessions, ihUsers } from '../db/schema/installhub.js';
 import {
   globalUsers,
   portalScheduleEvents,
@@ -37,6 +37,7 @@ import {
   ssAssessmentWorkSessions,
   ssRooftopAssessments,
   ssSites,
+  ssUsers,
 } from '../db/schema/solarsense.js';
 import {
   localFileSize,
@@ -113,7 +114,10 @@ export type RecordedActorHoursDto = {
   userId: string;
   displayName: string | null;
   activeMilliseconds: number;
+  /** Observed session time that was not reported as app-active. */
+  restingMilliseconds: number;
   hours: number;
+  restingHours: number;
   billingRate: number | null;
   labourAmount: number | null;
   billingRateEditable: boolean;
@@ -265,6 +269,9 @@ export type SchedulerFinancialSummaryDto = {
     scheduledHours: number;
     actualHours: number;
     actualMilliseconds: number;
+    /** Derived only inside persisted session boundaries; gaps between sessions are excluded. */
+    restingHours: number;
+    restingMilliseconds: number;
     actualSource: 'active_sessions';
     actors: RecordedActorHoursDto[];
     billableHours: number;
@@ -1081,39 +1088,116 @@ async function scheduledHoursForSource(
   }, 0), 4);
 }
 
+export type RecordedWorkSessionTelemetry = {
+  actorUserId: string;
+  startedAt: Date;
+  lastActiveAt: Date;
+  endedAt: Date | null;
+  activeMilliseconds: number;
+};
+
+export type RecordedActorTime = {
+  actorUserId: string;
+  activeMilliseconds: number;
+  restingMilliseconds: number;
+};
+
+/**
+ * Aggregates only persisted observation windows. For an open session the last
+ * activity checkpoint is the observation boundary; current time and gaps
+ * between separate sessions are deliberately excluded.
+ */
+export function aggregateRecordedSessionTime(
+  sessions: readonly RecordedWorkSessionTelemetry[],
+): {
+  activeMilliseconds: number;
+  restingMilliseconds: number;
+  actors: RecordedActorTime[];
+} {
+  const byActor = new Map<string, Omit<RecordedActorTime, 'actorUserId'>>();
+  let activeMilliseconds = 0;
+  let restingMilliseconds = 0;
+  for (const session of sessions) {
+    const observedEnd = session.endedAt ?? session.lastActiveAt;
+    const observedMilliseconds = Math.max(
+      0,
+      observedEnd.getTime() - session.startedAt.getTime(),
+    );
+    const sessionRestingMilliseconds = Math.max(
+      0,
+      observedMilliseconds - session.activeMilliseconds,
+    );
+    const current = byActor.get(session.actorUserId) ?? {
+      activeMilliseconds: 0,
+      restingMilliseconds: 0,
+    };
+    const nextActorActive = current.activeMilliseconds + session.activeMilliseconds;
+    const nextActorResting = current.restingMilliseconds + sessionRestingMilliseconds;
+    const nextActive = activeMilliseconds + session.activeMilliseconds;
+    const nextResting = restingMilliseconds + sessionRestingMilliseconds;
+    if (
+      !Number.isSafeInteger(nextActorActive)
+      || !Number.isSafeInteger(nextActorResting)
+      || !Number.isSafeInteger(nextActive)
+      || !Number.isSafeInteger(nextResting)
+      || nextActorActive < 0
+      || nextActorResting < 0
+    ) {
+      throw conflict('Recorded session time exceeds the supported accounting range');
+    }
+    byActor.set(session.actorUserId, {
+      activeMilliseconds: nextActorActive,
+      restingMilliseconds: nextActorResting,
+    });
+    activeMilliseconds = nextActive;
+    restingMilliseconds = nextResting;
+  }
+  return {
+    activeMilliseconds,
+    restingMilliseconds,
+    actors: [...byActor.entries()].map(([actorUserId, time]) => ({ actorUserId, ...time })),
+  };
+}
+
 async function recordedHoursForSource(
   source: FinanceSource,
   executor: FinanceExecutor = db,
-): Promise<{ activeMilliseconds: number; actors: RecordedActorHoursDto[] }> {
-  let sessions: Array<{ actorUserId: string; activeMilliseconds: number }>;
+): Promise<{
+  activeMilliseconds: number;
+  restingMilliseconds: number;
+  actors: RecordedActorHoursDto[];
+}> {
+  let sessions: RecordedWorkSessionTelemetry[];
   if (source.sourceApp === 'ecoaudit') {
     sessions = await executor.select({
       actorUserId: eaAuditWorkSessions.actorUserId,
+      startedAt: eaAuditWorkSessions.startedAt,
+      lastActiveAt: eaAuditWorkSessions.lastActiveAt,
+      endedAt: eaAuditWorkSessions.endedAt,
       activeMilliseconds: eaAuditWorkSessions.activeMilliseconds,
     }).from(eaAuditWorkSessions).where(eq(eaAuditWorkSessions.auditId, source.sourceId));
   } else if (source.sourceApp === 'solarsense') {
     sessions = await executor.select({
       actorUserId: ssAssessmentWorkSessions.actorUserId,
+      startedAt: ssAssessmentWorkSessions.startedAt,
+      lastActiveAt: ssAssessmentWorkSessions.lastActiveAt,
+      endedAt: ssAssessmentWorkSessions.endedAt,
       activeMilliseconds: ssAssessmentWorkSessions.activeMilliseconds,
     }).from(ssAssessmentWorkSessions)
       .where(eq(ssAssessmentWorkSessions.assessmentId, source.sourceId));
   } else {
     sessions = await executor.select({
       actorUserId: ihInstallationWorkSessions.actorUserId,
+      startedAt: ihInstallationWorkSessions.startedAt,
+      lastActiveAt: ihInstallationWorkSessions.lastActiveAt,
+      endedAt: ihInstallationWorkSessions.endedAt,
       activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
     }).from(ihInstallationWorkSessions)
       .where(eq(ihInstallationWorkSessions.installationId, source.sourceId));
   }
 
-  const byActor = new Map<string, number>();
-  for (const session of sessions) {
-    const next = (byActor.get(session.actorUserId) ?? 0) + session.activeMilliseconds;
-    if (!Number.isSafeInteger(next) || next < 0) {
-      throw conflict('Recorded active time exceeds the supported accounting range');
-    }
-    byActor.set(session.actorUserId, next);
-  }
-  const actorIds = [...byActor.keys()];
+  const recorded = aggregateRecordedSessionTime(sessions);
+  const actorIds = recorded.actors.map((actor) => actor.actorUserId);
   const memberships = actorIds.length === 0 ? [] : await executor.select({
     originUserId: unifiedUsers.originUserId,
     fieldUserId: unifiedUsers.fieldUserId,
@@ -1135,16 +1219,44 @@ async function recordedHoursForSource(
     memberByActor.set(membership.originUserId, membership);
     memberByActor.set(membership.fieldUserId, membership);
   }
-  const actors = [...byActor.entries()].map(([actorUserId, activeMilliseconds]) => {
+  const unresolvedActorIds = actorIds.filter((actorId) => !memberByActor.has(actorId));
+  let sourceUsers: Array<{ id: string; fullName: string | null; email: string }> = [];
+  if (unresolvedActorIds.length > 0) {
+    if (source.sourceApp === 'ecoaudit') {
+      sourceUsers = await executor.select({
+        id: eaUsers.id,
+        fullName: eaUsers.fullName,
+        email: eaUsers.email,
+      }).from(eaUsers).where(inArray(eaUsers.id, unresolvedActorIds));
+    } else if (source.sourceApp === 'solarsense') {
+      sourceUsers = await executor.select({
+        id: ssUsers.id,
+        fullName: ssUsers.fullName,
+        email: ssUsers.email,
+      }).from(ssUsers).where(inArray(ssUsers.id, unresolvedActorIds));
+    } else {
+      sourceUsers = await executor.select({
+        id: ihUsers.id,
+        fullName: ihUsers.fullName,
+        email: ihUsers.email,
+      }).from(ihUsers).where(inArray(ihUsers.id, unresolvedActorIds));
+    }
+  }
+  const sourceUserById = new Map(sourceUsers.map((user) => [user.id, user]));
+  const actors = recorded.actors.map((actorTime) => {
+    const { actorUserId, activeMilliseconds, restingMilliseconds } = actorTime;
     const membership = memberByActor.get(actorUserId);
+    const sourceUser = sourceUserById.get(actorUserId);
     const billingRateCents = membership?.billingRateCents ?? null;
     return {
       userId: membership?.globalUserId ?? actorUserId,
       displayName: membership
         ? membership.fullName?.trim() || membership.displayEmail
-        : null,
+        : sourceUser?.fullName?.trim() || sourceUser?.email || null,
       activeMilliseconds,
+      restingMilliseconds,
       hours: millisecondsToHours(activeMilliseconds),
+      restingHours: millisecondsToHours(restingMilliseconds),
       billingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
       labourAmount: billingRateCents === null
         ? null
@@ -1156,19 +1268,20 @@ async function recordedHoursForSource(
       billingRateEditable: Boolean(membership),
     };
   }).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
-  const activeMilliseconds = actors.reduce((total, actor) => {
-    const next = total + actor.activeMilliseconds;
-    if (!Number.isSafeInteger(next)) {
-      throw conflict('Recorded active time exceeds the supported accounting range');
-    }
-    return next;
-  }, 0);
-  return { activeMilliseconds, actors };
+  return {
+    activeMilliseconds: recorded.activeMilliseconds,
+    restingMilliseconds: recorded.restingMilliseconds,
+    actors,
+  };
 }
 
 async function billingActorsForSource(
   source: FinanceSource,
-  recorded: { activeMilliseconds: number; actors: RecordedActorHoursDto[] },
+  recorded: {
+    activeMilliseconds: number;
+    restingMilliseconds: number;
+    actors: RecordedActorHoursDto[];
+  },
   event: ScheduleEventRow | null,
   executor: FinanceExecutor,
 ): Promise<RecordedActorHoursDto[]> {
@@ -1215,7 +1328,9 @@ async function billingActorsForSource(
     userId: assignee.id,
     displayName: assignee.fullName?.trim() || assignee.displayEmail,
     activeMilliseconds: 0,
+    restingMilliseconds: 0,
     hours: 0,
+    restingHours: 0,
     billingRate: assignee.billingRateCents === null
       ? null
       : centsToMoney(assignee.billingRateCents),
@@ -1747,6 +1862,7 @@ async function buildFinancialSummary(
   }
 
   const actualHours = millisecondsToHours(recorded.activeMilliseconds);
+  const restingHours = millisecondsToHours(recorded.restingMilliseconds);
   const billableHoursOverride = currentOverride?.billableMilliseconds == null
     ? null
     : millisecondsToHours(currentOverride.billableMilliseconds);
@@ -1842,6 +1958,8 @@ async function buildFinancialSummary(
       scheduledHours,
       actualHours,
       actualMilliseconds: recorded.activeMilliseconds,
+      restingHours,
+      restingMilliseconds: recorded.restingMilliseconds,
       actualSource: 'active_sessions',
       actors: billingActors,
       billableHours,
