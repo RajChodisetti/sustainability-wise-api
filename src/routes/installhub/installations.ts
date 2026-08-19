@@ -20,6 +20,7 @@ import {
   type UnifiedInstallHubUserView,
 } from './users.js';
 import {
+  assertWorkSessionCheckpointAccess,
   decideWorkSessionUpdate,
   parseWorkSessionBody,
   presentWorkSession,
@@ -126,7 +127,6 @@ export async function installhubInstallationRoutes(
         ))
         .for('update');
       if (!installation) throw notFound('Installation');
-      assertInstallationAccess(installation, request.user);
 
       const [existing] = await tx
         .select()
@@ -135,6 +135,15 @@ export async function installhubInstallationRoutes(
           eq(ihInstallationWorkSessions.installationId, installationId),
           eq(ihInstallationWorkSessions.id, sessionId),
         ));
+      assertWorkSessionCheckpointAccess({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        assertParentAccess: () => assertInstallationAccess(
+          installation,
+          request.user,
+        ),
+      });
       const decision = decideWorkSessionUpdate({
         incoming,
         existing,

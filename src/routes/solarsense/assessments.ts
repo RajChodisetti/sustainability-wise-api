@@ -27,6 +27,7 @@ import {
 } from './helpers.js';
 import { badRequest, conflict } from '../../utils/errors.js';
 import {
+  assertWorkSessionCheckpointAccess,
   decideWorkSessionUpdate,
   parseWorkSessionBody,
   presentWorkSession,
@@ -311,7 +312,6 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         ))
         .for('update');
       const foundAssessment = assertFound(assessment, 'Assessment');
-      assertAssessmentAccess(foundSite, foundAssessment, request.user);
 
       const [existing] = await tx
         .select()
@@ -320,6 +320,16 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
           eq(ssAssessmentWorkSessions.assessmentId, id),
           eq(ssAssessmentWorkSessions.id, sessionId),
         ));
+      assertWorkSessionCheckpointAccess({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        assertParentAccess: () => assertAssessmentAccess(
+          foundSite,
+          foundAssessment,
+          request.user,
+        ),
+      });
       const completionFence = resolveSolarCompletionFence(foundSite, foundAssessment);
       const decision = decideWorkSessionUpdate({
         incoming,

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { AppError } from '../utils/errors.js';
+import { AppError, forbidden } from '../utils/errors.js';
 import {
+  assertWorkSessionCheckpointAccess,
   decideWorkSessionUpdate,
   parseWorkSessionBody,
   presentWorkSession,
@@ -50,6 +51,20 @@ function assertConflict(detail: string, callback: () => unknown): void {
     assert.equal(error.statusCode, 409);
     assert.equal(error.detail, detail);
     return true;
+  });
+}
+
+function assertCheckpointAccessAfterTransfer(input: {
+  incoming: WorkSessionInput;
+  existing?: StoredWorkSession;
+  actorUserId?: string;
+}): void {
+  assertWorkSessionCheckpointAccess({
+    ...input,
+    actorUserId: input.actorUserId ?? 'inspector-1',
+    assertParentAccess: () => {
+      throw forbidden('parent_access_denied');
+    },
   });
 }
 
@@ -143,6 +158,69 @@ test('returns current state for stale and equal revisions', () => {
     existing: stored({ revision: 3 }),
     incoming: incoming({ revision: 3, activeMilliseconds: 60_000 }),
   }), { action: 'current' });
+});
+
+test('former assignees may retry or close only their own existing open session', () => {
+  const endedAt = new Date('2026-08-15T10:01:01.000Z');
+
+  assert.doesNotThrow(() => assertCheckpointAccessAfterTransfer({
+    existing: stored({ revision: 2 }),
+    incoming: incoming({ revision: 2 }),
+  }));
+  assert.doesNotThrow(() => assertCheckpointAccessAfterTransfer({
+    existing: stored(),
+    incoming: incoming({ revision: 2, endedAt }),
+  }));
+
+  assert.throws(() => assertCheckpointAccessAfterTransfer({
+    incoming: incoming({ endedAt }),
+  }), (error: unknown) => error instanceof AppError
+    && error.statusCode === 403
+    && error.detail === 'parent_access_denied');
+  assert.throws(() => assertCheckpointAccessAfterTransfer({
+    existing: stored({ actorUserId: 'other-inspector' }),
+    incoming: incoming({ revision: 2, endedAt }),
+  }), (error: unknown) => error instanceof AppError
+    && error.statusCode === 403
+    && error.detail === 'parent_access_denied');
+  assert.throws(() => assertCheckpointAccessAfterTransfer({
+    existing: stored(),
+    incoming: incoming({ revision: 2 }),
+  }), (error: unknown) => error instanceof AppError
+    && error.statusCode === 403
+    && error.detail === 'parent_access_denied');
+  assert.throws(() => assertCheckpointAccessAfterTransfer({
+    existing: stored({ endedAt }),
+    incoming: incoming({ revision: 2, endedAt }),
+  }), (error: unknown) => error instanceof AppError
+    && error.statusCode === 403
+    && error.detail === 'parent_access_denied');
+});
+
+test('checkpoint fallback never masks non-forbidden parent access errors', () => {
+  const programmingError = new Error('unexpected_access_failure');
+  assert.throws(() => assertWorkSessionCheckpointAccess({
+    existing: stored(),
+    incoming: incoming({ revision: 2, endedAt: lastActiveAt }),
+    actorUserId: 'inspector-1',
+    assertParentAccess: () => {
+      throw programmingError;
+    },
+  }), (error: unknown) => error === programmingError);
+});
+
+test('current parent access remains authoritative for new and open checkpoints', () => {
+  assert.doesNotThrow(() => assertWorkSessionCheckpointAccess({
+    incoming: incoming({ revision: 2 }),
+    existing: stored(),
+    actorUserId: 'inspector-1',
+    assertParentAccess: () => {},
+  }));
+  assert.doesNotThrow(() => assertWorkSessionCheckpointAccess({
+    incoming: incoming(),
+    actorUserId: 'inspector-1',
+    assertParentAccess: () => {},
+  }));
 });
 
 test('rejects identity changes and higher-revision regressions', () => {

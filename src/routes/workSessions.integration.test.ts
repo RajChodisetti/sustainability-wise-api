@@ -65,6 +65,23 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
     app: 'installhub',
     role: 'inspector',
   });
+  const otherTokens = {
+    ecoaudit: signAccessToken({
+      userId: otherUserId,
+      app: 'ecoaudit',
+      role: 'inspector',
+    }),
+    solarsense: signAccessToken({
+      userId: otherUserId,
+      app: 'solarsense',
+      role: 'inspector',
+    }),
+    installhub: signAccessToken({
+      userId: otherUserId,
+      app: 'installhub',
+      role: 'inspector',
+    }),
+  };
 
   const put = (
     url: string,
@@ -120,14 +137,17 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
       {
         url: `/v1/ecoaudit/audits/${auditId}/active-time/sessions/session-1`,
         token: ecoToken,
+        otherToken: otherTokens.ecoaudit,
       },
       {
         url: `/v1/solarsense/sites/${siteId}/assessments/${assessmentId}/active-time/sessions/session-1`,
         token: solarToken,
+        otherToken: otherTokens.solarsense,
       },
       {
         url: `/v1/installhub/installations/${installationId}/active-time/sessions/session-1`,
         token: installToken,
+        otherToken: otherTokens.installhub,
       },
     ];
     for (const endpoint of endpoints) {
@@ -176,6 +196,96 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
       openPayload,
     );
     assert.equal(missingResponse.statusCode, 404, missingResponse.body);
+
+    const transferEndpoints = endpoints.map((endpoint) => ({
+      ...endpoint,
+      url: endpoint.url.replace('/session-1', '/session-transfer'),
+    }));
+    for (const endpoint of transferEndpoints) {
+      const inserted = await put(endpoint.url, endpoint.token, openPayload);
+      assert.equal(inserted.statusCode, 200, inserted.body);
+      assert.equal(inserted.json().applied, true);
+    }
+
+    await db.update(eaAudits).set({
+      createdByUserId: otherUserId,
+      assignedInspectorUserId: otherUserId,
+    }).where(eq(eaAudits.id, auditId));
+    await db.update(ssSites).set({
+      createdByUserId: otherUserId,
+    }).where(eq(ssSites.id, siteId));
+    await db.update(ssRooftopAssessments).set({
+      assignedInspectorUserId: otherUserId,
+    }).where(eq(ssRooftopAssessments.id, assessmentId));
+    await db.update(ihInstallations).set({
+      createdByUserId: otherUserId,
+      assignedInspectorUserId: otherUserId,
+    }).where(eq(ihInstallations.id, installationId));
+
+    const closedAfterTransfer: SessionPayload = {
+      ...openPayload,
+      revision: 2,
+      endedAt: '2026-08-15T10:02:00.000Z',
+    };
+    for (const endpoint of transferEndpoints) {
+      const retry = await put(endpoint.url, endpoint.token, openPayload);
+      assert.equal(retry.statusCode, 200, retry.body);
+      assert.equal(retry.json().applied, false);
+
+      const continuedOpen = await put(endpoint.url, endpoint.token, {
+        ...openPayload,
+        revision: 2,
+      });
+      assert.equal(continuedOpen.statusCode, 403, continuedOpen.body);
+
+      const closed = await put(endpoint.url, endpoint.token, closedAfterTransfer);
+      assert.equal(closed.statusCode, 200, closed.body);
+      assert.equal(closed.json().applied, true);
+      assert.equal(closed.json().endedAt, closedAfterTransfer.endedAt);
+
+      const postCloseAdvance = await put(endpoint.url, endpoint.token, {
+        ...closedAfterTransfer,
+        revision: 3,
+      });
+      assert.equal(postCloseAdvance.statusCode, 403, postCloseAdvance.body);
+
+      const newClosedSession = await put(
+        endpoint.url.replace('/session-transfer', '/session-after-transfer'),
+        endpoint.token,
+        closedAfterTransfer,
+      );
+      assert.equal(newClosedSession.statusCode, 403, newClosedSession.body);
+
+      const newAssigneeCannotClaimPriorSession = await put(
+        endpoint.url,
+        endpoint.otherToken,
+        closedAfterTransfer,
+      );
+      assert.equal(
+        newAssigneeCannotClaimPriorSession.statusCode,
+        409,
+        newAssigneeCannotClaimPriorSession.body,
+      );
+      assert.equal(
+        newAssigneeCannotClaimPriorSession.json().detail,
+        'work_session_actor_changed',
+      );
+    }
+
+    await db.update(eaAudits).set({
+      createdByUserId: actorUserId,
+      assignedInspectorUserId: null,
+    }).where(eq(eaAudits.id, auditId));
+    await db.update(ssSites).set({
+      createdByUserId: actorUserId,
+    }).where(eq(ssSites.id, siteId));
+    await db.update(ssRooftopAssessments).set({
+      assignedInspectorUserId: null,
+    }).where(eq(ssRooftopAssessments.id, assessmentId));
+    await db.update(ihInstallations).set({
+      createdByUserId: actorUserId,
+      assignedInspectorUserId: null,
+    }).where(eq(ihInstallations.id, installationId));
 
     const ecoBoundary = new Date('2026-08-15T10:05:00.000Z');
     await db.update(eaAudits).set({

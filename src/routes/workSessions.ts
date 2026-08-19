@@ -1,4 +1,4 @@
-import { badRequest, conflict } from '../utils/errors.js';
+import { AppError, badRequest, conflict } from '../utils/errors.js';
 
 export const workSessionBodySchema = {
   type: 'object',
@@ -71,6 +71,36 @@ export interface WorkSessionInput {
 export interface StoredWorkSession extends WorkSessionInput {
   id: string;
   actorUserId: string;
+}
+
+/**
+ * Preserve a former assignee's ability to flush the one session they already
+ * own after a scheduler transfer, without restoring access to the parent job.
+ * A newer checkpoint is accepted only when it closes an open session. Older
+ * or equal revisions are harmless retries and are returned as current by
+ * decideWorkSessionUpdate.
+ */
+export function assertWorkSessionCheckpointAccess(input: {
+  incoming: WorkSessionInput;
+  existing?: StoredWorkSession;
+  actorUserId: string;
+  assertParentAccess: () => void;
+}): void {
+  try {
+    input.assertParentAccess();
+  } catch (error) {
+    if (!(error instanceof AppError) || error.statusCode !== 403) throw error;
+    const ownedSession = input.existing?.actorUserId === input.actorUserId;
+    const currentRetry = Boolean(
+      input.existing && input.incoming.revision <= input.existing.revision,
+    );
+    const finalizesOpenSession = Boolean(
+      input.existing
+      && input.existing.endedAt === null
+      && input.incoming.endedAt !== null,
+    );
+    if (!ownedSession || (!currentRetry && !finalizesOpenSession)) throw error;
+  }
 }
 
 export type WorkSessionDecision =

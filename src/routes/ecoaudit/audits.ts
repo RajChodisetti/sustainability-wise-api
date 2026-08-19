@@ -32,6 +32,7 @@ import {
 import { badRequest, conflict } from '../../utils/errors.js';
 import { cloneRecordForInsert, copyableBodyOverrides, copyNameWithSuffix } from '../copyUtils.js';
 import {
+  assertWorkSessionCheckpointAccess,
   decideWorkSessionUpdate,
   parseWorkSessionBody,
   presentWorkSession,
@@ -230,7 +231,6 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
         .where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)))
         .for('update');
       const found = assertFound(audit, 'Audit');
-      assertAuditAccess(found, request.user);
 
       const [existing] = await tx
         .select()
@@ -239,6 +239,12 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
           eq(eaAuditWorkSessions.auditId, id),
           eq(eaAuditWorkSessions.id, sessionId),
         ));
+      assertWorkSessionCheckpointAccess({
+        incoming,
+        existing,
+        actorUserId: request.user.userId,
+        assertParentAccess: () => assertAuditAccess(found, request.user),
+      });
       const decision = decideWorkSessionUpdate({
         incoming,
         existing,
