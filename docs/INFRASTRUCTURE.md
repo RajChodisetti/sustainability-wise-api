@@ -116,6 +116,17 @@ writes. It is `NOT VALID` so historical fractional audit revisions remain
 append-only evidence; new and updated billable-hour revisions must be exact
 hour multiples. Cost hours and raw app-recorded time retain fractional precision.
 
+0042 adds nullable `portal_schedule_events.estimated_duration_minutes` with a
+1-through-10,080-minute database fence. It is an additive schema-only change:
+existing rows receive null and retain their historical `scheduled_end_at`.
+Deploy the migration before code that writes or reads the estimate; no table
+backfill or inferred default duration is required.
+
+For the portal/API rollout, start the new API first and then the new portal. The
+API temporarily accepts and ignores deprecated `scheduledEndAt` values from a
+cached old portal, while the old API does not understand the new estimate field.
+This compatibility input is never persisted or converted into an estimate.
+
 Scheduler invoice PDFs use the shared durable `pdf_jobs` queue rather than a
 browser-held render request. Jobs and stored artifacts are owned by the exact
 portal app/user credential that queued them, pin invoice `id` + `updatedAt` in

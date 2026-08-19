@@ -184,6 +184,17 @@ administrator sets billing hours, each actor's active-time share may apportion
 the editable internal labour suggestion across fixed user rates. Billing hours
 remain a separately audited, editable non-negative integer.
 
+## Scheduler estimated duration
+
+Scheduler assignment asks for an optional estimated duration in whole minutes,
+not a client-selected end timestamp. The canonical persisted value is nullable
+`portal_schedule_events.estimated_duration_minutes`, bounded from 1 through
+10,080 when present. Null means no estimate was supplied and must never trigger
+a default-hours assumption. For canonical writes, the calendar end is derived
+from the scheduled start plus the estimate. Historical `scheduled_end_at`
+values remain readable and are preserved by unrelated edits; no migration
+backfills or infers estimates from them.
+
 ## Authentication and Ownership
 
 Every protected domain route uses `authenticate`, `requireApp(product)`, and the

@@ -272,6 +272,8 @@ export const portalScheduleEvents = pgTable('portal_schedule_events', {
   assigneeDisplayName: text('assignee_display_name'),
   assigneeEmail: text('assignee_email'),
   scheduledStartAt: timestamp('scheduled_start_at').notNull(),
+  /** Optional scheduling estimate; null means no duration was provided. */
+  estimatedDurationMinutes: integer('estimated_duration_minutes'),
   scheduledEndAt: timestamp('scheduled_end_at'),
   deadlineAt: timestamp('deadline_at').notNull(),
   status: text('status').notNull().default('planned'),
@@ -297,6 +299,13 @@ export const portalScheduleEvents = pgTable('portal_schedule_events', {
   `),
   check('portal_schedule_events_status_check', sql`
     ${table.status} IN ('planned', 'in_progress', 'done', 'cancelled')
+  `),
+  check('portal_schedule_events_estimated_duration_check', sql`
+    ${table.estimatedDurationMinutes} IS NULL
+    OR (
+      ${table.estimatedDurationMinutes} > 0
+      AND ${table.estimatedDurationMinutes} <= 10080
+    )
   `),
 ]);
 

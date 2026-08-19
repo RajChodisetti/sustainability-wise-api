@@ -13,6 +13,8 @@ export type ScheduleEvent = {
   assigneeDisplayName: string | null;
   assigneeEmail: string | null;
   scheduledStartAt: string;
+  estimatedDurationMinutes: number | null;
+  /** Legacy/derived read compatibility. New scheduler writes use the estimate only. */
   scheduledEndAt: string | null;
   deadlineAt: string;
   status: ScheduleStatus;
@@ -48,7 +50,7 @@ export type CreateScheduleEventInput = {
   sourceId?: string | null;
   assigneeFieldUserId: string;
   scheduledStartAt: string;
-  scheduledEndAt?: string | null;
+  estimatedDurationMinutes?: number | null;
   deadlineAt: string;
   status?: ScheduleStatus;
 };
@@ -59,7 +61,7 @@ export type CreateSchedulerDispatchInput = {
   description?: string | null;
   assigneeFieldUserId: string;
   scheduledStartAt: string;
-  scheduledEndAt?: string | null;
+  estimatedDurationMinutes?: number | null;
   deadlineAt: string;
   job: {
     siteName: string;
@@ -77,7 +79,7 @@ export type UpdateScheduleEventInput = {
   description?: string | null;
   assigneeFieldUserId?: string;
   scheduledStartAt?: string;
-  scheduledEndAt?: string | null;
+  estimatedDurationMinutes?: number | null;
   deadlineAt?: string;
   status?: ScheduleStatus;
 };

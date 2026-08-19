@@ -7,6 +7,7 @@ export const HOUR_HEIGHT_PX = 56;
 export type TimedGridItem = {
   id: string;
   scheduledStartAt: string;
+  estimatedDurationMinutes: number | null;
   scheduledEndAt: string | null;
 };
 
@@ -49,14 +50,20 @@ export function gridHeightPx(): number {
 }
 
 /** Position an event within the day column; clamps to visible window. */
-export function eventBlockStyle(startIso: string, endIso: string | null): {
+export function eventBlockStyle(
+  startIso: string,
+  estimatedDurationMinutes: number | null,
+  legacyEndIso: string | null,
+): {
   top: number;
   height: number;
 } {
   const start = new Date(startIso);
-  const end = endIso
-    ? new Date(endIso)
-    : new Date(start.getTime() + 60 * 60 * 1000);
+  const end = new Date(calendarEventEndMs(
+    start.getTime(),
+    estimatedDurationMinutes,
+    legacyEndIso,
+  ));
 
   const dayStart = new Date(start);
   dayStart.setHours(GRID_HOUR_START, 0, 0, 0);
@@ -82,9 +89,11 @@ export function eventLaneLayout<T extends TimedGridItem>(events: T[]): Map<strin
   const normalized = events
     .map((event) => {
       const start = new Date(event.scheduledStartAt).getTime();
-      const proposedEnd = event.scheduledEndAt
-        ? new Date(event.scheduledEndAt).getTime()
-        : start + 60 * 60 * 1000;
+      const proposedEnd = calendarEventEndMs(
+        start,
+        event.estimatedDurationMinutes,
+        event.scheduledEndAt,
+      );
       return {
         event,
         start,
@@ -132,10 +141,6 @@ export function slotDateTime(day: Date, hour: number, minute = 0): Date {
   return new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute, 0, 0);
 }
 
-export function defaultEndFromStart(start: Date): Date {
-  return new Date(start.getTime() + 60 * 60 * 1000);
-}
-
 export function defaultDeadlineFromStart(start: Date): Date {
   const d = new Date(start);
   d.setDate(d.getDate() + 2);
@@ -143,10 +148,27 @@ export function defaultDeadlineFromStart(start: Date): Date {
   return d;
 }
 
-export function durationMs(startIso: string, endIso: string | null): number {
-  const start = new Date(startIso).getTime();
-  if (!endIso) return 60 * 60 * 1000;
-  return Math.max(new Date(endIso).getTime() - start, 15 * 60 * 1000);
+function calendarEventEndMs(
+  startMs: number,
+  estimatedDurationMinutes: number | null,
+  legacyEndIso: string | null,
+): number {
+  if (
+    Number.isInteger(estimatedDurationMinutes)
+    && estimatedDurationMinutes !== null
+    && estimatedDurationMinutes > 0
+  ) {
+    return startMs + estimatedDurationMinutes * 60 * 1000;
+  }
+
+  if (legacyEndIso) {
+    const legacyEndMs = new Date(legacyEndIso).getTime();
+    if (Number.isFinite(legacyEndMs) && legacyEndMs >= startMs) return legacyEndMs;
+  }
+
+  // No estimate means no assumed duration. Layout still applies its existing
+  // 15-minute minimum so an unsized job remains visible and selectable.
+  return startMs;
 }
 
 export function initials(label: string): string {

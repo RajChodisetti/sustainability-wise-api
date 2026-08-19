@@ -11,6 +11,7 @@ import {
   isSchedulerAdmin,
   listScheduleEvents,
   listUnscheduledJobs,
+  MAX_ESTIMATED_DURATION_MINUTES,
   searchJobOptions,
   updateScheduleEvent,
   type ScheduleSourceApp,
@@ -258,7 +259,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       sourceId: typeof body.sourceId === 'string' ? body.sourceId : null,
       assigneeFieldUserId: String(body.assigneeFieldUserId ?? ''),
       scheduledStartAt: body.scheduledStartAt,
-      scheduledEndAt: body.scheduledEndAt,
+      estimatedDurationMinutes: body.estimatedDurationMinutes,
       deadlineAt: body.deadlineAt,
       status: body.status,
     });
@@ -286,6 +287,13 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
           description: { type: ['string', 'null'] },
           assigneeFieldUserId: { type: 'string', minLength: 1 },
           scheduledStartAt: { type: 'string' },
+          estimatedDurationMinutes: {
+            type: ['integer', 'null'],
+            minimum: 1,
+            maximum: MAX_ESTIMATED_DURATION_MINUTES,
+          },
+          // Rolling-deploy compatibility only. The handler deliberately
+          // ignores this deprecated field instead of persisting or inferring it.
           scheduledEndAt: { type: ['string', 'null'] },
           deadlineAt: { type: 'string' },
           job: { type: 'object', additionalProperties: true },
@@ -306,7 +314,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         : undefined,
       assigneeFieldUserId: String(body.assigneeFieldUserId ?? ''),
       scheduledStartAt: body.scheduledStartAt,
-      scheduledEndAt: body.scheduledEndAt,
+      estimatedDurationMinutes: body.estimatedDurationMinutes,
       deadlineAt: body.deadlineAt,
       job: body.job,
       status: body.status,
@@ -332,7 +340,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         ? body.assigneeFieldUserId
         : undefined,
       scheduledStartAt: body.scheduledStartAt,
-      scheduledEndAt: body.scheduledEndAt,
+      estimatedDurationMinutes: body.estimatedDurationMinutes,
       deadlineAt: body.deadlineAt,
       status: body.status,
     });

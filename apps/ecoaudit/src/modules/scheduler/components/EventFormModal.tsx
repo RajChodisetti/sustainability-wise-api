@@ -3,7 +3,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner } from '@/components/ui/Card';
-import { FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
+import {
+  FieldError,
+  FieldHint,
+  FieldLabel,
+  Input,
+  Select,
+  Textarea,
+} from '@/components/ui/FormFields';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import {
@@ -19,6 +26,12 @@ import {
   fromDatetimeLocalValue,
   toDatetimeLocalValue,
 } from '@/modules/scheduler/lib/deadline';
+import {
+  estimatedDurationError,
+  estimatedDurationUpdate,
+  parseEstimatedDurationMinutes,
+} from '@/modules/scheduler/lib/estimatedDuration';
+import { scheduledStartUpdate } from '@/modules/scheduler/lib/eventUpdate';
 import {
   schedulerDefaultSourceApp,
   schedulerEventSupportsMobileNotifications,
@@ -76,7 +89,9 @@ function initialFormValues(
       description: event.description ?? '',
       assigneeFieldUserId: event.assigneeFieldUserId,
       startLocal: toDatetimeLocalValue(event.scheduledStartAt),
-      endLocal: event.scheduledEndAt ? toDatetimeLocalValue(event.scheduledEndAt) : '',
+      estimatedDurationMinutes: event.estimatedDurationMinutes === null
+        ? ''
+        : String(event.estimatedDurationMinutes),
       deadlineLocal: toDatetimeLocalValue(event.deadlineAt),
       status: event.status,
     };
@@ -108,7 +123,7 @@ function initialFormValues(
     description: '',
     assigneeFieldUserId: '',
     startLocal: toDatetimeLocalValue(start.toISOString()),
-    endLocal: '',
+    estimatedDurationMinutes: '',
     deadlineLocal: toDatetimeLocalValue(deadline.toISOString()),
     status: 'planned' as ScheduleStatus,
   };
@@ -155,7 +170,9 @@ export function EventFormModal({
   const [description, setDescription] = useState(initial.description);
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
   const [startLocal, setStartLocal] = useState(initial.startLocal);
-  const [endLocal, setEndLocal] = useState(initial.endLocal);
+  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState(
+    initial.estimatedDurationMinutes,
+  );
   const [deadlineLocal, setDeadlineLocal] = useState(initial.deadlineLocal);
   const [status, setStatus] = useState<ScheduleStatus>(initial.status);
   const [error, setError] = useState<string | null>(null);
@@ -174,10 +191,13 @@ export function EventFormModal({
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
     sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
   )), [assignees.data, sourceApp]);
+  const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
+  const durationError = estimatedDurationError(estimatedDurationMinutes);
 
   const canSubmit = useMemo(() => {
     if (!isAdmin) return false;
     if (!assigneeFieldUserId || !startLocal || !deadlineLocal) return false;
+    if (parsedEstimatedDurationMinutes === undefined) return false;
     if (sourceApp === 'custom') return Boolean(title.trim());
     if (creationMode === 'existing') return Boolean(sourceId);
     if (sourceApp === 'ecoaudit') return Boolean(jobSiteName.trim() && jobSiteAddress.trim());
@@ -190,6 +210,7 @@ export function EventFormModal({
     assigneeFieldUserId,
     startLocal,
     deadlineLocal,
+    parsedEstimatedDurationMinutes,
     sourceApp,
     title,
     creationMode,
@@ -258,7 +279,10 @@ export function EventFormModal({
   if (!open || (event && !visibleSourceApps.includes(event.sourceApp))) return null;
 
   async function handleSubmit() {
-    if (!canSubmit) return;
+    const submittedEstimatedDurationMinutes = parseEstimatedDurationMinutes(
+      estimatedDurationMinutes,
+    );
+    if (!canSubmit || submittedEstimatedDurationMinutes === undefined) return;
     setError(null);
     try {
       if (editing && event) {
@@ -268,8 +292,15 @@ export function EventFormModal({
             title: title.trim() || event.title,
             description: description.trim() || null,
             assigneeFieldUserId,
-            scheduledStartAt: fromDatetimeLocalValue(startLocal),
-            scheduledEndAt: endLocal ? fromDatetimeLocalValue(endLocal) : null,
+            ...scheduledStartUpdate(
+              initial.startLocal,
+              startLocal,
+              fromDatetimeLocalValue(startLocal),
+            ),
+            ...estimatedDurationUpdate(
+              event.estimatedDurationMinutes,
+              submittedEstimatedDurationMinutes,
+            ),
             deadlineAt: fromDatetimeLocalValue(deadlineLocal),
             status,
           },
@@ -281,7 +312,9 @@ export function EventFormModal({
           description: description.trim() || null,
           assigneeFieldUserId,
           scheduledStartAt: fromDatetimeLocalValue(startLocal),
-          scheduledEndAt: endLocal ? fromDatetimeLocalValue(endLocal) : null,
+          ...(submittedEstimatedDurationMinutes === null
+            ? {}
+            : { estimatedDurationMinutes: submittedEstimatedDurationMinutes }),
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           job: {
             siteName: jobSiteName.trim(),
@@ -314,7 +347,9 @@ export function EventFormModal({
           sourceId: sourceApp === 'custom' ? null : sourceId,
           assigneeFieldUserId,
           scheduledStartAt: fromDatetimeLocalValue(startLocal),
-          scheduledEndAt: endLocal ? fromDatetimeLocalValue(endLocal) : null,
+          ...(submittedEstimatedDurationMinutes === null
+            ? {}
+            : { estimatedDurationMinutes: submittedEstimatedDurationMinutes }),
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           status: 'planned',
         });
@@ -367,7 +402,7 @@ export function EventFormModal({
           {editing ? 'Edit scheduled job' : 'Schedule a job'}
         </h2>
         <p className="mt-1 text-sm text-[var(--text-sub)]">
-          Assign work for a day and time with a hard deadline.
+          Assign work for a start time, optional duration estimate, and hard deadline.
         </p>
 
         {!isAdmin ? (
@@ -549,12 +584,28 @@ export function EventFormModal({
               value={startLocal}
               onChange={(e) => setStartLocal(e.target.value)}
             />
-            <FieldLabel>End (optional)</FieldLabel>
+            <FieldLabel htmlFor="scheduler-estimated-duration">
+              Estimated time to complete (minutes, optional)
+            </FieldLabel>
             <Input
-              type="datetime-local"
-              value={endLocal}
-              onChange={(e) => setEndLocal(e.target.value)}
+              id="scheduler-estimated-duration"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="off"
+              maxLength={5}
+              placeholder="e.g. 90"
+              value={estimatedDurationMinutes}
+              onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
+              aria-invalid={Boolean(durationError)}
+              aria-describedby={durationError
+                ? 'scheduler-estimated-duration-error scheduler-estimated-duration-hint'
+                : 'scheduler-estimated-duration-hint'}
             />
+            <FieldHint id="scheduler-estimated-duration-hint">
+              Leave blank if the duration is not known. The calendar uses this estimate only for planning.
+            </FieldHint>
+            <FieldError id="scheduler-estimated-duration-error" message={durationError ?? undefined} />
             <FieldLabel>Deadline</FieldLabel>
             <Input
               type="datetime-local"

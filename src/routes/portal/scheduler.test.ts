@@ -90,6 +90,42 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
     });
     assert.equal(clientOwner.statusCode, 400);
 
+    const deprecatedNonNullEnd = await app.inject({
+      method: 'POST',
+      url,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        ...validDispatch,
+        scheduledEndAt: '2026-08-20T11:00:00.000Z',
+        job: { ...validDispatch.job, status: 'Completed' },
+      },
+    });
+    assert.equal(deprecatedNonNullEnd.statusCode, 400, deprecatedNonNullEnd.body);
+    assert.deepEqual(deprecatedNonNullEnd.json(), clientJobStatus.json());
+
+    const toleratedLegacyNullEnd = await app.inject({
+      method: 'POST',
+      url,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        ...validDispatch,
+        scheduledEndAt: null,
+        job: { ...validDispatch.job, status: 'Completed' },
+      },
+    });
+    assert.equal(toleratedLegacyNullEnd.statusCode, 400, toleratedLegacyNullEnd.body);
+    assert.deepEqual(toleratedLegacyNullEnd.json(), clientJobStatus.json());
+
+    for (const estimatedDurationMinutes of [0, 1.5, 10081]) {
+      const invalidEstimate = await app.inject({
+        method: 'POST',
+        url,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { ...validDispatch, estimatedDurationMinutes },
+      });
+      assert.equal(invalidEstimate.statusCode, 400, invalidEstimate.body);
+    }
+
     const invalidAuditDate = await app.inject({
       method: 'POST',
       url,
@@ -136,6 +172,23 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
       },
     });
     assert.equal(legacySolarSiteLink.statusCode, 400);
+
+    const legacySolarSiteLinkWithDeprecatedEnd = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/events',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        sourceApp: 'solarsense',
+        sourceType: 'site',
+        sourceId: 'legacy-site-id',
+        assigneeFieldUserId: 'field-user',
+        scheduledStartAt: validDispatch.scheduledStartAt,
+        scheduledEndAt: '2026-08-20T11:00:00.000Z',
+        deadlineAt: validDispatch.deadlineAt,
+      },
+    });
+    assert.equal(legacySolarSiteLinkWithDeprecatedEnd.statusCode, 400);
+    assert.deepEqual(legacySolarSiteLinkWithDeprecatedEnd.json(), legacySolarSiteLink.json());
   } finally {
     await app.close();
   }

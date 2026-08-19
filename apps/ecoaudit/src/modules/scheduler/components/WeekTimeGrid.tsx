@@ -242,7 +242,11 @@ function DayColumn({
             key={event.id}
             event={event}
             style={{
-              ...eventBlockStyle(event.scheduledStartAt, event.scheduledEndAt),
+              ...eventBlockStyle(
+                event.scheduledStartAt,
+                event.estimatedDurationMinutes,
+                event.scheduledEndAt,
+              ),
               left: `calc(${lane.leftPercent}% + 0.25rem)`,
               width: `calc(${lane.widthPercent}% - 0.5rem)`,
             }}

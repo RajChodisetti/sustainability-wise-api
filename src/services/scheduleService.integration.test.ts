@@ -24,6 +24,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       cancelScheduleEvent,
       createScheduleEvent,
       createSchedulerDispatch,
+      getScheduleEvent,
       listUnscheduledJobs,
       searchJobOptions,
       updateScheduleEvent,
@@ -128,6 +129,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     const baseDispatch = {
       assigneeFieldUserId: firstAssignee.fieldUserId,
       scheduledStartAt: '2026-08-20T09:00:00.000Z',
+      estimatedDurationMinutes: 90,
       deadlineAt: '2026-08-22T17:00:00.000Z',
     };
     const eco = await createSchedulerDispatch(admin, {
@@ -167,6 +169,15 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(eco.status, 'planned');
     assert.equal(solar.status, 'planned');
     assert.equal(field.status, 'planned');
+    assert.equal(eco.estimatedDurationMinutes, 90);
+    assert.equal(eco.scheduledEndAt, '2026-08-20T10:30:00.000Z');
+    const [storedEcoEvent] = await db.select().from(portalScheduleEvents)
+      .where(eq(portalScheduleEvents.id, eco.id));
+    assert.equal(storedEcoEvent.estimatedDurationMinutes, 90);
+    assert.equal(
+      storedEcoEvent.scheduledEndAt?.toISOString(),
+      '2026-08-20T10:30:00.000Z',
+    );
 
     const [[ecoRow], [solarRow], [fieldRow], gridRows] = await Promise.all([
       db.select().from(eaAudits).where(eq(eaAudits.id, eco.sourceId!)),
@@ -199,15 +210,33 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(solarSite.status, 'Draft');
     assert.equal(solarSite.createdByUserId, actor.appUserIds.solarsense);
 
-    await updateScheduleEvent(admin, solar.id, {
+    const reassignedEvent = await updateScheduleEvent(admin, solar.id, {
       assigneeFieldUserId: secondAssignee.fieldUserId,
     });
+    assert.equal(reassignedEvent.estimatedDurationMinutes, 90);
+    assert.equal(reassignedEvent.scheduledEndAt, '2026-08-20T10:30:00.000Z');
     const [reassignedSolar] = await db.select().from(ssRooftopAssessments)
       .where(eq(ssRooftopAssessments.id, solar.sourceId!));
     assert.equal(
       reassignedSolar.assignedInspectorUserId,
       secondAssignee.appUserIds.solarsense,
     );
+
+    const reestimatedEvent = await updateScheduleEvent(admin, solar.id, {
+      estimatedDurationMinutes: 120,
+    });
+    assert.equal(reestimatedEvent.estimatedDurationMinutes, 120);
+    assert.equal(reestimatedEvent.scheduledEndAt, '2026-08-20T11:00:00.000Z');
+    const movedEvent = await updateScheduleEvent(admin, solar.id, {
+      scheduledStartAt: '2026-08-20T10:00:00.000Z',
+    });
+    assert.equal(movedEvent.estimatedDurationMinutes, 120);
+    assert.equal(movedEvent.scheduledEndAt, '2026-08-20T12:00:00.000Z');
+    const clearedEstimate = await updateScheduleEvent(admin, solar.id, {
+      estimatedDurationMinutes: null,
+    });
+    assert.equal(clearedEstimate.estimatedDurationMinutes, null);
+    assert.equal(clearedEstimate.scheduledEndAt, null);
 
     const copiedPhotoId = `scheduler-photo-${runId}`;
     copiedPhotoIds.push(copiedPhotoId);
@@ -322,9 +351,34 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     });
     assert.equal(linkedEco.sourceId, linkableEcoAuditId);
     assert.equal(linkedEco.sourceApp, 'ecoaudit');
+    assert.equal(linkedEco.estimatedDurationMinutes, null);
+    assert.equal(linkedEco.scheduledEndAt, null);
     const [linkedEcoRow] = await db.select().from(eaAudits)
       .where(eq(eaAudits.id, linkableEcoAuditId));
     assert.equal(linkedEcoRow.assignedInspectorUserId, firstAssignee.appUserIds.ecoaudit);
+
+    // Legacy rows remain readable with their historic end until the schedule
+    // itself is rewritten. A start edit without an estimate must not invent a
+    // replacement duration.
+    const historicalEnd = new Date('2026-08-20T16:00:00.000Z');
+    await db.update(portalScheduleEvents).set({
+      estimatedDurationMinutes: null,
+      scheduledEndAt: historicalEnd,
+    }).where(eq(portalScheduleEvents.id, linkedEco.id));
+    const legacyRead = await getScheduleEvent(admin, linkedEco.id);
+    assert.equal(legacyRead.estimatedDurationMinutes, null);
+    assert.equal(legacyRead.scheduledEndAt, historicalEnd.toISOString());
+    const legacyTitleEdit = await updateScheduleEvent(admin, linkedEco.id, {
+      title: 'Legacy end preserved',
+      assigneeFieldUserId: firstAssignee.fieldUserId,
+      scheduledStartAt: baseDispatch.scheduledStartAt,
+    });
+    assert.equal(legacyTitleEdit.scheduledEndAt, historicalEnd.toISOString());
+    const legacyScheduleRewrite = await updateScheduleEvent(admin, linkedEco.id, {
+      scheduledStartAt: '2026-08-21T09:00:00.000Z',
+    });
+    assert.equal(legacyScheduleRewrite.estimatedDurationMinutes, null);
+    assert.equal(legacyScheduleRewrite.scheduledEndAt, null);
 
     // A cancelled Solar event can be rescheduled, but two concurrent attempts
     // still serialize on the product row and produce only one active event.

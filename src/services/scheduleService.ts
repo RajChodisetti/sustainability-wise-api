@@ -51,6 +51,7 @@ export type ScheduleEventDto = {
   assigneeDisplayName: string | null;
   assigneeEmail: string | null;
   scheduledStartAt: string;
+  estimatedDurationMinutes: number | null;
   scheduledEndAt: string | null;
   deadlineAt: string;
   status: ScheduleStatus;
@@ -106,6 +107,46 @@ function requireIsoDate(value: unknown, field: string): Date {
   return date;
 }
 
+export const MAX_ESTIMATED_DURATION_MINUTES = 7 * 24 * 60;
+
+/**
+ * Estimates are optional, but an estimate that is supplied must be a whole,
+ * positive number of minutes. Null and an empty string explicitly clear an
+ * existing estimate; undefined means the caller did not send the field.
+ */
+export function parseEstimatedDurationMinutes(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (
+    typeof value !== 'number'
+    || !Number.isSafeInteger(value)
+    || value <= 0
+    || value > MAX_ESTIMATED_DURATION_MINUTES
+  ) {
+    throw badRequest(
+      `estimatedDurationMinutes must be a whole number between 1 and ${MAX_ESTIMATED_DURATION_MINUTES}`,
+    );
+  }
+  return value;
+}
+
+export function deriveScheduledEndAt(
+  scheduledStartAt: Date,
+  estimatedDurationMinutes: number | null,
+): Date | null {
+  if (estimatedDurationMinutes === null) return null;
+  return new Date(scheduledStartAt.getTime() + estimatedDurationMinutes * 60_000);
+}
+
+function rejectClientScheduledEndAt(value: unknown): void {
+  // Null is tolerated temporarily so an API-first rolling deploy remains
+  // compatible with the previous portal, which sent null for an empty field.
+  if (value !== undefined && value !== null) {
+    throw badRequest(
+      'scheduledEndAt is derived; refresh and provide estimatedDurationMinutes instead',
+    );
+  }
+}
+
 function parseSourceApp(value: unknown): ScheduleSourceApp {
   if (
     value === 'ecoaudit'
@@ -144,6 +185,9 @@ function parseStatus(value: unknown): ScheduleStatus {
 }
 
 function rowToDto(row: typeof portalScheduleEvents.$inferSelect): ScheduleEventDto {
+  const scheduledEndAt = row.estimatedDurationMinutes === null
+    ? row.scheduledEndAt
+    : deriveScheduledEndAt(row.scheduledStartAt, row.estimatedDurationMinutes);
   return {
     id: row.id,
     title: row.title,
@@ -155,7 +199,8 @@ function rowToDto(row: typeof portalScheduleEvents.$inferSelect): ScheduleEventD
     assigneeDisplayName: row.assigneeDisplayName,
     assigneeEmail: row.assigneeEmail,
     scheduledStartAt: row.scheduledStartAt.toISOString(),
-    scheduledEndAt: toIso(row.scheduledEndAt),
+    estimatedDurationMinutes: row.estimatedDurationMinutes,
+    scheduledEndAt: toIso(scheduledEndAt),
     deadlineAt: row.deadlineAt.toISOString(),
     status: row.status as ScheduleStatus,
     createdByUserId: row.createdByUserId,
@@ -670,6 +715,8 @@ export type CreateScheduleEventInput = {
   sourceId?: string | null;
   assigneeFieldUserId: string;
   scheduledStartAt: unknown;
+  estimatedDurationMinutes?: unknown;
+  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown;
   deadlineAt: unknown;
   status?: unknown;
@@ -692,11 +739,11 @@ export async function createScheduleEvent(
   const sourceId = input.sourceId?.trim() || null;
   const start = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
   const deadline = requireIsoDate(input.deadlineAt, 'deadlineAt');
-  let end: Date | null = null;
-  if (input.scheduledEndAt !== undefined && input.scheduledEndAt !== null && input.scheduledEndAt !== '') {
-    end = requireIsoDate(input.scheduledEndAt, 'scheduledEndAt');
-    if (end < start) throw badRequest('scheduledEndAt must be on or after scheduledStartAt');
-  }
+  rejectClientScheduledEndAt(input.scheduledEndAt);
+  const estimatedDurationMinutes = parseEstimatedDurationMinutes(
+    input.estimatedDurationMinutes,
+  );
+  const end = deriveScheduledEndAt(start, estimatedDurationMinutes);
 
   if (typeof input.assigneeFieldUserId !== 'string' || !input.assigneeFieldUserId.trim()) {
     throw badRequest('assigneeFieldUserId is required');
@@ -728,6 +775,7 @@ export async function createScheduleEvent(
       assigneeDisplayName: assignee.displayName,
       assigneeEmail: assignee.email,
       scheduledStartAt: start,
+      estimatedDurationMinutes,
       scheduledEndAt: end,
       deadlineAt: deadline,
       status,
@@ -763,6 +811,8 @@ export type CreateSchedulerDispatchInput = {
   description?: string | null;
   assigneeFieldUserId: string;
   scheduledStartAt: unknown;
+  estimatedDurationMinutes?: unknown;
+  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown;
   deadlineAt: unknown;
   job: unknown;
@@ -990,12 +1040,11 @@ export async function createSchedulerDispatch(
   }
   const start = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
   const deadline = requireIsoDate(input.deadlineAt, 'deadlineAt');
-  const end = input.scheduledEndAt === undefined
-    || input.scheduledEndAt === null
-    || input.scheduledEndAt === ''
-    ? null
-    : requireIsoDate(input.scheduledEndAt, 'scheduledEndAt');
-  if (end && end < start) throw badRequest('scheduledEndAt must be on or after scheduledStartAt');
+  rejectClientScheduledEndAt(input.scheduledEndAt);
+  const estimatedDurationMinutes = parseEstimatedDurationMinutes(
+    input.estimatedDurationMinutes,
+  );
+  const end = deriveScheduledEndAt(start, estimatedDurationMinutes);
   const job = parseDispatchJob(input.job, sourceApp);
   validateDispatchJob(sourceApp, job);
 
@@ -1025,6 +1074,7 @@ export async function createSchedulerDispatch(
       assigneeDisplayName: assignee.displayName,
       assigneeEmail: assignee.email,
       scheduledStartAt: start,
+      estimatedDurationMinutes,
       scheduledEndAt: end,
       deadlineAt: deadline,
       status: 'planned',
@@ -1056,6 +1106,8 @@ export type UpdateScheduleEventInput = {
   description?: string | null;
   assigneeFieldUserId?: string;
   scheduledStartAt?: unknown;
+  estimatedDurationMinutes?: unknown;
+  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown | null;
   deadlineAt?: unknown;
   status?: unknown;
@@ -1066,6 +1118,7 @@ type ScheduleBusinessFields = Pick<ScheduleEventDto,
   | 'description'
   | 'assigneeFieldUserId'
   | 'scheduledStartAt'
+  | 'estimatedDurationMinutes'
   | 'scheduledEndAt'
   | 'deadlineAt'
   | 'status'
@@ -1080,6 +1133,7 @@ export function scheduleBusinessFieldsChanged(
     || before.description !== after.description
     || before.assigneeFieldUserId !== after.assigneeFieldUserId
     || before.scheduledStartAt !== after.scheduledStartAt
+    || before.estimatedDurationMinutes !== after.estimatedDurationMinutes
     || before.scheduledEndAt !== after.scheduledEndAt
     || before.deadlineAt !== after.deadlineAt
     || before.status !== after.status;
@@ -1094,6 +1148,11 @@ export async function updateScheduleEvent(
   if (!isSchedulerAdmin(user)) {
     throw forbidden('Only admins can update schedule events');
   }
+  rejectClientScheduledEndAt(input.scheduledEndAt);
+  const estimatedDurationWasProvided = input.estimatedDurationMinutes !== undefined;
+  const requestedEstimatedDurationMinutes = estimatedDurationWasProvided
+    ? parseEstimatedDurationMinutes(input.estimatedDurationMinutes)
+    : undefined;
 
   const updated = await db.transaction(async (tx) => {
     const [existing] = await tx
@@ -1138,15 +1197,11 @@ export async function updateScheduleEvent(
       patch.assigneeDisplayName = assignee.displayName;
       patch.assigneeEmail = assignee.email;
     }
+    let scheduledStartChanged = false;
     if (input.scheduledStartAt !== undefined) {
-      patch.scheduledStartAt = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
-    }
-    if (input.scheduledEndAt !== undefined) {
-      if (input.scheduledEndAt === null || input.scheduledEndAt === '') {
-        patch.scheduledEndAt = null;
-      } else {
-        patch.scheduledEndAt = requireIsoDate(input.scheduledEndAt, 'scheduledEndAt');
-      }
+      const requestedStart = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
+      scheduledStartChanged = requestedStart.getTime() !== existing.scheduledStartAt.getTime();
+      if (scheduledStartChanged) patch.scheduledStartAt = requestedStart;
     }
     if (input.deadlineAt !== undefined) {
       patch.deadlineAt = requireIsoDate(input.deadlineAt, 'deadlineAt');
@@ -1167,12 +1222,13 @@ export async function updateScheduleEvent(
       patch.cancelledAt = nextStatus === 'cancelled' ? new Date() : null;
     }
 
-    const start = (patch.scheduledStartAt as Date | undefined) ?? existing.scheduledStartAt;
-    const end = patch.scheduledEndAt !== undefined
-      ? (patch.scheduledEndAt as Date | null)
-      : existing.scheduledEndAt;
-    if (end && end < start) {
-      throw badRequest('scheduledEndAt must be on or after scheduledStartAt');
+    if (estimatedDurationWasProvided || scheduledStartChanged) {
+      const start = (patch.scheduledStartAt as Date | undefined) ?? existing.scheduledStartAt;
+      const estimatedDurationMinutes = estimatedDurationWasProvided
+        ? requestedEstimatedDurationMinutes!
+        : existing.estimatedDurationMinutes;
+      patch.estimatedDurationMinutes = estimatedDurationMinutes;
+      patch.scheduledEndAt = deriveScheduledEndAt(start, estimatedDurationMinutes);
     }
 
     const nextStatusIsActive = nextStatus === 'planned' || nextStatus === 'in_progress';

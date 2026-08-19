@@ -109,20 +109,33 @@ cutover remain cancelled because the database cannot distinguish them safely
 from intentionally cancelled work.
 
 New-work dispatch accepts `sourceApp`, the assignee's canonical
-`assigneeFieldUserId`, schedule/deadline timestamps, and a product-specific
-`job` object. Eco Audit requires `siteName` and `siteAddress`; SolarSense
-requires `siteName`, `location`, and `buildingIdName`; Field App Complete
+`assigneeFieldUserId`, `scheduledStartAt`, `deadlineAt`, an optional
+`estimatedDurationMinutes`, and a product-specific `job` object. The estimate
+is a whole number from 1 through 10,080 minutes. Omitting it stores no estimate
+and does not assume a default duration. New clients must not submit an arbitrary
+`scheduledEndAt`; when an estimate is present, the server derives the calendar
+end from `scheduledStartAt + estimatedDurationMinutes`. During the rolling
+upgrade, the HTTP facade tolerates a deprecated string or null `scheduledEndAt`
+from cached portal bundles but ignores it completely—it is never stored or used
+to infer an estimate. Historical events keep their existing `scheduledEndAt`
+and remain readable. Eco Audit requires
+`siteName` and `siteAddress`; SolarSense requires `siteName`, `location`, and
+`buildingIdName`; Field App Complete
 requires `clientName`, `siteName`, and `siteAddress`. `auditDate` is optional
 when calling the API directly and must use `YYYY-MM-DD`; the portal sends the
 locally selected calendar date. Field App Complete defaults to
 `Australia/Sydney` unless an explicit timezone is supplied.
 
-The server derives ownership and inspector display fields from authenticated
-canonical identities. Client-supplied IDs, assignment, sync state, deletion,
-completion, and lifecycle status fields are rejected. New work is always Draft
-and its event is always planned. SolarSense dispatches and new links target a
-rooftop assessment; historical site-linked events remain readable, but cannot
-be newly linked or reassigned. Completed or deleted jobs are not linkable.
+Event create and update use the same optional estimate contract. Updating an
+unrelated field on a historical event does not erase its legacy end timestamp;
+once its schedule or estimate is explicitly rewritten, the canonical derived
+end applies. The server derives ownership and inspector display fields from
+authenticated canonical identities. Client-supplied IDs, assignment, sync
+state, deletion, completion, and lifecycle status fields are rejected. New work
+is always Draft and its event is always planned. SolarSense dispatches and new
+links target a rooftop assessment; historical site-linked events remain
+readable, but cannot be newly linked or reassigned. Completed or deleted jobs
+are not linkable.
 Product completion does not implicitly mark the calendar event done, and event
 status changes do not complete or reopen product data.
 
