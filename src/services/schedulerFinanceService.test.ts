@@ -85,9 +85,7 @@ test('user billing uses fixed canonical rates and proportionally editable hours'
       userId: 'user-a',
       displayName: 'A',
       activeMilliseconds: 7_200_000,
-      restingMilliseconds: 900_000,
       hours: 2,
-      restingHours: 0.25,
       billingRate: 100,
       labourAmount: 200,
       billingRateEditable: true,
@@ -96,9 +94,7 @@ test('user billing uses fixed canonical rates and proportionally editable hours'
       userId: 'user-b',
       displayName: 'B',
       activeMilliseconds: 3_600_000,
-      restingMilliseconds: 3_600_000,
       hours: 1,
-      restingHours: 1,
       billingRate: 200,
       labourAmount: 200,
       billingRateEditable: true,
@@ -116,9 +112,7 @@ test('missing user rates fail closed, including while commercial hours remain ze
     userId: 'user-missing',
     displayName: 'Needs admin',
     activeMilliseconds: 0,
-    restingMilliseconds: 0,
     hours: 0,
-    restingHours: 0,
     billingRate: null,
     labourAmount: null,
     billingRateEditable: true,
@@ -135,44 +129,32 @@ test('missing user rates fail closed, including while commercial hours remain ze
   });
 });
 
-test('recorded session aggregation reports only observed inactive time', () => {
+test('recorded session aggregation totals active time by worker', () => {
   const recorded = aggregateRecordedSessionTime([
     {
       actorUserId: 'user-a',
-      startedAt: new Date('2026-08-20T09:00:00.000Z'),
-      lastActiveAt: new Date('2026-08-20T09:45:00.000Z'),
-      endedAt: new Date('2026-08-20T09:45:00.000Z'),
       activeMilliseconds: 1_800_000,
     },
     {
       actorUserId: 'user-a',
-      startedAt: new Date('2026-08-20T10:30:00.000Z'),
-      lastActiveAt: new Date('2026-08-20T10:45:00.000Z'),
-      endedAt: null,
       activeMilliseconds: 900_000,
     },
     {
       actorUserId: 'user-b',
-      startedAt: new Date('2026-08-20T11:00:00.000Z'),
-      lastActiveAt: new Date('2026-08-20T11:10:00.000Z'),
-      endedAt: null,
       activeMilliseconds: 600_005,
     },
   ]);
 
   assert.deepEqual(recorded, {
     activeMilliseconds: 3_300_005,
-    restingMilliseconds: 900_000,
     actors: [
       {
         actorUserId: 'user-a',
         activeMilliseconds: 2_700_000,
-        restingMilliseconds: 900_000,
       },
       {
         actorUserId: 'user-b',
         activeMilliseconds: 600_005,
-        restingMilliseconds: 0,
       },
     ],
   });
@@ -184,7 +166,6 @@ test('origin and Field actor ids merge into one canonical worker row', () => {
       userId: 'global-user',
       displayName: 'Inspector One',
       activeMilliseconds: 1_800_000,
-      restingMilliseconds: 300_000,
       billingRateCents: 10_000,
       billingRateEditable: true,
     },
@@ -192,7 +173,6 @@ test('origin and Field actor ids merge into one canonical worker row', () => {
       userId: 'global-user',
       displayName: 'Inspector One',
       activeMilliseconds: 900_000,
-      restingMilliseconds: 600_000,
       billingRateCents: 10_000,
       billingRateEditable: true,
     },
@@ -200,33 +180,9 @@ test('origin and Field actor ids merge into one canonical worker row', () => {
     userId: 'global-user',
     displayName: 'Inspector One',
     activeMilliseconds: 2_700_000,
-    restingMilliseconds: 900_000,
     billingRateCents: 10_000,
     billingRateEditable: true,
   }]);
-});
-
-test('resting telemetry never changes user labour calculations', () => {
-  const actor = {
-    userId: 'user-a',
-    displayName: 'A',
-    activeMilliseconds: 3_600_000,
-    hours: 1,
-    billingRate: 100,
-    labourAmount: 100,
-    billingRateEditable: true,
-  };
-  const withoutResting = effectiveUserLabourBilling([{
-    ...actor,
-    restingMilliseconds: 0,
-    restingHours: 0,
-  }], 3);
-  const withResting = effectiveUserLabourBilling([{
-    ...actor,
-    restingMilliseconds: 86_400_000,
-    restingHours: 24,
-  }], 3);
-  assert.deepEqual(withResting, withoutResting);
 });
 
 test('non-zero billing hours without a linked user fail closed', () => {

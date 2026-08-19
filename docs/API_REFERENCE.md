@@ -478,14 +478,6 @@ Every insert and revision is rejected when cumulative active time exceeds its
 `startedAt`→`lastActiveAt` wall span by more than the documented five-second
 monotonic/wall-clock tolerance; client time is therefore plausible evidence,
 not an unconstrained billable number.
-The global-admin finance summary also exposes `time.restingMilliseconds` /
-`time.restingHours` and the same pair on each named `time.actors[]` row. Resting
-time is derived per persisted session as the nonnegative difference between
-`startedAt`→(`endedAt` or `lastActiveAt`) and `activeMilliseconds`. Open sessions
-stop at their last checkpoint; gaps between sessions and later wall-clock time
-are not attributed to the job. These fields are internal observation evidence
-only. They do not enter billing/cost hours, labour amounts, invoice lines, or
-invoice PDFs.
 App-recorded hours are evidence for an administrator to review, not assumed
 commercial hours. Effective billable and cost hours default to zero and remain
 directly editable through audited overrides; changing them never edits the raw

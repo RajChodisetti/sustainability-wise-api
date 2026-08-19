@@ -173,16 +173,14 @@ browser cache as the iOS local working copy or silently implement the mobile
 pull/import flow. Self-service password changes require the current password;
 an administrator may reset another user's password without it.
 
-## Scheduler internal work-time evidence
+## Scheduler internal active-time evidence
 
 Scheduler finance summaries are restricted to active canonical global
 administrators. Product work-session rows are the sole authority for app-active
-time. Per-session resting/inactive time is derived as
-`max(0, (endedAt ?? lastActiveAt) - startedAt - activeMilliseconds)`; never use
-the current time or gaps between sessions. Aggregate both values by the resolved
-named actor. These fields remain internal evidence and must not feed billing or
-cost hours, labour calculations, invoice DTOs, invoice authoring UI, or PDFs.
-Billing hours remain a separately audited, editable non-negative integer.
+time. Aggregate active time by the resolved named actor. This field remains
+internal evidence and must not feed billing or cost hours, labour calculations,
+invoice DTOs, invoice authoring UI, or PDFs. Billing hours remain a separately
+audited, editable non-negative integer.
 
 ## Authentication and Ownership
 

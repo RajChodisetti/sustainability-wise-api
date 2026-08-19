@@ -181,17 +181,13 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       ]);
       assert.equal(eco.time.actualMilliseconds, 5_400_000);
       assert.equal(eco.time.actualHours, 1.5);
-      assert.equal(eco.time.restingMilliseconds, 900_000);
-      assert.equal(eco.time.restingHours, 0.25);
       assert.equal(eco.time.scheduledHours, 2);
       assert.equal(eco.time.hoursVariance, -0.5);
       assert.deepEqual(eco.time.actors, [{
         userId: 'worker-global',
         displayName: 'Recorded Worker',
         activeMilliseconds: 5_400_000,
-        restingMilliseconds: 900_000,
         hours: 1.5,
-        restingHours: 0.25,
         billingRate: 150,
         labourAmount: 225,
         billingRateEditable: true,

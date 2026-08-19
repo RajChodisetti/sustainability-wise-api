@@ -114,10 +114,7 @@ export type RecordedActorHoursDto = {
   userId: string;
   displayName: string | null;
   activeMilliseconds: number;
-  /** Observed session time that was not reported as app-active. */
-  restingMilliseconds: number;
   hours: number;
-  restingHours: number;
   billingRate: number | null;
   labourAmount: number | null;
   billingRateEditable: boolean;
@@ -269,9 +266,6 @@ export type SchedulerFinancialSummaryDto = {
     scheduledHours: number;
     actualHours: number;
     actualMilliseconds: number;
-    /** Derived only inside persisted session boundaries; gaps between sessions are excluded. */
-    restingHours: number;
-    restingMilliseconds: number;
     actualSource: 'active_sessions';
     actors: RecordedActorHoursDto[];
     billableHours: number;
@@ -1090,23 +1084,18 @@ async function scheduledHoursForSource(
 
 export type RecordedWorkSessionTelemetry = {
   actorUserId: string;
-  startedAt: Date;
-  lastActiveAt: Date;
-  endedAt: Date | null;
   activeMilliseconds: number;
 };
 
 export type RecordedActorTime = {
   actorUserId: string;
   activeMilliseconds: number;
-  restingMilliseconds: number;
 };
 
 export type ResolvedRecordedActorTime = {
   userId: string;
   displayName: string | null;
   activeMilliseconds: number;
-  restingMilliseconds: number;
   billingRateCents: number | null;
   billingRateEditable: boolean;
 };
@@ -1123,12 +1112,9 @@ export function mergeResolvedRecordedActorTime(
       continue;
     }
     const activeMilliseconds = current.activeMilliseconds + actor.activeMilliseconds;
-    const restingMilliseconds = current.restingMilliseconds + actor.restingMilliseconds;
     if (
       !Number.isSafeInteger(activeMilliseconds)
-      || !Number.isSafeInteger(restingMilliseconds)
       || activeMilliseconds < 0
-      || restingMilliseconds < 0
       || (
         current.billingRateCents !== null
         && actor.billingRateCents !== null
@@ -1141,7 +1127,6 @@ export function mergeResolvedRecordedActorTime(
       userId: actor.userId,
       displayName: current.displayName ?? actor.displayName,
       activeMilliseconds,
-      restingMilliseconds,
       billingRateCents: current.billingRateCents ?? actor.billingRateCents,
       billingRateEditable: current.billingRateEditable || actor.billingRateEditable,
     });
@@ -1149,60 +1134,34 @@ export function mergeResolvedRecordedActorTime(
   return [...byUser.values()];
 }
 
-/**
- * Aggregates only persisted observation windows. For an open session the last
- * activity checkpoint is the observation boundary; current time and gaps
- * between separate sessions are deliberately excluded.
- */
 export function aggregateRecordedSessionTime(
   sessions: readonly RecordedWorkSessionTelemetry[],
 ): {
   activeMilliseconds: number;
-  restingMilliseconds: number;
   actors: RecordedActorTime[];
 } {
-  const byActor = new Map<string, Omit<RecordedActorTime, 'actorUserId'>>();
+  const byActor = new Map<string, number>();
   let activeMilliseconds = 0;
-  let restingMilliseconds = 0;
   for (const session of sessions) {
-    const observedEnd = session.endedAt ?? session.lastActiveAt;
-    const observedMilliseconds = Math.max(
-      0,
-      observedEnd.getTime() - session.startedAt.getTime(),
-    );
-    const sessionRestingMilliseconds = Math.max(
-      0,
-      observedMilliseconds - session.activeMilliseconds,
-    );
-    const current = byActor.get(session.actorUserId) ?? {
-      activeMilliseconds: 0,
-      restingMilliseconds: 0,
-    };
-    const nextActorActive = current.activeMilliseconds + session.activeMilliseconds;
-    const nextActorResting = current.restingMilliseconds + sessionRestingMilliseconds;
+    const nextActorActive = (byActor.get(session.actorUserId) ?? 0)
+      + session.activeMilliseconds;
     const nextActive = activeMilliseconds + session.activeMilliseconds;
-    const nextResting = restingMilliseconds + sessionRestingMilliseconds;
     if (
       !Number.isSafeInteger(nextActorActive)
-      || !Number.isSafeInteger(nextActorResting)
       || !Number.isSafeInteger(nextActive)
-      || !Number.isSafeInteger(nextResting)
       || nextActorActive < 0
-      || nextActorResting < 0
     ) {
       throw conflict('Recorded session time exceeds the supported accounting range');
     }
-    byActor.set(session.actorUserId, {
-      activeMilliseconds: nextActorActive,
-      restingMilliseconds: nextActorResting,
-    });
+    byActor.set(session.actorUserId, nextActorActive);
     activeMilliseconds = nextActive;
-    restingMilliseconds = nextResting;
   }
   return {
     activeMilliseconds,
-    restingMilliseconds,
-    actors: [...byActor.entries()].map(([actorUserId, time]) => ({ actorUserId, ...time })),
+    actors: [...byActor.entries()].map(([actorUserId, actorActiveMilliseconds]) => ({
+      actorUserId,
+      activeMilliseconds: actorActiveMilliseconds,
+    })),
   };
 }
 
@@ -1211,33 +1170,23 @@ async function recordedHoursForSource(
   executor: FinanceExecutor = db,
 ): Promise<{
   activeMilliseconds: number;
-  restingMilliseconds: number;
   actors: RecordedActorHoursDto[];
 }> {
   let sessions: RecordedWorkSessionTelemetry[];
   if (source.sourceApp === 'ecoaudit') {
     sessions = await executor.select({
       actorUserId: eaAuditWorkSessions.actorUserId,
-      startedAt: eaAuditWorkSessions.startedAt,
-      lastActiveAt: eaAuditWorkSessions.lastActiveAt,
-      endedAt: eaAuditWorkSessions.endedAt,
       activeMilliseconds: eaAuditWorkSessions.activeMilliseconds,
     }).from(eaAuditWorkSessions).where(eq(eaAuditWorkSessions.auditId, source.sourceId));
   } else if (source.sourceApp === 'solarsense') {
     sessions = await executor.select({
       actorUserId: ssAssessmentWorkSessions.actorUserId,
-      startedAt: ssAssessmentWorkSessions.startedAt,
-      lastActiveAt: ssAssessmentWorkSessions.lastActiveAt,
-      endedAt: ssAssessmentWorkSessions.endedAt,
       activeMilliseconds: ssAssessmentWorkSessions.activeMilliseconds,
     }).from(ssAssessmentWorkSessions)
       .where(eq(ssAssessmentWorkSessions.assessmentId, source.sourceId));
   } else {
     sessions = await executor.select({
       actorUserId: ihInstallationWorkSessions.actorUserId,
-      startedAt: ihInstallationWorkSessions.startedAt,
-      lastActiveAt: ihInstallationWorkSessions.lastActiveAt,
-      endedAt: ihInstallationWorkSessions.endedAt,
       activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
     }).from(ihInstallationWorkSessions)
       .where(eq(ihInstallationWorkSessions.installationId, source.sourceId));
@@ -1291,7 +1240,7 @@ async function recordedHoursForSource(
   }
   const sourceUserById = new Map(sourceUsers.map((user) => [user.id, user]));
   const resolvedActors = recorded.actors.map((actorTime): ResolvedRecordedActorTime => {
-    const { actorUserId, activeMilliseconds, restingMilliseconds } = actorTime;
+    const { actorUserId, activeMilliseconds } = actorTime;
     const membership = memberByActor.get(actorUserId);
     const sourceUser = sourceUserById.get(actorUserId);
     return {
@@ -1300,7 +1249,6 @@ async function recordedHoursForSource(
         ? membership.fullName?.trim() || membership.displayEmail
         : sourceUser?.fullName?.trim() || sourceUser?.email || null,
       activeMilliseconds,
-      restingMilliseconds,
       billingRateCents: membership?.billingRateCents ?? null,
       billingRateEditable: Boolean(membership),
     };
@@ -1310,7 +1258,6 @@ async function recordedHoursForSource(
       userId,
       displayName,
       activeMilliseconds,
-      restingMilliseconds,
       billingRateCents,
       billingRateEditable,
     } = actorTime;
@@ -1318,9 +1265,7 @@ async function recordedHoursForSource(
       userId,
       displayName,
       activeMilliseconds,
-      restingMilliseconds,
       hours: millisecondsToHours(activeMilliseconds),
-      restingHours: millisecondsToHours(restingMilliseconds),
       billingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
       labourAmount: billingRateCents === null
         ? null
@@ -1334,7 +1279,6 @@ async function recordedHoursForSource(
   }).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
   return {
     activeMilliseconds: recorded.activeMilliseconds,
-    restingMilliseconds: recorded.restingMilliseconds,
     actors,
   };
 }
@@ -1343,7 +1287,6 @@ async function billingActorsForSource(
   source: FinanceSource,
   recorded: {
     activeMilliseconds: number;
-    restingMilliseconds: number;
     actors: RecordedActorHoursDto[];
   },
   event: ScheduleEventRow | null,
@@ -1392,9 +1335,7 @@ async function billingActorsForSource(
     userId: assignee.id,
     displayName: assignee.fullName?.trim() || assignee.displayEmail,
     activeMilliseconds: 0,
-    restingMilliseconds: 0,
     hours: 0,
-    restingHours: 0,
     billingRate: assignee.billingRateCents === null
       ? null
       : centsToMoney(assignee.billingRateCents),
@@ -1926,7 +1867,6 @@ async function buildFinancialSummary(
   }
 
   const actualHours = millisecondsToHours(recorded.activeMilliseconds);
-  const restingHours = millisecondsToHours(recorded.restingMilliseconds);
   const billableHoursOverride = currentOverride?.billableMilliseconds == null
     ? null
     : millisecondsToHours(currentOverride.billableMilliseconds);
@@ -2022,8 +1962,6 @@ async function buildFinancialSummary(
       scheduledHours,
       actualHours,
       actualMilliseconds: recorded.activeMilliseconds,
-      restingHours,
-      restingMilliseconds: recorded.restingMilliseconds,
       actualSource: 'active_sessions',
       actors: billingActors,
       billableHours,

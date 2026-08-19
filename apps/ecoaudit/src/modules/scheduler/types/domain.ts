@@ -411,8 +411,6 @@ export type SchedulerFinancialSummary = {
     scheduledHours: number;
     actualHours: number;
     actualMilliseconds: number;
-    restingHours: number;
-    restingMilliseconds: number;
     actualSource: 'active_sessions';
     billableHours: number;
     billableHoursOverride: number | null;
@@ -435,9 +433,7 @@ export type SchedulerFinancialSummary = {
       userId: string;
       displayName: string | null;
       activeMilliseconds: number;
-      restingMilliseconds: number;
       hours: number;
-      restingHours: number;
       billingRate: number | null;
       labourAmount: number | null;
       billingRateEditable: boolean;
