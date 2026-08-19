@@ -250,7 +250,7 @@ export function manualHoursEntryIssue(input: {
 }): string | null {
   if (input.actualHours > 0) return null;
   if (input.billableHoursOverride !== null && input.costHoursOverride !== null) return null;
-  return 'No app time was recorded. Enter both billable hours and cost hours before invoicing this job.';
+  return 'No app time was recorded. Enter both billing hours and cost hours for accurate internal reporting.';
 }
 
 export function shouldAttachHourOverrideReason(input: {

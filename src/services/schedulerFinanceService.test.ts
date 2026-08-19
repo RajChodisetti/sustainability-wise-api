@@ -10,6 +10,7 @@ import {
   effectiveUserLabourBilling,
   invoiceLineTotalCents,
   isCompletedSchedulerJobStatus,
+  mergeResolvedRecordedActorTime,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
   schedulerInternalHoursNeedReview,
@@ -175,6 +176,34 @@ test('recorded session aggregation reports only observed inactive time', () => {
       },
     ],
   });
+});
+
+test('origin and Field actor ids merge into one canonical worker row', () => {
+  assert.deepEqual(mergeResolvedRecordedActorTime([
+    {
+      userId: 'global-user',
+      displayName: 'Inspector One',
+      activeMilliseconds: 1_800_000,
+      restingMilliseconds: 300_000,
+      billingRateCents: 10_000,
+      billingRateEditable: true,
+    },
+    {
+      userId: 'global-user',
+      displayName: 'Inspector One',
+      activeMilliseconds: 900_000,
+      restingMilliseconds: 600_000,
+      billingRateCents: 10_000,
+      billingRateEditable: true,
+    },
+  ]), [{
+    userId: 'global-user',
+    displayName: 'Inspector One',
+    activeMilliseconds: 2_700_000,
+    restingMilliseconds: 900_000,
+    billingRateCents: 10_000,
+    billingRateEditable: true,
+  }]);
 });
 
 test('resting telemetry never changes user labour calculations', () => {

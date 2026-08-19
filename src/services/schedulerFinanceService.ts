@@ -1102,6 +1102,53 @@ export type RecordedActorTime = {
   restingMilliseconds: number;
 };
 
+export type ResolvedRecordedActorTime = {
+  userId: string;
+  displayName: string | null;
+  activeMilliseconds: number;
+  restingMilliseconds: number;
+  billingRateCents: number | null;
+  billingRateEditable: boolean;
+};
+
+/** Origin and Field IDs can both identify one canonical worker after a transfer/sync. */
+export function mergeResolvedRecordedActorTime(
+  actors: readonly ResolvedRecordedActorTime[],
+): ResolvedRecordedActorTime[] {
+  const byUser = new Map<string, ResolvedRecordedActorTime>();
+  for (const actor of actors) {
+    const current = byUser.get(actor.userId);
+    if (!current) {
+      byUser.set(actor.userId, { ...actor });
+      continue;
+    }
+    const activeMilliseconds = current.activeMilliseconds + actor.activeMilliseconds;
+    const restingMilliseconds = current.restingMilliseconds + actor.restingMilliseconds;
+    if (
+      !Number.isSafeInteger(activeMilliseconds)
+      || !Number.isSafeInteger(restingMilliseconds)
+      || activeMilliseconds < 0
+      || restingMilliseconds < 0
+      || (
+        current.billingRateCents !== null
+        && actor.billingRateCents !== null
+        && current.billingRateCents !== actor.billingRateCents
+      )
+    ) {
+      throw conflict('Resolved worker time exceeds the supported accounting range');
+    }
+    byUser.set(actor.userId, {
+      userId: actor.userId,
+      displayName: current.displayName ?? actor.displayName,
+      activeMilliseconds,
+      restingMilliseconds,
+      billingRateCents: current.billingRateCents ?? actor.billingRateCents,
+      billingRateEditable: current.billingRateEditable || actor.billingRateEditable,
+    });
+  }
+  return [...byUser.values()];
+}
+
 /**
  * Aggregates only persisted observation windows. For an open session the last
  * activity checkpoint is the observation boundary; current time and gaps
@@ -1243,16 +1290,33 @@ async function recordedHoursForSource(
     }
   }
   const sourceUserById = new Map(sourceUsers.map((user) => [user.id, user]));
-  const actors = recorded.actors.map((actorTime) => {
+  const resolvedActors = recorded.actors.map((actorTime): ResolvedRecordedActorTime => {
     const { actorUserId, activeMilliseconds, restingMilliseconds } = actorTime;
     const membership = memberByActor.get(actorUserId);
     const sourceUser = sourceUserById.get(actorUserId);
-    const billingRateCents = membership?.billingRateCents ?? null;
     return {
       userId: membership?.globalUserId ?? actorUserId,
       displayName: membership
         ? membership.fullName?.trim() || membership.displayEmail
         : sourceUser?.fullName?.trim() || sourceUser?.email || null,
+      activeMilliseconds,
+      restingMilliseconds,
+      billingRateCents: membership?.billingRateCents ?? null,
+      billingRateEditable: Boolean(membership),
+    };
+  });
+  const actors = mergeResolvedRecordedActorTime(resolvedActors).map((actorTime) => {
+    const {
+      userId,
+      displayName,
+      activeMilliseconds,
+      restingMilliseconds,
+      billingRateCents,
+      billingRateEditable,
+    } = actorTime;
+    return {
+      userId,
+      displayName,
       activeMilliseconds,
       restingMilliseconds,
       hours: millisecondsToHours(activeMilliseconds),
@@ -1265,7 +1329,7 @@ async function recordedHoursForSource(
             billingRateCents,
             'Recorded labour',
           )),
-      billingRateEditable: Boolean(membership),
+      billingRateEditable,
     };
   }).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
   return {

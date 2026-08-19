@@ -320,7 +320,7 @@ test('jobs without app time require both audited accounting hour values', () => 
     actualHours: 0,
     billableHoursOverride: null,
     costHoursOverride: null,
-  }), 'No app time was recorded. Enter both billable hours and cost hours before invoicing this job.');
+  }), 'No app time was recorded. Enter both billing hours and cost hours for accurate internal reporting.');
   assert.equal(manualHoursEntryIssue({
     actualHours: 0,
     billableHoursOverride: 0,
