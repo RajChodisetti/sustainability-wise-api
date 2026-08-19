@@ -75,7 +75,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         id, site_name, site_address, inspector_name, audit_date, status,
         assigned_inspector_user_id, created_at
       ) VALUES
-        ('eco-job', 'Eco Factory', '1 Eco Road', 'Worker', '2026-08-20', 'Completed',
+        ('eco-job', 'Eco Factory', '1 Eco Road', 'Worker', '2026-08-20', 'Draft',
          'worker-eco', '2026-08-01'),
         ('eco-unscheduled', 'Unscheduled Eco', '2 Eco Road', 'Worker', '2026-08-21',
          'Completed', 'worker-eco', '2026-08-01')
@@ -89,7 +89,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       INSERT INTO ss_rooftop_assessments (
         id, site_id, site_name, building_id_name, status,
         assigned_inspector_user_id, created_at
-      ) VALUES ('solar-job', 'solar-site', 'Solar Campus', 'Building A', 'Completed',
+      ) VALUES ('solar-job', 'solar-site', 'Solar Campus', 'Building A', 'Draft',
         'worker-solar', '2026-08-01')
     `);
     await setup.unsafe(`
@@ -98,7 +98,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         status, assigned_inspector_user_id, created_at
       ) VALUES
         ('field-job', 'Field Client', 'Field Factory', '4 Field Road',
-         'Worker', '2026-08-23', 'Completed', 'worker-installhub', '2026-08-01'),
+         'Worker', '2026-08-23', 'Draft', 'worker-installhub', '2026-08-01'),
         ('field-empty-purge', 'Empty Client', 'Empty Field Job', '5 Field Road',
          'Worker', '2026-08-24', 'Draft', 'worker-installhub', '2026-08-01'),
         ('field-expense-purge', 'Expense Client', 'Expense Field Job', '6 Field Road',
