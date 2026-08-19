@@ -19,7 +19,10 @@ import {
   fromDatetimeLocalValue,
   toDatetimeLocalValue,
 } from '@/modules/scheduler/lib/deadline';
-import { schedulerDefaultSourceApp } from '@/modules/scheduler/lib/visibility';
+import {
+  schedulerDefaultSourceApp,
+  schedulerEventSupportsMobileNotifications,
+} from '@/modules/scheduler/lib/visibility';
 import type {
   ScheduleEvent,
   ScheduleSourceApp,
@@ -50,12 +53,6 @@ function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
   if (app === 'installhub') return 'installation';
   if (app === 'solarsense') return 'assessment';
   return 'custom';
-}
-
-function supportsMobileSchedulerNotifications(event: ScheduleEvent): boolean {
-  if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
-  return (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
-    || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
 }
 
 function initialFormValues(
@@ -207,7 +204,7 @@ export function EventFormModal({
   const saving = create.isPending || dispatch.isPending || update.isPending || cancel.isPending;
   const busy = saving || remind.isPending;
   const supportsMobileNotifications = event
-    ? supportsMobileSchedulerNotifications(event)
+    ? schedulerEventSupportsMobileNotifications(event)
     : sourceApp !== 'custom';
 
   useEffect(() => {

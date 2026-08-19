@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   schedulerDefaultSourceApp,
+  schedulerEventSupportsMobileNotifications,
   schedulerIsFieldOnly,
   schedulerSelectableSourceApps,
   schedulerSourceAppIsSelectable,
@@ -9,6 +10,24 @@ import {
   schedulerVisibleFinanceSourceApps,
   schedulerVisibleSourceApps,
 } from './visibility';
+
+test('mobile Scheduler notifications cover every linked product app', () => {
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'eco-job',
+  }), true);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'solar-job',
+  }), true);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'installhub', sourceType: 'installation', sourceId: 'field-job',
+  }), true);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'custom', sourceType: 'custom', sourceId: 'custom-job',
+  }), false);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: null,
+  }), false);
+});
 
 test('existing Scheduler work remains visible across every source', () => {
   const visibleSourceApps = schedulerVisibleSourceApps();

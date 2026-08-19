@@ -1,5 +1,6 @@
 import type {
   FinanceSourceApp,
+  ScheduleEvent,
   ScheduleSourceApp,
 } from '@/modules/scheduler/types/domain';
 
@@ -41,6 +42,16 @@ export function schedulerSourceAppIsSelectable(
   sourceApp: ScheduleSourceApp,
 ): boolean {
   return sourceApps.includes(sourceApp);
+}
+
+/** Product-backed jobs that can receive Scheduler push notifications. */
+export function schedulerEventSupportsMobileNotifications(
+  event: Pick<ScheduleEvent, 'sourceApp' | 'sourceType' | 'sourceId'>,
+): boolean {
+  if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
+  return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
+    || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
+    || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
 }
 
 export function schedulerDefaultSourceApp(
