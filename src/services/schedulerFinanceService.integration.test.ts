@@ -1280,15 +1280,15 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       const hoursIndependentSnapshot = await service.loadSchedulerInvoiceExportSnapshot(
         admin,
         unscheduled.financeId,
-        unscheduledConcurrent.id,
-        unscheduledConcurrent.updatedAt,
+        extendedDraft.id,
+        extendedDraft.updatedAt,
       );
-      assert.equal(hoursIndependentSnapshot.id, unscheduledConcurrent.id);
+      assert.equal(hoursIndependentSnapshot.id, extendedDraft.id);
       const hoursIndependentIssued = await service.issueSchedulerInvoiceByFinanceId(
         admin,
         unscheduled.financeId,
-        unscheduledConcurrent.id,
-        unscheduledConcurrent.updatedAt,
+        hoursIndependentSnapshot.id,
+        hoursIndependentSnapshot.updatedAt,
       );
       assert.equal(hoursIndependentIssued.status, 'issued');
       await service.voidSchedulerInvoiceByFinanceId(
