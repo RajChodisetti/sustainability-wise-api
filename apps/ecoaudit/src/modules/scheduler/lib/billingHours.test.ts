@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   isWholeBillingHoursInput,
-  stepWholeBillingHours,
   wholeBillingHours,
 } from './billingHours';
 
@@ -22,9 +22,17 @@ test('billing hours input accepts only empty or non-negative whole-number text',
   assert.equal(isWholeBillingHoursInput('-1'), false);
 });
 
-test('focused wheel steps billing hours by one without crossing zero', () => {
-  assert.equal(stepWholeBillingHours('2', 1), '3');
-  assert.equal(stepWholeBillingHours('2', -1), '1');
-  assert.equal(stepWholeBillingHours('0', -1), '0');
-  assert.equal(stepWholeBillingHours('', 1), '1');
+test('billing hours use typed digits without wheel or arrow step behavior', async () => {
+  const panelSource = await readFile(
+    new URL('../components/FinanceSettingsPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  const billingInput = panelSource
+    .split('id="finance-billable-hours"')[1]
+    ?.split('/>')[0] ?? '';
+
+  assert.match(billingInput, /type="text"/);
+  assert.match(billingInput, /inputMode="numeric"/);
+  assert.doesNotMatch(billingInput, /\b(?:min|step)=/);
+  assert.doesNotMatch(panelSource, /addEventListener\(['"]wheel['"]/);
 });

@@ -156,8 +156,8 @@ default to zero and are stored as audited editable overrides. Billing-hour
 overrides are non-negative whole-hour integers; app-recorded evidence may remain
 fractional, as may the separate cost-hours override. The portal adopts that
 evidence into Billing hours by rounding to the nearest whole hour (`0.5` rounds
-up), while preserving its exact value in Cost hours; the focused Billing hours
-input uses one-hour arrow and wheel/trackpad steps with a zero minimum. No
+up), while preserving its exact value in Cost hours. Billing hours accept typed
+digits only; arrow keys and wheel/trackpad gestures do not step the value. No
 receipt attachment upload is exposed in this release;
 supplier bills are structured vendor/reference/date/category/cost/sell records.
 `SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API

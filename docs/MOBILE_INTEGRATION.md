@@ -131,9 +131,9 @@ administrator may edit the separate audited commercial value. App evidence may
 remain fractional, but Billing hours accept only non-negative whole hours. The
 portal's app-hours shortcut rounds the evidence to the nearest whole hour
 (`0.5` rounds up) and clamps it at zero for Billing hours, while Cost hours keeps
-the exact value. A focused Billing hours input changes by one hour for each
-arrow-key or wheel/trackpad step. Customer labour uses the canonical nullable
-per-user billing rate configured in the portal; a
+the exact value. Billing hours accept typed digits only; arrow keys and
+wheel/trackpad gestures do not step the value. Customer labour uses the
+canonical nullable per-user billing rate configured in the portal; a
 missing rate is reported for administrator setup and is never inferred by a
 mobile client or from the job duration.
 

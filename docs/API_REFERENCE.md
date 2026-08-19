@@ -469,10 +469,9 @@ When the portal's app-hours shortcut copies that evidence into Billing hours, it
 rounds to the nearest whole hour (`0.5` rounds up) and clamps the result at zero.
 The shortcut keeps the exact app value in Cost hours; the whole-hour constraint
 applies only to Billing hours.
-The focused Billing hours number input changes in one-hour steps: Arrow Up or a
-wheel/trackpad scroll up adds one, while Arrow Down or a scroll down subtracts
-one without crossing zero. Scrolling the page while the input is not focused
-does not change its value.
+The Billing hours field accepts typed digits only. Wheel and trackpad gestures
+continue scrolling the page, while arrow keys retain normal text-caret behavior;
+neither interaction changes the stored hour value.
 `hoursVariance` means actual minus scheduled hours, while
 `commercialHoursVariance` means effective billable minus effective cost hours.
 Migration 0038 appends a zero-hour administrative revision wherever an existing

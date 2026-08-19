@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner } from '@/components/ui/Card';
@@ -12,7 +12,6 @@ import {
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
   isWholeBillingHoursInput,
-  stepWholeBillingHours,
   wholeBillingHours,
 } from '@/modules/scheduler/lib/billingHours';
 import type {
@@ -77,21 +76,6 @@ export function FinanceSettingsPanel({
   const [billingAbn, setBillingAbn] = useState(summary.billing.abn ?? '');
   const [billingReference, setBillingReference] = useState(summary.billing.reference ?? '');
   const [error, setError] = useState<string | null>(null);
-  const billableHoursInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const input = billableHoursInputRef.current;
-    if (!input) return;
-
-    function handleWheel(event: WheelEvent) {
-      if (document.activeElement !== input || event.deltaY === 0) return;
-      event.preventDefault();
-      setBillableHours((current) => stepWholeBillingHours(current, event.deltaY < 0 ? 1 : -1));
-    }
-
-    input.addEventListener('wheel', handleWheel, { passive: false });
-    return () => input.removeEventListener('wheel', handleWheel);
-  }, []);
 
   function buildPayload(): UpdateSchedulerFinanceInput | null {
     const nextQuotedAmount = numberValue(quotedAmount);
@@ -258,12 +242,10 @@ export function FinanceSettingsPanel({
             <div>
               <FieldLabel htmlFor="finance-billable-hours">Billing hours</FieldLabel>
               <Input
-                ref={billableHoursInputRef}
                 id="finance-billable-hours"
-                type="number"
-                min="0"
-                step="1"
+                type="text"
                 inputMode="numeric"
+                pattern="[0-9]*"
                 value={billableHours}
                 aria-describedby="finance-billable-hours-hint"
                 onChange={(event) => {
@@ -273,7 +255,7 @@ export function FinanceSettingsPanel({
                 }}
               />
               <FieldHint id="finance-billable-hours-hint">
-                Whole hours only. Focus this field, then scroll or use the arrow keys to change it by 1 hour. App time is rounded to the nearest whole hour when copied here.
+                Whole hours only. Type a non-negative whole number. App time is rounded to the nearest whole hour when copied here.
               </FieldHint>
             </div>
             <div>
