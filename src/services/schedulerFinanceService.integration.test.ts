@@ -778,7 +778,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           invoice.id === consolidatedPaid.id
           || invoice.financeIds.includes(eco.financeId)
         )),
-        false,
+        true,
       );
       await assert.rejects(
         service.voidConsolidatedSchedulerInvoice(
