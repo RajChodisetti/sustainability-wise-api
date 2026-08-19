@@ -197,7 +197,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
       .where(eq(schedulerNotificationJobs.eventId, event.id));
     assert.deepEqual(
       jobs.map((job) => job.notificationKind).sort(),
-      ['assigned', 'day_of', 'one_day_before'],
+      ['assigned', 'day_of', 'one_day_before', 'one_hour_before'],
     );
 
     // A same-snapshot assignee save repairs an old scheduler/product mismatch,
@@ -221,7 +221,7 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     assert.deepEqual(
       jobs.filter((job) => job.status === 'queued')
         .map((job) => job.notificationKind).sort(),
-      ['assigned', 'day_of', 'one_day_before'],
+      ['assigned', 'day_of', 'one_day_before', 'one_hour_before'],
     );
     const afterRepairJobCount = jobs.length;
     await updateScheduleEvent(admin, event.id, {
@@ -230,6 +230,78 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
     jobs = await db.select().from(schedulerNotificationJobs)
       .where(eq(schedulerNotificationJobs.eventId, event.id));
     assert.equal(jobs.length, afterRepairJobCount);
+
+    // Rescheduling cancels even a claimed one-hour job, creates one fresh
+    // reminder at the new start minus one hour, and fences the stale worker.
+    const oneHourBeforeReschedule = jobs.find((job) => (
+      job.status === 'queued' && job.notificationKind === 'one_hour_before'
+    ));
+    assert.ok(oneHourBeforeReschedule);
+    const claimedOneHourBeforeReschedule = await claimJob(oneHourBeforeReschedule.id);
+    const rescheduledStart = new Date(start.getTime() + 2 * 60 * 60_000);
+    await updateScheduleEvent(admin, event.id, {
+      scheduledStartAt: rescheduledStart.toISOString(),
+      deadlineAt: new Date(rescheduledStart.getTime() + 60 * 60_000).toISOString(),
+    });
+    const [cancelledOldOneHour] = await db.select().from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.id, oneHourBeforeReschedule.id));
+    assert.equal(cancelledOldOneHour.status, 'cancelled');
+    jobs = await db.select().from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.eventId, event.id));
+    const replacementOneHours = jobs.filter((job) => (
+      job.status === 'queued' && job.notificationKind === 'one_hour_before'
+    ));
+    assert.equal(replacementOneHours.length, 1);
+    assert.equal(
+      replacementOneHours[0].availableAt.toISOString(),
+      new Date(rescheduledStart.getTime() - 60 * 60_000).toISOString(),
+    );
+    assert.equal(
+      (replacementOneHours[0].payload as { scheduledStartAt: string }).scheduledStartAt,
+      rescheduledStart.toISOString(),
+    );
+    assert.notEqual(replacementOneHours[0].dedupeKey, oneHourBeforeReschedule.dedupeKey);
+    let staleOneHourSendCalls = 0;
+    await processClaimedSchedulerNotificationJob(claimedOneHourBeforeReschedule, {
+      async send() {
+        staleOneHourSendCalls += 1;
+        return [{ status: 'ok', id: 'must-not-send-rescheduled-one-hour' }];
+      },
+      async getReceipts() {
+        return {};
+      },
+    });
+    assert.equal(staleOneHourSendCalls, 0);
+
+    // The worker also compares the one-hour payload timestamp itself. This
+    // direct mutation bypasses service-side cancellation to exercise that
+    // last-boundary stale-schedule fence independently.
+    const claimedTimestampStaleOneHour = await claimJob(replacementOneHours[0].id);
+    await db.update(portalScheduleEvents).set({
+      scheduledStartAt: new Date(rescheduledStart.getTime() + 30 * 60_000),
+      updatedAt: new Date(),
+    }).where(eq(portalScheduleEvents.id, event.id));
+    let timestampStaleOneHourSendCalls = 0;
+    await processClaimedSchedulerNotificationJob(claimedTimestampStaleOneHour, {
+      async send() {
+        timestampStaleOneHourSendCalls += 1;
+        return [{ status: 'ok', id: 'must-not-send-timestamp-stale-one-hour' }];
+      },
+      async getReceipts() {
+        return {};
+      },
+    });
+    assert.equal(timestampStaleOneHourSendCalls, 0);
+    const [timestampStaleOneHour] = await db.select().from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.id, replacementOneHours[0].id));
+    assert.equal(timestampStaleOneHour.status, 'cancelled');
+    assert.equal(timestampStaleOneHour.lastError, 'scheduler_target_no_longer_eligible');
+    await db.update(portalScheduleEvents).set({
+      scheduledStartAt: rescheduledStart,
+      updatedAt: new Date(),
+    }).where(eq(portalScheduleEvents.id, event.id));
+    jobs = await db.select().from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.eventId, event.id));
 
     // A delayed automatic job is terminally fenced if the linked work
     // completes after enqueue but before the Expo send boundary.
@@ -518,7 +590,18 @@ test('scheduler notifications are transactional, transferable, cancellable, and 
         updatedAt: new Date(),
       },
     });
+    const [oneHourBeforeCancellation] = await db.select()
+      .from(schedulerNotificationJobs)
+      .where(and(
+        eq(schedulerNotificationJobs.eventId, event.id),
+        eq(schedulerNotificationJobs.notificationKind, 'one_hour_before'),
+        eq(schedulerNotificationJobs.status, 'queued'),
+      )).orderBy(sql`${schedulerNotificationJobs.createdAt} DESC`).limit(1);
+    assert.ok(oneHourBeforeCancellation);
     await cancelScheduleEvent(admin, event.id);
+    const [cancelledOneHour] = await db.select().from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.id, oneHourBeforeCancellation.id));
+    assert.equal(cancelledOneHour.status, 'cancelled');
     const [deliveryCancelledWithJob] = await db.select()
       .from(schedulerNotificationDeliveries)
       .where(eq(

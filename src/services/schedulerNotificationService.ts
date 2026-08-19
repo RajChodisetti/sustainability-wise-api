@@ -56,7 +56,12 @@ export type ManualReminderResult = {
   notificationId: string;
 };
 
-const AUTOMATED_KINDS: SchedulerNotificationKind[] = ['one_day_before', 'day_of'];
+const AUTOMATED_KINDS = [
+  'one_day_before',
+  'one_hour_before',
+  'day_of',
+] as const satisfies readonly SchedulerNotificationKind[];
+type AutomatedSchedulerNotificationKind = typeof AUTOMATED_KINDS[number];
 const PENDING_JOB_STATUSES = ['queued', 'processing', 'awaiting_receipts'] as const;
 // One initial send plus eight receipt checks must fit even when transient send
 // failures consume additional claims. Delivery receiptChecks remains the
@@ -541,6 +546,7 @@ export function schedulerNotificationCopy(
     cancelled: 'Job cancelled',
     manual_reminder: 'Job reminder',
     one_day_before: 'Upcoming job',
+    one_hour_before: 'Job starts soon',
     day_of: 'Scheduled job reminder',
   };
   const notificationBodies: Record<SchedulerNotificationKind, string> = {
@@ -550,6 +556,7 @@ export function schedulerNotificationCopy(
     cancelled: 'A scheduled job was cancelled.',
     manual_reminder: 'You have a scheduled job reminder.',
     one_day_before: 'A scheduled job is coming up.',
+    one_hour_before: 'A scheduled job starts within an hour.',
     day_of: 'You have a scheduled job.',
   };
   return {
@@ -618,7 +625,10 @@ export async function enqueueImmediateSchedulerNotification(
   executor: NotificationExecutor,
   event: ScheduleEventRow,
   globalUserId: string,
-  kind: Exclude<SchedulerNotificationKind, 'one_day_before' | 'day_of'>,
+  kind: Exclude<
+    SchedulerNotificationKind,
+    AutomatedSchedulerNotificationKind
+  >,
   now = new Date(),
 ): Promise<string | null> {
   if (!await isSchedulerNotificationEligible(executor, event, globalUserId, kind)) return null;
@@ -651,10 +661,17 @@ export async function enqueueAutomatedSchedulerNotifications(
     globalUserId,
     'day_of',
   )) return [];
-  const triggers: Array<{ kind: 'one_day_before' | 'day_of'; at: Date }> = [
+  const triggers: Array<{
+    kind: AutomatedSchedulerNotificationKind;
+    at: Date;
+  }> = [
     {
       kind: 'one_day_before',
       at: new Date(event.scheduledStartAt.getTime() - 24 * 60 * 60 * 1_000),
+    },
+    {
+      kind: 'one_hour_before',
+      at: new Date(event.scheduledStartAt.getTime() - 60 * 60 * 1_000),
     },
     { kind: 'day_of', at: event.scheduledStartAt },
   ];
@@ -691,7 +708,7 @@ export async function cancelPendingSchedulerNotifications(
     conditions.push(eq(schedulerNotificationJobs.globalUserId, options.globalUserId));
   }
   if (options.automatedOnly) {
-    conditions.push(inArray(schedulerNotificationJobs.notificationKind, AUTOMATED_KINDS));
+    conditions.push(inArray(schedulerNotificationJobs.notificationKind, [...AUTOMATED_KINDS]));
   }
   const affected = await executor.select({ id: schedulerNotificationJobs.id })
     .from(schedulerNotificationJobs)

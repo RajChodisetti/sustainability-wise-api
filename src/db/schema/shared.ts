@@ -309,6 +309,7 @@ export type SchedulerNotificationData = {
     | 'cancelled'
     | 'manual_reminder'
     | 'one_day_before'
+    | 'one_hour_before'
     | 'day_of';
   eventId: string;
   sourceApp: 'ecoaudit' | 'solarsense' | 'installhub';
@@ -447,6 +448,7 @@ export const schedulerNotificationJobs = pgTable('scheduler_notification_jobs', 
       'cancelled',
       'manual_reminder',
       'one_day_before',
+      'one_hour_before',
       'day_of'
     )
   `),

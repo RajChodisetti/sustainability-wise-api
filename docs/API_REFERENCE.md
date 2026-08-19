@@ -134,8 +134,9 @@ assigned. Cancellation cancels pending automatic notifications and notifies the
 current assignee only when the linked product assignment was aligned before the
 transition. Marking a scheduler event `done` cancels pending notifications and
 does not queue a completion push. Active mobile events also queue
-`one_day_before` exactly 24 hours before `scheduledStartAt` and `day_of` at
-`scheduledStartAt`; triggers already in the past are not replayed.
+`one_day_before` exactly 24 hours before `scheduledStartAt`,
+`one_hour_before` exactly one hour before it, and `day_of` at
+`scheduledStartAt`; triggers already due or in the past are not replayed.
 
 A notification target must be exactly Eco Audit/`audit`, Solar
 Sense/`assessment`, or Field App Complete/`installation`, with a non-null linked
@@ -146,9 +147,9 @@ API verifies that the event is active, the linked product and (for Solar) parent
 site are non-deleted Draft rows, and the current product assignment matches the
 canonical scheduler assignee. A completed, deleted, rescheduled, or reassigned
 job therefore cannot receive a stale automatic push. Recovered `one_day_before`
-jobs expire at the scheduled start; recovered `day_of` jobs expire 24 hours
-after it or at `scheduledEndAt`, whichever comes first, and both use generic
-time-safe copy. Migration 0031 backfills
+and `one_hour_before` jobs expire at the scheduled start; recovered `day_of`
+jobs expire 24 hours after it or at `scheduledEndAt`, whichever comes first,
+and all three use generic time-safe copy. Migration 0031 backfills
 only future reminders for legacy rows already satisfying those checks; skipped
 misaligned Draft rows can be repaired by explicitly saving their current
 `assigneeFieldUserId`, which realigns product access and queues a fresh assigned
@@ -157,6 +158,14 @@ rows remain skipped. Deploy through migration 0032 as well: it adds monotonic
 device lifecycle fences, upgrades the durable notification attempt budget, and
 terminalizes any nonterminal delivery rows left beneath an already-terminal
 0031 job.
+
+Migration 0041 permits `one_hour_before` in the durable job constraint and
+backfills only aligned Eco Audit, Solar Sense, and Field App Complete events
+whose one-hour trigger is still strictly in the future. Stop every pre-0041
+notification worker before applying it, then start the 0041-capable API/worker;
+older workers do not understand the new kind's timestamp fence. Before rolling
+back to pre-0041 code, first quiesce delivery and cancel or otherwise terminalize
+all nonterminal `one_hour_before` rows under the newer code.
 
 Manual reminder input is `{ "idempotencyKey": "<client-generated value>" }`.
 The first request returns HTTP 202 with

@@ -23,6 +23,13 @@ test('recovered automatic jobs expire before their copy becomes misleading', () 
   ), true);
   assert.equal(automaticNotificationStillRelevant('one_day_before', start, null, start), false);
   assert.equal(automaticNotificationStillRelevant(
+    'one_hour_before',
+    start,
+    null,
+    new Date('2026-08-20T08:59:59.999Z'),
+  ), true);
+  assert.equal(automaticNotificationStillRelevant('one_hour_before', start, null, start), false);
+  assert.equal(automaticNotificationStillRelevant(
     'day_of',
     start,
     null,

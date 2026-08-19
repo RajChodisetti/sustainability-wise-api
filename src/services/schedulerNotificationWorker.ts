@@ -93,7 +93,7 @@ export function automaticNotificationStillRelevant(
   scheduledEndAt: Date | null,
   now = new Date(),
 ): boolean {
-  if (kind === 'one_day_before') {
+  if (kind === 'one_day_before' || kind === 'one_hour_before') {
     return now.getTime() < scheduledStartAt.getTime();
   }
   if (kind === 'day_of') {
@@ -251,7 +251,11 @@ function payloadMatchesCurrentEvent(
     && job.eventId === event.id
     && job.sourceApp === event.sourceApp;
   if (!stableFieldsMatch) return false;
-  if (job.notificationKind === 'one_day_before' || job.notificationKind === 'day_of') {
+  if (
+    job.notificationKind === 'one_day_before'
+    || job.notificationKind === 'one_hour_before'
+    || job.notificationKind === 'day_of'
+  ) {
     return payload.scheduledStartAt === event.scheduledStartAt.toISOString();
   }
   return true;

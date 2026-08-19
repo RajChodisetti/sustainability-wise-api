@@ -288,6 +288,13 @@
       "when": 1787118842385,
       "tag": "0040_restore_scheduler_source_links",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1787123402221,
+      "tag": "0041_one_hour_scheduler_notifications",
+      "breakpoints": true
     }
   ]
 }

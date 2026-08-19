@@ -94,15 +94,16 @@ Backups must include all `scheduler_job_*`, `scheduler_invoice_*`, and active-ti
 session tables because issued/paid invoice retention is independent of mutable
 operational source rows.
 
-0038 applies the current Scheduler billing and source-boundary contract after
-0037. It adds the nullable canonical `global_users.billing_rate_cents`, adds the
+0038 applies the Scheduler billing contract after 0037. It adds the nullable
+canonical `global_users.billing_rate_cents`, adds the
 per-line `show_quantity_and_rate` presentation flag, and preserves historical
 invoice rows with their existing detailed presentation while making new lines
-amount-only by default. It cancels active Eco Audit calendar links and
-terminalizes pending Eco Audit Scheduler notifications without modifying any
-`ea_audits` business row. A database write fence prevents rolling older API
-instances from recreating an active Eco Scheduler link after that cutover. It
-also supersedes every existing explicit or legacy
+amount-only by default. As a historical cutover it cancelled active Eco Audit
+calendar links, terminalized pending Eco Audit Scheduler notifications, and
+installed a temporary database write fence without modifying any `ea_audits`
+business row. Migration 0040 removes that fence and restores Eco Audit as a
+backend Scheduler link/notification source without rewriting cancelled history.
+Migration 0038 also supersedes every existing explicit or legacy
 hour override with a zero billable/cost-hours revision; pristine ledgers keep no
 override and now evaluate to zero in the application. Raw work sessions and
 issued invoice snapshots remain intact. Finally, its database fences allow draft invoice lines
@@ -219,18 +220,27 @@ claims are recovered, and timers are stopped during graceful shutdown. Expo send
 batches are capped at 100 and receipt requests at 1,000. Configure
 `EXPO_ACCESS_TOKEN` only when enhanced Expo push security is enabled; the Expo
 account/service-account token must have access to all three registered EAS
-projects. Never log or expose it. Scheduler delivery targets only Solar Sense
-assessments and Field App Complete installations; Eco Audit device registration
-remains compatible but is not a Scheduler notification source. Each external
-send batch revalidates the current scheduler event,
+projects. Never log or expose it. Scheduler delivery targets linked Eco Audit
+audits, Solar Sense assessments, and Field App Complete installations. Each
+external send batch revalidates the current scheduler event,
 linked Draft product, canonical assignment, and automatic trigger timestamp;
-stale jobs are terminally cancelled. One-day jobs expire at event start and
-day-of jobs expire at event end or after 24 hours so outage recovery cannot emit misleading
-temporal copy. Per-message `MessageRateExceeded` tickets or receipts
+stale jobs are terminally cancelled. One-day and one-hour jobs expire at event
+start, and day-of jobs expire at event end or after 24 hours, so outage recovery
+cannot emit misleading temporal copy. Per-message `MessageRateExceeded` tickets or receipts
 retain only the affected device delivery for bounded backoff/retry.
 `EXPO_PUSH_ENABLED=false` pauses delivery without deleting queued work. See
 `.env.production.example` for polling, claim recovery, receipt delay, retry, and
 request-timeout controls.
+
+Migration 0041 expands the notification-kind constraint and backfills only
+still-future one-hour reminders for currently aligned active Eco Audit, Solar
+Sense, and Field App Complete events. Stop all pre-0041 API/notification-worker
+processes before applying it, run migrations with 0041-capable code, and only
+then start delivery workers. A pre-0041 worker does not apply the new kind's
+timestamp fence. The same compatibility rule applies in reverse: do not roll
+back while nonterminal `one_hour_before` rows remain. A due job with no enabled
+device is terminalized as delivered with `no_enabled_push_devices`; a later
+device registration does not replay it.
 
 Push device lifecycle fences are stored per app/device/canonical owner. The
 monotonic `registrationGeneration` makes PUT/logout ordering restart-safe:

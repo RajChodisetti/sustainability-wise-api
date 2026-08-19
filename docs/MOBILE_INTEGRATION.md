@@ -44,8 +44,8 @@ If Expo reports `DeviceNotRegistered`, the API disables that exact token but
 keeps the current lifecycle usable; register a replacement Expo token with the
 same `registrationGeneration`. Only logout or account transfer revokes it.
 
-Scheduler pushes are normal visible notifications. Solar Sense uses Android
-channel `scheduler-updates`; Field App Complete uses `scheduler`.
+Scheduler pushes are normal visible notifications. Eco Audit and Solar Sense
+use Android channel `scheduler-updates`; Field App Complete uses `scheduler`.
 The lock-screen title/body is deliberately generic (for example, “New job
 assigned” / “You were assigned a scheduled job”) and never contains an event
 title, site/client data, address, description, email, credential, or token. The
@@ -54,10 +54,10 @@ navigation payload is:
 ```json
 {
   "type": "scheduler",
-  "notificationKind": "assigned | changed | assignment_removed | cancelled | manual_reminder | one_day_before | day_of",
+  "notificationKind": "assigned | changed | assignment_removed | cancelled | manual_reminder | one_day_before | one_hour_before | day_of",
   "eventId": "...",
-  "sourceApp": "solarsense | installhub",
-  "sourceType": "assessment | installation",
+  "sourceApp": "ecoaudit | solarsense | installhub",
+  "sourceType": "audit | assessment | installation",
   "sourceId": "...",
   "scheduledStartAt": "2026-08-20T09:00:00.000Z"
 }
@@ -68,17 +68,17 @@ show the operating-system popup only: they do not keep a notification history
 or deep-link a notification tap into the work record. A normal app launch/list
 and subsequent API/sync response remain authoritative for access.
 
-Only linked Solar Sense rooftop assessments and Field App Complete
-installations are Scheduler notification targets. Eco Audit remains a supported
-mobile application and may retain its app-scoped device registration, sync,
-active-time, and report behavior, but its audits are not discoverable or
-notifiable through Scheduler. Existing Eco Audit Scheduler notification work is
-terminalized without changing an audit or its product assignment. Legacy Solar
-site calendar rows, custom events, and rows without a linked source ID do not
-produce mobile pushes. Delivery rechecks the live scheduler row and linked
-Draft assignment at the Expo send boundary, so a completed, deleted,
-rescheduled, cancelled, or reassigned job cannot emit a stale active-work
-reminder.
+Linked Eco Audit audits, Solar Sense rooftop assessments, and Field App Complete
+installations are Scheduler notification targets. Legacy Solar site calendar
+rows, custom events, and rows without a linked source ID do not produce mobile
+pushes. Active linked work queues generic reminders 24 hours before, one hour
+before, and at the scheduled start. A trigger already due when work is linked or
+rescheduled is not replayed. Delivery rechecks the live scheduler row, linked
+Draft assignment, and automatic trigger timestamp at the Expo send boundary,
+so a completed, deleted, rescheduled, cancelled, or reassigned job cannot emit a
+stale active-work reminder. Recovered 24-hour and one-hour reminders expire at
+the scheduled start; the start-time reminder expires at the scheduled end or 24
+hours after start, whichever comes first.
 
 ## Active foreground audit time
 

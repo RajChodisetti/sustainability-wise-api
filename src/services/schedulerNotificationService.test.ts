@@ -66,7 +66,7 @@ function capturingExecutor() {
   return { inserted, executor };
 }
 
-test('automatic reminders enqueue only future one-day and start-time triggers', async () => {
+test('automatic reminders enqueue only future one-day, one-hour, and start-time triggers', async () => {
   const now = new Date('2026-08-15T08:00:00.000Z');
   const future = capturingExecutor();
   await enqueueAutomatedSchedulerNotifications(
@@ -77,11 +77,19 @@ test('automatic reminders enqueue only future one-day and start-time triggers', 
   );
   assert.deepEqual(
     future.inserted.map((row) => row.notificationKind),
-    ['one_day_before', 'day_of'],
+    ['one_day_before', 'one_hour_before', 'day_of'],
   );
   assert.deepEqual(
     future.inserted.map((row) => (row.availableAt as Date).toISOString()),
-    ['2026-08-16T08:00:00.000Z', '2026-08-17T08:00:00.000Z'],
+    [
+      '2026-08-16T08:00:00.000Z',
+      '2026-08-17T07:00:00.000Z',
+      '2026-08-17T08:00:00.000Z',
+    ],
+  );
+  assert.equal(
+    new Set(future.inserted.map((row) => row.dedupeKey)).size,
+    future.inserted.length,
   );
 
   const insideOneDay = capturingExecutor();
@@ -93,6 +101,30 @@ test('automatic reminders enqueue only future one-day and start-time triggers', 
   );
   assert.deepEqual(
     insideOneDay.inserted.map((row) => row.notificationKind),
+    ['one_hour_before', 'day_of'],
+  );
+
+  const insideOneHour = capturingExecutor();
+  await enqueueAutomatedSchedulerNotifications(
+    insideOneHour.executor as never,
+    scheduleEvent(new Date('2026-08-15T08:30:00.000Z')) as never,
+    'global-user-1',
+    now,
+  );
+  assert.deepEqual(
+    insideOneHour.inserted.map((row) => row.notificationKind),
+    ['day_of'],
+  );
+
+  const exactlyOneHour = capturingExecutor();
+  await enqueueAutomatedSchedulerNotifications(
+    exactlyOneHour.executor as never,
+    scheduleEvent(new Date('2026-08-15T09:00:00.000Z')) as never,
+    'global-user-1',
+    now,
+  );
+  assert.deepEqual(
+    exactlyOneHour.inserted.map((row) => row.notificationKind),
     ['day_of'],
   );
 
@@ -113,6 +145,31 @@ test('automatic reminders enqueue only future one-day and start-time triggers', 
     now,
   );
   assert.equal(terminal.inserted.length, 0);
+});
+
+test('one-hour reminders cover every linked mobile product target', async () => {
+  const now = new Date('2026-08-15T08:00:00.000Z');
+  const start = new Date('2026-08-17T08:00:00.000Z');
+  const linkedTargets = [
+    { sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'audit-1' },
+    { sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'assessment-1' },
+    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'installation-1' },
+  ] as const;
+
+  for (const target of linkedTargets) {
+    const captured = capturingExecutor();
+    await enqueueAutomatedSchedulerNotifications(
+      captured.executor as never,
+      { ...scheduleEvent(start), ...target } as never,
+      'global-user-1',
+      now,
+    );
+    assert.deepEqual(
+      captured.inserted.map((row) => row.notificationKind),
+      ['one_day_before', 'one_hour_before', 'day_of'],
+      `${target.sourceApp} must receive the complete automated reminder set`,
+    );
+  }
 });
 
 test('only concrete mobile work pairs with a source ID are notification targets', () => {
@@ -180,6 +237,14 @@ test('notification copy is generic and Expo token validation accepts both prefix
   assert.equal(copy.title, 'New job assigned');
   assert.equal(copy.body, 'You were assigned a scheduled job.');
   assert.equal(copy.body.includes('New assessment'), false);
+  assert.deepEqual(schedulerNotificationCopy(
+    'one_hour_before',
+    'Private job title',
+    new Date('2026-08-20T23:00:00.000Z'),
+  ), {
+    title: 'Job starts soon',
+    body: 'A scheduled job starts within an hour.',
+  });
   assert.deepEqual(schedulerNotificationCopy(
     'day_of',
     'Private job title',
