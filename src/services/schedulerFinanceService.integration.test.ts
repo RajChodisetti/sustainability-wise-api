@@ -1472,11 +1472,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           AND EXISTS (
             SELECT 1 FROM scheduler_invoice_jobs AS job
             WHERE job.invoice_id = invoice.id
-              AND job.job_source_app IN ('solarsense', 'installhub')
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM scheduler_invoice_jobs AS job
-            WHERE job.invoice_id = invoice.id AND job.job_source_app = 'ecoaudit'
+              AND job.job_source_app IN ('ecoaudit', 'solarsense', 'installhub')
           )
       `)[0]?.count ?? 0);
       assert.equal(portfolioSummary.statusCounts.paid, databasePaidCount);
@@ -1488,11 +1484,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           AND EXISTS (
             SELECT 1 FROM scheduler_invoice_jobs AS job
             WHERE job.invoice_id = invoice.id
-              AND job.job_source_app IN ('solarsense', 'installhub')
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM scheduler_invoice_jobs AS job
-            WHERE job.invoice_id = invoice.id AND job.job_source_app = 'ecoaudit'
+              AND job.job_source_app IN ('ecoaudit', 'solarsense', 'installhub')
           )
       `)[0]?.count ?? 0);
       assert.equal(portfolioSummary.statusCounts.overdue, databaseOverdueCount);
