@@ -43,6 +43,7 @@ import {
   parseSolarLifecycleStatus,
   resolveSolarCompletionFence,
 } from './completionFence.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 type AssessmentChanges = Partial<typeof ssRooftopAssessments.$inferInsert>;
 
@@ -475,42 +476,55 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
     const { siteId, id } = request.params as { siteId: string; id: string };
-    const site = await getSite(siteId);
-    assertDraftMutable(site, 'Site');
-    const completedAt = new Date();
+    const updated = await db.transaction(async (tx) => {
+      const [site] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
+        .for('update');
+      const foundSite = assertFound(site, 'Site');
+      assertDraftMutable(foundSite, 'Site');
+      const [assessment] = await tx
+        .select()
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+          isNull(ssRooftopAssessments.deletedAt),
+        ))
+        .for('update');
+      const foundAssessment = assertFound(assessment, 'Assessment');
+      assertAssessmentAccess(foundSite, foundAssessment, request.user);
+      assertDraftMutable(foundAssessment, 'Assessment');
+      const completedAt = new Date();
+      const [completed] = await tx
+        .update(ssRooftopAssessments)
+        .set({
+          status: 'Completed',
+          completedAt: sql<Date>`coalesce(
+            ${ssRooftopAssessments.completedAt},
+            ${sql.param(completedAt, ssRooftopAssessments.completedAt)}
+          )`,
+          updatedAt: completedAt,
+          syncStatus: 'local',
+        })
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+          eq(ssRooftopAssessments.status, 'Draft'),
+          isNull(ssRooftopAssessments.deletedAt),
+        ))
+        .returning();
+      const foundCompleted = assertFound(completed, 'Assessment');
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'solarsense',
+        sourceType: 'assessment',
+        sourceId: id,
+      }, { observedAt: completedAt });
+      return foundCompleted;
+    });
 
-    const [assessment] = await db
-      .select()
-      .from(ssRooftopAssessments)
-      .where(and(
-        eq(ssRooftopAssessments.id, id),
-        eq(ssRooftopAssessments.siteId, siteId),
-        isNull(ssRooftopAssessments.deletedAt),
-      ));
-    const foundAssessment = assertFound(assessment, 'Assessment');
-    assertAssessmentAccess(site, foundAssessment, request.user);
-    assertDraftMutable(foundAssessment, 'Assessment');
-
-    const [updated] = await db
-      .update(ssRooftopAssessments)
-      .set({
-        status: 'Completed',
-        completedAt: sql<Date>`coalesce(
-          ${ssRooftopAssessments.completedAt},
-          ${sql.param(completedAt, ssRooftopAssessments.completedAt)}
-        )`,
-        updatedAt: completedAt,
-        syncStatus: 'local',
-      })
-      .where(and(
-        eq(ssRooftopAssessments.id, id),
-        eq(ssRooftopAssessments.siteId, siteId),
-        eq(ssRooftopAssessments.status, 'Draft'),
-        isNull(ssRooftopAssessments.deletedAt),
-      ))
-      .returning();
-
-    return reply.send(assertFound(updated, 'Assessment'));
+    return reply.send(updated);
   });
 
 }

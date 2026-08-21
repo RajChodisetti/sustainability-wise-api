@@ -34,6 +34,7 @@ import {
   solarSitePhotoFieldReferences,
   type CopiedPhotoEntity,
 } from '../../storage/photoCopyReferences.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 type SiteChanges = Partial<typeof ssSites.$inferInsert>;
 
@@ -239,30 +240,38 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
     preHandler: [authenticate, requireApp('solarsense'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const [site] = await db
-      .select()
-      .from(ssSites)
-      .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
+    const updated = await db.transaction(async (tx) => {
+      const [site] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)))
+        .for('update');
+      const found = assertFound(site, 'Site');
+      assertSiteAccess(found, request.user);
+      const completedAt = new Date();
+      const [completed] = await tx
+        .update(ssSites)
+        .set({
+          status: 'Completed',
+          completedAt: sql<Date>`coalesce(
+            ${ssSites.completedAt},
+            ${sql.param(completedAt, ssSites.completedAt)}
+          )`,
+          updatedAt: completedAt,
+          syncStatus: 'local',
+        })
+        .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)))
+        .returning();
+      const foundCompleted = assertFound(completed, 'Site');
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'solarsense',
+        sourceType: 'site',
+        sourceId: id,
+      }, { observedAt: completedAt });
+      return foundCompleted;
+    });
 
-    const found = assertFound(site, 'Site');
-    assertSiteAccess(found, request.user);
-    const completedAt = new Date();
-
-    const [updated] = await db
-      .update(ssSites)
-      .set({
-        status: 'Completed',
-        completedAt: sql<Date>`coalesce(
-          ${ssSites.completedAt},
-          ${sql.param(completedAt, ssSites.completedAt)}
-        )`,
-        updatedAt: completedAt,
-        syncStatus: 'local',
-      })
-      .where(eq(ssSites.id, id))
-      .returning();
-
-    return reply.send(assertFound(updated, 'Site'));
+    return reply.send(updated);
   });
 
   app.post('/:id/copy', {

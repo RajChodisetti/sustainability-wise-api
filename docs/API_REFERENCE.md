@@ -136,8 +136,12 @@ is always Draft and its event is always planned. SolarSense dispatches and new
 links target a rooftop assessment; historical site-linked events remain
 readable, but cannot be newly linked or reassigned. Completed or deleted jobs
 are not linkable.
-Product completion does not implicitly mark the calendar event done, and event
-status changes do not complete or reopen product data.
+Product completion marks every non-cancelled linked calendar event done and
+cancels its pending automated reminders; manual reminder history is preserved.
+The projection is idempotently reconciled by explicit completion and by Eco
+Audit/Solar Sense mobile sync ingestion. Field App Complete uses its canonical
+completion endpoint. Event status changes do not complete or reopen product
+data.
 
 Creating or linking mobile product work atomically queues an `assigned` push.
 Meaningful title, schedule, deadline, status, or assignee changes queue the

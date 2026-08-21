@@ -4,10 +4,14 @@ import test from 'node:test';
 import {
   availableInvoiceExpenses,
   billAttachmentValidation,
+  compareFinanceExceptionJobs,
   consolidatedInvoiceJobSubtotal,
   consolidatedInvoiceJobsWithoutCharges,
   consolidatedInvoiceRecipientIssue,
   draftReservedAmount,
+  financeExceptionCounts,
+  financeJobExceptionKinds,
+  financeJobMatchesExceptionFilter,
   financeJobNeedsReview,
   financeOverviewFromSummary,
   financeTargetLookupFailed,
@@ -27,8 +31,10 @@ import {
   schedulerFinanceHref,
   schedulerFinanceTargetFromSearchParams,
   schedulerTabTransition,
+  schedulerTabLinkShouldActivateInPlace,
   schedulerInvoicePdfFallbackFilename,
   schedulerInvoicePdfReportVariantKey,
+  selectedVisibleFinanceJob,
   shouldAttachHourOverrideReason,
   toggleConsolidatedInvoiceJob,
 } from './finance';
@@ -50,6 +56,13 @@ test('job and invoice selection boundaries remount stateful commercial editors',
   const invoices = readFileSync(new URL('../components/SchedulerInvoicesWorkspace.tsx', import.meta.url), 'utf8');
   assert.match(workspace, /<SchedulerFinanceDetail key=\{selected\.financeId\}/);
   assert.match(invoices, /<GlobalInvoiceDetail key=\{selectedInvoiceId\}/);
+});
+
+test('finance detail selection cannot remain on a job hidden by queue filters', () => {
+  const visible = [{ financeId: 'visible' } as FinanceOverviewItem];
+  assert.equal(selectedVisibleFinanceJob(visible, 'visible')?.financeId, 'visible');
+  assert.equal(selectedVisibleFinanceJob(visible, 'hidden'), null);
+  assert.equal(selectedVisibleFinanceJob(visible, null), null);
 });
 
 test('finance events are limited to exact mobile source pairs', () => {
@@ -160,6 +173,29 @@ test('scheduler tab transitions keep URL and in-memory finance targets in parity
   );
 });
 
+test('same-route portfolio invoice links activate in-page state without breaking native link gestures', () => {
+  const ordinaryClick = {
+    defaultPrevented: false,
+    button: 0,
+    metaKey: false,
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+  };
+  assert.equal(schedulerTabLinkShouldActivateInPlace(ordinaryClick), true);
+  assert.equal(schedulerTabLinkShouldActivateInPlace({ ...ordinaryClick, button: 1 }), false);
+  assert.equal(schedulerTabLinkShouldActivateInPlace({ ...ordinaryClick, metaKey: true }), false);
+  assert.equal(schedulerTabLinkShouldActivateInPlace({ ...ordinaryClick, ctrlKey: true }), false);
+  assert.equal(schedulerTabLinkShouldActivateInPlace({ ...ordinaryClick, defaultPrevented: true }), false);
+
+  const schedulerPage = readFileSync(new URL('../pages/SchedulerPage.tsx', import.meta.url), 'utf8');
+  const workspace = readFileSync(new URL('../components/SchedulerFinanceWorkspace.tsx', import.meta.url), 'utf8');
+  const portfolio = readFileSync(new URL('../components/SchedulerPortfolioSummary.tsx', import.meta.url), 'utf8');
+  assert.match(schedulerPage, /onActivateView=\{\(nextView\) => activateTab\(nextView\)\}/);
+  assert.match(workspace, /onActivateInvoices=\{\(\) => onActivateView\('invoices'\)\}/);
+  assert.match(portfolio, /onClick=\{activateInvoices\}/);
+});
+
 test('hours review uses the audited backend state even when recorded hours are zero', () => {
   const base = {
     financeId: 'f', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a', eventId: 'e', jobName: 'Job', siteName: 'Site',
@@ -173,6 +209,107 @@ test('hours review uses the audited backend state even when recorded hours are z
   } as const;
   assert.equal(financeJobNeedsReview({ ...base, needsHoursReview: false }), false);
   assert.equal(financeJobNeedsReview({ ...base, needsHoursReview: true }), true);
+});
+
+test('finance exception queue derives only job-level states present in the overview response', () => {
+  const base: FinanceOverviewItem = {
+    financeId: 'finance-neutral',
+    sourceApp: 'ecoaudit',
+    sourceType: 'audit',
+    sourceId: 'audit-neutral',
+    eventId: 'event-neutral',
+    jobName: 'Neutral job',
+    siteName: 'Neutral site',
+    jobDate: '2026-08-16',
+    jobStatus: 'Draft',
+    eventStatus: 'planned',
+    currency: 'AUD',
+    actualHours: 1,
+    billableHours: 1,
+    costHours: 1,
+    billableAmount: 100,
+    totalCost: 50,
+    invoicedAmount: 100,
+    unbilledAmount: 0,
+    grossProfit: 50,
+    marginPct: 50,
+    invoiceCount: 1,
+    hasOverdueInvoice: false,
+    needsHoursReview: false,
+    invoiceReadiness: {
+      completionSatisfied: false,
+      completionBasis: null,
+      hoursSatisfied: true,
+      hoursBasis: 'app_time',
+      ready: false,
+    },
+  };
+  const completedWithoutInvoice: FinanceOverviewItem = {
+    ...base,
+    financeId: 'finance-complete',
+    sourceId: 'audit-complete',
+    jobName: 'Completed without invoice',
+    invoiceCount: 0,
+    invoicedAmount: 0,
+    unbilledAmount: 750,
+    invoiceReadiness: {
+      ...base.invoiceReadiness,
+      completionSatisfied: true,
+      completionBasis: 'job',
+      ready: true,
+    },
+  };
+  const overdueHoursReview: FinanceOverviewItem = {
+    ...base,
+    financeId: 'finance-overdue',
+    sourceId: 'audit-overdue',
+    jobName: 'Overdue and hours review',
+    jobDate: '2026-08-01',
+    hasOverdueInvoice: true,
+    needsHoursReview: true,
+  };
+  const workInProgressUnbilled: FinanceOverviewItem = {
+    ...base,
+    financeId: 'finance-wip',
+    sourceId: 'audit-wip',
+    jobName: 'Expected work in progress',
+    invoiceCount: 0,
+    invoicedAmount: 0,
+    unbilledAmount: 400,
+  };
+
+  assert.deepEqual(financeJobExceptionKinds(base), []);
+  assert.deepEqual(financeJobExceptionKinds(workInProgressUnbilled), []);
+  assert.deepEqual(
+    financeJobExceptionKinds(completedWithoutInvoice),
+    ['completed_without_invoice', 'unbilled'],
+  );
+  assert.deepEqual(
+    financeJobExceptionKinds(overdueHoursReview),
+    ['overdue', 'hours_review'],
+  );
+  assert.deepEqual(
+    financeExceptionCounts([
+      base,
+      workInProgressUnbilled,
+      completedWithoutInvoice,
+      overdueHoursReview,
+    ]),
+    {
+      overdue: 1,
+      hours_review: 1,
+      completed_without_invoice: 1,
+      unbilled: 1,
+    },
+  );
+  assert.equal(financeJobMatchesExceptionFilter(base, 'overdue'), false);
+  assert.equal(financeJobMatchesExceptionFilter(overdueHoursReview, 'overdue'), true);
+  assert.deepEqual(
+    [completedWithoutInvoice, base, overdueHoursReview]
+      .sort(compareFinanceExceptionJobs)
+      .map((job) => job.financeId),
+    ['finance-overdue', 'finance-complete', 'finance-neutral'],
+  );
 });
 
 test('reserved and invoiced expenses are excluded from new drafts', () => {

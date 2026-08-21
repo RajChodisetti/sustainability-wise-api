@@ -1162,9 +1162,10 @@ const AUTHORED_FORM_DEFINITIONS: readonly FormDefinition[] = [
 ];
 
 /**
- * Field App Complete captures whatever is observed. No answer or evidence slot
- * is mandatory, including on completion; TBC relationship records are handled
- * by installation readiness instead of by per-field validation.
+ * Field App Complete captures whatever is observed. Business answers and
+ * evidence remain optional; the one completion-only safety gate is the visible
+ * "Can you safely proceed?" answer. TBC relationship records are handled by
+ * installation readiness instead of by per-field validation.
  */
 export const FORM_DEFINITIONS: readonly FormDefinition[] = AUTHORED_FORM_DEFINITIONS.map(
   (definition) => ({
@@ -1298,17 +1299,57 @@ export type FormValidationIssue = {
   message: string;
 };
 
+export const SAFE_TO_PROCEED_FIELD_KEY = 'prestart.safe_to_proceed';
+export const SAFE_TO_PROCEED_COMPLETION_MESSAGE =
+  'Select Yes for “Can you safely proceed?” before completing this form. If it is not safe, stop work and resolve the hazards first.';
+
+type FormValidationInput = Pick<
+  FormSubmission,
+  'formType' | 'answers' | 'attachments'
+>;
+
+export function isSafeToProceedFieldVisible(
+  form: FormValidationInput,
+): boolean {
+  const definition = FORM_DEFINITION_BY_TYPE[form.formType];
+  return definition.sections.some((section) => (
+    isSectionVisible(section, form.answers)
+    && section.fields.some((field) => (
+      field.key === SAFE_TO_PROCEED_FIELD_KEY
+      && isFieldVisible(field, form.answers)
+    ))
+  ));
+}
+
+export function safeToProceedCompletionIssue(
+  form: FormValidationInput,
+): FormValidationIssue | null {
+  if (
+    !isSafeToProceedFieldVisible(form)
+    || form.answers[SAFE_TO_PROCEED_FIELD_KEY] === 'yes'
+  ) {
+    return null;
+  }
+  return {
+    fieldKey: SAFE_TO_PROCEED_FIELD_KEY,
+    message: SAFE_TO_PROCEED_COMPLETION_MESSAGE,
+  };
+}
+
 export function formValidationIssues(
-  form: Pick<FormSubmission, 'formType' | 'answers' | 'attachments'>,
+  form: FormValidationInput,
 ): FormValidationIssue[] {
+  const issues: FormValidationIssue[] = [];
+  const safetyIssue = safeToProceedCompletionIssue(form);
+  if (safetyIssue) issues.push(safetyIssue);
+
   if (
     form.formType !== 'comms-fault'
     || form.answers['works.replace_device'] !== 'yes'
   ) {
-    return [];
+    return issues;
   }
 
-  const issues: FormValidationIssue[] = [];
   const deviceType = String(
     form.answers['works.new_device_type'] ?? '',
   ).trim();

@@ -51,6 +51,7 @@ import {
   reconcilePhotoCopyReferencesForParent,
   type CopiedPhotoEntity,
 } from '../../storage/photoCopyReferences.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 const equipmentTables = [
   { table: eaMainSwitchboards, entityType: 'main_switchboard' },
@@ -353,19 +354,34 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
-    const found = assertFound(audit, 'Audit');
-    assertAuditAccess(found, request.user);
-    const now = new Date();
-    const timing = resolveCompletionTiming(found, now);
-    const [updated] = await db.update(eaAudits).set({
-      status: 'Completed',
-      startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
-      completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
-      updatedAt: now,
-      syncStatus: 'local',
-    }).where(eq(eaAudits.id, id)).returning();
-    return reply.send(assertFound(updated, 'Audit'));
+    const updated = await db.transaction(async (tx) => {
+      const [audit] = await tx.select().from(eaAudits).where(and(
+        eq(eaAudits.id, id),
+        isNull(eaAudits.deletedAt),
+      )).for('update');
+      const found = assertFound(audit, 'Audit');
+      assertAuditAccess(found, request.user);
+      const now = new Date();
+      const timing = resolveCompletionTiming(found, now);
+      const [completed] = await tx.update(eaAudits).set({
+        status: 'Completed',
+        startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
+        completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
+        updatedAt: now,
+        syncStatus: 'local',
+      }).where(and(
+        eq(eaAudits.id, id),
+        isNull(eaAudits.deletedAt),
+      )).returning();
+      const foundCompleted = assertFound(completed, 'Audit');
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'ecoaudit',
+        sourceType: 'audit',
+        sourceId: id,
+      }, { observedAt: now });
+      return foundCompleted;
+    });
+    return reply.send(updated);
   });
 
   app.patch('/:id/reopen', {

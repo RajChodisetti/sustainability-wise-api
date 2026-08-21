@@ -52,11 +52,14 @@ import {
 } from '@/modules/installhub/components/WorkflowUi';
 import {
   FORM_DEFINITION_BY_TYPE,
+  SAFE_TO_PROCEED_FIELD_KEY,
   answersAfterChange,
   editorOptionsForField,
   formValidationIssues,
   isFieldVisible,
+  isSafeToProceedFieldVisible,
   isSectionVisible,
+  safeToProceedCompletionIssue,
   type FormFieldDefinition,
 } from '@/modules/installhub/forms/catalog';
 import {
@@ -271,6 +274,18 @@ export function InstallHubFormEditorPage() {
   const canonicalMeter = source.formType === 'ww-installation' && source.meterId
     ? meterDevices(tree).find((item) => item.id === source.meterId)
     : null;
+  const validationCandidate: Pick<
+    FormSubmission,
+    'formType' | 'answers' | 'attachments'
+  > = {
+    formType: currentForm.formType,
+    answers,
+    attachments,
+  };
+  const safeToProceedVisible = isSafeToProceedFieldVisible(validationCandidate);
+  const safetyCompletionIssue = readOnly
+    ? null
+    : safeToProceedCompletionIssue(validationCandidate);
   function parentHref(form: FormSubmission = currentForm): string {
     if (assetReturn) {
       return assetMeterReturnHref(installationId, assetReturn);
@@ -514,7 +529,7 @@ export function InstallHubFormEditorPage() {
                   ? new Date(source.completedAt).toLocaleString()
                   : ''
               }`
-            : `All fields optional · ${
+            : `${safeToProceedVisible ? 'Safety sign-off required to complete · ' : 'All fields optional · '}${
                 saving ? 'Saving…' : dirty ? 'Changes pending' : 'Saved automatically'
               }`
         }
@@ -635,7 +650,12 @@ export function InstallHubFormEditorPage() {
                     attachments={attachments}
                     readOnly={readOnly}
                     uploading={uploadingSlot === field.key}
-                    error={completionErrors.find((item) => item.fieldKey === field.key)?.message}
+                    error={
+                      completionErrors.find((item) => item.fieldKey === field.key)?.message
+                      ?? (field.key === SAFE_TO_PROCEED_FIELD_KEY
+                        ? safetyCompletionIssue?.message
+                        : undefined)
+                    }
                     onChange={change}
                     onUpload={(files) => uploadEvidence(field, files)}
                     onCaption={(id, caption) => {
@@ -676,13 +696,18 @@ export function InstallHubFormEditorPage() {
         />
       ) : (
         <Card id="form-actions" tabIndex={-1} className="mt-6 scroll-mt-4">
+          {safetyCompletionIssue ? (
+            <div className="mb-4">
+              <ErrorBanner message={safetyCompletionIssue.message} />
+            </div>
+          ) : null}
           <InlineNotice tone="warning">
             Completing the form makes this record read-only and updates the
             operational meter registry where applicable.
           </InlineNotice>
           <div className="mt-5 flex flex-wrap gap-2">
             <Button
-              disabled={completing || saving}
+              disabled={completing || saving || Boolean(safetyCompletionIssue)}
               onClick={() => void completeForm()}
             >
               <Icon name="check" size={17} />
@@ -760,8 +785,13 @@ function FormField({
   }
   if (field.kind === 'yesno') {
     return (
-      <fieldset id={fieldId} className="mt-5" aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined}>
-        <legend className="mb-2 text-sm font-bold text-[var(--text)]">
+      <fieldset
+        id={fieldId}
+        className={`mt-5 rounded-xl ${error ? 'border-2 border-[var(--red)] bg-[var(--red-soft)] p-4' : ''}`}
+        aria-invalid={Boolean(error)}
+        aria-describedby={error ? errorId : undefined}
+      >
+        <legend className={`mb-2 text-sm font-bold ${error ? 'text-[var(--red)]' : 'text-[var(--text)]'}`}>
           {label}
         </legend>
         <div className="flex flex-wrap gap-2">
@@ -780,7 +810,9 @@ function FormField({
               onClick={() => onChange(field.key, optionValue)}
               className={`min-h-11 rounded-full border px-5 text-sm font-bold ${
                 value === optionValue
-                  ? 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]'
+                  ? error && optionValue !== 'yes'
+                    ? 'border-[var(--red)] bg-[var(--red)] text-[var(--red-fg)]'
+                    : 'border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-fg)]'
                   : 'border-[var(--border-strong)] bg-[var(--surface)] text-[var(--text)] hover:border-[var(--primary)]'
               } disabled:opacity-65`}
             >

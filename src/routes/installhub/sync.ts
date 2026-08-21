@@ -1181,6 +1181,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       incomingTree.installation.status = existingInstallation?.status === 'Completed'
         ? 'Completed'
         : 'Draft';
+      // Completion notes are pinned only by the canonical completion route.
+      // Restore the server value so clients predating this additive field can
+      // still replay an exact completed snapshot without erasing the sign-off.
+      incomingTree.installation.completionNotes = existingInstallation?.completionNotes ?? null;
       incomingTree.installation.createdByUserId = existingInstallation?.createdByUserId
         ?? request.user.userId;
       incomingTree.installation.assignedInspectorUserId = existingInstallation?.assignedInspectorUserId ?? null;

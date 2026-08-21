@@ -10,6 +10,7 @@ import {
   FORM_DEFINITION_BY_TYPE,
   FORM_DEFINITIONS,
   SENSOR_OPTIONS_BY_DEVICE,
+  SAFE_TO_PROCEED_FIELD_KEY,
   SIGNALS,
   SWITCHBOARD_TYPES,
   acceptedOptionsForField,
@@ -17,6 +18,7 @@ import {
   editorOptionsForField,
   formValidationIssues,
   isFieldVisible,
+  isSafeToProceedFieldVisible,
   isSectionVisible,
   meterAfterCommsReplacement,
   optionsForField,
@@ -360,27 +362,50 @@ test('Comms replacement sensor visibility follows the selected replacement devic
 test('captured yes/no, numeric, and select values remain optional observations', () => {
   assert.deepEqual(validateForm(submission('ww-installation', {
     'prestart.safe_access': 'not_applicable',
+    'prestart.safe_to_proceed': 'yes',
   })), []);
   assert.deepEqual(validateForm(submission('honeywell-q400', {
     'site.latitude': 'not-a-coordinate',
   })), []);
   assert.deepEqual(validateForm(submission('comms-fault', {
     'existing.signal': 'Invented signal',
+    'prestart.safe_to_proceed': 'yes',
   })), []);
 });
 
-test('form completion produces no mandatory-field issues', () => {
+test('visible safe-to-proceed sign-off is the only common completion gate', () => {
+  const blank = submission('ww-installation', {
+    'prestart.safe_access': 'not_applicable',
+  });
+  assert.equal(isSafeToProceedFieldVisible(blank), true);
+  assert.deepEqual(
+    formValidationIssues(blank).map((issue) => issue.fieldKey),
+    [SAFE_TO_PROCEED_FIELD_KEY],
+  );
+  assert.deepEqual(
+    formValidationIssues(submission('ww-installation', {
+      'prestart.safe_to_proceed': 'no',
+    })).map((issue) => issue.fieldKey),
+    [SAFE_TO_PROCEED_FIELD_KEY],
+  );
+
   const issues = formValidationIssues(
     submission('ww-installation', {
       'prestart.safe_access': 'not_applicable',
+      'prestart.safe_to_proceed': 'yes',
     }),
   );
   assert.deepEqual(issues, []);
+
+  const formWithoutSafetyQuestion = submission('ace-switchboard', {});
+  assert.equal(isSafeToProceedFieldVisible(formWithoutSafetyQuestion), false);
+  assert.deepEqual(formValidationIssues(formWithoutSafetyQuestion), []);
 });
 
 test('Comms replacement completion requires a valid model, serial, and sensor', () => {
   const missing = formValidationIssues(
     submission('comms-fault', {
+      'prestart.safe_to_proceed': 'yes',
       'works.replace_device': 'yes',
     }),
   );
@@ -395,6 +420,7 @@ test('Comms replacement completion requires a valid model, serial, and sensor', 
 
   assert.deepEqual(formValidationIssues(
     submission('comms-fault', {
+      'prestart.safe_to_proceed': 'yes',
       'works.replace_device': 'yes',
       'works.new_device_type': 'A6M',
       'works.new_device_id': 'NEW-ID',
@@ -405,6 +431,7 @@ test('Comms replacement completion requires a valid model, serial, and sensor', 
   assert.deepEqual(
     formValidationIssues(
       submission('comms-fault', {
+        'prestart.safe_to_proceed': 'yes',
         'works.replace_device': 'yes',
         'works.new_device_type': 'A6M',
         'works.new_device_id': 'NEW-ID',
@@ -415,9 +442,16 @@ test('Comms replacement completion requires a valid model, serial, and sensor', 
   );
 });
 
-test('legacy draft records also have no mandatory-field completion gate', () => {
+test('legacy draft records retain their visible safety sign-off gate', () => {
+  assert.deepEqual(
+    formValidationIssues(submission('a3rm-installation', {
+      'device.type': 'A3RM',
+    })).map((issue) => issue.fieldKey),
+    [SAFE_TO_PROCEED_FIELD_KEY],
+  );
   assert.deepEqual(validateForm(submission('a3rm-installation', {
     'device.type': 'A3RM',
+    'prestart.safe_to_proceed': 'yes',
   })), []);
 });
 

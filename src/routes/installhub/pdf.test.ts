@@ -7,12 +7,14 @@ import {
   installHubChannelLoadLabel,
   liveDiagnosticCanonicalReport,
   installHubReportVariantKey,
+  pinnedCanonicalReport,
   pinnedPhotoMatchesManifest,
   requestedLiveMode,
   requestedReportDetailMode,
   requestedRecordVersion,
 } from './pdf.js';
 import type { CanonicalInstallationTree } from './canonical.js';
+import { buildCanonicalSnapshotPayload } from './treeService.js';
 
 test('pinned reports require exact registry identity and checksum', () => {
   const manifest = {
@@ -147,6 +149,7 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
       treeSchemaVersion: 2,
       treeRevision: 13,
       recordVersionNumber: 0,
+      completionNotes: 'Technician verified final labelling and handover.',
       electricalMapLayout: {
         version: 1,
         canvas: { width: 1_000, height: 700 },
@@ -248,6 +251,7 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
       status: 'Draft',
       answers: {},
       attachments: [],
+      historicalMeterRemoved: false,
     }],
     serverDerived: { virtualMeterDefinitions: [] },
   };
@@ -260,6 +264,10 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
   assert.equal(report.snapshotPayloadHash, null);
   assert.equal(report.mappingContentHash, null);
   assert.equal(report.readyToComplete, false);
+  assert.equal(
+    report.completionNotes,
+    'Technician verified final labelling and handover.',
+  );
   assert.deepEqual(report.electricalMapLayout, tree.installation.electricalMapLayout);
   assert.deepEqual(report.meters[0]?.channels[0], {
     id: 'channel-1',
@@ -287,4 +295,14 @@ test('live diagnostics project the current Draft/TBC tree without claiming a pin
   assert.ok(report.unresolvedRelationships.some((item) => (
     item.subjectId === 'board-tbc' && item.reason === 'TBC'
   )));
+
+  const pinned = pinnedCanonicalReport(buildCanonicalSnapshotPayload({
+    tree,
+    mediaManifest: [],
+  }));
+  assert.equal(pinned.reportSource, 'canonical-version');
+  assert.equal(
+    pinned.completionNotes,
+    'Technician verified final labelling and handover.',
+  );
 });

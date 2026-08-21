@@ -122,12 +122,19 @@ export type InstallationLifecycleResult = {
   treeRevision: number;
   recordVersionNumber?: number;
   completedFromRevision?: number;
+  completionNotes?: string | null;
   readiness?: InstallationReadiness;
+};
+
+export type CompleteInstallationInput = {
+  baseTreeRevision: number;
+  idempotencyKey: string;
+  completionNotes?: string | null;
 };
 
 export function completeInstallation(
   installationId: string,
-  input: { baseTreeRevision: number; idempotencyKey: string },
+  input: CompleteInstallationInput,
 ): Promise<InstallationLifecycleResult> {
   return installHubRequest(
     'POST',

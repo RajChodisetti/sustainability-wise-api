@@ -52,6 +52,13 @@ import {
   type ElectricalMapLayoutDocument,
   type SavedElectricalMapLayout,
 } from './electricalMapLayout.js';
+import {
+  installHubCompletionNotesFromReplayResult,
+  installHubCompletionReplayMatchesCurrentState,
+  installHubCompletionNotesSchema,
+  normalizeInstallHubCompletionNotes,
+} from './completionNotes.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 function positiveVersion(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -653,18 +660,29 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         properties: {
           baseTreeRevision: { type: 'integer', minimum: 0 },
           idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+          completionNotes: installHubCompletionNotesSchema,
         },
       },
     },
   }, async (request, reply) => {
     const { installationId } = request.params as { installationId: string };
-    const body = request.body as { baseTreeRevision: unknown; idempotencyKey: unknown };
+    const body = request.body as {
+      baseTreeRevision: unknown;
+      idempotencyKey: unknown;
+      completionNotes?: unknown;
+    };
     const baseTreeRevision = nonNegativeRevision(body.baseTreeRevision);
     if (typeof body.idempotencyKey !== 'string' || !body.idempotencyKey.trim()) {
       throw badRequest('idempotencyKey is required');
     }
     const idempotencyKey = body.idempotencyKey.trim();
-    const fingerprint = canonicalPayloadHash({ baseTreeRevision, operation: 'complete' });
+    const completionNotes = normalizeInstallHubCompletionNotes(body.completionNotes);
+    const legacyFingerprint = canonicalPayloadHash({ baseTreeRevision, operation: 'complete' });
+    const fingerprint = canonicalPayloadHash({
+      baseTreeRevision,
+      completionNotes,
+      operation: 'complete',
+    });
 
     const outcome = await db.transaction(async (tx) => {
       const [installation] = await tx.select().from(ihInstallations).where(and(
@@ -681,10 +699,26 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         eq(ihCompletionIdempotency.idempotencyKey, idempotencyKey),
       ));
       if (prior) {
-        if (prior.requestFingerprint !== fingerprint) {
+        const matchesPreNotesClient = completionNotes === null
+          && prior.requestFingerprint === legacyFingerprint;
+        if (prior.requestFingerprint !== fingerprint && !matchesPreNotesClient) {
           throw conflict('idempotency_key_reused');
         }
-        return { kind: 'success' as const, result: prior.result };
+        if (!installHubCompletionReplayMatchesCurrentState(installation, prior)) {
+          throw conflict('completion_state_changed');
+        }
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'installhub',
+          sourceType: 'installation',
+          sourceId: installationId,
+        });
+        return {
+          kind: 'success' as const,
+          result: {
+            ...prior.result,
+            completionNotes: installHubCompletionNotesFromReplayResult(prior.result),
+          },
+        };
       }
       if (installation.treeSchemaVersion < 2) throw conflict('upgrade_required');
       if (installation.status === 'Completed') throw conflict('installation_already_completed');
@@ -707,6 +741,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         completedAt,
         completedByUserId: request.user.userId,
         completedFromRevision: baseTreeRevision,
+        completionNotes,
         updatedAt: completedAt,
         syncStatus: 'synced',
       }).where(and(
@@ -722,6 +757,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       tree.installation.completedAt = completedAt.toISOString();
       tree.installation.completedByUserId = request.user.userId;
       tree.installation.completedFromRevision = baseTreeRevision;
+      tree.installation.completionNotes = completionNotes;
       tree.installation.updatedAt = completedAt.toISOString();
       const snapshot = await insertCanonicalRecordVersion({
         executor: tx,
@@ -735,6 +771,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         completedAt: completedAt.toISOString(),
         completedByUserId: request.user.userId,
         completedFromRevision: baseTreeRevision,
+        completionNotes,
         treeRevision: nextRevision,
         recordVersionNumber: nextVersion,
         payloadHash: snapshot.payloadHash,
@@ -752,6 +789,11 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         recordVersionNumber: nextVersion,
         result,
       });
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'installhub',
+        sourceType: 'installation',
+        sourceId: installationId,
+      }, { observedAt: completedAt });
       return { kind: 'success' as const, result };
     });
     if (outcome.kind === 'not_ready') {
@@ -803,6 +845,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       const [updated] = await tx.update(ihInstallations).set({
         status: 'Draft',
         treeRevision: nextRevision,
+        completionNotes: null,
         reopenedAt,
         reopenedByUserId: request.user.userId,
         reopenedFromVersionNumber: installation.recordVersionNumber,
@@ -826,6 +869,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         reopenedAt: reopenedAt.toISOString(),
         reopenedByUserId: request.user.userId,
         reason,
+        completionNotes: null,
         readiness: paginateReadiness(installationReadiness(tree)),
       };
     });

@@ -58,6 +58,7 @@ export const ihInstallations = pgTable('ih_installations', {
   completedAt: timestamp('completed_at'),
   completedByUserId: text('completed_by_user_id'),
   completedFromRevision: integer('completed_from_revision'),
+  completionNotes: text('completion_notes'),
   reopenedAt: timestamp('reopened_at'),
   reopenedByUserId: text('reopened_by_user_id'),
   reopenedFromVersionNumber: integer('reopened_from_version_number'),
@@ -72,6 +73,10 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_record_version_check', sql`${table.recordVersionNumber} >= 0`),
   check('ih_installations_electrical_map_layout_revision_check', sql`${table.electricalMapLayoutRevision} >= 0`),
   check('ih_installations_status_check', sql`${table.status} IN ('Draft', 'Completed')`),
+  check(
+    'ih_installations_completion_notes_length_check',
+    sql`${table.completionNotes} IS NULL OR char_length(${table.completionNotes}) <= 2000`,
+  ),
   check('ih_installations_external_key_nonempty_check', sql`length(btrim(${table.externalKey})) > 0`),
 ]);
 

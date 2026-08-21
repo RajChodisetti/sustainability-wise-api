@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { EmptyState, ErrorBanner, Spinner } from '@/components/ui/Card';
-import { Checkbox, Input, Select } from '@/components/ui/FormFields';
+import { Input, Select } from '@/components/ui/FormFields';
 import { SchedulerBillsWorkspace } from '@/modules/scheduler/components/SchedulerBillsWorkspace';
 import { SchedulerFinanceDetail } from '@/modules/scheduler/components/SchedulerFinanceDetail';
 import { SchedulerInvoicesWorkspace } from '@/modules/scheduler/components/SchedulerInvoicesWorkspace';
@@ -15,15 +15,21 @@ import {
   useSchedulerFinancialSummary,
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
+  compareFinanceExceptionJobs,
+  financeExceptionCounts,
   financeAppLabel,
   financeJobKey,
-  financeJobNeedsReview,
+  financeJobExceptionKinds,
+  financeJobMatchesExceptionFilter,
   financeOverviewFromSummary,
   financeTargetFromPages,
   financeTargetLookupFailed,
   financeTargetRequiresJobLookup,
   marginTone,
   schedulerFinanceHref,
+  selectedVisibleFinanceJob,
+  type FinanceExceptionFilter,
+  type FinanceExceptionKind,
 } from '@/modules/scheduler/lib/finance';
 import { schedulerVisibleFinanceSourceApps } from '@/modules/scheduler/lib/visibility';
 import type {
@@ -65,11 +71,13 @@ export function SchedulerFinanceWorkspace({
   initialTarget,
   visibleSourceApps,
   selectableSourceApps,
+  onActivateView,
 }: {
   view: SchedulerFinanceView;
   initialTarget?: SchedulerFinanceTarget;
   visibleSourceApps: ScheduleSourceApp[];
   selectableSourceApps: ScheduleSourceApp[];
+  onActivateView: (view: SchedulerFinanceView) => void;
 }) {
   const overview = useSchedulerFinanceOverview(true);
   const requestedJobTarget = financeTargetRequiresJobLookup(initialTarget) ? initialTarget : undefined;
@@ -80,7 +88,7 @@ export function SchedulerFinanceWorkspace({
   );
   const [search, setSearch] = useState('');
   const [sourceApp, setSourceApp] = useState<FinanceSourceApp | 'all'>('all');
-  const [needsReviewOnly, setNeedsReviewOnly] = useState(false);
+  const [exceptionFilter, setExceptionFilter] = useState<FinanceExceptionFilter>('all');
   const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const appliedTargetRef = useRef<string | null>(null);
   const visibleFinanceSourceApps = useMemo(
@@ -104,10 +112,7 @@ export function SchedulerFinanceWorkspace({
     }
     return [...byFinanceId.values()]
       .filter((job) => visibleFinanceSourceApps.includes(job.sourceApp))
-      .sort(
-      (left, right) => right.jobDate.localeCompare(left.jobDate)
-        || left.financeId.localeCompare(right.financeId),
-      );
+      .sort(compareFinanceExceptionJobs);
   }, [directTarget.data, exactSourceTarget.data, overview.data, visibleFinanceSourceApps]);
   const initialTargetJob = financeTargetFromPages([{ items, nextCursor: null }], requestedJobTarget);
   const initialTargetFailed = financeTargetLookupFailed({
@@ -183,14 +188,14 @@ export function SchedulerFinanceWorkspace({
     const needle = search.trim().toLocaleLowerCase();
     return items.filter((job) => {
       if (sourceApp !== 'all' && job.sourceApp !== sourceApp) return false;
-      if (needsReviewOnly && !financeJobNeedsReview(job)) return false;
+      if (!financeJobMatchesExceptionFilter(job, exceptionFilter)) return false;
       if (!needle) return true;
       return `${job.jobName} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`
         .toLocaleLowerCase()
         .includes(needle);
     });
-  }, [items, needsReviewOnly, search, sourceApp]);
-  const selected = items.find((job) => financeJobKey(job) === selectedJobKey) ?? null;
+  }, [exceptionFilter, items, search, sourceApp]);
+  const selected = selectedVisibleFinanceJob(filtered, selectedJobKey);
 
   function loadMoreJobs() {
     if (overview.hasNextPage && !overview.isFetchingNextPage) void overview.fetchNextPage();
@@ -251,7 +256,10 @@ export function SchedulerFinanceWorkspace({
 
   return (
     <div className="space-y-5">
-      <SchedulerPortfolioSummary visibleSourceApps={visibleFinanceSourceApps} />
+      <SchedulerPortfolioSummary
+        visibleSourceApps={visibleFinanceSourceApps}
+        onActivateInvoices={() => onActivateView('invoices')}
+      />
       {items.length === 0 ? (
         <EmptyState
           title="No jobs are ready for finance"
@@ -269,13 +277,13 @@ export function SchedulerFinanceWorkspace({
             search={search}
             sourceApp={sourceApp}
             filterSourceApps={selectableFinanceSourceApps}
-            needsReviewOnly={needsReviewOnly}
+            exceptionFilter={exceptionFilter}
             hasNextPage={Boolean(overview.hasNextPage)}
             fetchingNextPage={overview.isFetchingNextPage}
             fetchNextPageError={overview.isFetchNextPageError ? overview.error : null}
             onSearch={setSearch}
             onSourceApp={setSourceApp}
-            onNeedsReview={setNeedsReviewOnly}
+            onExceptionFilter={setExceptionFilter}
             onLoadMore={loadMoreJobs}
             onSelect={(job) => {
               setSelectedJobKey(financeJobKey(job));
@@ -306,13 +314,13 @@ function FinanceJobPicker({
   search,
   sourceApp,
   filterSourceApps,
-  needsReviewOnly,
+  exceptionFilter,
   hasNextPage,
   fetchingNextPage,
   fetchNextPageError,
   onSearch,
   onSourceApp,
-  onNeedsReview,
+  onExceptionFilter,
   onLoadMore,
   onSelect,
 }: {
@@ -322,20 +330,31 @@ function FinanceJobPicker({
   search: string;
   sourceApp: FinanceSourceApp | 'all';
   filterSourceApps: FinanceSourceApp[];
-  needsReviewOnly: boolean;
+  exceptionFilter: FinanceExceptionFilter;
   hasNextPage: boolean;
   fetchingNextPage: boolean;
   fetchNextPageError: unknown;
   onSearch: (value: string) => void;
   onSourceApp: (value: FinanceSourceApp | 'all') => void;
-  onNeedsReview: (value: boolean) => void;
+  onExceptionFilter: (value: FinanceExceptionFilter) => void;
   onLoadMore: () => void;
   onSelect: (job: FinanceOverviewItem) => void;
 }) {
-  const reviewCount = items.filter(financeJobNeedsReview).length;
+  const exceptionCounts = financeExceptionCounts(items);
   return (
     <aside className="min-w-0 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)] xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:self-start xl:overflow-y-auto" aria-label="Finance jobs">
-      <div className="flex items-start justify-between gap-3"><div><h2 className="font-extrabold text-[var(--text)]">Job detail</h2><p className="mt-0.5 text-xs text-[var(--text-sub)]">{items.length}{hasNextPage ? '+' : ''} records loaded</p></div>{reviewCount ? <span className="rounded-full bg-[var(--amber-soft)] px-2.5 py-1 text-xs font-extrabold text-[var(--amber)]">{reviewCount}{hasNextPage ? '+' : ''} review</span> : null}</div>
+      <div>
+        <h2 className="font-extrabold text-[var(--text)]">Finance action queue</h2>
+        <p className="mt-0.5 text-xs leading-5 text-[var(--text-sub)]">
+          Prioritised from {items.length}{hasNextPage ? '+' : ''} loaded job summaries. Draft invoices are managed in the Invoices tab because draft status is not supplied per job here.
+        </p>
+      </div>
+      <FinanceExceptionFilters
+        counts={exceptionCounts}
+        total={items.length}
+        selected={exceptionFilter}
+        onSelect={onExceptionFilter}
+      />
       <label className="mt-4 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-job-search">Search jobs</label>
       <Input id="finance-job-search" type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Job name or ID" className="mt-1" />
       <label className="mt-3 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-app-filter">Product</label>
@@ -343,16 +362,20 @@ function FinanceJobPicker({
         <option value="all">All jobs</option>
         {filterSourceApps.map((app) => <option key={app} value={app}>{financeAppLabel(app)}</option>)}
       </Select>
-      <Checkbox label="Needs setup or review only" checked={needsReviewOnly} onChange={onNeedsReview} />
-      {hasNextPage && (search.trim() || sourceApp !== 'all' || needsReviewOnly) ? <p className="mb-2 text-xs leading-5 text-[var(--text-sub)]">Filters apply to loaded jobs. Load more to continue the search.</p> : null}
+      {hasNextPage && (search.trim() || sourceApp !== 'all' || exceptionFilter !== 'all') ? <p className="mt-3 text-xs leading-5 text-[var(--text-sub)]">Filters apply to loaded jobs. Load more to continue the search.</p> : null}
       <nav className="mt-3 space-y-2" aria-label="Financial summary jobs">
         {filtered.map((job) => {
           const selected = financeJobKey(job) === selectedJobKey;
-          const needsReview = financeJobNeedsReview(job);
+          const exceptions = financeJobExceptionKinds(job);
           const tone = marginTone(job.marginPct);
           return (
             <button key={job.financeId} type="button" aria-current={selected ? 'true' : undefined} onClick={() => onSelect(job)} className={`block min-h-11 w-full rounded-xl border px-3 py-3 text-left transition-colors ${selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)]'}`}>
-              <span className="flex items-start justify-between gap-2"><span className="min-w-0"><span className="block truncate text-sm font-extrabold text-[var(--text)]">{job.jobName}</span><span className="mt-0.5 block text-xs text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {dateLabel(job.jobDate)}</span></span>{needsReview ? <span className="shrink-0 rounded-full bg-[var(--amber-soft)] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-[var(--amber)]">Review</span> : job.hasOverdueInvoice ? <span className="shrink-0 rounded-full bg-[var(--red-soft)] px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-[var(--red)]">Overdue</span> : null}</span>
+              <span className="flex items-start justify-between gap-2"><span className="min-w-0"><span className="block truncate text-sm font-extrabold text-[var(--text)]">{job.jobName}</span><span className="mt-0.5 block text-xs text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {dateLabel(job.jobDate)}</span></span>{exceptions[0] ? <FinanceExceptionBadge kind={exceptions[0]} /> : null}</span>
+              {exceptions.length > 1 ? (
+                <span className="mt-2 flex flex-wrap gap-1.5">
+                  {exceptions.slice(1).map((kind) => <FinanceExceptionBadge key={kind} kind={kind} />)}
+                </span>
+              ) : null}
               <span className="mt-2 flex items-end justify-between gap-2 text-xs"><span className="text-[var(--text-sub)]">Unbilled {money(job.unbilledAmount, job.currency)}</span><span className={`font-extrabold ${toneClasses[tone]}`}>{job.marginPct == null ? 'No margin' : `${job.marginPct.toFixed(1)}% margin`}</span></span>
             </button>
           );
@@ -362,5 +385,67 @@ function FinanceJobPicker({
         {fetchNextPageError ? <ErrorBanner message={cloudConnectionErrorMessage(fetchNextPageError)} /> : null}
       </nav>
     </aside>
+  );
+}
+
+const financeExceptionLabels: Record<FinanceExceptionKind, string> = {
+  overdue: 'Overdue',
+  hours_review: 'Hours review',
+  completed_without_invoice: 'Complete · no invoice',
+  unbilled: 'Unbilled',
+};
+
+const financeExceptionBadgeClasses: Record<FinanceExceptionKind, string> = {
+  overdue: 'bg-[var(--red-soft)] text-[var(--red)]',
+  hours_review: 'bg-[var(--amber-soft)] text-[var(--amber)]',
+  completed_without_invoice: 'bg-[var(--primary-soft)] text-[var(--primary)]',
+  unbilled: 'bg-[var(--surface2)] text-[var(--text-sub)]',
+};
+
+function FinanceExceptionFilters({
+  counts,
+  total,
+  selected,
+  onSelect,
+}: {
+  counts: Record<FinanceExceptionKind, number>;
+  total: number;
+  selected: FinanceExceptionFilter;
+  onSelect: (filter: FinanceExceptionFilter) => void;
+}) {
+  const filters: Array<{ key: FinanceExceptionFilter; label: string; count: number }> = [
+    { key: 'all', label: 'All jobs', count: total },
+    { key: 'overdue', label: 'Overdue', count: counts.overdue },
+    { key: 'hours_review', label: 'Hours', count: counts.hours_review },
+    { key: 'completed_without_invoice', label: 'No invoice', count: counts.completed_without_invoice },
+    { key: 'unbilled', label: 'Unbilled', count: counts.unbilled },
+  ];
+  return (
+    <div className="mt-4 grid grid-cols-2 gap-2" aria-label="Finance exception filters">
+      {filters.map((filter) => (
+        <button
+          key={filter.key}
+          type="button"
+          aria-pressed={selected === filter.key}
+          onClick={() => onSelect(filter.key)}
+          className={`min-h-11 rounded-xl border px-3 py-2 text-left text-xs font-bold transition-colors ${
+            selected === filter.key
+              ? 'border-[var(--primary)] bg-[var(--primary-soft)] text-[var(--primary)]'
+              : 'border-[var(--border)] bg-[var(--surface2)] text-[var(--text-sub)] hover:border-[var(--border-strong)]'
+          }`}
+        >
+          <span className="block">{filter.label}</span>
+          <span className="mt-0.5 block text-base font-extrabold">{filter.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function FinanceExceptionBadge({ kind }: { kind: FinanceExceptionKind }) {
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wide ${financeExceptionBadgeClasses[kind]}`}>
+      {financeExceptionLabels[kind]}
+    </span>
   );
 }

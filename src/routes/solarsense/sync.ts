@@ -39,6 +39,7 @@ import {
   requireUploadCapability,
 } from '../../auth/uploadCapability.js';
 import { resolveSyncedCompletion } from './completionFence.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -520,24 +521,33 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       const { id: _id, ...updateValues } = values;
       const excludedStatus = sql.raw(`excluded.${ssSites.status.name}`);
       const excludedCompletedAt = sql.raw(`excluded.${ssSites.completedAt.name}`);
-      const [upserted] = await db
-        .insert(ssSites)
-        .values(values)
-        .onConflictDoUpdate({
-          target: ssSites.id,
-          set: {
-            ...updateValues,
-            completedAt: sql<Date | null>`case
-              when ${ssSites.status} = 'Completed'
-                then coalesce(${ssSites.completedAt}, ${excludedCompletedAt})
-              when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
-              else null
-            end`,
-          },
-          setWhere: sql`${ssSites.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
-        })
-        .returning({ id: ssSites.id });
-      if (!upserted) throw conflict('site_completed_reopen_requires_explicit_transition');
+      await db.transaction(async (tx) => {
+        const [upserted] = await tx
+          .insert(ssSites)
+          .values(values)
+          .onConflictDoUpdate({
+            target: ssSites.id,
+            set: {
+              ...updateValues,
+              completedAt: sql<Date | null>`case
+                when ${ssSites.status} = 'Completed'
+                  then coalesce(${ssSites.completedAt}, ${excludedCompletedAt})
+                when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+                else null
+              end`,
+            },
+            setWhere: sql`${ssSites.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+          })
+          .returning({ id: ssSites.id });
+        if (!upserted) throw conflict('site_completed_reopen_requires_explicit_transition');
+        if (!values.deletedAt && values.status === 'Completed') {
+          await completeLinkedSchedulerEvents(tx, {
+            sourceApp: 'solarsense',
+            sourceType: 'site',
+            sourceId: localId,
+          }, { observedAt: receivedAt });
+        }
+      });
       siteIds[localId] = values.serverId;
       if (values.deletedAt) {
         await deletePhotosForSite(localId);
@@ -568,24 +578,35 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       const { id: _id, ...updateValues } = values;
       const excludedStatus = sql.raw(`excluded.${ssRooftopAssessments.status.name}`);
       const excludedCompletedAt = sql.raw(`excluded.${ssRooftopAssessments.completedAt.name}`);
-      const [upserted] = await db
-        .insert(ssRooftopAssessments)
-        .values(values)
-        .onConflictDoUpdate({
-          target: ssRooftopAssessments.id,
-          set: {
-            ...updateValues,
-            completedAt: sql<Date | null>`case
-              when ${ssRooftopAssessments.status} = 'Completed'
-                then coalesce(${ssRooftopAssessments.completedAt}, ${excludedCompletedAt})
-              when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
-              else null
-            end`,
-          },
-          setWhere: sql`${ssRooftopAssessments.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
-        })
-        .returning({ id: ssRooftopAssessments.id });
-      if (!upserted) throw conflict('assessment_completed_reopen_requires_explicit_transition');
+      await db.transaction(async (tx) => {
+        const [upserted] = await tx
+          .insert(ssRooftopAssessments)
+          .values(values)
+          .onConflictDoUpdate({
+            target: ssRooftopAssessments.id,
+            set: {
+              ...updateValues,
+              completedAt: sql<Date | null>`case
+                when ${ssRooftopAssessments.status} = 'Completed'
+                  then coalesce(${ssRooftopAssessments.completedAt}, ${excludedCompletedAt})
+                when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+                else null
+              end`,
+            },
+            setWhere: sql`${ssRooftopAssessments.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+          })
+          .returning({ id: ssRooftopAssessments.id });
+        if (!upserted) {
+          throw conflict('assessment_completed_reopen_requires_explicit_transition');
+        }
+        if (!values.deletedAt && values.status === 'Completed') {
+          await completeLinkedSchedulerEvents(tx, {
+            sourceApp: 'solarsense',
+            sourceType: 'assessment',
+            sourceId: localId,
+          }, { observedAt: receivedAt });
+        }
+      });
       assessmentIds[localId] = values.serverId;
       if (values.deletedAt) {
         await deletePhotosForAssessment(localId);

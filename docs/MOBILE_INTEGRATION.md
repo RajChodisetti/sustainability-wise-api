@@ -194,6 +194,20 @@ The API owns a separate namespace:
 | Tables | Product IDs remain in `ea_users`, `ss_users`, and `ih_users`; `global_users` owns identity/role/state, `global_user_credentials` preserves migrated credentials, and `unified_users` maps all three projections to one Field subject |
 | Shared media registry | `photo_registry` rows with `app = installhub` |
 
+### Installation lifecycle endpoints
+
+| Method and route | Purpose |
+|---|---|
+| `POST /v1/installhub/installations/:installationId/complete` | Atomically complete a ready canonical installation, pin its immutable version, and reconcile linked Scheduler work |
+| `POST /v1/installhub/installations/:installationId/reopen` | Reopen the live installation as Draft while retaining its completed immutable version |
+
+Completion requires `baseTreeRevision` and `idempotencyKey`, and accepts optional
+nullable camelCase `completionNotes`. Notes are trimmed, blank input becomes
+`null`, and meaningful text is limited to 2,000 characters. The exact normalized
+value participates in the idempotency fingerprint, is stored in the completed
+snapshot/report, and is cleared only from the live row when that installation is
+reopened. Generic sync cannot create the first Draft-to-Completed transition.
+
 ### Sync endpoints
 
 | Method and route | Purpose |

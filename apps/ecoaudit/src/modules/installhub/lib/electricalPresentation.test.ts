@@ -558,8 +558,11 @@ test('TBC and retained legacy issue helpers get persisted correction routes', ()
     field: 'answers.device.serial',
     message: 'Correct the completed form contract.',
   });
-  assert.match(contractAction.href, /forms\/form-1#form-completed-actions$/);
-  assert.match(contractAction.label, /amend/i);
+  assert.match(
+    contractAction.href,
+    /forms\/form-1#form-field-prestart-safe_to_proceed$/,
+  );
+  assert.match(contractAction.label, /invalid completed-form field/i);
   assert.match(contractAction.instruction, /Create amendment.*Complete form/);
   const evidenceAction = readinessCorrectionAction(tree, {
     code: 'EVIDENCE_NOT_CONFIRMED',

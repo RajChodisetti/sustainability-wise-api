@@ -11,11 +11,11 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     { buildApp },
     { db, closeDb },
     { ihInstallations, ihZones },
-    { photoRegistry },
+    { photoRegistry, recordVersions },
     { signAccessToken },
     { makePhotoStorageKeyFromNames },
     { writeLocalFile },
-    { eq },
+    { and, eq },
     { purgeInstallHubInstallationTree },
   ] = await Promise.all([
     import('../../app.js'),
@@ -246,15 +246,51 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
       payload: {
         baseTreeRevision: 3,
         idempotencyKey: `complete-${freshInstallationId}`,
+        completionNotes: '  Technician verified labels and client handover.  ',
       },
     });
     assert.equal(completed.statusCode, 200, completed.body);
     assert.equal(completed.json().treeRevision, 4);
     assert.equal(completed.json().recordVersionNumber, 3);
+    assert.equal(
+      completed.json().completionNotes,
+      'Technician verified labels and client handover.',
+    );
+    const completedReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/installhub/installations/${freshInstallationId}/complete`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        baseTreeRevision: 3,
+        idempotencyKey: `complete-${freshInstallationId}`,
+        completionNotes: 'Technician verified labels and client handover.',
+      },
+    });
+    assert.equal(completedReplay.statusCode, 200, completedReplay.body);
+    assert.equal(
+      completedReplay.json().completionNotes,
+      'Technician verified labels and client handover.',
+    );
+    const changedNotesReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/installhub/installations/${freshInstallationId}/complete`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        baseTreeRevision: 3,
+        idempotencyKey: `complete-${freshInstallationId}`,
+        completionNotes: 'Different sign-off text',
+      },
+    });
+    assert.equal(changedNotesReplay.statusCode, 409, changedNotesReplay.body);
     const completedPull = await pull(freshInstallationId);
+    assert.equal(
+      completedPull.json().installations[0].installation.completionNotes,
+      'Technician verified labels and client handover.',
+    );
     const completedExactTree = structuredClone(completedPull.json().installations[0]);
     completedExactTree.syncStage = 'complete';
     completedExactTree.baseTreeRevision = 4;
+    delete (completedExactTree.installation as Record<string, unknown>).completionNotes;
     const completedExactReplay = await push(completedExactTree);
     assert.equal(completedExactReplay.statusCode, 200, completedExactReplay.body);
     assert.equal(completedExactReplay.json().treeRevision, 4);
@@ -276,6 +312,38 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     });
     assert.equal(reopened.statusCode, 200, reopened.body);
     assert.equal(reopened.json().treeRevision, 5);
+    assert.equal(reopened.json().completionNotes, null);
+    const [completedVersion] = await db.select({ snapshot: recordVersions.snapshot })
+      .from(recordVersions)
+      .where(and(
+        eq(recordVersions.app, 'installhub'),
+        eq(recordVersions.entityType, 'installation'),
+        eq(recordVersions.entityId, freshInstallationId),
+        eq(recordVersions.versionNumber, 3),
+      ));
+    assert.equal(
+      (completedVersion?.snapshot as {
+        installationTree?: { installation?: { completionNotes?: string | null } };
+      }).installationTree?.installation?.completionNotes,
+      'Technician verified labels and client handover.',
+    );
+    const reopenedPull = await pull(freshInstallationId);
+    assert.equal(
+      reopenedPull.json().installations[0].installation.completionNotes,
+      null,
+    );
+    const staleCompletionReplay = await app.inject({
+      method: 'POST',
+      url: `/v1/installhub/installations/${freshInstallationId}/complete`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: {
+        baseTreeRevision: 3,
+        idempotencyKey: `complete-${freshInstallationId}`,
+        completionNotes: 'Technician verified labels and client handover.',
+      },
+    });
+    assert.equal(staleCompletionReplay.statusCode, 409, staleCompletionReplay.body);
+    assert.equal(staleCompletionReplay.json().detail, 'completion_state_changed');
 
     const importedPayload = freshPayload(
       importedCopyId,
@@ -316,11 +384,13 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
       payload: {
         baseTreeRevision: 1,
         idempotencyKey: `complete-${historicalOptionalDefaultsId}`,
+        completionNotes: null,
       },
     });
     assert.equal(historicalOptionalComplete.statusCode, 200, historicalOptionalComplete.body);
     assert.equal(historicalOptionalComplete.json().treeRevision, 2);
     assert.equal(historicalOptionalComplete.json().recordVersionNumber, 1);
+    assert.equal(historicalOptionalComplete.json().completionNotes, null);
     const completedHistoricalPull = await pull(historicalOptionalDefaultsId);
     const completedHistoricalTree = structuredClone(
       completedHistoricalPull.json().installations[0],

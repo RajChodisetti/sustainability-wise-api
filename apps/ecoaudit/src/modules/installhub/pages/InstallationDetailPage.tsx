@@ -1,18 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
-import { FieldLabel, Textarea } from '@/components/ui/FormFields';
+import { FieldHint, FieldLabel, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import {
   completeInstallation,
   deleteCloudInstallation,
   reopenInstallation,
+  type CompleteInstallationInput,
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import {
@@ -41,6 +42,21 @@ import {
 import { groupReadinessIssues } from '@/modules/installhub/lib/readinessPresentation';
 import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
+import {
+  clearPersistedInstallationCompletionAttempt,
+  INSTALLATION_COMPLETION_NOTES_MAX_LENGTH,
+  installationCompletionAttemptMayHaveSucceeded,
+  installationCompletionExactRetryIsDefinitive,
+  installationCompletionIdempotencyKey,
+  installationCompletionNotesForDialog,
+  installationCompletionNotesIssue,
+  installationCompletionRefreshError,
+  installationCompletionRefreshState,
+  normalizeInstallationCompletionNotes,
+  persistInstallationCompletionAttempt,
+  restoreInstallationCompletionAttempt,
+  reuseInstallationCompletionAttempt,
+} from '@/modules/installhub/lib/completion';
 
 export function InstallHubInstallationDetailPage() {
   const { installationId } = useParams<{ installationId: string }>();
@@ -51,6 +67,10 @@ export function InstallHubInstallationDetailPage() {
   const toast = useToast();
   const { user } = useInstallHubAuth();
   const [completeOpen, setCompleteOpen] = useState(false);
+  const [completionNotes, setCompletionNotes] = useState('');
+  const completionAttemptRef = useRef<CompleteInstallationInput | null>(null);
+  const [completionRefreshRequired, setCompletionRefreshRequired] = useState(false);
+  const [completionStateScope, setCompletionStateScope] = useState<string | null>(null);
   const [reopenOpen, setReopenOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState('');
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
@@ -59,6 +79,68 @@ export function InstallHubInstallationDetailPage() {
     if (!user || query.data?.installation.id !== installationId) return;
     clearInstallationCreateAttempt(user.id, installationId);
   }, [installationId, query.data, user]);
+
+  const currentCompletionStateScope = user
+    ? `${user.id}\0${installationId}`
+    : null;
+  const completionStateReady = currentCompletionStateScope !== null
+    && completionStateScope === currentCompletionStateScope;
+  const loadedCompletionInstallationId = query.data?.installation.id;
+  const loadedCompletionInstallationStatus = query.data?.installation.status;
+
+  useEffect(() => {
+    const actorUserId = user?.id;
+    const hydrateTimer = window.setTimeout(() => {
+      if (!actorUserId || loadedCompletionInstallationId !== installationId) {
+        if (completionStateScope !== null) {
+          completionAttemptRef.current = null;
+          setCompletionRefreshRequired(false);
+          setCompletionNotes('');
+          setCompleteOpen(false);
+          setCompletionStateScope(null);
+        }
+        return;
+      }
+
+      const scope = `${actorUserId}\0${installationId}`;
+      if (completionStateScope !== scope) {
+        completionAttemptRef.current = null;
+        setCompletionRefreshRequired(false);
+        setCompletionNotes('');
+        setCompleteOpen(false);
+        setCompletionStateScope(scope);
+        if (loadedCompletionInstallationStatus === 'Completed') {
+          clearPersistedInstallationCompletionAttempt(actorUserId, installationId);
+          return;
+        }
+        const restored = restoreInstallationCompletionAttempt(
+          actorUserId,
+          installationId,
+        );
+        if (restored) {
+          completionAttemptRef.current = restored;
+          setCompletionNotes(restored.completionNotes ?? '');
+          setCompletionRefreshRequired(true);
+        }
+        return;
+      }
+
+      if (loadedCompletionInstallationStatus === 'Completed') {
+        clearPersistedInstallationCompletionAttempt(actorUserId, installationId);
+        completionAttemptRef.current = null;
+        setCompletionRefreshRequired(false);
+        setCompletionNotes('');
+        setCompleteOpen(false);
+      }
+    }, 0);
+    return () => window.clearTimeout(hydrateTimer);
+  }, [
+    completionStateScope,
+    installationId,
+    loadedCompletionInstallationId,
+    loadedCompletionInstallationStatus,
+    user?.id,
+  ]);
 
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={installHubConnectionErrorMessage(query.error)} />;
@@ -77,20 +159,209 @@ export function InstallHubInstallationDetailPage() {
   const readinessIssueCount = readiness?.issues.length ?? 0;
   const readinessIssueTotal = readiness?.issuePage?.total ?? readinessIssueCount;
   const readinessIssuesTruncated = readinessIssueTotal > readinessIssueCount;
-  async function completeCurrentInstallation() {
-    if (!readiness?.readyToComplete) return;
+  const completionNotesError = installationCompletionNotesIssue(completionNotes);
+
+  function clearCompletionAttempt(clearNotes: boolean) {
+    if (user?.id) {
+      clearPersistedInstallationCompletionAttempt(user.id, installationId);
+    }
+    completionAttemptRef.current = null;
+    setCompletionRefreshRequired(false);
+    if (clearNotes) setCompletionNotes('');
+  }
+
+  async function refreshCompletionState() {
+    const results = await Promise.allSettled([
+      writer.refresh(),
+      readinessQuery.refetch({ throwOnError: true }),
+    ]);
+    const treeState = installationCompletionRefreshState(results[0]);
+    if (treeState === 'COMPLETED') {
+      clearCompletionAttempt(true);
+    }
+    return {
+      treeRefresh: results[0],
+      readinessRefresh: results[1],
+      treeState,
+    };
+  }
+
+  async function refreshCurrentInstallation() {
+    const wasCompletionUncertain = completionRefreshRequired;
     setLifecycleBusy(true);
     try {
-      await completeInstallation(installationId, {
-        baseTreeRevision: tree.treeRevision || 0,
-        idempotencyKey: idempotencyKey(`complete-${installationId}`, tree.treeRevision || 0),
-      });
+      const { treeRefresh, readinessRefresh, treeState } = await refreshCompletionState();
+      const treeRefreshError = installationCompletionRefreshError(treeRefresh);
+      const readinessRefreshError = installationCompletionRefreshError(readinessRefresh);
+      if (treeState === 'FAILED') {
+        toast.error(installHubConnectionErrorMessage(treeRefreshError));
+      } else if (wasCompletionUncertain && treeState === 'DRAFT') {
+        toast.error(
+          'The latest cloud state is still Draft, so the earlier completion outcome remains uncertain. Retry the exact retained completion request to resolve it safely.',
+        );
+      } else if (readinessRefreshError) {
+        toast.error('The latest installation was loaded, but completion readiness could not be rechecked.');
+      } else if (wasCompletionUncertain) {
+        toast.success('The latest cloud state confirms that the installation completed.');
+      } else {
+        toast.success('Latest cloud state loaded.');
+      }
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  async function completeCurrentInstallation() {
+    if (
+      !user
+      || !completionStateReady
+      || completionRefreshRequired
+      || !readiness?.readyToComplete
+      || completionNotesError
+    ) return;
+    const normalizedCompletionNotes = normalizeInstallationCompletionNotes(completionNotes);
+    const baseTreeRevision = tree.treeRevision || 0;
+    const proposedInput = {
+      baseTreeRevision,
+      completionNotes: normalizedCompletionNotes,
+      idempotencyKey: installationCompletionIdempotencyKey(
+        installationId,
+        baseTreeRevision,
+        normalizedCompletionNotes,
+      ),
+    };
+    const completionInput = reuseInstallationCompletionAttempt(
+      completionAttemptRef.current,
+      proposedInput,
+    );
+    completionAttemptRef.current = completionInput;
+    if (!persistInstallationCompletionAttempt(user.id, installationId, completionInput)) {
+      completionAttemptRef.current = null;
+      toast.error(
+        'This tab could not retain the exact completion request, so nothing was submitted. Enable session storage or use another supported browser and try again.',
+      );
+      return;
+    }
+    setLifecycleBusy(true);
+    try {
+      try {
+        await completeInstallation(installationId, completionInput);
+      } catch (error) {
+        if (installationCompletionAttemptMayHaveSucceeded(error)) {
+          setCompletionRefreshRequired(true);
+          setCompleteOpen(false);
+          const { treeState } = await refreshCompletionState();
+          if (treeState === 'COMPLETED') {
+            toast.success(
+              'The completion response was interrupted, but the latest cloud state confirms that the installation completed.',
+            );
+          } else if (treeState === 'DRAFT') {
+            toast.error(
+              `${installHubConnectionErrorMessage(error)} The latest cloud state is still Draft, so the exact completion request remains locked for a safe retry.`,
+            );
+          } else {
+            toast.error(
+              `${installHubConnectionErrorMessage(error)} The completion outcome is uncertain, and the latest cloud state could not be verified. Retry the exact request or check again.`,
+            );
+          }
+        } else {
+          clearCompletionAttempt(false);
+          toast.error(installHubConnectionErrorMessage(error));
+        }
+        return;
+      }
+
       setCompleteOpen(false);
-      await writer.refresh();
-      await readinessQuery.refetch();
-      toast.success('Installation completed and authoritative version pinned.');
-    } catch (error) {
-      toast.error(installHubConnectionErrorMessage(error));
+      setCompletionRefreshRequired(true);
+      const { treeRefresh, readinessRefresh, treeState } = await refreshCompletionState();
+      const treeRefreshError = installationCompletionRefreshError(treeRefresh);
+      const readinessRefreshError = installationCompletionRefreshError(readinessRefresh);
+      if (treeState === 'COMPLETED' && !readinessRefreshError) {
+        toast.success('Installation completed and authoritative version pinned.');
+      } else if (treeState === 'DRAFT') {
+        toast.error(
+          'Installation completion was accepted, but the latest cloud read still reports Draft. The exact accepted request remains locked until completion is visible.',
+        );
+      } else if (treeState === 'FAILED') {
+        toast.error(
+          `Installation completion was accepted, but the latest installation could not be verified. ${installHubConnectionErrorMessage(treeRefreshError)} Any retry will reuse the exact accepted request.`,
+        );
+      } else {
+        toast.error(
+          'Installation completed and the latest installation was loaded, but readiness could not be rechecked. Use Recheck before continuing.',
+        );
+      }
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  async function retryUncertainCompletion() {
+    const completionInput = completionAttemptRef.current;
+    if (!completionStateReady || !completionRefreshRequired || !completionInput) {
+      toast.error('There is no retained completion request to retry. Check the latest cloud state first.');
+      return;
+    }
+    setLifecycleBusy(true);
+    try {
+      try {
+        const result = await completeInstallation(installationId, completionInput);
+        if (result.status !== 'Completed') {
+          toast.error('The exact completion retry returned an unexpected state. The retained request remains locked.');
+          return;
+        }
+      } catch (error) {
+        if (installationCompletionExactRetryIsDefinitive(error)) {
+          clearCompletionAttempt(false);
+          const { treeState } = await refreshCompletionState();
+          if (treeState === 'COMPLETED') {
+            toast.success(
+              'The retained request was rejected, but the latest cloud state confirms that the installation is already completed.',
+            );
+          } else if (treeState === 'DRAFT') {
+            toast.error(
+              `${installHubConnectionErrorMessage(error)} The exact retained completion request was definitively rejected, so you can review the latest Draft and try again if appropriate.`,
+            );
+          } else {
+            toast.error(
+              `${installHubConnectionErrorMessage(error)} The exact retained completion request was definitively rejected, but the latest cloud state could not be loaded.`,
+            );
+          }
+          return;
+        }
+
+        setCompletionRefreshRequired(true);
+        const { treeState } = await refreshCompletionState();
+        if (treeState === 'COMPLETED') {
+          toast.success('The latest cloud state confirms that the retained completion request completed.');
+        } else if (treeState === 'DRAFT') {
+          toast.error(
+            `${installHubConnectionErrorMessage(error)} The exact retry is still ambiguous and the cloud state remains Draft. The original request and notes remain locked.`,
+          );
+        } else {
+          toast.error(
+            `${installHubConnectionErrorMessage(error)} The exact retry is still ambiguous and the latest cloud state could not be verified.`,
+          );
+        }
+        return;
+      }
+
+      setCompletionRefreshRequired(true);
+      const { treeState, readinessRefresh } = await refreshCompletionState();
+      const readinessRefreshError = installationCompletionRefreshError(readinessRefresh);
+      if (treeState === 'COMPLETED' && !readinessRefreshError) {
+        toast.success('The exact retained completion request completed and the authoritative version is pinned.');
+      } else if (treeState === 'COMPLETED') {
+        toast.error('Completion is confirmed, but readiness could not be rechecked. Use Recheck before continuing.');
+      } else if (treeState === 'DRAFT') {
+        toast.error(
+          'The exact completion retry was accepted, but the latest cloud read still reports Draft. The same request remains locked while completion becomes visible.',
+        );
+      } else {
+        toast.error(
+          'The exact completion retry was accepted, but the latest cloud state could not be verified. The same request remains locked.',
+        );
+      }
     } finally {
       setLifecycleBusy(false);
     }
@@ -152,8 +423,24 @@ export function InstallHubInstallationDetailPage() {
           <>
             <StatusBadge status={installation.status} />
             <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit</LinkButton>
-            <Button variant="secondary" onClick={() => void writer.refresh()}><Icon name="refresh" size={17} />Refresh</Button>
-            <Button onClick={() => installation.status === 'Completed' ? setReopenOpen(true) : setCompleteOpen(true)}>
+            <Button variant="secondary" disabled={lifecycleBusy} onClick={() => void refreshCurrentInstallation()}><Icon name="refresh" size={17} />Refresh</Button>
+            <Button disabled={lifecycleBusy || completionRefreshRequired || !completionStateReady} onClick={() => {
+              if (installation.status === 'Completed') {
+                setReopenOpen(true);
+                return;
+              }
+              const previousAttempt = completionAttemptRef.current;
+              if (previousAttempt && previousAttempt.baseTreeRevision !== (tree.treeRevision || 0)) {
+                completionAttemptRef.current = null;
+              }
+              setCompletionNotes(installationCompletionNotesForDialog({
+                previousAttempt,
+                treeRevision: tree.treeRevision || 0,
+                retainedNotes: completionNotes,
+                serverNotes: installation.completionNotes,
+              }));
+              setCompleteOpen(true);
+            }}>
               {installation.status === 'Completed' ? 'Reopen' : 'Complete'}
             </Button>
             {canDelete ? (
@@ -176,6 +463,42 @@ export function InstallHubInstallationDetailPage() {
         />
       </div>
       <TreeDraftNavigationGuard active={writer.hasPendingTree} onDiscard={writer.discard} />
+
+      {completionStateReady && completionRefreshRequired ? (
+        <div className="mb-6">
+          <InlineNotice tone="warning">
+            <div className="space-y-3">
+              <p>
+                The last completion outcome is uncertain. A cloud refresh that still shows Draft does not prove the original request has stopped; its revision, idempotency key, and technician notes remain locked.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  disabled={lifecycleBusy}
+                  onClick={() => void refreshCurrentInstallation()}
+                >
+                  Check latest state
+                </Button>
+                <Button
+                  disabled={lifecycleBusy}
+                  onClick={() => void retryUncertainCompletion()}
+                >
+                  Retry exact completion
+                </Button>
+              </div>
+            </div>
+          </InlineNotice>
+        </div>
+      ) : null}
+
+      {installation.status === 'Completed' ? (
+        <Card className="mb-6 border-l-4 border-l-[var(--green)]">
+          <h2 className="font-extrabold text-[var(--text)]">Technician completion notes</h2>
+          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--text-sub)]">
+            {installation.completionNotes?.trim() || 'No technician completion notes were recorded.'}
+          </p>
+        </Card>
+      ) : null}
 
       <section className="mb-7" aria-labelledby="installhub-workspace">
         <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>
@@ -296,14 +619,36 @@ export function InstallHubInstallationDetailPage() {
         busy={lifecycleBusy}
         blockedMessage={readinessAdvisory
           ? 'Server-authoritative readiness is unavailable. Reconnect and recheck before completion.'
+          : completionRefreshRequired
+            ? 'Resolve the retained completion request before starting another attempt.'
           : !readiness?.readyToComplete
           ? `Resolve all ${readinessIssueTotal} TBC item${readinessIssueTotal === 1 ? '' : 's'} before completion.`
-          : undefined}
+          : completionNotesError ?? undefined}
         onConfirm={() => void completeCurrentInstallation()}
-        onCancel={() => setCompleteOpen(false)}
+        onCancel={() => {
+          clearCompletionAttempt(true);
+          setCompleteOpen(false);
+        }}
       >
+        <FieldLabel htmlFor="installation-completion-notes" className="mt-0">
+          Technician completion notes (optional)
+        </FieldLabel>
+        <Textarea
+          id="installation-completion-notes"
+          value={completionNotes}
+          maxLength={INSTALLATION_COMPLETION_NOTES_MAX_LENGTH}
+          rows={5}
+          placeholder="Record final handover, access, labelling, or follow-up context for the completed installation."
+          onChange={(event) => setCompletionNotes(event.target.value)}
+        />
+        <FieldHint>
+          {completionNotes.length.toLocaleString('en-AU')} of{' '}
+          {INSTALLATION_COMPLETION_NOTES_MAX_LENGTH.toLocaleString('en-AU')} characters. Blank notes are saved as none.
+        </FieldHint>
         {!readiness?.readyToComplete ? (
-          <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
+          <div className="mt-4">
+            <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Open reconciliation</LinkButton>
+          </div>
         ) : null}
       </ConfirmDialog>
 

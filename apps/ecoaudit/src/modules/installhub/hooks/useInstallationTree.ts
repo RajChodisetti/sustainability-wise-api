@@ -477,7 +477,7 @@ export async function submitAndConfirmInstallationTree(
 }
 
 type InstallationTreeRetryCallbacks = {
-  refresh: () => Promise<void>;
+  refresh: () => Promise<void | InstallationTree>;
   reviewConflict: (pendingDraft: PendingInstallationDraft) => Promise<void>;
   resubmitOriginal: (
     tree: InstallationTree,
@@ -646,7 +646,11 @@ export function useTreeWriter(installationId: string) {
     return () => window.removeEventListener('beforeunload', warnBeforeUnload);
   }, [installationId, writeState]);
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (): Promise<InstallationTree> => {
+    await queryClient.cancelQueries({
+      queryKey: installationTreeKey(installationId),
+      exact: true,
+    });
     if (pendingDraftRef.current || hasStoredPendingTree(installationId)) {
       const latest = await getInstallationTree(installationId);
       queryClient.setQueryData(installationTreeKey(installationId), latest);
@@ -655,10 +659,11 @@ export function useTreeWriter(installationId: string) {
         message: 'Latest cloud values are loaded. The older unsent tab draft remains separate; discard it or re-enter only reviewed fields.',
         attemptedRevision: current.attemptedRevision ?? pendingDraftRef.current?.baseRevision,
       }));
-      return;
+      return latest;
     }
+    const latest = await getInstallationTree(installationId);
+    queryClient.setQueryData(installationTreeKey(installationId), latest);
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: installationTreeKey(installationId) }),
       queryClient.invalidateQueries({ queryKey: installationTreesKey }),
       queryClient.invalidateQueries({ queryKey: installationReadinessKey(installationId) }),
       queryClient.invalidateQueries({ queryKey: installationElectricalTreeKey(installationId) }),
@@ -668,6 +673,7 @@ export function useTreeWriter(installationId: string) {
     setHasPendingTree(false);
     clearPendingTree(installationId);
     setWriteState({ phase: 'saved', message: 'Latest cloud revision loaded' });
+    return latest;
   }, [installationId, queryClient]);
 
   const replace = useCallback(async (

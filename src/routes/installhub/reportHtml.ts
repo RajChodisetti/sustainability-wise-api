@@ -93,6 +93,7 @@ export type InstallHubCanonicalReport = {
   mappingContentHash: string | null;
   authoritative: boolean;
   readyToComplete: boolean;
+  completionNotes?: string | null;
   electricalMapLayout?: ElectricalMapLayoutDocument;
   physicalLocations: Array<{
     id: string;
@@ -709,6 +710,7 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .meter-channel-schedule tbody tr{page-break-inside:avoid;break-inside:avoid;}
 .meter-channel-schedule small{display:block;margin-top:2px;color:#64748B;font-size:6.7pt;line-height:1.3;}
 .canonical-meta{padding:8px 10px;background:#F8FAFC;border:1px solid #CBD5E1;font-size:7.5pt;overflow-wrap:anywhere;}
+.completion-notes-value{white-space:pre-wrap;}
 .electrical-map{page:electricalmap;page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
 .electrical-map-frame{margin:8px 0 14px;padding:8px;border:1px solid #CBD5E1;border-radius:7px;background:#FFFFFF;page-break-inside:avoid;break-inside:avoid;}
 .electrical-map-frame img{display:block;width:100%;height:auto;max-height:555px;object-fit:contain;}
@@ -1048,9 +1050,14 @@ function installationDetailsHtml(
   const details = detailMode === 'by-zone'
     ? zoneDetailsHtml(report)
     : `<div class="detail-group"><div class="detail-group-title">Incoming supply to connected loads</div>${hierarchyRows(report) || '<div class="canonical-meta">No resolved electrical hierarchy recorded.</div>'}</div>`;
+  const completionNotes = report.completionNotes?.trim();
+  const completionNotesBlock = completionNotes
+    ? `<h3>Completion notes</h3><div class="canonical-meta completion-notes-value">${escapeHtml(completionNotes)}</div>`
+    : '';
   return `<div class="canonical-section">
     <div class="section-bar">${report.reportSource === 'canonical-version' ? 'Pinned canonical installation' : 'Current installation diagnostic'}</div>
     <div class="canonical-meta">Report source ${report.reportSource} &middot; ${authorityLabel} &middot; Tree revision ${report.treeRevision} &middot; Ready ${report.readyToComplete ? 'YES' : 'NO'} &middot; ${canonicalVersionMeta}</div>
+    ${completionNotesBlock}
     ${map}
     ${cappedFallbackNotice}
     ${zoneModeHierarchyFallback}
@@ -1151,9 +1158,14 @@ function canonicalReportHtml(report: InstallHubCanonicalReport): string {
   const virtualCaveat = report.reportSource === 'canonical-version'
     ? 'The pinned formula subtracts the listed assignments from the pinned total assignment; changes made after this record version are not included.'
     : 'The live formula uses the current mutable tree and may change after this report is generated.';
+  const completionNotes = report.completionNotes?.trim();
+  const completionNotesBlock = completionNotes
+    ? `<h3>Completion notes</h3><div class="canonical-meta completion-notes-value">${escapeHtml(completionNotes)}</div>`
+    : '';
   return `<div class="canonical-section">
     <div class="section-bar">${sectionTitle}</div>
     <div class="canonical-meta">Report source ${report.reportSource} &middot; ${authorityLabel} &middot; Tree revision ${report.treeRevision} &middot; Ready ${report.readyToComplete ? 'YES' : 'NO'} &middot; ${canonicalVersionMeta}</div>
+    ${completionNotesBlock}
     <h3>Physical-zone summary</h3>
     <table class="canonical-table"><thead><tr><th>Zone</th><th>Description</th><th>Stable ID</th></tr></thead><tbody>${physicalLocations}</tbody></table>
     <h3>Electrical hierarchy</h3>

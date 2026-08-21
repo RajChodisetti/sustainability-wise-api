@@ -193,7 +193,87 @@ export function financeAppLabel(app: FinanceSourceApp): string {
 }
 
 export function financeJobNeedsReview(job: FinanceOverviewItem): boolean {
+  // This compatibility helper intentionally represents the audited-hours flag only.
+  // The broader finance queue uses financeJobExceptionKinds instead.
   return job.needsHoursReview;
+}
+
+export type FinanceExceptionKind =
+  | 'overdue'
+  | 'hours_review'
+  | 'completed_without_invoice'
+  | 'unbilled';
+
+export type FinanceExceptionFilter = 'all' | FinanceExceptionKind;
+
+const financeExceptionPriority: Record<FinanceExceptionKind, number> = {
+  overdue: 0,
+  hours_review: 1,
+  completed_without_invoice: 2,
+  unbilled: 3,
+};
+
+export function financeJobExceptionKinds(
+  job: FinanceOverviewItem,
+): FinanceExceptionKind[] {
+  const kinds: FinanceExceptionKind[] = [];
+  if (job.hasOverdueInvoice) kinds.push('overdue');
+  if (job.needsHoursReview) kinds.push('hours_review');
+  if (job.invoiceReadiness.completionSatisfied && job.invoiceCount === 0) {
+    kinds.push('completed_without_invoice');
+  }
+  if (
+    job.unbilledAmount > 0
+    && (job.invoiceReadiness.completionSatisfied || job.invoiceCount > 0)
+  ) {
+    kinds.push('unbilled');
+  }
+  return kinds;
+}
+
+export function financeExceptionCounts(
+  jobs: FinanceOverviewItem[],
+): Record<FinanceExceptionKind, number> {
+  const counts: Record<FinanceExceptionKind, number> = {
+    overdue: 0,
+    hours_review: 0,
+    completed_without_invoice: 0,
+    unbilled: 0,
+  };
+  for (const job of jobs) {
+    for (const kind of financeJobExceptionKinds(job)) counts[kind] += 1;
+  }
+  return counts;
+}
+
+export function financeJobMatchesExceptionFilter(
+  job: FinanceOverviewItem,
+  filter: FinanceExceptionFilter,
+): boolean {
+  return filter === 'all' || financeJobExceptionKinds(job).includes(filter);
+}
+
+export function selectedVisibleFinanceJob(
+  visibleJobs: FinanceOverviewItem[],
+  selectedFinanceId: string | null,
+): FinanceOverviewItem | null {
+  if (!selectedFinanceId) return null;
+  return visibleJobs.find((job) => financeJobKey(job) === selectedFinanceId) ?? null;
+}
+
+export function compareFinanceExceptionJobs(
+  left: FinanceOverviewItem,
+  right: FinanceOverviewItem,
+): number {
+  const priority = (job: FinanceOverviewItem) => {
+    const kinds = financeJobExceptionKinds(job);
+    return kinds.length
+      ? Math.min(...kinds.map((kind) => financeExceptionPriority[kind]))
+      : Number.POSITIVE_INFINITY;
+  };
+  return priority(left) - priority(right)
+    || right.jobDate.localeCompare(left.jobDate)
+    || left.financeId.localeCompare(right.financeId);
 }
 
 export function availableInvoiceExpenses(expenses: FinanceExpense[]): FinanceExpense[] {
@@ -379,6 +459,26 @@ export function schedulerTabTransition(
     href: `/scheduler?${params.toString()}`,
     financeTarget: financeTab ? schedulerFinanceTargetFromSearchParams(params) : undefined,
   };
+}
+
+export type SchedulerTabLinkActivation = {
+  defaultPrevented: boolean;
+  button: number;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+};
+
+export function schedulerTabLinkShouldActivateInPlace(
+  event: SchedulerTabLinkActivation,
+): boolean {
+  return !event.defaultPrevented
+    && event.button === 0
+    && !event.metaKey
+    && !event.ctrlKey
+    && !event.shiftKey
+    && !event.altKey;
 }
 
 export function consolidatedInvoiceJobSubtotal(

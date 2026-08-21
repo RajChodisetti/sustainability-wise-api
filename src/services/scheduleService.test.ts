@@ -7,6 +7,8 @@ import {
   deriveScheduledEndAt,
   MAX_ESTIMATED_DURATION_MINUTES,
   parseEstimatedDurationMinutes,
+  scheduleUpdateReactivatesProduct,
+  scheduleUpdateRequiresActiveProduct,
   sortByDeadlineUrgency,
 } from './scheduleService.js';
 
@@ -35,6 +37,36 @@ test('sortByDeadlineUrgency puts overdue and soonest first; done last', () => {
     sorted.map((item) => item.id),
     ['overdue', 'soon', 'future', 'done'],
   );
+});
+
+test('reactivating done or cancelled work requires the linked product to be active', () => {
+  assert.equal(scheduleUpdateReactivatesProduct({
+    existingStatus: 'done', nextStatus: 'planned',
+  }), true);
+  assert.equal(scheduleUpdateReactivatesProduct({
+    existingStatus: 'cancelled', nextStatus: 'in_progress',
+  }), true);
+  assert.equal(scheduleUpdateReactivatesProduct({
+    existingStatus: 'planned', nextStatus: 'in_progress',
+  }), false);
+  assert.equal(scheduleUpdateReactivatesProduct({
+    existingStatus: 'done', nextStatus: 'done',
+  }), false);
+  assert.equal(scheduleUpdateRequiresActiveProduct({
+    existingStatus: 'done', nextStatus: 'planned', explicitAssignee: false,
+  }), true);
+  assert.equal(scheduleUpdateRequiresActiveProduct({
+    existingStatus: 'cancelled', nextStatus: 'in_progress', explicitAssignee: false,
+  }), true);
+  assert.equal(scheduleUpdateRequiresActiveProduct({
+    existingStatus: 'planned', nextStatus: 'in_progress', explicitAssignee: false,
+  }), false);
+  assert.equal(scheduleUpdateRequiresActiveProduct({
+    existingStatus: 'planned', nextStatus: 'planned', explicitAssignee: true,
+  }), true);
+  assert.equal(scheduleUpdateRequiresActiveProduct({
+    existingStatus: 'done', nextStatus: 'done', explicitAssignee: true,
+  }), false);
 });
 
 test('estimated duration accepts only optional positive whole minutes within seven days', () => {

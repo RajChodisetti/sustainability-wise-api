@@ -104,6 +104,52 @@ test('report manifest is versioned and covers all six current and two legacy for
   );
 });
 
+test('canonical completion notes render escaped from the pinned report and blank notes are omitted', () => {
+  const canonicalReport: InstallHubCanonicalReport = {
+    reportSource: 'canonical-version',
+    treeRevision: 4,
+    recordVersionNumber: 3,
+    snapshotPayloadHash: 'snapshot-3',
+    mappingContentHash: 'mapping-3',
+    authoritative: true,
+    readyToComplete: true,
+    completionNotes: 'Final <script>alert("unsafe")</script>\nLabels verified.',
+    physicalLocations: [],
+    electricalNodes: [],
+    supplyEdges: [],
+    measurementEdges: [],
+    meters: [],
+    unresolvedRelationships: [],
+    assets: [],
+    meteringRows: [],
+    virtualMeterDefinitions: [],
+    readinessIssues: [],
+  };
+  const render = (report: InstallHubCanonicalReport) => buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    logoDataUri: 'data:image/png;base64,bG9nbw==',
+    includeIntro: true,
+    includeEnd: true,
+    generatedLabel: 'Generated 21/08/2026',
+    canonicalReport: report,
+  });
+
+  const html = render(canonicalReport);
+  assert.match(html, /Completion notes/);
+  assert.match(
+    html,
+    /Final &lt;script&gt;alert\(&quot;unsafe&quot;\)&lt;\/script&gt;\nLabels verified\./,
+  );
+  assert.doesNotMatch(html, /<script>alert/);
+
+  const blankHtml = render({ ...canonicalReport, completionNotes: '   ' });
+  assert.doesNotMatch(blankHtml, /Completion notes/);
+});
+
 test('dynamic installation report sections follow A3RM and A6M channel visibility', () => {
   const definition = INSTALLHUB_REPORT_DEFINITION_BY_TYPE['ww-installation'];
   const sectionTitles = (answers: Record<string, string>) =>

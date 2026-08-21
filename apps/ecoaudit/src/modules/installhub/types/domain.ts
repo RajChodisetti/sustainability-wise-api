@@ -270,6 +270,7 @@ export type Installation = {
   updatedAt: string;
   completedAt?: string | null;
   completedByUserId?: string | null;
+  completionNotes?: string | null;
   reopenedAt?: string | null;
   reopenedByUserId?: string | null;
   reopenReason?: string | null;

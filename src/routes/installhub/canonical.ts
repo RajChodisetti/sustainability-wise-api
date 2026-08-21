@@ -120,6 +120,7 @@ export type CanonicalInstallation = {
   completedAt?: string | null;
   completedByUserId?: string | null;
   completedFromRevision?: number | null;
+  completionNotes?: string | null;
   reopenedAt?: string | null;
   reopenedByUserId?: string | null;
   reopenedFromVersionNumber?: number | null;
@@ -943,6 +944,15 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     completedFromRevision: item.completedFromRevision == null
       ? null
       : integer(item.completedFromRevision, 0, 'installation.completedFromRevision'),
+    completionNotes: (() => {
+      const notes = optionalText(item.completionNotes);
+      if (notes && notes.length > 2_000) {
+        throw new CanonicalInputError(
+          'installation.completionNotes must contain at most 2000 characters',
+        );
+      }
+      return notes;
+    })(),
     reopenedAt: iso(item.reopenedAt),
     reopenedByUserId: optionalText(item.reopenedByUserId),
     reopenedFromVersionNumber: item.reopenedFromVersionNumber == null

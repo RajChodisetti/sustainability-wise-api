@@ -184,6 +184,7 @@ export async function loadCanonicalInstallationTree(
       completedAt: iso(installation.completedAt),
       completedByUserId: installation.completedByUserId,
       completedFromRevision: installation.completedFromRevision,
+      completionNotes: installation.completionNotes,
       reopenedAt: iso(installation.reopenedAt),
       reopenedByUserId: installation.reopenedByUserId,
       reopenedFromVersionNumber: installation.reopenedFromVersionNumber,
@@ -1776,9 +1777,22 @@ export function canonicalSnapshotContentHash(
   // v2.2 changed only JSON/hash canonicalization. Treat an otherwise exact
   // v2.1 pin as the same immutable content so retry never creates a version
   // solely to repair historical hash provenance.
-  const comparable = withoutHash.canonicalizerVersion === 'installation-canonical-v2.1'
+  const canonicalizerComparable = withoutHash.canonicalizerVersion === 'installation-canonical-v2.1'
     ? { ...withoutHash, canonicalizerVersion: INSTALLATION_CANONICALIZER_VERSION }
     : withoutHash;
+  // completionNotes was added as nullable. Historical snapshots omit it, while
+  // current live-tree projection emits null. Normalize only the comparison
+  // shape; never rewrite the immutable snapshot or its stored payload hash.
+  const installation = canonicalizerComparable.installationTree.installation;
+  const comparable = Object.prototype.hasOwnProperty.call(installation, 'completionNotes')
+    ? canonicalizerComparable
+    : {
+        ...canonicalizerComparable,
+        installationTree: {
+          ...canonicalizerComparable.installationTree,
+          installation: { ...installation, completionNotes: null },
+        },
+      };
   return canonicalPayloadHash(comparable);
 }
 

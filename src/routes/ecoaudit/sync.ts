@@ -34,6 +34,7 @@ import {
   createConfiguredUploadUrl,
   requireUploadCapability,
 } from '../../auth/uploadCapability.js';
+import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 
 function uploadUrl(sessionId: string): string {
   return createConfiguredUploadUrl(
@@ -330,24 +331,35 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const { id: _aid, ...auditUpdateValues } = auditValues;
     const excludedStatus = sql.raw(`excluded.${eaAudits.status.name}`);
     const excludedCompletedAt = sql.raw(`excluded.${eaAudits.completedAt.name}`);
-    const [upsertedAudit] = await db
-      .insert(eaAudits)
-      .values(auditValues as any)
-      .onConflictDoUpdate({
-        target: eaAudits.id,
-        set: {
-          ...auditUpdateValues,
-          completedAt: sql<Date | null>`case
-            when ${eaAudits.status} = 'Completed'
-              then coalesce(${eaAudits.completedAt}, ${excludedCompletedAt})
-            when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
-            else null
-          end`,
-        } as any,
-        setWhere: sql`${eaAudits.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
-      })
-      .returning({ id: eaAudits.id });
-    if (!upsertedAudit) throw conflict('audit_completed_reopen_requires_explicit_transition');
+    await db.transaction(async (tx) => {
+      const [upsertedAudit] = await tx
+        .insert(eaAudits)
+        .values(auditValues as any)
+        .onConflictDoUpdate({
+          target: eaAudits.id,
+          set: {
+            ...auditUpdateValues,
+            completedAt: sql<Date | null>`case
+              when ${eaAudits.status} = 'Completed'
+                then coalesce(${eaAudits.completedAt}, ${excludedCompletedAt})
+              when ${excludedStatus} = 'Completed' then ${excludedCompletedAt}
+              else null
+            end`,
+          } as any,
+          setWhere: sql`${eaAudits.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
+        })
+        .returning({ id: eaAudits.id });
+      if (!upsertedAudit) {
+        throw conflict('audit_completed_reopen_requires_explicit_transition');
+      }
+      if (!auditValues.deletedAt && auditValues.status === 'Completed') {
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'ecoaudit',
+          sourceType: 'audit',
+          sourceId: localAuditId,
+        }, { observedAt: receivedAt });
+      }
+    });
     if (auditValues.deletedAt) {
       await deletePhotosForAudit(localAuditId);
       const versionNumber = await saveRecordVersion({

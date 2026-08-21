@@ -403,6 +403,36 @@ async function assertSourceExists(
   throw badRequest('Invalid sourceApp / sourceType combination');
 }
 
+async function assertLinkedSourceActiveForReactivation(
+  executor: ScheduleExecutor,
+  sourceApp: ScheduleSourceApp,
+  sourceType: ScheduleSourceType,
+  sourceId: string | null,
+): Promise<void> {
+  // New Solar links target assessments, but historical site-linked rows remain
+  // readable and can be completed by the site lifecycle projection. They may
+  // only be reactivated while that exact site is again an active Draft.
+  if (sourceApp === 'solarsense' && sourceType === 'site') {
+    if (!sourceId?.trim()) {
+      throw badRequest('sourceId is required for linked jobs');
+    }
+    const [site] = await executor
+      .select({ id: ssSites.id })
+      .from(ssSites)
+      .where(and(
+        eq(ssSites.id, sourceId.trim()),
+        eq(ssSites.status, 'Draft'),
+        isNull(ssSites.deletedAt),
+      ))
+      .for('update')
+      .limit(1);
+    if (!site) throw notFound('Active Draft site');
+    return;
+  }
+
+  await assertSourceExists(executor, sourceApp, sourceType, sourceId);
+}
+
 function validateAppTypePair(sourceApp: ScheduleSourceApp, sourceType: ScheduleSourceType): void {
   if (sourceApp === 'custom' && sourceType !== 'custom') {
     throw badRequest('custom sourceApp requires sourceType custom');
@@ -575,11 +605,65 @@ async function clearLinkedSourceAssignment(
   }
 }
 
+/**
+ * Scheduler/product transactions use product -> event as their row-lock order.
+ * This lifecycle-neutral lock also covers completed/deleted source rows so an
+ * event update cannot invert that order against a concurrent completion.
+ */
+async function lockLinkedSourceRow(
+  executor: ScheduleExecutor,
+  sourceApp: ScheduleSourceApp,
+  sourceType: ScheduleSourceType,
+  sourceId: string | null,
+): Promise<void> {
+  if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') return;
+  if (sourceApp === 'ecoaudit' && sourceType === 'audit') {
+    await executor.select({ id: eaAudits.id }).from(eaAudits)
+      .where(eq(eaAudits.id, sourceId)).for('update').limit(1);
+    return;
+  }
+  if (sourceApp === 'solarsense' && sourceType === 'site') {
+    await executor.select({ id: ssSites.id }).from(ssSites)
+      .where(eq(ssSites.id, sourceId)).for('update').limit(1);
+    return;
+  }
+  if (sourceApp === 'solarsense' && sourceType === 'assessment') {
+    const [assessmentHint] = await executor
+      .select({ siteId: ssRooftopAssessments.siteId })
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, sourceId))
+      .limit(1);
+    if (!assessmentHint) return;
+    if (!assessmentHint.siteId) {
+      await executor.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments)
+        .where(eq(ssRooftopAssessments.id, sourceId)).for('update').limit(1);
+      return;
+    }
+    await executor.select({ id: ssSites.id }).from(ssSites)
+      .where(eq(ssSites.id, assessmentHint.siteId)).for('update').limit(1);
+    const [lockedAssessment] = await executor
+      .select({ siteId: ssRooftopAssessments.siteId })
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, sourceId))
+      .for('update')
+      .limit(1);
+    if (lockedAssessment && lockedAssessment.siteId !== assessmentHint.siteId) {
+      throw conflict('linked_assessment_site_changed');
+    }
+    return;
+  }
+  if (sourceApp === 'installhub' && sourceType === 'installation') {
+    await executor.select({ id: ihInstallations.id }).from(ihInstallations)
+      .where(eq(ihInstallations.id, sourceId)).for('update').limit(1);
+  }
+}
+
 async function assertNoActiveLinkedEvent(
   executor: ScheduleExecutor,
   sourceApp: ScheduleSourceApp,
   sourceType: ScheduleSourceType,
   sourceId: string | null,
+  excludeEventId?: string,
 ): Promise<void> {
   if (!sourceId || sourceApp === 'custom') return;
   const [existing] = await executor
@@ -590,6 +674,7 @@ async function assertNoActiveLinkedEvent(
       eq(portalScheduleEvents.sourceType, sourceType),
       eq(portalScheduleEvents.sourceId, sourceId),
       ne(portalScheduleEvents.status, 'cancelled'),
+      ...(excludeEventId ? [ne(portalScheduleEvents.id, excludeEventId)] : []),
     ))
     .limit(1);
   if (existing) throw conflict('Job already has an active scheduler event');
@@ -752,6 +837,7 @@ export async function createScheduleEvent(
   if (status === 'cancelled') throw badRequest('Create with planned status; cancel via PATCH/DELETE');
 
   const created = await db.transaction(async (tx) => {
+    await lockLinkedSourceRow(tx, sourceApp, sourceType, sourceId);
     const labelFromSource = await assertSourceExists(tx, sourceApp, sourceType, sourceId);
     const title = (input.title?.trim() || labelFromSource || 'Scheduled work').slice(0, 300);
     if (!title) throw badRequest('title is required');
@@ -1139,6 +1225,32 @@ export function scheduleBusinessFieldsChanged(
     || before.status !== after.status;
 }
 
+export function scheduleUpdateRequiresActiveProduct(input: {
+  existingStatus: ScheduleStatus;
+  nextStatus: ScheduleStatus;
+  explicitAssignee: boolean;
+}): boolean {
+  const nextStatusIsActive = input.nextStatus === 'planned'
+    || input.nextStatus === 'in_progress';
+  return nextStatusIsActive && (
+    input.explicitAssignee
+    || input.existingStatus === 'cancelled'
+    || input.existingStatus === 'done'
+  );
+}
+
+export function scheduleUpdateReactivatesProduct(input: {
+  existingStatus: ScheduleStatus;
+  nextStatus: ScheduleStatus;
+}): boolean {
+  const nextStatusIsActive = input.nextStatus === 'planned'
+    || input.nextStatus === 'in_progress';
+  return nextStatusIsActive && (
+    input.existingStatus === 'cancelled'
+    || input.existingStatus === 'done'
+  );
+}
+
 export async function updateScheduleEvent(
   user: AuthUser,
   id: string,
@@ -1155,6 +1267,26 @@ export async function updateScheduleEvent(
     : undefined;
 
   const updated = await db.transaction(async (tx) => {
+    // Source identity is immutable through this API. Read it without an event
+    // row lock, acquire the linked product lock, then lock/re-read the event.
+    // Completion paths use the same product -> event order.
+    const [sourceHint] = await tx
+      .select({
+        sourceApp: portalScheduleEvents.sourceApp,
+        sourceType: portalScheduleEvents.sourceType,
+        sourceId: portalScheduleEvents.sourceId,
+      })
+      .from(portalScheduleEvents)
+      .where(eq(portalScheduleEvents.id, id))
+      .limit(1);
+    if (!sourceHint) throw notFound('Schedule event');
+    assertSchedulerSourceAppVisible(sourceHint.sourceApp);
+    await lockLinkedSourceRow(
+      tx,
+      sourceHint.sourceApp as ScheduleSourceApp,
+      sourceHint.sourceType as ScheduleSourceType,
+      sourceHint.sourceId,
+    );
     const [existing] = await tx
       .select()
       .from(portalScheduleEvents)
@@ -1162,6 +1294,13 @@ export async function updateScheduleEvent(
       .for('update')
       .limit(1);
     if (!existing) throw notFound('Schedule event');
+    if (
+      existing.sourceApp !== sourceHint.sourceApp
+      || existing.sourceType !== sourceHint.sourceType
+      || existing.sourceId !== sourceHint.sourceId
+    ) {
+      throw conflict('schedule_event_source_changed');
+    }
     assertSchedulerSourceAppVisible(existing.sourceApp);
 
     const existingGlobalUserId = isMobileScheduleNotificationTarget(existing)
@@ -1231,24 +1370,41 @@ export async function updateScheduleEvent(
       patch.scheduledEndAt = deriveScheduledEndAt(start, estimatedDurationMinutes);
     }
 
-    const nextStatusIsActive = nextStatus === 'planned' || nextStatus === 'in_progress';
     const explicitAssignee = input.assigneeFieldUserId !== undefined;
-    let productAssignmentRepaired = false;
-    if (
-      nextStatusIsActive
-      && isMobileScheduleNotificationTarget(existing)
-      && (explicitAssignee || existing.status === 'cancelled')
-    ) {
-      await assertSourceExists(
+    const reactivatesLinkedProduct = scheduleUpdateReactivatesProduct({
+      existingStatus: existing.status as ScheduleStatus,
+      nextStatus,
+    });
+    const updateRequiresActiveProduct = scheduleUpdateRequiresActiveProduct({
+      existingStatus: existing.status as ScheduleStatus,
+      nextStatus,
+      explicitAssignee,
+    });
+    if (reactivatesLinkedProduct) {
+      await assertLinkedSourceActiveForReactivation(
         tx,
         existing.sourceApp as ScheduleSourceApp,
         existing.sourceType as ScheduleSourceType,
         existing.sourceId,
       );
+    }
+    let productAssignmentRepaired = false;
+    if (
+      isMobileScheduleNotificationTarget(existing)
+      && updateRequiresActiveProduct
+    ) {
+      if (!reactivatesLinkedProduct) {
+        await assertSourceExists(
+          tx,
+          existing.sourceApp as ScheduleSourceApp,
+          existing.sourceType as ScheduleSourceType,
+          existing.sourceId,
+        );
+      }
       const subject = assignee
         ?? await loadSchedulerSubject(tx, existing.assigneeFieldUserId);
       // Lock the linked product before checking for another active event. This
-      // serializes two cancelled events being reopened at the same time.
+      // serializes concurrent inactive-event reactivation attempts.
       productAssignmentRepaired = await alignLinkedSourceAssignment(
         tx,
         existing.sourceApp as ScheduleSourceApp,
@@ -1258,12 +1414,13 @@ export async function updateScheduleEvent(
       );
       assignee = subject;
     }
-    if (nextStatusIsActive && existing.status === 'cancelled') {
+    if (reactivatesLinkedProduct) {
       await assertNoActiveLinkedEvent(
         tx,
         existing.sourceApp as ScheduleSourceApp,
         existing.sourceType as ScheduleSourceType,
         existing.sourceId,
+        existing.id,
       );
     }
 
@@ -1330,7 +1487,10 @@ export async function updateScheduleEvent(
           row,
           assignee.globalUserId,
         );
-      } else if (existing.status === 'cancelled' && currentGlobalUserId) {
+      } else if (
+        (existing.status === 'cancelled' || existing.status === 'done')
+        && currentGlobalUserId
+      ) {
         await cancelPendingSchedulerNotifications(tx, row.id, {}, new Date());
         await enqueueImmediateSchedulerNotification(
           tx,

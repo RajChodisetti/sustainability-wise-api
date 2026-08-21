@@ -18,6 +18,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       photoCopyReferences,
       photoRegistry,
       portalScheduleEvents,
+      schedulerNotificationJobs,
       unifiedUsers,
     },
     {
@@ -379,6 +380,74 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     });
     assert.equal(legacyScheduleRewrite.estimatedDurationMinutes, null);
     assert.equal(legacyScheduleRewrite.scheduledEndAt, null);
+
+    const doneLinkedEco = await updateScheduleEvent(admin, linkedEco.id, {
+      status: 'done',
+    });
+    assert.equal(doneLinkedEco.status, 'done');
+    const reactivatedLinkedEco = await updateScheduleEvent(admin, linkedEco.id, {
+      status: 'planned',
+    });
+    assert.equal(reactivatedLinkedEco.status, 'planned');
+
+    const legacySiteEventId = randomUUID();
+    await db.insert(portalScheduleEvents).values({
+      id: legacySiteEventId,
+      title: 'Legacy Solar site event',
+      sourceApp: 'solarsense',
+      sourceType: 'site',
+      sourceId: solarSite.id,
+      assigneeFieldUserId: firstAssignee.fieldUserId,
+      assigneeDisplayName: firstAssignee.name,
+      assigneeEmail: firstAssignee.email,
+      scheduledStartAt: new Date(baseDispatch.scheduledStartAt),
+      deadlineAt: new Date(baseDispatch.deadlineAt),
+      status: 'done',
+      createdByUserId: actor.appUserIds.ecoaudit,
+      createdByApp: 'ecoaudit',
+    });
+    await db.update(ssSites).set({
+      status: 'Completed',
+      completedAt: now,
+    }).where(eq(ssSites.id, solarSite.id));
+    await assert.rejects(
+      updateScheduleEvent(admin, legacySiteEventId, { status: 'planned' }),
+      (error: unknown) => (
+        (error as { statusCode?: number; message?: string }).statusCode === 404
+        && (error as { message?: string }).message === 'Active Draft site not found'
+      ),
+    );
+
+    await db.update(ssSites).set({
+      status: 'Draft',
+      completedAt: null,
+      deletedAt: null,
+    }).where(eq(ssSites.id, solarSite.id));
+    const reactivatedLegacySite = await updateScheduleEvent(admin, legacySiteEventId, {
+      status: 'planned',
+    });
+    assert.equal(reactivatedLegacySite.status, 'planned');
+    const legacySiteNotifications = await db.select({ id: schedulerNotificationJobs.id })
+      .from(schedulerNotificationJobs)
+      .where(eq(schedulerNotificationJobs.eventId, legacySiteEventId));
+    assert.deepEqual(legacySiteNotifications, []);
+
+    await updateScheduleEvent(admin, legacySiteEventId, { status: 'done' });
+    await db.update(ssSites).set({ deletedAt: now })
+      .where(eq(ssSites.id, solarSite.id));
+    await assert.rejects(
+      updateScheduleEvent(admin, legacySiteEventId, { status: 'in_progress' }),
+      (error: unknown) => (
+        (error as { statusCode?: number; message?: string }).statusCode === 404
+        && (error as { message?: string }).message === 'Active Draft site not found'
+      ),
+    );
+    const [stillDoneLegacySiteEvent] = await db.select({ status: portalScheduleEvents.status })
+      .from(portalScheduleEvents)
+      .where(eq(portalScheduleEvents.id, legacySiteEventId));
+    assert.equal(stillDoneLegacySiteEvent.status, 'done');
+    await db.update(ssSites).set({ deletedAt: null })
+      .where(eq(ssSites.id, solarSite.id));
 
     // A cancelled Solar event can be rescheduled, but two concurrent attempts
     // still serialize on the product row and produce only one active event.

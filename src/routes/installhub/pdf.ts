@@ -222,6 +222,7 @@ function canonicalReportProjection(input: {
     authoritative: input.reportSource === 'canonical-version'
       && input.readiness.eligibility.authoritativeReport,
     readyToComplete: input.readiness.readyToComplete,
+    completionNotes: input.tree.installation.completionNotes ?? null,
     ...(input.tree.installation.electricalMapLayout
       ? { electricalMapLayout: input.tree.installation.electricalMapLayout }
       : {}),

@@ -236,6 +236,7 @@ export default function SchedulerPage({
             initialTarget={financeTarget}
             visibleSourceApps={visibleSourceApps}
             selectableSourceApps={selectableSourceApps}
+            onActivateView={(nextView) => activateTab(nextView)}
           />
         </div>
       ) : null}

@@ -302,6 +302,13 @@
       "when": 1787155655548,
       "tag": "0042_third_wilson_fisk",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1787352073645,
+      "tag": "0043_installhub_completion_notes",
+      "breakpoints": true
     }
   ]
 }

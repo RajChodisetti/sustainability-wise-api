@@ -72,6 +72,26 @@ test('canonicalizer backfills an editable meter custom name for legacy wire payl
   );
 });
 
+test('canonical completion notes normalize blanks and enforce the 2,000-character invariant', () => {
+  const blank = baseTree();
+  blank.installation.completionNotes = '  \n\t  ';
+  assert.equal(normalizeInstallationTreeV2(blank).installation.completionNotes, null);
+
+  const bounded = baseTree();
+  bounded.installation.completionNotes = `  ${'x'.repeat(2_000)}  `;
+  assert.equal(
+    normalizeInstallationTreeV2(bounded).installation.completionNotes,
+    'x'.repeat(2_000),
+  );
+
+  const oversized = baseTree();
+  oversized.installation.completionNotes = 'x'.repeat(2_001);
+  assert.throws(
+    () => normalizeInstallationTreeV2(oversized),
+    /installation\.completionNotes must contain at most 2000 characters/,
+  );
+});
+
 test('optional default projection is pure, idempotent, and fingerprint-equivalent', () => {
   const historical = baseTree();
   historical.installation.timezone = 'Invalid/Timezone';
@@ -2515,5 +2535,22 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     canonicalSnapshotContentHash(storedShape),
   );
   assert.equal(JSON.stringify(legacySnapshot), legacyBeforeVerification);
+
+  const preCompletionNotesWithoutHash = structuredClone(storedWithoutHash);
+  delete preCompletionNotesWithoutHash.installationTree.installation.completionNotes;
+  const preCompletionNotesSnapshot = {
+    ...preCompletionNotesWithoutHash,
+    payloadHash: canonicalPayloadHash(preCompletionNotesWithoutHash),
+  };
+  const preCompletionNotesBeforeComparison = JSON.stringify(preCompletionNotesSnapshot);
+  assert.equal(canonicalSnapshotPayloadHashMatches(preCompletionNotesSnapshot), true);
+  assert.equal(
+    canonicalSnapshotContentHash(preCompletionNotesSnapshot),
+    canonicalSnapshotContentHash(storedShape),
+  );
+  assert.equal(
+    JSON.stringify(preCompletionNotesSnapshot),
+    preCompletionNotesBeforeComparison,
+  );
   assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.8');
 });

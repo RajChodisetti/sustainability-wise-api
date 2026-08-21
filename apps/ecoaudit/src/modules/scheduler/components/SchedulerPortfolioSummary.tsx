@@ -1,11 +1,18 @@
 'use client';
 
+import Link from 'next/link';
+import type { MouseEvent } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { useSchedulerPortfolioSummary } from '@/modules/scheduler/hooks/useScheduler';
 import { wholeBillingHours } from '@/modules/scheduler/lib/billingHours';
-import { draftReservedAmount, financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
+import {
+  draftReservedAmount,
+  financeAppLabel,
+  marginTone,
+  schedulerTabLinkShouldActivateInPlace,
+} from '@/modules/scheduler/lib/finance';
 import type { FinanceSourceApp } from '@/modules/scheduler/types/domain';
 
 function money(value: number, currency: string): string {
@@ -29,8 +36,10 @@ const toneClass = {
 
 export function SchedulerPortfolioSummary({
   visibleSourceApps,
+  onActivateInvoices,
 }: {
   visibleSourceApps: FinanceSourceApp[];
+  onActivateInvoices: () => void;
 }) {
   const query = useSchedulerPortfolioSummary();
 
@@ -52,6 +61,11 @@ export function SchedulerPortfolioSummary({
   const visibleProducts = visibleProductLabels.length < 2
     ? visibleProductLabels[0] ?? 'Scheduler'
     : `${visibleProductLabels.slice(0, -1).join(', ')}, and ${visibleProductLabels.at(-1)}`;
+  function activateInvoices(event: MouseEvent<HTMLAnchorElement>) {
+    if (!schedulerTabLinkShouldActivateInPlace(event)) return;
+    event.preventDefault();
+    onActivateInvoices();
+  }
   return (
     <section aria-labelledby="portfolio-finance-heading" className="space-y-3">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -65,13 +79,27 @@ export function SchedulerPortfolioSummary({
         </div>
         <div className="flex flex-wrap gap-2 text-xs font-bold">
           {summary.statusCounts.overdue > 0 ? (
-            <span className="rounded-full bg-[var(--red-soft)] px-3 py-1.5 text-[var(--red)]">
-              {summary.statusCounts.overdue} overdue
-            </span>
+            <Link
+              href="/scheduler?tab=invoices"
+              onClick={activateInvoices}
+              className="rounded-full bg-[var(--red-soft)] px-3 py-1.5 text-[var(--red)] no-underline transition hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-[var(--red)]/30"
+            >
+              {summary.statusCounts.overdue} overdue · review invoices
+            </Link>
           ) : null}
-          <span className="rounded-full bg-[var(--surface2)] px-3 py-1.5 text-[var(--text-sub)]">
-            {summary.statusCounts.draft} draft invoice{summary.statusCounts.draft === 1 ? '' : 's'}
-          </span>
+          {summary.statusCounts.draft > 0 ? (
+            <Link
+              href="/scheduler?tab=invoices"
+              onClick={activateInvoices}
+              className="rounded-full bg-[var(--amber-soft)] px-3 py-1.5 text-[var(--amber)] no-underline transition hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-[var(--amber)]/30"
+            >
+              {summary.statusCounts.draft} draft invoice{summary.statusCounts.draft === 1 ? '' : 's'} · continue
+            </Link>
+          ) : (
+            <span className="rounded-full bg-[var(--green-soft)] px-3 py-1.5 text-[var(--green)]">
+              No draft invoices
+            </span>
+          )}
         </div>
       </div>
 
