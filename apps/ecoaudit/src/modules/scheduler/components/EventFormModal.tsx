@@ -79,12 +79,6 @@ type InstallHubJobDetails = {
   quoteNumber: string;
   jobComments: string;
   accessInformation: string;
-  warrantyDevice: boolean | null;
-  monitoringInstalled: boolean | null;
-  hardwareInstalled: boolean | null;
-  solarCapacityKw: string;
-  additionalMonitoringRequired: boolean | null;
-  additionalMonitoringHardware: string;
 };
 
 const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
@@ -101,14 +95,7 @@ const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
   quoteNumber: '',
   jobComments: '',
   accessInformation: '',
-  warrantyDevice: null,
-  monitoringInstalled: null,
-  hardwareInstalled: null,
-  solarCapacityKw: '',
-  additionalMonitoringRequired: null,
-  additionalMonitoringHardware: '',
 };
-const MAX_SOLAR_CAPACITY_KW = 1_000_000;
 
 function optionalJobText(value: string): string | null {
   return value.trim() || null;
@@ -166,14 +153,6 @@ function installHubJobPayload(details: InstallHubJobDetails) {
     quoteNumber: optionalJobText(details.quoteNumber),
     jobComments: optionalJobText(details.jobComments),
     accessInformation: optionalJobText(details.accessInformation),
-    warrantyDevice: details.warrantyDevice,
-    monitoringInstalled: details.monitoringInstalled,
-    hardwareInstalled: details.hardwareInstalled,
-    solarCapacityKw: details.solarCapacityKw.trim()
-      ? Number(details.solarCapacityKw)
-      : null,
-    additionalMonitoringRequired: details.additionalMonitoringRequired,
-    additionalMonitoringHardware: optionalJobText(details.additionalMonitoringHardware),
   };
 }
 
@@ -337,21 +316,10 @@ export function EventFormModal({
         && jobBuildingName.trim(),
       );
     }
-    const solarCapacityKw = installHubJobDetails.solarCapacityKw.trim()
-      ? Number(installHubJobDetails.solarCapacityKw)
-      : null;
     return Boolean(
       jobClientName.trim()
       && jobSiteName.trim()
       && schedulerAddressIsComplete(jobAddress)
-      && (
-        solarCapacityKw === null
-        || (
-          Number.isFinite(solarCapacityKw)
-          && solarCapacityKw >= 0
-          && solarCapacityKw <= MAX_SOLAR_CAPACITY_KW
-        )
-      )
     );
   }, [
     isAdmin,
@@ -368,7 +336,6 @@ export function EventFormModal({
     jobAddress,
     jobBuildingName,
     jobClientName,
-    installHubJobDetails,
   ]);
 
   const saving = create.isPending || dispatch.isPending || update.isPending || cancel.isPending;
@@ -651,7 +618,7 @@ export function EventFormModal({
                         {sourceApp === 'installhub' ? (
                           <div className="mt-4 space-y-4 border-t border-[var(--border)] pt-4">
                             <section aria-labelledby="scheduler-field-job-planning">
-                              <h3 id="scheduler-field-job-planning" className="text-sm font-extrabold text-[var(--text)]">Field App job planning</h3>
+                              <h3 id="scheduler-field-job-planning" className="text-sm font-extrabold text-[var(--text)]">Field App job planning and scope</h3>
                               <div className="grid gap-x-3 sm:grid-cols-2">
                                 <div>
                                   <FieldLabel htmlFor="scheduler-customer-name">Customer name</FieldLabel>
@@ -684,6 +651,10 @@ export function EventFormModal({
                                   <FieldLabel htmlFor="scheduler-quote-number">Quote number</FieldLabel>
                                   <Input id="scheduler-quote-number" value={installHubJobDetails.quoteNumber} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, quoteNumber: event.target.value }))} />
                                 </div>
+                                <div className="sm:col-span-2">
+                                  <FieldLabel htmlFor="scheduler-job-comments">Job comments / scope</FieldLabel>
+                                  <Textarea id="scheduler-job-comments" rows={3} value={installHubJobDetails.jobComments} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, jobComments: event.target.value }))} />
+                                </div>
                               </div>
                             </section>
 
@@ -710,29 +681,6 @@ export function EventFormModal({
                               </div>
                             </section>
 
-                            <section className="border-t border-[var(--border)] pt-4" aria-labelledby="scheduler-field-job-state">
-                              <h3 id="scheduler-field-job-state" className="text-sm font-extrabold text-[var(--text)]">Recorded installation state</h3>
-                              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Leave a selection as Not recorded when the answer is unknown.</p>
-                              <div className="grid gap-x-3 sm:grid-cols-2 lg:grid-cols-3">
-                                <NullableBooleanSelect id="scheduler-warranty-device" label="Warranty device" value={installHubJobDetails.warrantyDevice} onChange={(warrantyDevice) => setInstallHubJobDetails((current) => ({ ...current, warrantyDevice }))} />
-                                <NullableBooleanSelect id="scheduler-monitoring-installed" label="Monitoring installed" value={installHubJobDetails.monitoringInstalled} onChange={(monitoringInstalled) => setInstallHubJobDetails((current) => ({ ...current, monitoringInstalled }))} />
-                                <NullableBooleanSelect id="scheduler-hardware-installed" label="Hardware installed" value={installHubJobDetails.hardwareInstalled} onChange={(hardwareInstalled) => setInstallHubJobDetails((current) => ({ ...current, hardwareInstalled }))} />
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-solar-capacity">Solar capacity (kW)</FieldLabel>
-                                  <Input id="scheduler-solar-capacity" type="number" min="0" max={MAX_SOLAR_CAPACITY_KW} step="any" inputMode="decimal" value={installHubJobDetails.solarCapacityKw} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, solarCapacityKw: event.target.value }))} />
-                                  <FieldHint>Maximum {MAX_SOLAR_CAPACITY_KW.toLocaleString('en-AU')} kW.</FieldHint>
-                                </div>
-                                <NullableBooleanSelect id="scheduler-additional-monitoring" label="Additional monitoring required" value={installHubJobDetails.additionalMonitoringRequired} onChange={(additionalMonitoringRequired) => setInstallHubJobDetails((current) => ({ ...current, additionalMonitoringRequired }))} />
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-additional-hardware">Additional monitoring hardware</FieldLabel>
-                                  <Input id="scheduler-additional-hardware" value={installHubJobDetails.additionalMonitoringHardware} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, additionalMonitoringHardware: event.target.value }))} />
-                                </div>
-                                <div className="sm:col-span-2 lg:col-span-3">
-                                  <FieldLabel htmlFor="scheduler-job-comments">Job comments</FieldLabel>
-                                  <Textarea id="scheduler-job-comments" rows={3} value={installHubJobDetails.jobComments} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, jobComments: event.target.value }))} />
-                                </div>
-                              </div>
-                            </section>
                           </div>
                         ) : null}
                         {sourceApp === 'solarsense' ? (

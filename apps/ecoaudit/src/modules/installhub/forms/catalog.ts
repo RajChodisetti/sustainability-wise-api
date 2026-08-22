@@ -1423,7 +1423,9 @@ export function createInitialFormAnswers(
   return {
     'site.date_time': new Date().toISOString(),
     'site.customer_name':
-      installation.clientName || installation.siteName,
+      installation.customerName?.trim()
+      || installation.clientName
+      || installation.siteName,
     'site.address': installation.siteAddress,
     'installer.name': user.fullName || user.email,
   };

@@ -173,6 +173,12 @@ references are not assumed globally unique. Omitting an additive field keeps an
 existing value during legacy synchronization; sending `null` explicitly clears
 it. Nullable booleans preserve unknown as `null`.
 
+The Scheduler's new Field App job form collects planning, scope, contact,
+access, reference, and optional NMI values. It does not ask for installation
+outcomes such as installed hardware or monitoring during job creation. Those
+nullable outcome fields remain accepted by the API for older clients and remain
+editable on an existing installation.
+
 The supplied business labels map to existing domain authorities: status is the
 product lifecycle, install schedule/date/by is the Scheduler event and actor,
 electricity NMI is grid-supply data, actual meter/device IDs and types remain on

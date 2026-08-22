@@ -653,24 +653,26 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
             </div>
           </section>
 
-          <section className="mt-6 border-t border-[var(--border)] pt-5" aria-labelledby="installation-recorded-state">
-            <h2 id="installation-recorded-state" className="text-base font-extrabold text-[var(--text)]">Recorded installation state</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Use “Not recorded” when the answer is unknown; unknown is not treated as No.</p>
-            <div className="mt-2 grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
-              <NullableBooleanField id="installation-warranty-device" label="Warranty device" value={form.warrantyDevice} disabled={formLocked} onChange={(warrantyDevice) => updateForm({ warrantyDevice })} />
-              <NullableBooleanField id="installation-monitoring-installed" label="Monitoring installed" value={form.monitoringInstalled} disabled={formLocked} onChange={(monitoringInstalled) => updateForm({ monitoringInstalled })} />
-              <NullableBooleanField id="installation-hardware-installed" label="Hardware installed" value={form.hardwareInstalled} disabled={formLocked} onChange={(hardwareInstalled) => updateForm({ hardwareInstalled })} />
-              <div>
-                <FieldLabel htmlFor="installation-solar-capacity">Solar capacity (kW)</FieldLabel>
-                <Input id="installation-solar-capacity" type="number" min="0" max={MAX_SOLAR_CAPACITY_KW} step="any" inputMode="decimal" value={form.solarCapacityKw} disabled={formLocked} onChange={(event) => updateForm({ solarCapacityKw: event.target.value })} />
+          {mode === 'edit' ? (
+            <section className="mt-6 border-t border-[var(--border)] pt-5" aria-labelledby="installation-recorded-state">
+              <h2 id="installation-recorded-state" className="text-base font-extrabold text-[var(--text)]">Recorded installation state</h2>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Use “Not recorded” when the answer is unknown; unknown is not treated as No.</p>
+              <div className="mt-2 grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
+                <NullableBooleanField id="installation-warranty-device" label="Warranty device" value={form.warrantyDevice} disabled={formLocked} onChange={(warrantyDevice) => updateForm({ warrantyDevice })} />
+                <NullableBooleanField id="installation-monitoring-installed" label="Monitoring installed" value={form.monitoringInstalled} disabled={formLocked} onChange={(monitoringInstalled) => updateForm({ monitoringInstalled })} />
+                <NullableBooleanField id="installation-hardware-installed" label="Hardware installed" value={form.hardwareInstalled} disabled={formLocked} onChange={(hardwareInstalled) => updateForm({ hardwareInstalled })} />
+                <div>
+                  <FieldLabel htmlFor="installation-solar-capacity">Solar capacity (kW)</FieldLabel>
+                  <Input id="installation-solar-capacity" type="number" min="0" max={MAX_SOLAR_CAPACITY_KW} step="any" inputMode="decimal" value={form.solarCapacityKw} disabled={formLocked} onChange={(event) => updateForm({ solarCapacityKw: event.target.value })} />
+                </div>
+                <NullableBooleanField id="installation-additional-monitoring" label="Additional monitoring required" value={form.additionalMonitoringRequired} disabled={formLocked} onChange={(additionalMonitoringRequired) => updateForm({ additionalMonitoringRequired })} />
+                <div>
+                  <FieldLabel htmlFor="installation-additional-hardware">Additional monitoring hardware</FieldLabel>
+                  <Input id="installation-additional-hardware" value={form.additionalMonitoringHardware} maxLength={5000} disabled={formLocked} onChange={(event) => updateForm({ additionalMonitoringHardware: event.target.value })} />
+                </div>
               </div>
-              <NullableBooleanField id="installation-additional-monitoring" label="Additional monitoring required" value={form.additionalMonitoringRequired} disabled={formLocked} onChange={(additionalMonitoringRequired) => updateForm({ additionalMonitoringRequired })} />
-              <div>
-                <FieldLabel htmlFor="installation-additional-hardware">Additional monitoring hardware</FieldLabel>
-                <Input id="installation-additional-hardware" value={form.additionalMonitoringHardware} maxLength={5000} disabled={formLocked} onChange={(event) => updateForm({ additionalMonitoringHardware: event.target.value })} />
-              </div>
-            </div>
-          </section>
+            </section>
+          ) : null}
 
           <section className="mt-6 border-t border-[var(--border)] pt-5" aria-labelledby="installation-portal-context">
             <h2 id="installation-portal-context" className="text-base font-extrabold text-[var(--text)]">Field App context</h2>

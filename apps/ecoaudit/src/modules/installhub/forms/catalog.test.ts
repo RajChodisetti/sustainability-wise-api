@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import test from 'node:test';
 import type {
   FormSubmission,
+  Installation,
+  InstallHubUser,
   Meter,
 } from '@/modules/installhub/types/domain';
 import {
@@ -15,6 +17,7 @@ import {
   SWITCHBOARD_TYPES,
   acceptedOptionsForField,
   answersAfterChange,
+  createInitialFormAnswers,
   editorOptionsForField,
   formValidationIssues,
   isFieldVisible,
@@ -24,6 +27,31 @@ import {
   optionsForField,
   validateForm,
 } from './catalog';
+
+test('new forms prefer the installation customer over the contracting client', () => {
+  const user = {
+    fullName: 'Field Technician',
+    email: 'field@example.com',
+  } as InstallHubUser;
+  const baseInstallation = {
+    clientName: 'Contracting Client',
+    customerName: 'End Customer',
+    siteName: 'Customer Site',
+    siteAddress: '1 Test Street',
+  } as Installation;
+
+  assert.equal(
+    createInitialFormAnswers(baseInstallation, user)['site.customer_name'],
+    'End Customer',
+  );
+  assert.equal(
+    createInitialFormAnswers(
+      { ...baseInstallation, customerName: '   ' },
+      user,
+    )['site.customer_name'],
+    'Contracting Client',
+  );
+});
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {

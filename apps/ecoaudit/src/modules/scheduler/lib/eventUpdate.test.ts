@@ -36,3 +36,17 @@ test('event modal edit uses changed-field-aware start payloads', () => {
     /\.\.\.scheduledStartUpdate\(\s*initial\.startLocal,\s*startLocal,/,
   );
 });
+
+test('new Field App jobs collect planning inputs without installation outcomes', () => {
+  const modalSource = readFileSync(
+    new URL('../components/EventFormModal.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(modalSource, /Field App job planning and scope/);
+  assert.match(modalSource, /scheduler-job-comments/);
+  assert.doesNotMatch(
+    modalSource,
+    /scheduler-(?:warranty-device|monitoring-installed|hardware-installed|solar-capacity|additional-monitoring|additional-hardware)/,
+  );
+});
