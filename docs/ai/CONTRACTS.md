@@ -178,11 +178,80 @@ an administrator may reset another user's password without it.
 Scheduler finance summaries are restricted to active canonical global
 administrators. Product work-session rows are the sole authority for app-active
 time. Aggregate active time by the resolved named actor. This field remains
-internal evidence: it must never automatically populate billing or cost hours,
-and it must not appear in invoice DTOs, invoice authoring UI, or PDFs. After an
-administrator sets billing hours, each actor's active-time share may apportion
-the editable internal labour suggestion across fixed user rates. Billing hours
-remain a separately audited, editable non-negative integer.
+internal evidence and must not feed billing or cost hours, labour calculations,
+invoice DTOs, invoice authoring UI, or PDFs. Billing hours remain a separately
+audited, editable non-negative integer.
+
+## Scheduler workforce and analytics
+
+The canonical `global_users` identity owns each user's IANA timezone and weekly
+working-day mask. Sunday is bit `1`, Monday bit `2`, through Saturday bit `64`;
+the default `62` is Monday–Friday. Leave uses inclusive local calendar dates in
+the user's timezone snapshot. Employees may create and cancel their own leave;
+only an active canonical administrator may approve or reject it. Pending and
+approved requests cannot overlap, and an administrator cannot review their own
+request. Approval fails while planned or in-progress
+Scheduler work overlaps the requested dates, and the same check is enforced
+under row locks whenever active work is created, dispatched, reassigned,
+rescheduled, or reactivated. Product assignment backdoors must not bypass this
+Scheduler authority.
+When an explicit event end is supplied it must be strictly later than the
+start; an omitted end retains the existing one-hour availability interval.
+
+Admin analytics accepts inclusive `from`/`to` date keys and an IANA timezone,
+defaults to `Australia/Sydney`, uses a half-open UTC interval internally, and is
+limited to 366 calendar days. The UI label **Working hours on site** means only
+persisted app-active milliseconds; it is not separate attendance telemetry. A
+work session is counted wholly when `endedAt`, or `lastActiveAt` for an open
+session, falls in the window. Completed jobs use the product's authoritative
+first-completion fact timestamp when a fact exists and use product `completedAt`
+only for legacy rows with no fact. Each user's working-day denominator converts
+the report interval to that user's saved timezone before applying the weekly
+mask and approved local-date leave. Average daily jobs is completed jobs divided
+by those working days after approved leave, or zero when none remain. The full
+report is read in one read-only repeatable-read database snapshot.
+
+Technician attribution uses the work-session actor for hours. A first-completion
+fact is authoritative even when its technician is null; only legacy jobs with no
+fact fall back to a non-cancelled Scheduler assignee, choosing planned/in-progress
+first, then newest update, then lexical event ID, and then product assignment.
+Known historical identity IDs remain on immutable facts, while unresolved or
+inactive identities are reported as unattributed in the active-user leaderboard.
+Backlog and
+pipeline are current-state views of supported EcoAudit audits, SolarSense
+assessments, and InstallHub installations still planned/in-progress when the
+report runs. Backlog is scheduled through the selected end date; pipeline is
+after that end, split into the next seven calendar days and days 8–30. Historical
+Scheduler status is not reconstructed, and custom/legacy Solar site rows are
+excluded. These definitions and attribution-quality totals are returned with
+every analytics response.
+
+Financial analytics never converts or combines currencies. Invoice-created,
+issued, paid, and voided metrics use the invoice snapshot at the matching
+lifecycle timestamp and include ex-GST, GST, and inc-GST cents. Completed-work
+revenue for a new authoritative transition persists currency, ex-GST, GST,
+inc-GST, configured GST basis points, snapshot status, and capture time on the
+completion fact. First completion time, attribution, snapshot status, and money
+never change. Legally accepted late work sessions affect working-hours analytics
+only; they do not rewrite historical completed-work revenue. Incomplete snapshots
+remain explicit and unavailable historical facts remain unavailable. Any revenue
+restatement requires a future explicit audited workflow. Migration 0044 creates
+unavailable facts for every dateable legacy completion, including soft-deleted
+completed products because soft delete controls operational visibility rather
+than erasing commercial/HR history. A retained Completed product with neither a
+fact nor completion timestamp is exposed as `undatedCompletedJobs`, cannot be
+placed in a custom window, and never receives an invented timestamp. Any residual
+legacy product with no fact contributes completed-job counts but no completed-work
+revenue; analytics reads never create or borrow a current finance ledger for
+historical work. Posted
+refunds and audited refund reversals are separate positive metrics; net paid is
+payments minus posted refunds plus reversals occurring inside the selected
+window and may be negative. Partial or full refunds inherit invoice currency,
+follow the invoice's snapshotted GST rate (with the final refund absorbing any
+whole-cent remainder), are component-bounded by the invoice ex-GST/GST totals,
+require an idempotency key plus invoice revision, and may be voided only with
+retained actor, time, and reason evidence. An invoice with a posted refund
+cannot itself be voided until every posted refund is auditably reversed.
 
 ## Scheduler estimated duration
 

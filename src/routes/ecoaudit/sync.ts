@@ -287,54 +287,58 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
     const auditPayload = body.audit;
 
     const localAuditId = requiredString(auditPayload, 'id');
-    const [existingAudit] = await db.select().from(eaAudits).where(eq(eaAudits.id, localAuditId));
-    if (existingAudit) assertAuditAccess(existingAudit, request.user);
-
-    const auditServerId = existingAudit?.serverId ?? (typeof auditPayload.serverId === 'string' && auditPayload.serverId.trim() ? auditPayload.serverId : randomUUID());
-    const status = str(auditPayload.status) ?? existingAudit?.status ?? 'Draft';
     const receivedAt = new Date();
-    const updatedAt = auditPayload.updatedAt ? dateOrNow(auditPayload.updatedAt) : receivedAt;
-    const createdAt = auditPayload.createdAt
-      ? dateOrNow(auditPayload.createdAt)
-      : (existingAudit?.createdAt ?? receivedAt);
-    const timing = resolveSyncedAuditTiming({
-      status,
-      incomingStartedAt: auditPayload.startedAt ? dateOrNow(auditPayload.startedAt) : null,
-      incomingCompletedAt: auditPayload.completedAt ? dateOrNow(auditPayload.completedAt) : null,
-      existingStartedAt: existingAudit?.startedAt,
-      existingCompletedAt: existingAudit?.completedAt,
-      createdAt,
-      observedAt: receivedAt,
-    });
-
-    const auditValues = {
-      id: localAuditId, serverId: auditServerId, syncStatus: 'synced',
-      updatedAt,
-      deletedAt: auditPayload.deletedAt ? dateOrNow(auditPayload.deletedAt) : null,
-      siteName: requiredString(auditPayload, 'siteName'),
-      siteAddress: requiredString(auditPayload, 'siteAddress'),
-      inspectorName: requiredString(auditPayload, 'inspectorName'),
-      auditDate: typeof auditPayload.auditDate === 'string' ? auditPayload.auditDate : null,
-      status,
-      createdByUserId: resolveSyncCreatedByUserId({
-        existingRecord: Boolean(existingAudit),
-        existingCreatedByUserId: existingAudit?.createdByUserId,
-        incomingCreatedByUserId: auditPayload.createdByUserId,
-        actor: request.user,
-      }),
-      // Preserve the server-side scheduler assignment. A stale mobile copy
-      // must not undo a reassign or cancellation on its next sync.
-      assignedInspectorUserId: existingAudit?.assignedInspectorUserId ?? null,
-      ...timing,
-      createdAt,
-    };
-    const { id: _aid, ...auditUpdateValues } = auditValues;
-    const excludedStatus = sql.raw(`excluded.${eaAudits.status.name}`);
-    const excludedCompletedAt = sql.raw(`excluded.${eaAudits.completedAt.name}`);
-    await db.transaction(async (tx) => {
+    const auditValues = await db.transaction(async (tx) => {
+      const [existingAudit] = await tx.select().from(eaAudits)
+        .where(eq(eaAudits.id, localAuditId))
+        .for('update');
+      if (existingAudit) assertAuditAccess(existingAudit, request.user);
+      const auditServerId = existingAudit?.serverId
+        ?? (typeof auditPayload.serverId === 'string' && auditPayload.serverId.trim()
+          ? auditPayload.serverId
+          : randomUUID());
+      const status = str(auditPayload.status) ?? existingAudit?.status ?? 'Draft';
+      const updatedAt = auditPayload.updatedAt ? dateOrNow(auditPayload.updatedAt) : receivedAt;
+      const createdAt = auditPayload.createdAt
+        ? dateOrNow(auditPayload.createdAt)
+        : (existingAudit?.createdAt ?? receivedAt);
+      const timing = resolveSyncedAuditTiming({
+        status,
+        incomingStartedAt: auditPayload.startedAt ? dateOrNow(auditPayload.startedAt) : null,
+        incomingCompletedAt: auditPayload.completedAt ? dateOrNow(auditPayload.completedAt) : null,
+        existingStatus: existingAudit?.status,
+        existingStartedAt: existingAudit?.startedAt,
+        existingCompletedAt: existingAudit?.completedAt,
+        createdAt,
+        observedAt: receivedAt,
+      });
+      const values = {
+        id: localAuditId, serverId: auditServerId, syncStatus: 'synced',
+        updatedAt,
+        deletedAt: auditPayload.deletedAt ? dateOrNow(auditPayload.deletedAt) : null,
+        siteName: requiredString(auditPayload, 'siteName'),
+        siteAddress: requiredString(auditPayload, 'siteAddress'),
+        inspectorName: requiredString(auditPayload, 'inspectorName'),
+        auditDate: typeof auditPayload.auditDate === 'string' ? auditPayload.auditDate : null,
+        status,
+        createdByUserId: resolveSyncCreatedByUserId({
+          existingRecord: Boolean(existingAudit),
+          existingCreatedByUserId: existingAudit?.createdByUserId,
+          incomingCreatedByUserId: auditPayload.createdByUserId,
+          actor: request.user,
+        }),
+        // Preserve the locked server-side Scheduler assignment. A stale mobile
+        // copy must not undo a concurrent reassign or cancellation.
+        assignedInspectorUserId: existingAudit?.assignedInspectorUserId ?? null,
+        ...timing,
+        createdAt,
+      };
+      const { id: _aid, ...auditUpdateValues } = values;
+      const excludedStatus = sql.raw(`excluded.${eaAudits.status.name}`);
+      const excludedCompletedAt = sql.raw(`excluded.${eaAudits.completedAt.name}`);
       const [upsertedAudit] = await tx
         .insert(eaAudits)
-        .values(auditValues as any)
+        .values(values as any)
         .onConflictDoUpdate({
           target: eaAudits.id,
           set: {
@@ -352,13 +356,19 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       if (!upsertedAudit) {
         throw conflict('audit_completed_reopen_requires_explicit_transition');
       }
-      if (!auditValues.deletedAt && auditValues.status === 'Completed') {
+      if (values.status === 'Completed') {
         await completeLinkedSchedulerEvents(tx, {
           sourceApp: 'ecoaudit',
           sourceType: 'audit',
           sourceId: localAuditId,
-        }, { observedAt: receivedAt });
+        }, {
+          observedAt: receivedAt,
+          completionProvenance: !existingAudit || existingAudit.status !== 'Completed'
+            ? 'offline_transition'
+            : 'historical_replay',
+        });
       }
+      return values;
     });
     if (auditValues.deletedAt) {
       await deletePhotosForAudit(localAuditId);
@@ -369,7 +379,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         snapshot: body,
         userId: request.user.userId,
       });
-      return reply.send({ auditId: localAuditId, serverId: auditServerId, versionNumber });
+      return reply.send({ auditId: localAuditId, serverId: auditValues.serverId, versionNumber });
     }
 
     // Upsert zones
@@ -512,7 +522,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       userId: request.user.userId,
     });
 
-    return reply.send({ auditId: localAuditId, serverId: auditServerId, versionNumber });
+    return reply.send({ auditId: localAuditId, serverId: auditValues.serverId, versionNumber });
   });
 
   // GET /pull

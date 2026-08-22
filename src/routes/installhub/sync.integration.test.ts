@@ -345,7 +345,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     assert.equal(staleCompletionReplay.statusCode, 409, staleCompletionReplay.body);
     assert.equal(staleCompletionReplay.json().detail, 'completion_state_changed');
 
-    const importedPayload = freshPayload(
+      const importedPayload = freshPayload(
       importedCopyId,
       String(firstInstallation.externalKey),
       null,

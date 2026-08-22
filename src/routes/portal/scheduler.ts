@@ -75,6 +75,22 @@ import {
   queueSchedulerInvoiceEmail,
   type QueueSchedulerInvoiceEmailInput,
 } from '../../services/schedulerInvoiceEmailService.js';
+import {
+  cancelSchedulerLeaveRequest,
+  createSchedulerLeaveRequest,
+  listSchedulerLeaveRequests,
+  reviewSchedulerLeaveRequest,
+} from '../../services/schedulerLeaveService.js';
+import {
+  listSchedulerInvoiceRefunds,
+  postSchedulerInvoiceRefund,
+  voidSchedulerInvoiceRefund,
+  type PostSchedulerInvoiceRefundInput,
+  type VoidSchedulerInvoiceRefundInput,
+} from '../../services/schedulerRefundService.js';
+import { getSchedulerAnalytics } from '../../services/schedulerAnalyticsService.js';
+import { suggestSchedulerAddresses } from '../../services/schedulerMapProvider.js';
+import { getSchedulerRouteSuggestion } from '../../services/schedulerRouteService.js';
 
 function parseOptionalDate(value: unknown, name: string): Date | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -129,6 +145,11 @@ const invoiceDraftBodySchema = {
   required: ['expectedUpdatedAt'],
   properties: {
     expectedUpdatedAt: { type: 'string', format: 'date-time' },
+    xeroInvoiceNumber: { type: ['string', 'null'], minLength: 1, maxLength: 100 },
+    xeroDate: {
+      type: ['string', 'null'],
+      pattern: '^\\d{4}-\\d{2}-\\d{2}$',
+    },
     notes: { type: ['string', 'null'], maxLength: 5000 },
     dueDate: { type: ['string', 'null'] },
     billToName: { type: 'string', minLength: 1, maxLength: 300 },
@@ -192,6 +213,200 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     const summary = await getScheduleSummary(request.user);
     return reply.send(summary);
   });
+
+  app.get('/scheduler/analytics', {
+    schema: {
+      tags: ['Portal Scheduler Analytics'],
+      summary: 'Admin people and financial analytics for an inclusive calendar-date window',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['from', 'to'],
+        properties: {
+          from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          timezone: { type: 'string', minLength: 1, maxLength: 100 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    return reply.send(await getSchedulerAnalytics(request.user, {
+      from: query.from,
+      to: query.to,
+      timezone: query.timezone,
+    }));
+  });
+
+  app.post('/scheduler/address-suggestions', {
+    schema: {
+      tags: ['Portal Scheduler Routing'],
+      summary: 'Suggest normalized Australian addresses from the configured geocoder',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', maxLength: 300 },
+          postcode: { type: 'string', pattern: '^[0-9]{4}$' },
+          limit: { type: 'integer', minimum: 1, maximum: 10 },
+        },
+      },
+    },
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    return reply.send(await suggestSchedulerAddresses({
+      query: typeof body.query === 'string' ? body.query : '',
+      postcode: typeof body.postcode === 'string' ? body.postcode : undefined,
+      limit: typeof body.limit === 'number' ? body.limit : undefined,
+    }));
+  });
+
+  app.post('/scheduler/route-suggestions', {
+    schema: {
+      tags: ['Portal Scheduler Routing'],
+      summary: 'Suggest the shortest route through one employee’s scheduled Australian jobs',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['date', 'currentLocation'],
+        properties: {
+          date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          assigneeFieldUserId: { type: 'string', minLength: 1, maxLength: 200 },
+          currentLocation: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['latitude', 'longitude'],
+            properties: {
+              latitude: { type: 'number', minimum: -44, maximum: -9 },
+              longitude: { type: 'number', minimum: 112, maximum: 154 },
+              accuracyMeters: { type: 'number', minimum: 0, maximum: 100000 },
+              capturedAt: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => {
+    const body = request.body as Record<string, unknown>;
+    return reply.send(await getSchedulerRouteSuggestion(request.user, {
+      date: body.date,
+      currentLocation: body.currentLocation,
+      assigneeFieldUserId: body.assigneeFieldUserId,
+    }));
+  });
+
+  app.get('/scheduler/leave-requests', {
+    schema: {
+      tags: ['Portal Scheduler HR'],
+      summary: 'List personal leave or, for administrators, team leave',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          globalUserId: { type: 'string', minLength: 1 },
+          status: {
+            type: 'string',
+            enum: ['pending', 'approved', 'rejected', 'cancelled'],
+          },
+          from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => reply.send({
+    requests: await listSchedulerLeaveRequests(
+      request.user,
+      request.query as Record<string, unknown>,
+    ),
+  }));
+
+  app.post('/scheduler/leave-requests', {
+    schema: {
+      tags: ['Portal Scheduler HR'],
+      summary: 'Apply for leave as the signed-in employee',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['leaveType', 'startDate', 'endDate'],
+        properties: {
+          leaveType: {
+            type: 'string',
+            enum: ['annual', 'personal', 'unpaid', 'other'],
+          },
+          startDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          endDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+          employeeNote: { type: ['string', 'null'], maxLength: 2000 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => reply.status(201).send(await createSchedulerLeaveRequest(
+    request.user,
+    request.body as Record<string, unknown> & {
+      leaveType: unknown;
+      startDate: unknown;
+      endDate: unknown;
+    },
+  )));
+
+  app.post<{ Params: { id: string } }>('/scheduler/leave-requests/:id/decision', {
+    schema: {
+      tags: ['Portal Scheduler HR'],
+      summary: 'Approve or reject a pending leave request',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['decision', 'expectedUpdatedAt'],
+        properties: {
+          decision: { type: 'string', enum: ['approve', 'reject'] },
+          reviewerNote: { type: ['string', 'null'], maxLength: 2000 },
+          expectedUpdatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send(await reviewSchedulerLeaveRequest(
+    request.user,
+    request.params.id,
+    request.body as {
+      decision: unknown;
+      reviewerNote?: unknown;
+      expectedUpdatedAt: unknown;
+    },
+  )));
+
+  app.post<{ Params: { id: string } }>('/scheduler/leave-requests/:id/cancel', {
+    schema: {
+      tags: ['Portal Scheduler HR'],
+      summary: 'Cancel a pending or approved leave request',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['expectedUpdatedAt'],
+        properties: {
+          expectedUpdatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => reply.send(await cancelSchedulerLeaveRequest(
+    request.user,
+    request.params.id,
+    request.body as { expectedUpdatedAt: unknown },
+  )));
 
   app.get('/scheduler/events', {
     schema: {
@@ -574,10 +789,81 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     request.params.invoiceId,
   )));
 
+  app.get<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/refunds', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'List posted and voided refunds for an invoice',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send({
+    items: await listSchedulerInvoiceRefunds(request.user, request.params.invoiceId),
+  }));
+
+  app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/refunds', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Post a partial or full invoice refund',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'idempotencyKey',
+          'expectedUpdatedAt',
+          'amountExGst',
+          'gstAmount',
+          'reason',
+        ],
+        properties: {
+          idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+          expectedUpdatedAt: { type: 'string', format: 'date-time' },
+          amountExGst: { type: 'number', exclusiveMinimum: 0 },
+          gstAmount: { type: 'number', minimum: 0 },
+          refundedAt: { type: ['string', 'null'], format: 'date-time' },
+          reason: { type: 'string', minLength: 1, maxLength: 2000 },
+          externalReference: { type: ['string', 'null'], maxLength: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.status(201).send(await postSchedulerInvoiceRefund(
+    request.user,
+    request.params.invoiceId,
+    request.body as PostSchedulerInvoiceRefundInput,
+  )));
+
+  app.post<{ Params: { invoiceId: string; refundId: string } }>(
+    '/scheduler/invoices/:invoiceId/refunds/:refundId/void',
+    {
+      schema: {
+        tags: ['Portal Scheduler Finance'],
+        summary: 'Void a posted refund while retaining its audit history',
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['expectedUpdatedAt', 'reason'],
+          properties: {
+            expectedUpdatedAt: { type: 'string', format: 'date-time' },
+            reason: { type: 'string', minLength: 1, maxLength: 2000 },
+          },
+        },
+      },
+      preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+    },
+    async (request, reply) => reply.send(await voidSchedulerInvoiceRefund(
+      request.user,
+      request.params.invoiceId,
+      request.params.refundId,
+      request.body as VoidSchedulerInvoiceRefundInput,
+    )),
+  );
+
   app.patch<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId', {
     schema: {
       tags: ['Portal Scheduler Finance'],
-      summary: 'Edit a consolidated draft invoice',
+      summary: 'Edit draft content or reconcile non-void invoice Xero metadata',
       security: [{ bearerAuth: [] }],
       body: invoiceDraftBodySchema,
     },
@@ -943,7 +1229,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit draft invoice fields, costs, and presentation',
+        summary: 'Edit draft content or reconcile non-void invoice Xero metadata',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },
@@ -1201,7 +1487,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Edit draft invoice fields, costs, and presentation',
+        summary: 'Edit draft content or reconcile non-void invoice Xero metadata',
         security: [{ bearerAuth: [] }],
         body: invoiceDraftBodySchema,
       },

@@ -57,6 +57,67 @@ import {
   restoreInstallationCompletionAttempt,
   reuseInstallationCompletionAttempt,
 } from '@/modules/installhub/lib/completion';
+import type { Installation } from '@/modules/installhub/types/domain';
+
+function optionalValue(value: string | null | undefined): string {
+  return value?.trim() || 'Not recorded';
+}
+
+function triStateValue(value: boolean | null | undefined): string {
+  if (value === true) return 'Yes';
+  if (value === false) return 'No';
+  return 'Not recorded';
+}
+
+function completedAtValue(value: string | null | undefined, timezone?: string | null): string {
+  if (!value) return 'Not recorded';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  const requestedTimezone = timezone?.trim() || 'Australia/Sydney';
+  for (const displayTimezone of [...new Set([requestedTimezone, 'Australia/Sydney'])]) {
+    try {
+      return `${date.toLocaleString('en-AU', {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+        timeZone: displayTimezone,
+      })} (${displayTimezone})`;
+    } catch {
+      // Legacy installations may carry a non-IANA timezone. Try the AU default.
+    }
+  }
+  return value;
+}
+
+function structuredSiteAddress(installation: Installation): string {
+  const localityLine = [
+    installation.siteLocality?.trim(),
+    installation.siteState?.trim(),
+    installation.sitePostcode?.trim(),
+  ].filter(Boolean).join(' ');
+  const country = installation.siteCountryCode?.trim();
+  return [
+    installation.siteAddress.trim(),
+    localityLine,
+    country && country !== 'AU' ? country : '',
+  ].filter(Boolean).join('\n') || 'Not recorded';
+}
+
+function InstallationDetailItem({
+  label,
+  value,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  wide?: boolean;
+}) {
+  return (
+    <div className={wide ? 'sm:col-span-2 xl:col-span-3' : ''}>
+      <dt className="text-[10px] font-extrabold uppercase tracking-wide text-[var(--muted)]">{label}</dt>
+      <dd className="mt-1 whitespace-pre-wrap text-sm leading-5 text-[var(--text)]">{value}</dd>
+    </div>
+  );
+}
 
 export function InstallHubInstallationDetailPage() {
   const { installationId } = useParams<{ installationId: string }>();
@@ -422,7 +483,9 @@ export function InstallHubInstallationDetailPage() {
         actions={
           <>
             <StatusBadge status={installation.status} />
-            <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit</LinkButton>
+            {installation.status === 'Draft' ? (
+              <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit</LinkButton>
+            ) : null}
             <Button variant="secondary" disabled={lifecycleBusy} onClick={() => void refreshCurrentInstallation()}><Icon name="refresh" size={17} />Refresh</Button>
             <Button disabled={lifecycleBusy || completionRefreshRequired || !completionStateReady} onClick={() => {
               if (installation.status === 'Completed') {
@@ -493,12 +556,58 @@ export function InstallHubInstallationDetailPage() {
 
       {installation.status === 'Completed' ? (
         <Card className="mb-6 border-l-4 border-l-[var(--green)]">
-          <h2 className="font-extrabold text-[var(--text)]">Technician completion notes</h2>
-          <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--text-sub)]">
-            {installation.completionNotes?.trim() || 'No technician completion notes were recorded.'}
-          </p>
+          <h2 className="font-extrabold text-[var(--text)]">Authoritative completion record</h2>
+          <dl className="mt-3 grid gap-x-5 gap-y-3 sm:grid-cols-2">
+            <InstallationDetailItem label="Completed at" value={completedAtValue(installation.completedAt, installation.timezone)} />
+            <InstallationDetailItem label="Completed by user ID" value={optionalValue(installation.completedByUserId)} />
+            <InstallationDetailItem
+              label="Technician completion notes"
+              value={installation.completionNotes?.trim() || 'No technician completion notes were recorded.'}
+              wide
+            />
+          </dl>
         </Card>
       ) : null}
+
+      <Card className="mb-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-extrabold text-[var(--text)]">Job and metering plan</h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Planning fields provide job context. Installed devices, electrical relationships, and completion remain authoritative in their existing workspaces.</p>
+          </div>
+          {installation.status === 'Draft' ? <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit details</LinkButton> : null}
+        </div>
+        <dl className="mt-4 grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+          <InstallationDetailItem label="Client" value={optionalValue(installation.clientName)} />
+          <InstallationDetailItem label="Customer" value={optionalValue(installation.customerName)} />
+          <InstallationDetailItem label="Site" value={optionalValue(installation.siteName)} />
+          <InstallationDetailItem label="Australian site address" value={structuredSiteAddress(installation)} wide />
+          <InstallationDetailItem label="Service type" value={optionalValue(installation.serviceType)} />
+          <InstallationDetailItem label="Metering solution" value={optionalValue(installation.meteringSolutionType)} />
+          <InstallationDetailItem label="Planned meter type (planning only)" value={optionalValue(installation.plannedMeterType)} />
+          <InstallationDetailItem label="MaaS" value={triStateValue(installation.maas)} />
+          <InstallationDetailItem label="Fergus job number" value={optionalValue(installation.fergusJobNumber)} />
+          <InstallationDetailItem label="Quote number" value={optionalValue(installation.quoteNumber)} />
+          <InstallationDetailItem label="Warranty device" value={triStateValue(installation.warrantyDevice)} />
+          <InstallationDetailItem label="Monitoring installed" value={triStateValue(installation.monitoringInstalled)} />
+          <InstallationDetailItem label="Hardware installed" value={triStateValue(installation.hardwareInstalled)} />
+          <InstallationDetailItem label="Solar capacity" value={installation.solarCapacityKw == null ? 'Not recorded' : `${installation.solarCapacityKw.toLocaleString('en-AU')} kW`} />
+          <InstallationDetailItem label="Additional monitoring required" value={triStateValue(installation.additionalMonitoringRequired)} />
+          <InstallationDetailItem label="Additional monitoring hardware" value={optionalValue(installation.additionalMonitoringHardware)} />
+          <InstallationDetailItem label="Job comments" value={optionalValue(installation.jobComments)} wide />
+        </dl>
+      </Card>
+
+      <details className="mb-6 rounded-[var(--radius-md)] border border-[var(--amber)]/30 bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
+        <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">Site contact and access information (sensitive)</summary>
+        <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">Open only when needed for this installation. These details are kept out of Scheduler job-option labels.</p>
+        <dl className="mt-4 grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+          <InstallationDetailItem label="Contact name" value={optionalValue(installation.siteContactName)} />
+          <InstallationDetailItem label="Contact phone" value={optionalValue(installation.siteContactPhone)} />
+          <InstallationDetailItem label="Contact email" value={optionalValue(installation.siteContactEmail)} />
+          <InstallationDetailItem label="Access information" value={optionalValue(installation.accessInformation)} wide />
+        </dl>
+      </details>
 
       <section className="mb-7" aria-labelledby="installhub-workspace">
         <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>

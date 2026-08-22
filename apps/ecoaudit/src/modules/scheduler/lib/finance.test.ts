@@ -154,6 +154,12 @@ test('scheduler tab transitions keep URL and in-memory finance targets in parity
     schedulerTabTransition('?tab=financial-summary&financeId=finance-7&eventId=event-7', 'calendar'),
     { href: '/scheduler?tab=calendar', financeTarget: undefined },
   );
+  for (const tab of ['my-route', 'team-performance', 'leave', 'finance-analytics'] as const) {
+    assert.deepEqual(
+      schedulerTabTransition('?tab=invoices&financeId=finance-7&invoiceId=invoice-7', tab),
+      { href: `/scheduler?tab=${tab}`, financeTarget: undefined },
+    );
+  }
   assert.deepEqual(
     schedulerTabTransition('?tab=calendar', 'bills'),
     { href: '/scheduler?tab=bills', financeTarget: undefined },

@@ -69,8 +69,41 @@ export type CreateSchedulerDispatchInput = {
     location?: string;
     buildingIdName?: string;
     clientName?: string;
+    /** Written to the canonical default grid supply, not installation metadata. */
+    electricityNmi?: string | null;
+    customerName?: string | null;
+    maas?: boolean | null;
+    serviceType?: string | null;
+    meteringSolutionType?: string | null;
+    /** Planning context only; installed device records remain authoritative. */
+    plannedMeterType?: string | null;
+    siteContactName?: string | null;
+    siteContactPhone?: string | null;
+    siteContactEmail?: string | null;
+    fergusJobNumber?: string | null;
+    quoteNumber?: string | null;
+    jobComments?: string | null;
+    accessInformation?: string | null;
+    warrantyDevice?: boolean | null;
+    monitoringInstalled?: boolean | null;
+    hardwareInstalled?: boolean | null;
+    solarCapacityKw?: number | null;
+    additionalMonitoringRequired?: boolean | null;
+    additionalMonitoringHardware?: string | null;
     auditDate?: string;
     timezone?: string;
+    /** Additive structured destination; legacy product clients keep using the free-text fields. */
+    address?: {
+      freeform: string;
+      locality?: string;
+      state?: 'ACT' | 'NSW' | 'NT' | 'QLD' | 'SA' | 'TAS' | 'VIC' | 'WA';
+      postcode?: string;
+      countryCode: 'AU';
+      latitude?: number;
+      longitude?: number;
+      provider?: string;
+      placeId?: string;
+    };
   };
 };
 
@@ -97,6 +130,9 @@ export type PortalDirectoryUser = {
   email: string;
   role: string;
   billingRate: number | null;
+  timezone: string;
+  workingDaysMask: number;
+  updatedAt: string;
   appMemberships: Array<'ecoaudit' | 'solarsense' | 'installhub'>;
 };
 
@@ -267,9 +303,11 @@ export type SchedulerInvoiceListItem = {
   id: string;
   financeId: string;
   invoiceNumber: string;
+  xeroInvoiceNumber: string | null;
   status: SchedulerInvoiceStatus;
   currency: string;
   issueDate: string | null;
+  xeroDate: string | null;
   dueDate: string | null;
   subtotalExGst: number;
   gstAmount: number;
@@ -488,6 +526,8 @@ export type QuickSchedulerInvoiceInput = {
 
 export type UpdateSchedulerInvoiceInput = {
   expectedUpdatedAt: string;
+  xeroInvoiceNumber?: string | null;
+  xeroDate?: string | null;
   notes?: string | null;
   dueDate?: string | null;
   billToName?: string;
@@ -513,7 +553,6 @@ export type SchedulerInvoiceEligibilityIssue = {
     | 'billing_name_missing'
     | 'bill_to_override_required'
     | 'job_not_completed'
-    | 'hours_entry_required'
     | 'billing_rate_missing'
     | 'no_available_charges';
   message: string;

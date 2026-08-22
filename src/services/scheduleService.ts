@@ -21,7 +21,11 @@ import { globalUsers, portalScheduleEvents, unifiedUsers } from '../db/schema/sh
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
 import type { AuthUser } from '../auth/middleware.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
-import { deriveSiteCode } from '../routes/installhub/canonical.js';
+import {
+  GRID_SUPPLY_NMI_MAX_LENGTH,
+  INSTALLATION_METADATA_TEXT_LIMITS,
+  deriveSiteCode,
+} from '../routes/installhub/canonical.js';
 import {
   cancelPendingSchedulerNotifications,
   enqueueAutomatedSchedulerNotifications,
@@ -35,6 +39,12 @@ import {
   schedulerVisibleFinanceSourceApps,
   schedulerVisibleSourceApps,
 } from './schedulerVisibility.js';
+import {
+  instantDateInTimeZone,
+  isValidIanaTimeZone,
+  lockAndAssertAssigneeAvailable,
+} from './schedulerLeaveService.js';
+import { parseSchedulerDispatchAddress } from './schedulerAddressService.js';
 
 export type ScheduleSourceApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'custom';
 export type ScheduleSourceType = 'audit' | 'site' | 'assessment' | 'installation' | 'custom';
@@ -90,6 +100,7 @@ type UnifiedSchedulerSubject = {
 };
 
 const PORTAL_APPS = new Set(['ecoaudit', 'solarsense', 'installhub']);
+const DEFAULT_INSTALLHUB_TIMEZONE = 'Australia/Sydney';
 
 function toIso(value: Date | null | undefined): string | null {
   if (!value) return null;
@@ -105,6 +116,32 @@ function requireIsoDate(value: unknown, field: string): Date {
     throw badRequest(`${field} must be a valid ISO datetime`);
   }
   return date;
+}
+
+export function assertScheduleInterval(start: Date, end: Date | null): void {
+  if (end && end.getTime() <= start.getTime()) {
+    throw badRequest('scheduledEndAt must be after scheduledStartAt');
+  }
+}
+
+/**
+ * Legacy Field App clients display a date-only installation field. Scheduler
+ * stores an absolute instant, so project that instant through the installation's
+ * Australian IANA timezone instead of slicing its UTC representation.
+ */
+export function installHubSchedulerAuditDate(
+  scheduledStartAt: Date,
+  installationTimezone: string,
+): string {
+  const timezone = installationTimezone.trim();
+  return instantDateInTimeZone(
+    scheduledStartAt,
+    isValidIanaTimeZone(timezone) ? timezone : DEFAULT_INSTALLHUB_TIMEZONE,
+  );
+}
+
+function installHubSchedulerInspectorName(subject: UnifiedSchedulerSubject): string {
+  return subject.displayName?.trim() || subject.email || 'Assigned inspector';
 }
 
 export const MAX_ESTIMATED_DURATION_MINUTES = 7 * 24 * 60;
@@ -403,36 +440,6 @@ async function assertSourceExists(
   throw badRequest('Invalid sourceApp / sourceType combination');
 }
 
-async function assertLinkedSourceActiveForReactivation(
-  executor: ScheduleExecutor,
-  sourceApp: ScheduleSourceApp,
-  sourceType: ScheduleSourceType,
-  sourceId: string | null,
-): Promise<void> {
-  // New Solar links target assessments, but historical site-linked rows remain
-  // readable and can be completed by the site lifecycle projection. They may
-  // only be reactivated while that exact site is again an active Draft.
-  if (sourceApp === 'solarsense' && sourceType === 'site') {
-    if (!sourceId?.trim()) {
-      throw badRequest('sourceId is required for linked jobs');
-    }
-    const [site] = await executor
-      .select({ id: ssSites.id })
-      .from(ssSites)
-      .where(and(
-        eq(ssSites.id, sourceId.trim()),
-        eq(ssSites.status, 'Draft'),
-        isNull(ssSites.deletedAt),
-      ))
-      .for('update')
-      .limit(1);
-    if (!site) throw notFound('Active Draft site');
-    return;
-  }
-
-  await assertSourceExists(executor, sourceApp, sourceType, sourceId);
-}
-
 function validateAppTypePair(sourceApp: ScheduleSourceApp, sourceType: ScheduleSourceType): void {
   if (sourceApp === 'custom' && sourceType !== 'custom') {
     throw badRequest('custom sourceApp requires sourceType custom');
@@ -454,6 +461,7 @@ async function alignLinkedSourceAssignment(
   sourceType: ScheduleSourceType,
   sourceId: string | null,
   subject: UnifiedSchedulerSubject,
+  scheduledStartAt?: Date,
   strict = true,
 ): Promise<boolean> {
   if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') return false;
@@ -525,7 +533,12 @@ async function alignLinkedSourceAssignment(
   }
   if (sourceApp === 'installhub' && sourceType === 'installation') {
     const [current] = await executor
-      .select({ assignedInspectorUserId: ihInstallations.assignedInspectorUserId })
+      .select({
+        assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
+        inspectorName: ihInstallations.inspectorName,
+        auditDate: ihInstallations.auditDate,
+        timezone: ihInstallations.timezone,
+      })
       .from(ihInstallations)
       .where(and(
         eq(ihInstallations.id, sourceId),
@@ -538,11 +551,22 @@ async function alignLinkedSourceAssignment(
       if (!strict) return false;
       throw conflict('Linked installation is no longer an active Draft');
     }
-    if (current.assignedInspectorUserId === subject.fieldUserId) return false;
+    const inspectorName = installHubSchedulerInspectorName(subject);
+    const auditDate = scheduledStartAt
+      ? installHubSchedulerAuditDate(scheduledStartAt, current.timezone)
+      : current.auditDate;
+    const assignmentChanged = current.assignedInspectorUserId !== subject.fieldUserId;
+    if (
+      !assignmentChanged
+      && current.inspectorName === inspectorName
+      && current.auditDate === auditDate
+    ) return false;
     const [updated] = await executor
       .update(ihInstallations)
       .set({
         assignedInspectorUserId: subject.fieldUserId,
+        inspectorName,
+        auditDate,
         updatedAt: new Date(),
         syncStatus: 'local',
       })
@@ -553,7 +577,10 @@ async function alignLinkedSourceAssignment(
       ))
       .returning({ id: ihInstallations.id });
     if (!updated) throw conflict('Linked installation is no longer an active Draft');
-    return true;
+    // Notification repair is concerned only with assignment drift. A legacy
+    // date/name projection repair must not turn a normal event edit into a new
+    // assignment notification.
+    return assignmentChanged;
   }
   if (sourceApp === 'solarsense' && sourceType === 'site') {
     throw badRequest('Legacy Solar site events cannot change product assignment');
@@ -663,7 +690,6 @@ async function assertNoActiveLinkedEvent(
   sourceApp: ScheduleSourceApp,
   sourceType: ScheduleSourceType,
   sourceId: string | null,
-  excludeEventId?: string,
 ): Promise<void> {
   if (!sourceId || sourceApp === 'custom') return;
   const [existing] = await executor
@@ -674,7 +700,6 @@ async function assertNoActiveLinkedEvent(
       eq(portalScheduleEvents.sourceType, sourceType),
       eq(portalScheduleEvents.sourceId, sourceId),
       ne(portalScheduleEvents.status, 'cancelled'),
-      ...(excludeEventId ? [ne(portalScheduleEvents.id, excludeEventId)] : []),
     ))
     .limit(1);
   if (existing) throw conflict('Job already has an active scheduler event');
@@ -714,6 +739,7 @@ async function reconcileAssignmentAfterCancellation(
     remaining.sourceType as ScheduleSourceType,
     remaining.sourceId,
     subject,
+    remaining.scheduledStartAt,
     false,
   );
 }
@@ -842,11 +868,12 @@ export async function createScheduleEvent(
     const title = (input.title?.trim() || labelFromSource || 'Scheduled work').slice(0, 300);
     if (!title) throw badRequest('title is required');
     const assignee = await loadSchedulerSubject(tx, input.assigneeFieldUserId.trim());
+    await lockAndAssertAssigneeAvailable(tx, assignee.fieldUserId, start, end);
     // Updating the product assignment takes its row lock. Do this before the
     // duplicate check so concurrent creates for the same source serialize;
     // the losing transaction then observes the winner's committed event and
     // rolls its assignment update back with the conflict.
-    await alignLinkedSourceAssignment(tx, sourceApp, sourceType, sourceId, assignee);
+    await alignLinkedSourceAssignment(tx, sourceApp, sourceType, sourceId, assignee, start);
     await assertNoActiveLinkedEvent(tx, sourceApp, sourceType, sourceId);
 
     const now = new Date();
@@ -908,12 +935,38 @@ export type CreateSchedulerDispatchInput = {
 type DispatchJobInput = Record<string, unknown>;
 
 const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, ReadonlySet<string>> = {
-  ecoaudit: new Set(['siteName', 'siteAddress', 'auditDate']),
-  solarsense: new Set(['siteName', 'location', 'buildingIdName', 'auditDate']),
-  installhub: new Set(['clientName', 'siteName', 'siteAddress', 'auditDate', 'timezone']),
+  ecoaudit: new Set(['siteName', 'siteAddress', 'auditDate', 'address']),
+  solarsense: new Set(['siteName', 'location', 'buildingIdName', 'auditDate', 'address']),
+  installhub: new Set([
+    'customerName',
+    'clientName',
+    'maas',
+    'serviceType',
+    'meteringSolutionType',
+    'plannedMeterType',
+    'siteName',
+    'siteAddress',
+    'siteContactName',
+    'siteContactPhone',
+    'siteContactEmail',
+    'fergusJobNumber',
+    'quoteNumber',
+    'jobComments',
+    'accessInformation',
+    'warrantyDevice',
+    'monitoringInstalled',
+    'hardwareInstalled',
+    'solarCapacityKw',
+    'additionalMonitoringRequired',
+    'additionalMonitoringHardware',
+    'electricityNmi',
+    'auditDate',
+    'timezone',
+    'address',
+  ]),
 };
 
-function parseDispatchJob(
+export function parseDispatchJob(
   value: unknown,
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
 ): DispatchJobInput {
@@ -946,11 +999,41 @@ function dispatchString(job: DispatchJobInput, field: string): string {
   return value.trim();
 }
 
-function optionalDispatchString(job: DispatchJobInput, field: string): string | null {
+function optionalDispatchString(
+  job: DispatchJobInput,
+  field: string,
+  maxLength?: number,
+): string | null {
   const value = job[field];
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string') throw badRequest(`job.${field} must be a string`);
-  return value.trim() || null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (maxLength !== undefined && normalized.length > maxLength) {
+    throw badRequest(`job.${field} must contain at most ${maxLength} characters`);
+  }
+  return normalized;
+}
+
+function optionalDispatchBoolean(job: DispatchJobInput, field: string): boolean | null {
+  const value = job[field];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'boolean') throw badRequest(`job.${field} must be a boolean`);
+  return value;
+}
+
+function optionalDispatchSolarCapacity(job: DispatchJobInput): number | null {
+  const value = job.solarCapacityKw;
+  if (value === undefined || value === null || value === '') return null;
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || value < 0
+    || value > 1_000_000
+  ) {
+    throw badRequest('job.solarCapacityKw must be a finite number between 0 and 1000000');
+  }
+  return value;
 }
 
 function optionalDispatchDate(job: DispatchJobInput, field: string): string | null {
@@ -966,7 +1049,7 @@ function optionalDispatchDate(job: DispatchJobInput, field: string): string | nu
   return value;
 }
 
-function validateDispatchJob(
+export function validateDispatchJob(
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
   job: DispatchJobInput,
 ): void {
@@ -984,6 +1067,16 @@ function validateDispatchJob(
   dispatchString(job, 'clientName');
   dispatchString(job, 'siteAddress');
   optionalDispatchString(job, 'timezone');
+  for (const [field, maxLength] of Object.entries(INSTALLATION_METADATA_TEXT_LIMITS)) {
+    optionalDispatchString(job, field, maxLength);
+  }
+  optionalDispatchBoolean(job, 'maas');
+  optionalDispatchBoolean(job, 'warrantyDevice');
+  optionalDispatchBoolean(job, 'monitoringInstalled');
+  optionalDispatchBoolean(job, 'hardwareInstalled');
+  optionalDispatchBoolean(job, 'additionalMonitoringRequired');
+  optionalDispatchSolarCapacity(job);
+  optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH);
 }
 
 async function createDispatchedProductJob(
@@ -997,12 +1090,13 @@ async function createDispatchedProductJob(
   const now = new Date();
   const auditDate = optionalDispatchDate(job, 'auditDate')
     ?? scheduledStartAt.toISOString().slice(0, 10);
-  const inspectorName = assignee.displayName?.trim() || assignee.email || 'Assigned inspector';
+  const inspectorName = installHubSchedulerInspectorName(assignee);
 
   if (sourceApp === 'ecoaudit') {
     const sourceId = randomUUID();
     const siteName = dispatchString(job, 'siteName');
     const siteAddress = dispatchString(job, 'siteAddress');
+    const structuredAddress = parseSchedulerDispatchAddress(job.address, siteAddress, now);
     await executor.insert(eaAudits).values({
       id: sourceId,
       serverId: randomUUID(),
@@ -1011,6 +1105,7 @@ async function createDispatchedProductJob(
       deletedAt: null,
       siteName,
       siteAddress,
+      ...structuredAddress,
       inspectorName,
       auditDate,
       status: 'Draft',
@@ -1029,6 +1124,7 @@ async function createDispatchedProductJob(
     const siteName = dispatchString(job, 'siteName');
     const location = dispatchString(job, 'location');
     const buildingIdName = dispatchString(job, 'buildingIdName');
+    const structuredAddress = parseSchedulerDispatchAddress(job.address, location, now);
     const ownerUserId = requireProductUserId(actor, 'solarsense');
     await executor.insert(ssSites).values({
       id: siteId,
@@ -1038,6 +1134,7 @@ async function createDispatchedProductJob(
       deletedAt: null,
       siteName,
       location,
+      ...structuredAddress,
       dateOfAssessment: auditDate,
       createdByUserId: ownerUserId,
       createdAt: now,
@@ -1071,6 +1168,7 @@ async function createDispatchedProductJob(
   const clientName = dispatchString(job, 'clientName');
   const siteName = dispatchString(job, 'siteName');
   const siteAddress = dispatchString(job, 'siteAddress');
+  const structuredAddress = parseSchedulerDispatchAddress(job.address, siteAddress, now);
   await executor.insert(ihInstallations).values({
     id: sourceId,
     serverId: randomUUID(),
@@ -1082,9 +1180,79 @@ async function createDispatchedProductJob(
     treeSchemaVersion: 2,
     treeRevision: 1,
     recordVersionNumber: 0,
+    customerName: optionalDispatchString(
+      job,
+      'customerName',
+      INSTALLATION_METADATA_TEXT_LIMITS.customerName,
+    ),
     clientName,
+    maas: optionalDispatchBoolean(job, 'maas'),
+    serviceType: optionalDispatchString(
+      job,
+      'serviceType',
+      INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
+    ),
+    meteringSolutionType: optionalDispatchString(
+      job,
+      'meteringSolutionType',
+      INSTALLATION_METADATA_TEXT_LIMITS.meteringSolutionType,
+    ),
+    plannedMeterType: optionalDispatchString(
+      job,
+      'plannedMeterType',
+      INSTALLATION_METADATA_TEXT_LIMITS.plannedMeterType,
+    ),
     siteName,
     siteAddress,
+    ...structuredAddress,
+    siteContactName: optionalDispatchString(
+      job,
+      'siteContactName',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactName,
+    ),
+    siteContactPhone: optionalDispatchString(
+      job,
+      'siteContactPhone',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactPhone,
+    ),
+    siteContactEmail: optionalDispatchString(
+      job,
+      'siteContactEmail',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactEmail,
+    ),
+    fergusJobNumber: optionalDispatchString(
+      job,
+      'fergusJobNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.fergusJobNumber,
+    ),
+    quoteNumber: optionalDispatchString(
+      job,
+      'quoteNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.quoteNumber,
+    ),
+    jobComments: optionalDispatchString(
+      job,
+      'jobComments',
+      INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
+    ),
+    accessInformation: optionalDispatchString(
+      job,
+      'accessInformation',
+      INSTALLATION_METADATA_TEXT_LIMITS.accessInformation,
+    ),
+    warrantyDevice: optionalDispatchBoolean(job, 'warrantyDevice'),
+    monitoringInstalled: optionalDispatchBoolean(job, 'monitoringInstalled'),
+    hardwareInstalled: optionalDispatchBoolean(job, 'hardwareInstalled'),
+    solarCapacityKw: optionalDispatchSolarCapacity(job),
+    additionalMonitoringRequired: optionalDispatchBoolean(
+      job,
+      'additionalMonitoringRequired',
+    ),
+    additionalMonitoringHardware: optionalDispatchString(
+      job,
+      'additionalMonitoringHardware',
+      INSTALLATION_METADATA_TEXT_LIMITS.additionalMonitoringHardware,
+    ),
     inspectorName,
     auditDate,
     status: 'Draft',
@@ -1102,6 +1270,7 @@ async function createDispatchedProductJob(
     installationId: sourceId,
     name: 'Incoming grid connection',
     isDefault: true,
+    nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
     createdAt: now,
   });
   return {
@@ -1139,6 +1308,7 @@ export async function createSchedulerDispatch(
       loadActorSubject(tx, user),
       loadSchedulerSubject(tx, input.assigneeFieldUserId.trim()),
     ]);
+    await lockAndAssertAssigneeAvailable(tx, assignee.fieldUserId, start, end);
     const product = await createDispatchedProductJob(
       tx,
       sourceApp,
@@ -1239,16 +1409,16 @@ export function scheduleUpdateRequiresActiveProduct(input: {
   );
 }
 
-export function scheduleUpdateReactivatesProduct(input: {
+export function scheduleUpdateRequiresAvailabilityCheck(input: {
   existingStatus: ScheduleStatus;
   nextStatus: ScheduleStatus;
+  assigneeChanged: boolean;
+  scheduleChanged: boolean;
 }): boolean {
-  const nextStatusIsActive = input.nextStatus === 'planned'
-    || input.nextStatus === 'in_progress';
-  return nextStatusIsActive && (
-    input.existingStatus === 'cancelled'
-    || input.existingStatus === 'done'
-  );
+  if (input.nextStatus === 'cancelled') return false;
+  return input.assigneeChanged
+    || input.scheduleChanged
+    || input.nextStatus !== input.existingStatus;
 }
 
 export async function updateScheduleEvent(
@@ -1346,6 +1516,7 @@ export async function updateScheduleEvent(
       patch.deadlineAt = requireIsoDate(input.deadlineAt, 'deadlineAt');
     }
     const nextStatus = input.status !== undefined ? parseStatus(input.status) : existing.status as ScheduleStatus;
+    const nextStatusIsActive = nextStatus === 'planned' || nextStatus === 'in_progress';
     if (
       existing.status !== 'cancelled'
       && nextStatus === 'cancelled'
@@ -1370,37 +1541,49 @@ export async function updateScheduleEvent(
       patch.scheduledEndAt = deriveScheduledEndAt(start, estimatedDurationMinutes);
     }
 
+    const start = (patch.scheduledStartAt as Date | undefined) ?? existing.scheduledStartAt;
+    const end = patch.scheduledEndAt !== undefined
+      ? (patch.scheduledEndAt as Date | null)
+      : existing.scheduledEndAt;
+
     const explicitAssignee = input.assigneeFieldUserId !== undefined;
-    const reactivatesLinkedProduct = scheduleUpdateReactivatesProduct({
+    const availabilityChanged = scheduleUpdateRequiresAvailabilityCheck({
       existingStatus: existing.status as ScheduleStatus,
       nextStatus,
+      assigneeChanged,
+      scheduleChanged: input.scheduledStartAt !== undefined
+        || estimatedDurationWasProvided,
     });
-    const updateRequiresActiveProduct = scheduleUpdateRequiresActiveProduct({
-      existingStatus: existing.status as ScheduleStatus,
-      nextStatus,
-      explicitAssignee,
-    });
-    if (reactivatesLinkedProduct) {
-      await assertLinkedSourceActiveForReactivation(
+    if (availabilityChanged) {
+      await lockAndAssertAssigneeAvailable(
+        tx,
+        assignee?.fieldUserId ?? existing.assigneeFieldUserId,
+        start,
+        end,
+      );
+    }
+    let productAssignmentRepaired = false;
+    const installHubScheduleProjectionRequired = existing.sourceApp === 'installhub'
+      && existing.sourceType === 'installation'
+      && nextStatusIsActive
+      && input.scheduledStartAt !== undefined;
+    if (
+      isMobileScheduleNotificationTarget(existing)
+      && (
+        scheduleUpdateRequiresActiveProduct({
+          existingStatus: existing.status as ScheduleStatus,
+          nextStatus,
+          explicitAssignee,
+        })
+        || installHubScheduleProjectionRequired
+      )
+    ) {
+      await assertSourceExists(
         tx,
         existing.sourceApp as ScheduleSourceApp,
         existing.sourceType as ScheduleSourceType,
         existing.sourceId,
       );
-    }
-    let productAssignmentRepaired = false;
-    if (
-      isMobileScheduleNotificationTarget(existing)
-      && updateRequiresActiveProduct
-    ) {
-      if (!reactivatesLinkedProduct) {
-        await assertSourceExists(
-          tx,
-          existing.sourceApp as ScheduleSourceApp,
-          existing.sourceType as ScheduleSourceType,
-          existing.sourceId,
-        );
-      }
       const subject = assignee
         ?? await loadSchedulerSubject(tx, existing.assigneeFieldUserId);
       // Lock the linked product before checking for another active event. This
@@ -1411,16 +1594,19 @@ export async function updateScheduleEvent(
         existing.sourceType as ScheduleSourceType,
         existing.sourceId,
         subject,
+        start,
       );
       assignee = subject;
     }
-    if (reactivatesLinkedProduct) {
+    if (
+      nextStatusIsActive
+      && (existing.status === 'cancelled' || existing.status === 'done')
+    ) {
       await assertNoActiveLinkedEvent(
         tx,
         existing.sourceApp as ScheduleSourceApp,
         existing.sourceType as ScheduleSourceType,
         existing.sourceId,
-        existing.id,
       );
     }
 

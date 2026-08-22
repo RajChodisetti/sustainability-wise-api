@@ -58,8 +58,9 @@ with the unchanged credential.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return one canonical person per entry with Eco Audit, Solar Sense, and Field App Complete memberships, the shared Field subject, and nullable `billingRate` |
+| GET | `/v1/portal/users` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Return one canonical person per entry with product memberships, shared Field subject, nullable `billingRate`, IANA `timezone`, `workingDaysMask`, and canonical `updatedAt` |
 | PATCH | `/v1/portal/users/:globalUserId/billing-rate` | Eco Audit, Solar Sense, or Field App Complete admin JWT | Set the canonical user's non-negative hourly `billingRate`, or clear it with `null` |
+| PATCH | `/v1/portal/users/:globalUserId/workforce-profile` | active canonical admin JWT | Set the user's IANA timezone and Sunday=1…Saturday=64 working-day mask using `expectedUpdatedAt` optimistic concurrency |
 
 This endpoint selects public fields from `unified_users` and never returns or
 loads password hashes. `key`/`identityIds` identify `global_users`; each
@@ -73,6 +74,11 @@ all product memberships for that person use one administrative value. It is
 not inferred from a job, recorded time, or Scheduler defaults. A missing rate
 remains `null`; commercial labour calculation reports the affected user and
 requires an administrator to set the rate instead of guessing one.
+
+The workforce-profile PATCH accepts exactly
+`{ timezone, workingDaysMask, expectedUpdatedAt }`. At least one working-day bit
+must be set. It row-locks the canonical identity and returns 409
+`workforce_profile_version_conflict` for a stale revision.
 
 The 0030 backfill treats one pre-existing row per product with the same
 normalized real email or app-local username as one person. It prefers an
@@ -89,21 +95,51 @@ global projections never grant it.
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
+| GET | `/v1/portal/scheduler/analytics?from=YYYY-MM-DD&to=YYYY-MM-DD&timezone=Australia%2FSydney` | admin | User leaderboard and per-currency financial lifecycle analytics for an inclusive custom calendar window (maximum 366 days) |
+| GET | `/v1/portal/scheduler/leave-requests` | portal user | List the caller's leave requests; administrators may list team leave and filter by user, status, or overlapping date window |
+| POST | `/v1/portal/scheduler/leave-requests` | portal user | Apply for inclusive date-based leave in the caller's saved timezone |
+| POST | `/v1/portal/scheduler/leave-requests/:id/decision` | admin | Approve or reject pending leave with `expectedUpdatedAt`; approval rejects overlapping planned/in-progress work |
+| POST | `/v1/portal/scheduler/leave-requests/:id/cancel` | owner or admin | Cancel pending or approved leave with `expectedUpdatedAt` |
 | GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
 | POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Eco Audit, Solar Sense, or Field App Complete job, or create a custom event |
 | POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
+| POST | `/v1/portal/scheduler/address-suggestions` | portal user | Return Australia-only Photon address/postcode suggestions; reports `available: false` when the optional server-side geocoder is not configured |
+| POST | `/v1/portal/scheduler/route-suggestions` | portal user | Suggest an open driving route from a fresh Australian current location through that user's active jobs for one local calendar date; admin overrides require an explicitly authorized origin |
 | PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event and keep the product assignment aligned |
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
 | GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List active Draft jobs without an active event |
 
-Eco Audit audits and Solar Sense assessments remain supported Scheduler source
-records even though the portal does not offer either application in its source
-selector for new work. Existing rows remain visible in calendar and finance
-`All` views and through direct API filters; discovery, linking, assignment,
-active-time finance, and eligible mobile notifications continue to use the same
-product records. Migration 0040 removes the temporary Eco write fence installed
+The analytics endpoint reads one repeatable-read database snapshot. Its report
+timezone defines the selected UTC interval and daily financial buckets; each
+leaderboard user's saved timezone defines that user's working-day/leave labels.
+Completion facts supply immutable first-completion time and attribution plus a
+currency-preserving ex-GST/GST/inc-GST revenue snapshot. Accepted late session
+evidence at or before completion affects working-hours analytics only and does
+not rewrite the snapshot. Snapshot status, money, and `revenueCapturedAt` are
+immutable; any revenue restatement requires a future explicit audited workflow.
+Unavailable facts and legacy completions without a fact are counted as jobs but
+do not borrow current finance revenue. Migration 0044 backfills every dateable
+legacy completion as unavailable, including soft-deleted completed products;
+soft delete does not erase commercial or HR history. The
+`quality.completedWorkRevenue.undatedCompletedJobs` total exposes retained
+Completed products with no fact or timestamp; they cannot be placed in a custom
+window and no timestamp is invented. Backlog and pipeline are current
+planned/in-progress Scheduler state, not reconstructed historical status, and
+include only the three supported commercial product source pairs.
+For the legacy no-fact attribution fallback, a non-cancelled Scheduler event is
+chosen with planned/in-progress first, then newest update time, then lexical
+event ID; product assignment is used only when that event identity does not
+resolve.
+
+Eco Audit audits, Solar Sense assessments, and Field App Complete installations
+are supported Scheduler sources for both existing-work linking and authorized
+new-work dispatch. The assignee must have an active identity in the selected
+product. Existing rows remain visible in calendar and finance `All` views and
+through direct API filters; discovery, assignment, active-time finance, and
+eligible mobile notifications use the same product records. Migration 0040
+removes the temporary Eco write fence installed
 by 0038 without rewriting historical rows. Events cancelled by the earlier
 cutover remain cancelled because the database cannot distinguish them safely
 from intentionally cancelled work.
@@ -126,22 +162,85 @@ when calling the API directly and must use `YYYY-MM-DD`; the portal sends the
 locally selected calendar date. Field App Complete defaults to
 `Australia/Sydney` unless an explicit timezone is supplied.
 
+For Field App Complete, the dispatch `job` object may additionally carry the
+nullable installation metadata documented in the mobile integration guide and
+`electricityNmi`. The API stores `electricityNmi` as nullable, trimmed text of
+at most 100 characters on the installation's default grid supply rather than
+duplicating it on the installation. Service type,
+metering solution type, and planned meter type are bounded free text until a
+separate approved business vocabulary exists. External Fergus and quote
+references are not assumed globally unique. Omitting an additive field keeps an
+existing value during legacy synchronization; sending `null` explicitly clears
+it. Nullable booleans preserve unknown as `null`.
+
+The supplied business labels map to existing domain authorities: status is the
+product lifecycle, install schedule/date/by is the Scheduler event and actor,
+electricity NMI is grid-supply data, actual meter/device IDs and types remain on
+meter/device/form records, and completion date/by is server-owned lifecycle
+evidence. Client name and site address retain their existing installation
+fields. This avoids conflicting copies of operational facts.
+
+For linked Field App Complete events, Scheduler projects the event start's local
+calendar date and resolved assignee display name into the legacy installation
+`auditDate` and `inspectorName` fields for older clients. The Scheduler event and
+canonical assignee remain authoritative; this projection does not change product
+lifecycle or completion evidence.
+
+The server derives ownership and inspector display fields from authenticated
+canonical identities. Client-supplied IDs, assignment, sync state, deletion,
+completion, and lifecycle status fields are rejected. New work is always Draft
+and its event is always planned. SolarSense dispatches and new links target a
+rooftop assessment; historical site-linked events remain readable, but cannot
+be newly linked or reassigned. Completed or deleted jobs are not linkable.
+Product completion marks every non-cancelled linked calendar event done and
+cancels its pending automated reminders; manual reminder history is preserved.
+The projection is idempotently reconciled by explicit completion, and by Eco
+Audit/Solar Sense mobile sync ingestion. Field App Complete uses its canonical
+completion endpoint. Event status changes do not complete or reopen product data.
+
+Address suggestions accept `{ query?, postcode?, limit? }`; an empty search
+returns no suggestions. The response is `{ available, provider, attribution,
+suggestions }`. Each suggestion contains
+`id`, display `label`, street/address-line `freeform`, nullable `locality`,
+`state`, `postcode`, fixed `countryCode: "AU"`, coordinates, `provider`, and a
+nullable provider `placeId`. Unknown provider state names are returned as
+`null`, never as an unsupported Australian state code. A missing provider is a
+normal capability response (`available: false`), and clients must continue to
+permit manual address entry.
+
+New-work dispatch remains backwards compatible with the authoritative
+product-specific `siteAddress`/`location` string and UUID source IDs. Its `job`
+object may add `address: { freeform, locality?, state?, postcode?, countryCode:
+"AU", latitude?, longitude?, provider?, placeId? }`. The structured
+`freeform` is the user-entered address line and need not equal the composed
+legacy string. Selected or manual structure is stored atomically on the owning
+Eco Audit audit, SolarSense site, or Field App Complete installation. Stored
+coordinates are used only while their fingerprint still matches the current
+authoritative legacy address; otherwise route calculation ignores them and
+transiently geocodes the current text.
+
+Route suggestions accept `{ date, currentLocation: { latitude, longitude,
+accuracyMeters?, capturedAt? }, assigneeFieldUserId? }`. Inspectors are always
+restricted to themselves; an administrator may choose another active canonical
+Field user through the API only when the submitted current location is an
+explicitly authorized starting point. The shared portal keeps browser-location
+planning self-only so an administrator's device location is never presented as
+an employee's. The user's saved IANA timezone defines the requested local day. The
+API reads planned/in-progress Eco Audit audits, SolarSense assessments, and
+Field App Complete installations, then returns optimized `jobs`, explicit
+`unroutableJobs`, leg and total estimates, schedule warnings, and one
+`googleMapsUrl` in the optimized order. A configured OSRM table supplies exact
+road-duration ordering; an unavailable router produces a deterministic
+straight-line-distance fallback and warning. The operation is advisory: it
+does not persist current location, provider geocodes, route order, or any
+Scheduler mutation. To keep every stop in one Google Maps mobile URL, the
+server accepts at most four jobs for the day (destination plus three
+waypoints).
+
 Event create and update use the same optional estimate contract. Updating an
 unrelated field on a historical event does not erase its legacy end timestamp;
 once its schedule or estimate is explicitly rewritten, the canonical derived
-end applies. The server derives ownership and inspector display fields from
-authenticated canonical identities. Client-supplied IDs, assignment, sync
-state, deletion, completion, and lifecycle status fields are rejected. New work
-is always Draft and its event is always planned. SolarSense dispatches and new
-links target a rooftop assessment; historical site-linked events remain
-readable, but cannot be newly linked or reassigned. Completed or deleted jobs
-are not linkable.
-Product completion marks every non-cancelled linked calendar event done and
-cancels its pending automated reminders; manual reminder history is preserved.
-The projection is idempotently reconciled by explicit completion and by Eco
-Audit/Solar Sense mobile sync ingestion. Field App Complete uses its canonical
-completion endpoint. Event status changes do not complete or reopen product
-data.
+end applies.
 
 Creating or linking mobile product work atomically queues an `assigned` push.
 Meaningful title, schedule, deadline, status, or assignee changes queue the
@@ -394,9 +493,12 @@ and `needsHoursReview`.
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs` | Queue the exact consolidated PDF revision using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/email` | Queue Gmail delivery of an issued/paid invoice's exact branded PDF; requires `{expectedUpdatedAt,idempotencyKey}` and accepts optional `{to,subject,message}`; returns `202 {delivery,reused}` |
 | GET | `/v1/portal/scheduler/invoices/:invoiceId/email-deliveries` | List the newest 100 durable email delivery audit rows, including queued/sent/failed/unknown status and provider message identity |
+| GET | `/v1/portal/scheduler/invoices/:invoiceId/refunds` | List posted and reversed refund audit rows for the invoice |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/refunds` | Post an idempotent partial/full refund against an issued or paid invoice using `{expectedUpdatedAt,idempotencyKey,amountExGst,gstAmount,reason}` and optional refund time/reference; GST must match the invoice rate/final remainder |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/refunds/:refundId/void` | Reverse a posted refund auditably using `{expectedUpdatedAt,reason}`; the historical refund row is retained |
 | POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
 | GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
-| DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete evidence while its expense is unreserved or belongs only to a draft invoice; issued/paid evidence is immutable |
+| DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
 | GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, internal cost rate, billing contact, and audited hour override; customer billing rates belong to canonical users |
 | POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
@@ -410,6 +512,15 @@ and `needsHoursReview`.
 | GET | `/v1/export/jobs/latest?entityId=:invoiceId&artifactType=pdf&reportVariantKey=...` | Recover the current administrator's latest matching invoice export after navigation/reload |
 | GET | `/v1/export/jobs/:jobId` | Poll queued/running/complete/failed status and the canonical branded filename |
 | GET | `/v1/export/jobs/:jobId/download` | Stream the completed PDF with safe ASCII `filename` and UTF-8 `filename*` Content-Disposition values |
+
+Invoices expose nullable `xeroInvoiceNumber` and `xeroDate` as reconciliation
+metadata distinct from the internal invoice number/date and
+`purchaseOrderReference`. They may be set or cleared with the normal
+`expectedUpdatedAt` compare-and-swap while the invoice is draft, issued, or
+paid. A void invoice remains immutable. `xeroInvoiceNumber` is trimmed and
+limited to 100 characters; `xeroDate` is a valid `YYYY-MM-DD` calendar date.
+These fields record an external-system reference only; they do not perform or
+imply Xero API synchronization.
 
 Invoice email delivery status is `queued` while its exact PDF or a safe retry
 is pending, `processing` only while one worker owns the attempt, `sent` after
@@ -470,16 +581,6 @@ quantity/hours and unit/billing rate appear in the PDF only when an
 administrator explicitly enables `showQuantityAndRate`. Issue freezes the
 reviewed lines as immutable accounting snapshots.
 
-Creating a billable expense while its job belongs to exactly one draft invoice
-atomically appends an amount-only expense line to that draft. Its initial sell
-amount is `billableAmount` when supplied, otherwise the stored cost amount; the
-draft line can then be adjusted without rewriting the supplier cost. With no
-draft, the expense remains available for the next invoice. Multiple drafts for
-one job are ambiguous, so a billable expense write fails without persisting
-until the extra draft is voided or completed. Drafts with no automatic labour,
-quote, or expense suggestion are allowed so an administrator can add manual
-charges before issue.
-
 Released Field clients retain the legacy direct download adapter at
 `GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
 The Scheduler portal does not use that synchronous route.
@@ -515,10 +616,7 @@ Migration 0038 appends a zero-hour administrative revision wherever an existing
 explicit or migrated legacy override could otherwise remain nonzero; pristine
 ledgers evaluate to zero without creating purge-blocking evidence. Legacy estimated hours no
 longer block invoice creation, issue, or PDF generation; raw active-time
-evidence and already-issued invoice snapshots are preserved. Missing app time,
-missing billing rates, zero internal hours, and migrated legacy estimates never
-block a manual customer invoice; they only affect internal review and automatic
-labour suggestions.
+evidence and already-issued invoice snapshots are preserved.
 
 Non-void draft, issued, and paid lines reserve their linked labour/quote/expense
 values, preventing Quick Invoice duplication. Voiding releases reservations;
@@ -537,10 +635,8 @@ customer-facing charges. At issue, every selected job must contribute a
 positive line, and every line retains `financeId` plus its immutable job/source
 provenance. A draft/issued/paid reservation is visible and enforced from every
 participating job, including secondary jobs.
-Every exact linked source job must have current status `Completed` before draft
-creation and again before issue. A Completed SolarSense parent site does not
-make a Draft rooftop assessment invoiceable. A draft PDF also requires all live
-jobs to remain Completed;
+Every job must have current status `Completed` before draft creation and again
+before issue. A draft PDF also requires all live jobs to remain Completed;
 issued and paid historical snapshots remain exportable without reopening the
 operational job.
 Migration 0034 deliberately fails closed for pre-0034 line rewrites and
@@ -560,11 +656,9 @@ matching PDF/JPEG/PNG/WebP magic signature. Direct `Content-Type:
 application/pdf`, image types, and octet-stream plus `x-file-content-type` are
 accepted. The default maximum is 10 MiB (`SCHEDULER_BILL_ATTACHMENT_MAX_BYTES`,
 capped at 25 MiB). Metadata exposes checksum, size, type, safe filename, and an
-authenticated download path only. Upload and delete remain allowed while the
-expense belongs only to a draft invoice, which supports the create-then-upload
-bill workflow; they are rejected after issue or payment. Expense deletion itself
-still requires an unreserved expense. It atomically removes attachment records
-and queues durable byte deletion; pending upload rows use a one-hour
+authenticated download path only. Upload and delete are rejected after the
+expense is reserved or invoiced. Expense deletion atomically removes attachment
+records and queues durable byte deletion; pending upload rows use a one-hour
 lease plus startup/hourly reconciliation so crashes do not publish broken
 evidence or race a live upload.
 

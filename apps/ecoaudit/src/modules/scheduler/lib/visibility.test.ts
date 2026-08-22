@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   schedulerDefaultSourceApp,
-  schedulerEventSupportsMobileNotifications,
+  schedulerCreatableSourceApps,
   schedulerIsFieldOnly,
   schedulerSelectableSourceApps,
   schedulerSourceAppIsSelectable,
@@ -10,24 +10,6 @@ import {
   schedulerVisibleFinanceSourceApps,
   schedulerVisibleSourceApps,
 } from './visibility';
-
-test('mobile Scheduler notifications cover every linked product app', () => {
-  assert.equal(schedulerEventSupportsMobileNotifications({
-    sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'eco-job',
-  }), true);
-  assert.equal(schedulerEventSupportsMobileNotifications({
-    sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'solar-job',
-  }), true);
-  assert.equal(schedulerEventSupportsMobileNotifications({
-    sourceApp: 'installhub', sourceType: 'installation', sourceId: 'field-job',
-  }), true);
-  assert.equal(schedulerEventSupportsMobileNotifications({
-    sourceApp: 'custom', sourceType: 'custom', sourceId: 'custom-job',
-  }), false);
-  assert.equal(schedulerEventSupportsMobileNotifications({
-    sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: null,
-  }), false);
-});
 
 test('existing Scheduler work remains visible across every source', () => {
   const visibleSourceApps = schedulerVisibleSourceApps();
@@ -41,15 +23,30 @@ test('existing Scheduler work remains visible across every source', () => {
   assert.equal(schedulerIsFieldOnly(visibleSourceApps), false);
 });
 
-test('Scheduler controls and unscheduled drag choices select Field App or custom only', () => {
+test('new cross-product work is offered only when the actor has the required product identity', () => {
+  const all = schedulerSelectableSourceApps();
+  assert.deepEqual(
+    schedulerCreatableSourceApps(all, ['ecoaudit']),
+    ['ecoaudit', 'installhub', 'custom'],
+  );
+  assert.deepEqual(
+    schedulerCreatableSourceApps(all, ['ecoaudit', 'solarsense', 'installhub']),
+    all,
+  );
+});
+
+test('Scheduler controls and unscheduled drag choices cover every supported job type', () => {
   const selectableSourceApps = schedulerSelectableSourceApps();
-  assert.deepEqual(selectableSourceApps, ['installhub', 'custom']);
-  assert.deepEqual(schedulerVisibleFinanceSourceApps(selectableSourceApps), ['installhub']);
-  assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'ecoaudit'), false);
-  assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'solarsense'), false);
+  assert.deepEqual(selectableSourceApps, ['ecoaudit', 'solarsense', 'installhub', 'custom']);
+  assert.deepEqual(
+    schedulerVisibleFinanceSourceApps(selectableSourceApps),
+    ['ecoaudit', 'solarsense', 'installhub'],
+  );
+  assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'ecoaudit'), true);
+  assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'solarsense'), true);
   assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'installhub'), true);
   assert.equal(schedulerSourceAppIsSelectable(selectableSourceApps, 'custom'), true);
-  assert.equal(schedulerIsFieldOnly(selectableSourceApps), true);
+  assert.equal(schedulerIsFieldOnly(selectableSourceApps), false);
 });
 
 test('new Scheduler work defaults to Field App, never a display-only source', () => {

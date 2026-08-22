@@ -3,10 +3,12 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   cancelScheduleEvent,
+  cancelSchedulerLeaveRequest,
   checkConsolidatedSchedulerInvoiceEligibility,
   createConsolidatedSchedulerInvoice,
   createQuickSchedulerInvoice,
   createScheduleEvent,
+  createSchedulerLeaveRequest,
   createSchedulerDispatch,
   createSchedulerExpense,
   deleteSchedulerExpenseAttachment,
@@ -14,31 +16,40 @@ import {
   fetchGlobalSchedulerExpenses,
   fetchGlobalSchedulerInvoice,
   fetchGlobalSchedulerInvoices,
+  fetchSchedulerAnalytics,
+  fetchSchedulerAddressSuggestions,
   fetchSchedulerFinancialSummary,
   fetchSchedulerFinanceOverview,
   fetchSchedulerInvoice,
+  fetchSchedulerInvoiceRefunds,
   fetchSchedulerInvoiceEmailDeliveries,
   fetchSchedulerInvoices,
   fetchSchedulerPortfolioSummary,
+  fetchSchedulerRouteSuggestion,
   fetchPortalAssignees,
   fetchScheduleEvents,
+  fetchSchedulerLeaveRequests,
   fetchScheduleSummary,
   fetchUnscheduledJobs,
   issueGlobalSchedulerInvoice,
   issueSchedulerInvoice,
   markGlobalSchedulerInvoicePaid,
   markSchedulerInvoicePaid,
+  postSchedulerInvoiceRefund,
+  reviewSchedulerLeaveRequest,
   searchJobOptions,
   sendSchedulerInvoiceEmail,
   sendScheduleEventReminder,
   updateGlobalSchedulerInvoice,
   updatePortalUserBillingRate,
+  updatePortalUserWorkforceProfile,
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
   updateScheduleEvent,
   uploadSchedulerExpenseAttachment,
   voidGlobalSchedulerInvoice,
+  voidSchedulerInvoiceRefund,
   voidSchedulerInvoice,
 } from '@/modules/scheduler/api/client';
 import type {
@@ -53,6 +64,14 @@ import type {
   UpdateSchedulerInvoiceInput,
   UpdateScheduleEventInput,
 } from '@/modules/scheduler/types/domain';
+import type {
+  CreateSchedulerLeaveInput,
+  ReviewSchedulerLeaveInput,
+  SchedulerLeaveFilters,
+} from '@/modules/scheduler/types/workforce';
+import type { PostSchedulerInvoiceRefundInput } from '@/modules/scheduler/types/refunds';
+import type { SchedulerAnalyticsFilters } from '@/modules/scheduler/types/analytics';
+import type { SchedulerCurrentLocation } from '@/modules/scheduler/types/routing';
 
 export const schedulerKeys = {
   all: ['portal', 'scheduler'] as const,
@@ -86,6 +105,15 @@ export const schedulerKeys = {
     [...schedulerKeys.invoices(financeId), invoiceId] as const,
   invoiceEmailDeliveries: (invoiceId: string) =>
     [...schedulerKeys.finance(), 'invoice-email-deliveries', invoiceId] as const,
+  invoiceRefunds: (invoiceId: string) =>
+    [...schedulerKeys.finance(), 'invoice-refunds', invoiceId] as const,
+  analytics: (filters: SchedulerAnalyticsFilters) =>
+    [...schedulerKeys.all, 'analytics', filters] as const,
+  addressSuggestions: (query: string, postcode: string) =>
+    [...schedulerKeys.all, 'address-suggestions', query, postcode] as const,
+  route: () => [...schedulerKeys.all, 'route'] as const,
+  leave: (filters: SchedulerLeaveFilters, adminView: boolean) =>
+    [...schedulerKeys.all, 'leave', adminView ? 'team' : 'mine', filters] as const,
 };
 
 export function useScheduleSummary() {
@@ -137,12 +165,62 @@ export function useUpdatePortalUserBillingRate() {
   });
 }
 
+export function useUpdatePortalUserWorkforceProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ globalUserId, timezone, workingDaysMask, expectedUpdatedAt }: {
+      globalUserId: string;
+      timezone: string;
+      workingDaysMask: number;
+      expectedUpdatedAt: string;
+    }) => updatePortalUserWorkforceProfile(globalUserId, {
+      timezone,
+      workingDaysMask,
+      expectedUpdatedAt,
+    }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: schedulerKeys.assignees() }),
+        qc.invalidateQueries({ queryKey: [...schedulerKeys.all, 'analytics'] }),
+      ]);
+    },
+  });
+}
+
 export function useJobOptions(q: string, sourceApp?: ScheduleSourceApp, enabled = true) {
   return useQuery({
     queryKey: schedulerKeys.jobOptions(q, sourceApp),
     queryFn: () => searchJobOptions(q, sourceApp),
     enabled: enabled && q.trim().length >= 0,
     staleTime: 15_000,
+  });
+}
+
+export function useSchedulerAddressSuggestions(
+  input: { query?: string; postcode?: string },
+  enabled = true,
+) {
+  const query = input.query?.trim() ?? '';
+  const postcode = input.postcode?.trim() ?? '';
+  return useQuery({
+    queryKey: schedulerKeys.addressSuggestions(query, postcode),
+    queryFn: () => fetchSchedulerAddressSuggestions({
+      query: query || undefined,
+      postcode: postcode || undefined,
+      limit: 8,
+    }),
+    enabled: enabled && (query.length >= 3 || /^\d{4}$/.test(postcode)),
+    staleTime: 5 * 60_000,
+  });
+}
+
+export function useSchedulerRouteSuggestion() {
+  return useMutation({
+    mutationFn: (input: {
+      date: string;
+      currentLocation: SchedulerCurrentLocation;
+      assigneeFieldUserId?: string;
+    }) => fetchSchedulerRouteSuggestion(input),
   });
 }
 
@@ -208,6 +286,52 @@ export function useSendScheduleEventReminder() {
   });
 }
 
+export function useSchedulerLeaveRequests(
+  filters: SchedulerLeaveFilters = {},
+  adminView = false,
+) {
+  return useQuery({
+    queryKey: schedulerKeys.leave(filters, adminView),
+    queryFn: () => fetchSchedulerLeaveRequests(filters, adminView),
+  });
+}
+
+export function useCreateSchedulerLeaveRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateSchedulerLeaveInput) => createSchedulerLeaveRequest(input),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: [...schedulerKeys.all, 'leave'] });
+    },
+  });
+}
+
+export function useReviewSchedulerLeaveRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: ReviewSchedulerLeaveInput }) => (
+      reviewSchedulerLeaveRequest(id, input)
+    ),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: [...schedulerKeys.all, 'leave'] });
+    },
+  });
+}
+
+export function useCancelSchedulerLeaveRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, expectedUpdatedAt, adminAction }: {
+      id: string;
+      expectedUpdatedAt: string;
+      adminAction?: boolean;
+    }) => cancelSchedulerLeaveRequest(id, expectedUpdatedAt, adminAction),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: [...schedulerKeys.all, 'leave'] });
+    },
+  });
+}
+
 export function useSchedulerFinanceOverview(enabled = true) {
   return useInfiniteQuery({
     queryKey: schedulerKeys.financeOverview(),
@@ -246,6 +370,18 @@ export function useSchedulerPortfolioSummary(enabled = true) {
     queryKey: schedulerKeys.portfolioSummary(),
     queryFn: fetchSchedulerPortfolioSummary,
     enabled,
+  });
+}
+
+export function useSchedulerAnalytics(
+  filters: SchedulerAnalyticsFilters,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: schedulerKeys.analytics(filters),
+    queryFn: () => fetchSchedulerAnalytics(filters),
+    enabled,
+    staleTime: 60_000,
   });
 }
 
@@ -309,6 +445,48 @@ export function useSchedulerInvoiceEmailDeliveries(
         ))
         ? 5_000
         : false;
+    },
+  });
+}
+
+export function useSchedulerInvoiceRefunds(invoiceId: string, enabled = true) {
+  return useQuery({
+    queryKey: schedulerKeys.invoiceRefunds(invoiceId),
+    queryFn: () => fetchSchedulerInvoiceRefunds(invoiceId),
+    enabled: enabled && Boolean(invoiceId),
+  });
+}
+
+export function usePostSchedulerInvoiceRefund(invoiceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: PostSchedulerInvoiceRefundInput) => (
+      postSchedulerInvoiceRefund(invoiceId, input)
+    ),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: schedulerKeys.invoiceRefunds(invoiceId) }),
+        qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoice(invoiceId) }),
+        qc.invalidateQueries({ queryKey: schedulerKeys.globalInvoices() }),
+        qc.invalidateQueries({ queryKey: schedulerKeys.finance() }),
+      ]);
+    },
+  });
+}
+
+export function useVoidSchedulerInvoiceRefund(invoiceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ refundId, expectedUpdatedAt, reason }: {
+      refundId: string;
+      expectedUpdatedAt: string;
+      reason: string;
+    }) => voidSchedulerInvoiceRefund(invoiceId, refundId, expectedUpdatedAt, reason),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: schedulerKeys.invoiceRefunds(invoiceId) }),
+        qc.invalidateQueries({ queryKey: schedulerKeys.finance() }),
+      ]);
     },
   });
 }

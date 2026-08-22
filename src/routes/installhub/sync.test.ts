@@ -2,16 +2,47 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   assertInstallHubSiteCodeWriteAllowed,
+  assertLegacyInstallHubCompletionUsesCanonicalRoute,
   formValues,
   deriveInstallHubSiteCode,
   installHubSyncCreatesRecordVersion,
   installationValuesFromPayload,
+  installHubInstallationStatusForSync,
+  installHubSiteAddressChanged,
   parseInstallHubUploadBaseTreeRevision,
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
   prepareCanonicalInstallHubWrite,
   validateCanonicalFormContractsForSync,
 } from './sync.js';
+
+test('installation sync cannot create a first completion outside the canonical endpoint', () => {
+  assert.equal(installHubInstallationStatusForSync(undefined), 'Draft');
+  assert.equal(installHubInstallationStatusForSync('Draft'), 'Draft');
+  assert.equal(installHubInstallationStatusForSync('Completed'), 'Completed');
+  assert.doesNotThrow(() => {
+    assertLegacyInstallHubCompletionUsesCanonicalRoute('Draft', 'Draft');
+    assertLegacyInstallHubCompletionUsesCanonicalRoute('Completed', 'Completed');
+  });
+  assert.throws(
+    () => assertLegacyInstallHubCompletionUsesCanonicalRoute('Completed', 'Draft'),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'upgrade_required'
+    ),
+  );
+  assert.throws(
+    () => assertLegacyInstallHubCompletionUsesCanonicalRoute('Completed'),
+    (error: unknown) => Boolean(
+      error
+      && typeof error === 'object'
+      && 'detail' in error
+      && error.detail === 'upgrade_required'
+    ),
+  );
+});
 
 test('site-code rule matches the canonical eight-initial cross-client fixtures', () => {
   assert.deepEqual([
@@ -110,6 +141,104 @@ test('InstallHub sync maps canonical fields and binds new records to the actor',
   assert.equal(values.status, 'Completed');
   assert.equal(values.createdByUserId, 'authenticated-user');
   assert.equal(values.syncStatus, 'synced');
+});
+
+test('legacy InstallHub sync preserves omitted metadata and lets explicit null clear it', () => {
+  const existing = {
+    id: 'installation-1',
+    serverId: 'server-1',
+    externalKey: 'ih_server-1',
+    siteCode: 'EXAMPLE',
+    timezone: 'Australia/Sydney',
+    treeSchemaVersion: 1,
+    treeRevision: 4,
+    recordVersionNumber: 0,
+    customerName: 'Server customer',
+    maas: true,
+    serviceType: 'Meter install',
+    meteringSolutionType: 'Commercial',
+    plannedMeterType: 'A6M',
+    siteAddress: '42 Example Road',
+    siteLocality: 'Sydney',
+    siteState: 'NSW',
+    sitePostcode: '2000',
+    siteCountryCode: 'AU',
+    siteContactName: 'Site manager',
+    siteContactPhone: '02 9000 0000',
+    siteContactEmail: 'manager@example.test',
+    fergusJobNumber: 'F-100',
+    quoteNumber: 'Q-100',
+    jobComments: 'Server notes',
+    accessInformation: 'Reception',
+    warrantyDevice: false,
+    monitoringInstalled: true,
+    hardwareInstalled: true,
+    solarCapacityKw: 75,
+    additionalMonitoringRequired: false,
+    additionalMonitoringHardware: 'Existing CTs',
+    createdByUserId: 'authenticated-user',
+    assignedInspectorUserId: null,
+    status: 'Draft',
+    createdAt: new Date('2026-07-20T00:00:00.000Z'),
+  } as never;
+  const basePayload = {
+    id: 'installation-1',
+    clientName: 'Example Client',
+    siteName: 'Example Site',
+    siteAddress: '  42   EXAMPLE road ',
+    inspectorName: 'Installer One',
+    auditDate: '2026-07-22',
+    status: 'Draft',
+  };
+  const preserved = installationValuesFromPayload(basePayload, {
+    userId: 'authenticated-user',
+    role: 'inspector',
+  }, existing);
+  assert.equal(preserved.customerName, 'Server customer');
+  assert.equal(preserved.maas, true);
+  assert.equal(preserved.sitePostcode, '2000');
+  assert.equal(preserved.solarCapacityKw, 75);
+  assert.equal('siteLatitude' in preserved, false);
+
+  const cleared = installationValuesFromPayload({
+    ...basePayload,
+    customerName: null,
+    maas: null,
+    siteLocality: null,
+    solarCapacityKw: null,
+  }, {
+    userId: 'authenticated-user',
+    role: 'inspector',
+  }, existing);
+  assert.equal(cleared.customerName, null);
+  assert.equal(cleared.maas, null);
+  assert.equal(cleared.siteLocality, null);
+  assert.equal(cleared.solarCapacityKw, null);
+  assert.equal(cleared.siteLatitude, null);
+  assert.equal(cleared.siteGeocodeStatus, 'unresolved');
+});
+
+test('InstallHub address comparison invalidates only meaningful address changes', () => {
+  const current = {
+    siteAddress: '42 Example Road',
+    siteLocality: 'Sydney',
+    siteState: 'NSW',
+    sitePostcode: '2000',
+    siteCountryCode: 'AU',
+  };
+  assert.equal(installHubSiteAddressChanged(current, {
+    ...current,
+    siteAddress: '  42   EXAMPLE road ',
+    siteLocality: 'SYDNEY',
+  }), false);
+  assert.equal(installHubSiteAddressChanged(current, {
+    ...current,
+    sitePostcode: '2001',
+  }), true);
+  assert.equal(installHubSiteAddressChanged(current, {
+    ...current,
+    siteLocality: null,
+  }), true);
 });
 
 test('InstallHub sync rejects an incomplete installation payload', () => {
@@ -311,6 +440,32 @@ function freshCanonicalWrite(
     serverDerived: { virtualMeterDefinitions: [] },
   };
 }
+
+test('canonical sync normalizes grid NMI and rejects values beyond the shared bound', () => {
+  const trimmed = freshCanonicalWrite('grid-nmi-trimmed', {});
+  Object.assign(trimmed.gridSupplies[0], { nmi: '  41020000000  ' });
+  const preparedTrimmed = prepareCanonicalInstallHubWrite(
+    trimmed,
+    undefined,
+    'ih_grid_nmi_trimmed',
+  );
+  assert.equal(
+    normalizeInstallationTreeV2(preparedTrimmed).gridSupplies[0].nmi,
+    '41020000000',
+  );
+
+  const oversized = freshCanonicalWrite('grid-nmi-oversized', {});
+  Object.assign(oversized.gridSupplies[0], { nmi: 'n'.repeat(101) });
+  const preparedOversized = prepareCanonicalInstallHubWrite(
+    oversized,
+    undefined,
+    'ih_grid_nmi_oversized',
+  );
+  assert.throws(
+    () => normalizeInstallationTreeV2(preparedOversized),
+    /gridSupplies\[0\]\.nmi must be at most 100 characters/,
+  );
+});
 
 test('canonical create preparation accepts exact portal and mobile first-sync shapes', () => {
   const blankOptional = prepareCanonicalInstallHubWrite(freshCanonicalWrite('blank-optional', {

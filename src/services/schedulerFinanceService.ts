@@ -26,6 +26,7 @@ import {
   schedulerInvoiceCounters,
   schedulerInvoiceJobs,
   schedulerInvoiceLines,
+  schedulerInvoiceRefunds,
   schedulerInvoices,
   schedulerJobExpenses,
   schedulerJobFinance,
@@ -74,6 +75,44 @@ export type FinanceSource = {
   sourceType: FinanceSourceType;
   sourceId: string;
 };
+
+export function schedulerFinanceSourceMutexKey(source: FinanceSource): string {
+  return `scheduler-finance:${source.sourceApp}:${source.sourceType}:${source.sourceId}`;
+}
+
+export type SchedulerCompletedWorkRevenueSnapshot = {
+  status: 'captured' | 'incomplete';
+  currency: string;
+  amountExGstCents: number;
+  gstAmountCents: number;
+  totalIncGstCents: number;
+  gstRateBps: number;
+};
+
+export function buildSchedulerCompletedWorkRevenueSnapshot(input: {
+  currency: string;
+  billableAmount: number;
+  needsFinanceReview: boolean;
+  gstRate: number;
+}): SchedulerCompletedWorkRevenueSnapshot {
+  const amountExGstCents = moneyToCents(
+    input.billableAmount,
+    'Completed-work revenue',
+  );
+  const gstRateBps = Math.round(input.gstRate * 10_000);
+  if (!Number.isSafeInteger(gstRateBps) || gstRateBps < 0 || gstRateBps > 10_000) {
+    throw new Error('scheduler_completed_work_gst_rate_invalid');
+  }
+  const totals = invoiceTotalsFromCents([amountExGstCents], gstRateBps);
+  return {
+    status: input.needsFinanceReview ? 'incomplete' : 'captured',
+    currency: input.currency,
+    amountExGstCents: totals.subtotal,
+    gstAmountCents: totals.gst,
+    totalIncGstCents: totals.total,
+    gstRateBps,
+  };
+}
 
 export type SchedulerFinanceExecutor = Pick<
   typeof db,
@@ -198,6 +237,8 @@ export type SchedulerInvoiceListItemDto = {
   status: InvoiceStatus;
   currency: string;
   issueDate: string | null;
+  xeroInvoiceNumber: string | null;
+  xeroDate: string | null;
   dueDate: string | null;
   paidAt: string | null;
   subtotalExGst: number;
@@ -386,6 +427,10 @@ export type QuickInvoiceInput = {
 export type UpdateDraftInvoiceInput = {
   /** Required by Scheduler HTTP routes; omitted only by the legacy Field adapter. */
   expectedUpdatedAt?: string;
+  /** External reconciliation metadata; editable on every non-void invoice. */
+  xeroInvoiceNumber?: string | null;
+  /** Xero's calendar date in YYYY-MM-DD form, kept distinct from issueDate. */
+  xeroDate?: string | null;
   notes?: string | null;
   dueDate?: string | null;
   billToName?: string;
@@ -443,7 +488,6 @@ export type ConsolidatedInvoiceEligibilityDto = {
       | 'billing_name_missing'
       | 'bill_to_override_required'
       | 'job_not_completed'
-      | 'hours_entry_required'
       | 'billing_rate_missing'
       | 'no_available_charges';
     message: string;
@@ -499,46 +543,35 @@ type HourOverrideForReadiness = Pick<
   'source' | 'billableMilliseconds' | 'costMilliseconds'
 > | null;
 
-/** Invoice generation is gated by the exact linked source job, never its parent. */
 export function schedulerInvoiceCompletionReadiness(input: {
-  sourceApp: FinanceSourceApp;
   jobStatus: string | null;
+  completedAt: Date | string | null;
 }): InvoiceCompletionReadiness {
-  if (isCompletedSchedulerJobStatus(input.jobStatus ?? '')) {
+  // A status-only historical row is not auditable completed-work evidence.
+  if (isCompletedSchedulerJobStatus(input.jobStatus ?? '') && input.completedAt) {
     return { satisfied: true, basis: 'job' };
   }
   return { satisfied: false, basis: null };
 }
 
-/**
- * Hours are internal operational evidence and never gate customer invoice work.
- * The basis remains useful to explain which internal evidence is available.
- */
+/** Zero is a valid reviewed value, but both accounting hour values must be explicit without app time. */
 export function schedulerInvoiceHoursReadiness(
   activeMilliseconds: number,
   override: HourOverrideForReadiness,
 ): InvoiceHoursReadiness {
-  if (override?.source === 'admin') {
-    return { satisfied: true, basis: 'admin_override' };
-  }
+  if (override?.source === 'legacy_estimate') return { satisfied: false, basis: null };
   if (activeMilliseconds > 0) {
-    return { satisfied: true, basis: 'app_time' };
+    return {
+      satisfied: true,
+      basis: override?.source === 'admin' ? 'admin_override' : 'app_time',
+    };
   }
-  return { satisfied: true, basis: null };
-}
-
-/** Internal-review cue only; customer invoice readiness is completion-only. */
-export function schedulerInternalHoursNeedReview(
-  activeMilliseconds: number,
-  override: HourOverrideForReadiness,
-): boolean {
-  if (override?.source === 'legacy_estimate') return true;
-  if (activeMilliseconds > 0) return false;
-  return !(
+  if (
     override?.source === 'admin'
     && override.billableMilliseconds !== null
     && override.costMilliseconds !== null
-  );
+  ) return { satisfied: true, basis: 'admin_override' };
+  return { satisfied: false, basis: null };
 }
 
 function round(value: number, places = 2): number {
@@ -642,6 +675,20 @@ function parseDate(value: string | null | undefined, field: string): Date | null
   return parsed;
 }
 
+export function parseSchedulerInvoiceXeroDate(
+  value: string | null | undefined,
+): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw badRequest('xeroDate must be a valid YYYY-MM-DD calendar date');
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw badRequest('xeroDate must be a valid YYYY-MM-DD calendar date');
+  }
+  return value;
+}
+
 function assertInvoiceVersion(invoice: InvoiceRow, expectedUpdatedAt?: string): void {
   if (expectedUpdatedAt === undefined) return;
   const expected = parseDate(expectedUpdatedAt, 'expectedUpdatedAt');
@@ -672,12 +719,26 @@ function isInvoiceEmailDeliveryInProgressDatabaseError(error: unknown): boolean 
     );
 }
 
+export function nextSchedulerInvoiceRevisionAt(
+  previousUpdatedAt: Date,
+  now = new Date(),
+): Date {
+  return new Date(Math.max(now.getTime(), previousUpdatedAt.getTime() + 1));
+}
+
 function nextInvoiceUpdatedAt(invoice: InvoiceRow, now = new Date()): Date {
-  return new Date(Math.max(now.getTime(), invoice.updatedAt.getTime() + 1));
+  return nextSchedulerInvoiceRevisionAt(invoice.updatedAt, now);
 }
 
 function utcDateKey(value: Date): string {
   return value.toISOString().slice(0, 10);
+}
+
+export function isSchedulerInvoiceDueDateBeforeIssueDate(
+  dueDate: Date,
+  issueDate: Date,
+): boolean {
+  return utcDateKey(dueDate) < utcDateKey(issueDate);
 }
 
 function iso(value: Date | null | undefined): string | null {
@@ -935,6 +996,7 @@ async function sourceCompletionReadiness(
     const rows = lock
       ? await executor.select({
           status: eaAudits.status,
+          completedAt: eaAudits.completedAt,
           deletedAt: eaAudits.deletedAt,
         }).from(eaAudits)
           .where(eq(eaAudits.id, source.sourceId))
@@ -942,6 +1004,7 @@ async function sourceCompletionReadiness(
           .limit(1)
       : await executor.select({
           status: eaAudits.status,
+          completedAt: eaAudits.completedAt,
           deletedAt: eaAudits.deletedAt,
         }).from(eaAudits)
           .where(eq(eaAudits.id, source.sourceId))
@@ -949,8 +1012,8 @@ async function sourceCompletionReadiness(
     const audit = rows[0];
     if (!audit || audit.deletedAt) return { satisfied: false, basis: null };
     return schedulerInvoiceCompletionReadiness({
-      sourceApp: source.sourceApp,
       jobStatus: audit.status,
+      completedAt: audit.completedAt,
     });
   }
 
@@ -958,6 +1021,7 @@ async function sourceCompletionReadiness(
     const rows = lock
       ? await executor.select({
           status: ihInstallations.status,
+          completedAt: ihInstallations.completedAt,
           deletedAt: ihInstallations.deletedAt,
         }).from(ihInstallations)
           .where(eq(ihInstallations.id, source.sourceId))
@@ -965,6 +1029,7 @@ async function sourceCompletionReadiness(
           .limit(1)
       : await executor.select({
           status: ihInstallations.status,
+          completedAt: ihInstallations.completedAt,
           deletedAt: ihInstallations.deletedAt,
         }).from(ihInstallations)
           .where(eq(ihInstallations.id, source.sourceId))
@@ -972,14 +1037,15 @@ async function sourceCompletionReadiness(
     const installation = rows[0];
     if (!installation || installation.deletedAt) return { satisfied: false, basis: null };
     return schedulerInvoiceCompletionReadiness({
-      sourceApp: source.sourceApp,
       jobStatus: installation.status,
+      completedAt: installation.completedAt,
     });
   }
 
   const assessmentRows = lock
     ? await executor.select({
         status: ssRooftopAssessments.status,
+        completedAt: ssRooftopAssessments.completedAt,
         deletedAt: ssRooftopAssessments.deletedAt,
       }).from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, source.sourceId))
@@ -987,6 +1053,7 @@ async function sourceCompletionReadiness(
         .limit(1)
     : await executor.select({
         status: ssRooftopAssessments.status,
+        completedAt: ssRooftopAssessments.completedAt,
         deletedAt: ssRooftopAssessments.deletedAt,
       }).from(ssRooftopAssessments)
         .where(eq(ssRooftopAssessments.id, source.sourceId))
@@ -996,8 +1063,8 @@ async function sourceCompletionReadiness(
     return { satisfied: false, basis: null };
   }
   return schedulerInvoiceCompletionReadiness({
-    sourceApp: source.sourceApp,
     jobStatus: assessment.status,
+    completedAt: assessment.completedAt,
   });
 }
 
@@ -1008,7 +1075,7 @@ function assertInvoiceCompletionReady(
 ): void {
   if (completion.satisfied) return;
   const instruction = source.sourceApp === 'solarsense'
-    ? 'Mark the SolarSense assessment complete'
+    ? 'Mark the assessment complete'
     : 'Mark the job complete';
   throw conflict(
     `${jobName} must be completed before an invoice can be generated. ${instruction} before generating an invoice`,
@@ -1092,6 +1159,11 @@ export type RecordedActorTime = {
   activeMilliseconds: number;
 };
 
+/**
+ * Aggregates only persisted observation windows. For an open session the last
+ * activity checkpoint is the observation boundary; current time and gaps
+ * between separate sessions are deliberately excluded.
+ */
 export type ResolvedRecordedActorTime = {
   userId: string;
   displayName: string | null;
@@ -1243,6 +1315,7 @@ async function recordedHoursForSource(
     const { actorUserId, activeMilliseconds } = actorTime;
     const membership = memberByActor.get(actorUserId);
     const sourceUser = sourceUserById.get(actorUserId);
+    const billingRateCents = membership?.billingRateCents ?? null;
     return {
       userId: membership?.globalUserId ?? actorUserId,
       displayName: membership
@@ -1396,16 +1469,17 @@ async function ensureFinance(
   source: FinanceSource,
   metadata: JobMetadata,
   executor: FinanceExecutor = db,
+  options: { allowDeletedSource?: boolean } = {},
 ): Promise<FinanceRow> {
   // A plain database executor would release an advisory transaction lock at
   // the end of each statement. Wrap the complete check/insert/read sequence so
   // hard purge and finance creation share one durable source-identity mutex.
   if (executor === db) {
-    return db.transaction((tx) => ensureFinance(source, metadata, tx));
+    return db.transaction((tx) => ensureFinance(source, metadata, tx, options));
   }
   await executor.execute(sql`
     SELECT pg_advisory_xact_lock(hashtextextended(
-      ${`scheduler-finance:${source.sourceApp}:${source.sourceType}:${source.sourceId}`},
+      ${schedulerFinanceSourceMutexKey(source)},
       0
     ))
   `);
@@ -1417,19 +1491,25 @@ async function ensureFinance(
   if (existing) return existing;
 
   const activeSource = source.sourceApp === 'ecoaudit'
-    ? await executor.select({ id: eaAudits.id }).from(eaAudits).where(and(
-        eq(eaAudits.id, source.sourceId),
-        isNull(eaAudits.deletedAt),
-      )).limit(1)
+    ? await executor.select({ id: eaAudits.id }).from(eaAudits).where(
+        options.allowDeletedSource
+          ? eq(eaAudits.id, source.sourceId)
+          : and(eq(eaAudits.id, source.sourceId), isNull(eaAudits.deletedAt)),
+      ).limit(1)
     : source.sourceApp === 'solarsense'
-      ? await executor.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments).where(and(
-          eq(ssRooftopAssessments.id, source.sourceId),
-          isNull(ssRooftopAssessments.deletedAt),
-        )).limit(1)
-      : await executor.select({ id: ihInstallations.id }).from(ihInstallations).where(and(
-          eq(ihInstallations.id, source.sourceId),
-          isNull(ihInstallations.deletedAt),
-        )).limit(1);
+      ? await executor.select({ id: ssRooftopAssessments.id }).from(ssRooftopAssessments).where(
+          options.allowDeletedSource
+            ? eq(ssRooftopAssessments.id, source.sourceId)
+            : and(
+                eq(ssRooftopAssessments.id, source.sourceId),
+                isNull(ssRooftopAssessments.deletedAt),
+              ),
+        ).limit(1)
+      : await executor.select({ id: ihInstallations.id }).from(ihInstallations).where(
+          options.allowDeletedSource
+            ? eq(ihInstallations.id, source.sourceId)
+            : and(eq(ihInstallations.id, source.sourceId), isNull(ihInstallations.deletedAt)),
+        ).limit(1);
   if (!activeSource[0]) throw notFound('Source job');
 
   const now = new Date();
@@ -1526,6 +1606,8 @@ function invoiceListItem(
     status: row.status as InvoiceStatus,
     currency: row.currency,
     issueDate: iso(row.issueDate),
+    xeroInvoiceNumber: row.xeroInvoiceNumber,
+    xeroDate: row.xeroDate,
     dueDate: iso(row.dueDate),
     paidAt: iso(row.paidAt),
     subtotalExGst: centsToMoney(row.subtotalExGstCents),
@@ -1561,13 +1643,11 @@ type ExpenseReservation = {
   status: InvoiceStatus;
 };
 
-function expenseAttachmentIsFrozen(
+function expenseAttachmentMutationIsBlocked(
   expense: Pick<ExpenseRow, 'invoiced'>,
   reservation: ExpenseReservation | undefined,
 ): boolean {
-  return expense.invoiced
-    || reservation?.status === 'issued'
-    || reservation?.status === 'paid';
+  return expense.invoiced || Boolean(reservation && reservation.status !== 'draft');
 }
 
 async function expenseReservations(
@@ -1956,7 +2036,7 @@ async function buildFinancialSummary(
       completionBasis: completionReadiness.basis,
       hoursSatisfied: hoursReadiness.satisfied,
       hoursBasis: hoursReadiness.basis,
-      ready: completionReadiness.satisfied && hoursReadiness.satisfied,
+      ready: completionReadiness.satisfied,
     },
     time: {
       scheduledHours,
@@ -1987,10 +2067,7 @@ async function buildFinancialSummary(
             displayName: currentOverride.actorDisplayName,
           }
         : null,
-      needsHoursReview: schedulerInternalHoursNeedReview(
-        recorded.activeMilliseconds,
-        currentOverride,
-      )
+      needsHoursReview: !hoursReadiness.satisfied
         || userLabourBilling.missingBillingRateUsers.length > 0,
       missingBillingRateUsers: userLabourBilling.missingBillingRateUsers,
     },
@@ -2003,6 +2080,48 @@ async function buildFinancialSummary(
     invoices: await invoiceListItems(invoiceRows, executor),
     totals,
   };
+}
+
+/**
+ * Captures the commercial ledger as it exists at the first completion
+ * boundary. The supplied executor keeps finance creation/reads and the
+ * completion fact in one transaction. `incomplete` retains a coherent numeric
+ * snapshot while signalling that the underlying hours/rates still needed
+ * finance review at capture time.
+ */
+export async function captureSchedulerCompletedWorkRevenue(
+  source: FinanceSource,
+  executor: SchedulerFinanceExecutor,
+): Promise<SchedulerCompletedWorkRevenueSnapshot> {
+  const event = await latestEventForSource(source, executor);
+  const metadata = await loadJobMetadata(source, event, executor);
+  // An accepted completion can arrive in the same offline payload as a soft
+  // delete. Soft delete is operational visibility, not erasure of commercial
+  // history, so this first-completion path may create the retained ledger even
+  // though ordinary finance entry points continue to reject deleted sources.
+  const ensuredFinance = await ensureFinance(source, metadata, executor, {
+    allowDeletedSource: true,
+  });
+  // Every finance, expense, and invoice amount mutator takes this parent-row
+  // lock before changing child rows. Holding it across the summary prevents a
+  // READ COMMITTED capture from mixing two commercial ledger revisions.
+  const [lockedFinance] = await executor.select({ id: schedulerJobFinance.id })
+    .from(schedulerJobFinance)
+    .where(eq(schedulerJobFinance.id, ensuredFinance.id))
+    .for('update')
+    .limit(1);
+  if (!lockedFinance) throw conflict('Job finance changed during completion capture');
+  const summary = await buildFinancialSummary(
+    source,
+    event,
+    executor,
+  );
+  return buildSchedulerCompletedWorkRevenueSnapshot({
+    currency: summary.currency,
+    billableAmount: summary.totals.billableAmount,
+    needsFinanceReview: summary.time.needsHoursReview,
+    gstRate: config.schedulerInvoice.gstRate,
+  });
 }
 
 export async function getSchedulerFinancialSummary(
@@ -2161,82 +2280,88 @@ export async function updateSchedulerFinanceById(
   return updateSchedulerFinanceForContext(actor, await financeById(financeId), input);
 }
 
-async function draftInvoicesForFinance(
-  financeId: string,
-  executor: FinanceExecutor,
-): Promise<InvoiceRow[]> {
-  return executor.select().from(schedulerInvoices).where(and(
-    eq(schedulerInvoices.status, 'draft'),
-    or(
-      eq(schedulerInvoices.financeId, financeId),
-      inArray(
-        schedulerInvoices.id,
-        executor.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
-          .from(schedulerInvoiceJobs)
-          .where(eq(schedulerInvoiceJobs.financeId, financeId)),
-      ),
-    ),
-  )).orderBy(asc(schedulerInvoices.createdAt), asc(schedulerInvoices.id))
-    .for('update');
-}
-
-async function appendExpenseToDraftInvoice(
-  finance: FinanceRow,
+/**
+ * A create-expense request identifies a job, not an invoice. Auto-reserve the
+ * new charge only when that job belongs to exactly one draft, so a consolidated
+ * or parallel-draft workflow can never receive a charge by guesswork.
+ *
+ * The caller holds the finance row lock. Invoice creation, editing, issue, and
+ * void take the same lock, so the candidate set and appended snapshot cannot
+ * cross a lifecycle transition.
+ */
+async function appendBillableExpenseToSingleDraft(
   expense: ExpenseRow,
-  invoice: InvoiceRow,
   executor: FinanceExecutor,
-): Promise<void> {
+): Promise<ExpenseReservation | undefined> {
+  if (!expense.billable || expense.invoiced || expense.deletedAt) return undefined;
+  const candidates = await executor.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
+    .from(schedulerInvoiceJobs)
+    .innerJoin(schedulerInvoices, eq(schedulerInvoices.id, schedulerInvoiceJobs.invoiceId))
+    .where(and(
+      eq(schedulerInvoiceJobs.financeId, expense.financeId),
+      eq(schedulerInvoices.status, 'draft'),
+    ))
+    .orderBy(desc(schedulerInvoices.updatedAt), desc(schedulerInvoices.createdAt));
+  if (candidates.length !== 1) return undefined;
+
+  const invoiceId = candidates[0]!.invoiceId;
+  const [invoice] = await executor.select().from(schedulerInvoices)
+    .where(and(
+      eq(schedulerInvoices.id, invoiceId),
+      eq(schedulerInvoices.status, 'draft'),
+    ))
+    .for('update')
+    .limit(1);
+  if (!invoice) return undefined;
   const [membership] = await executor.select({ financeId: schedulerInvoiceJobs.financeId })
     .from(schedulerInvoiceJobs)
     .where(and(
       eq(schedulerInvoiceJobs.invoiceId, invoice.id),
-      eq(schedulerInvoiceJobs.financeId, finance.id),
+      eq(schedulerInvoiceJobs.financeId, expense.financeId),
     ))
     .limit(1);
-  if (!membership) throw conflict('The draft invoice no longer contains this job');
+  if (!membership) return undefined;
 
   const existingLines = await executor.select({
     sortOrder: schedulerInvoiceLines.sortOrder,
     lineTotalExGstCents: schedulerInvoiceLines.lineTotalExGstCents,
   }).from(schedulerInvoiceLines)
-    .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
-  if (existingLines.length >= 250) {
-    throw conflict('The draft invoice already contains the maximum of 250 charges');
-  }
-  const lineAmountCents = expense.billableAmountCents ?? expense.costAmountCents;
-  const now = new Date();
+    .where(eq(schedulerInvoiceLines.invoiceId, invoice.id))
+    .orderBy(asc(schedulerInvoiceLines.sortOrder));
+  // Preserve the public draft-edit limit and leave the expense available for
+  // an explicit administrator choice when the draft is already full.
+  if (existingLines.length >= 250) return undefined;
+
+  const amountCents = expense.billableAmountCents ?? expense.costAmountCents;
   await executor.insert(schedulerInvoiceLines).values({
     id: randomUUID(),
     invoiceId: invoice.id,
-    financeId: finance.id,
-    sortOrder: existingLines.reduce(
-      (highest, line) => Math.max(highest, line.sortOrder),
-      -1,
-    ) + 1,
+    financeId: expense.financeId,
+    sortOrder: (existingLines.at(-1)?.sortOrder ?? -1) + 1,
     kind: 'expense',
     description: expense.description,
     quantity: 1,
-    unitAmountExGstCents: lineAmountCents,
-    lineTotalExGstCents: lineAmountCents,
+    unitAmountExGstCents: amountCents,
+    lineTotalExGstCents: amountCents,
     showQuantityAndRate: false,
     expenseId: expense.id,
     category: expense.category,
-    createdAt: now,
+    createdAt: new Date(),
   });
   const totals = invoiceTotalsFromCents([
     ...existingLines.map((line) => line.lineTotalExGstCents),
-    lineAmountCents,
+    amountCents,
   ], invoice.gstRateBps);
-  const [updated] = await executor.update(schedulerInvoices).set({
+  await executor.update(schedulerInvoices).set({
     subtotalExGstCents: totals.subtotal,
     gstAmountCents: totals.gst,
     totalIncGstCents: totals.total,
-    updatedAt: nextInvoiceUpdatedAt(invoice, now),
+    updatedAt: nextInvoiceUpdatedAt(invoice),
   }).where(and(
     eq(schedulerInvoices.id, invoice.id),
     eq(schedulerInvoices.status, 'draft'),
-  )).returning({ id: schedulerInvoices.id });
-  if (!updated) throw conflict('The draft invoice changed before the bill could be added');
+  ));
+  return { invoiceId: invoice.id, status: 'draft' };
 }
 
 async function createSchedulerExpenseForContext(
@@ -2249,23 +2374,13 @@ async function createSchedulerExpenseForContext(
   const category = parseExpenseCategory(input.category);
   const description = requireText(input.description, 'description', 500);
   const billable = input.billable !== false;
-  const costAmountCents = moneyToCents(input.costAmount, 'costAmount');
-  const billableAmountCents = billable && input.billableAmount != null
-    ? moneyToCents(input.billableAmount, 'billableAmount')
-    : null;
   const id = randomUUID();
-  await db.transaction(async (tx) => {
+  const { created, reservation } = await db.transaction(async (tx) => {
     const [finance] = await tx.select().from(schedulerJobFinance)
       .where(eq(schedulerJobFinance.id, context.finance.id)).for('update').limit(1);
     if (!finance) throw notFound('Job finance');
-    const draftInvoices = billable ? await draftInvoicesForFinance(finance.id, tx) : [];
-    if (draftInvoices.length > 1) {
-      throw conflict(
-        'This job belongs to multiple draft invoices. Void or finish the extra draft before adding a billable cost',
-      );
-    }
     const now = new Date();
-    const [expense] = await tx.insert(schedulerJobExpenses).values({
+    const [created] = await tx.insert(schedulerJobExpenses).values({
       id,
       financeId: finance.id,
       kind,
@@ -2273,8 +2388,10 @@ async function createSchedulerExpenseForContext(
       description,
       vendor: optionalText(input.vendor, 300),
       reference: optionalText(input.reference, 200),
-      costAmountCents,
-      billableAmountCents,
+      costAmountCents: moneyToCents(input.costAmount, 'costAmount'),
+      billableAmountCents: billable && input.billableAmount != null
+        ? moneyToCents(input.billableAmount, 'billableAmount')
+        : null,
       billable,
       invoiced: false,
       incurredAt: parseDate(input.incurredAt, 'incurredAt'),
@@ -2283,15 +2400,11 @@ async function createSchedulerExpenseForContext(
       createdAt: now,
       updatedAt: now,
     }).returning();
-    if (!expense) throw new Error('scheduler_expense_insert_failed');
-    if (billable && draftInvoices[0]) {
-      await appendExpenseToDraftInvoice(finance, expense, draftInvoices[0], tx);
-    }
+    if (!created) throw new Error('scheduler_expense_create_failed');
+    const reservation = await appendBillableExpenseToSingleDraft(created, tx);
+    return { created, reservation };
   });
-  const [row] = await db.select().from(schedulerJobExpenses)
-    .where(eq(schedulerJobExpenses.id, id));
-  const reservation = (await expenseReservations(context.finance.id)).get(id);
-  return expenseDto(row!, event?.id ?? null, reservation);
+  return expenseDto(created, event?.id ?? null, reservation);
 }
 
 export async function createSchedulerExpense(
@@ -2644,57 +2757,44 @@ async function assertDraftInvoiceReady(
 ): Promise<void> {
   if (invoice.status !== 'draft') return;
   const candidateJobs = await invoiceJobsForRow(invoice, executor);
-  const candidateByFinance = new Map(candidateJobs.map((job) => [job.financeId, job]));
   const candidateSources = candidateJobs.map((job) => ({
     sourceApp: job.jobSourceApp,
     sourceType: job.jobSourceType,
     sourceId: job.jobSourceId,
   } as FinanceSource));
-  // Product status writers lock the source before finance evidence. Keep that
-  // same order here so a PDF readiness check cannot deadlock a completion edit
-  // or purge.
   const completionBySource = await lockCurrentCompletionReadiness(candidateSources, executor);
   const { jobs, finances } = await lockInvoiceFinances(invoice, executor);
+  const candidateSourceByFinanceId = new Map(candidateJobs.map((job, index) => (
+    [job.financeId, financeSourceKey(candidateSources[index]!)]
+  )));
+  if (
+    jobs.length !== candidateJobs.length
+    || jobs.some((job) => candidateSourceByFinanceId.get(job.financeId) !== financeSourceKey({
+      sourceApp: job.jobSourceApp,
+      sourceType: job.jobSourceType,
+      sourceId: job.jobSourceId,
+    } as FinanceSource))
+  ) throw conflict('Invoice jobs changed; retry export');
   const jobByFinance = new Map(jobs.map((job) => [job.financeId, job]));
-  if (jobs.length !== candidateJobs.length) {
-    throw conflict('The invoice job set changed; retry PDF generation');
-  }
   for (const finance of finances) {
     const source = {
       sourceApp: finance.sourceApp,
       sourceType: finance.sourceType,
       sourceId: finance.sourceId,
     } as FinanceSource;
-    const currentJob = jobByFinance.get(finance.id);
-    const candidateJob = candidateByFinance.get(finance.id);
-    const sourceKey = financeSourceKey(source);
-    if (
-      !currentJob
-      || !candidateJob
-      || financeSourceKey({
-        sourceApp: currentJob.jobSourceApp,
-        sourceType: currentJob.jobSourceType,
-        sourceId: currentJob.jobSourceId,
-      } as FinanceSource) !== sourceKey
-      || financeSourceKey({
-        sourceApp: candidateJob.jobSourceApp,
-        sourceType: candidateJob.jobSourceType,
-        sourceId: candidateJob.jobSourceId,
-      } as FinanceSource) !== sourceKey
-    ) {
-      throw conflict('The invoice job set changed; retry PDF generation');
-    }
     assertInvoiceCompletionReady(
       source,
-      currentJob.jobName,
-      completionBySource.get(sourceKey) ?? { satisfied: false, basis: null },
+      jobByFinance.get(finance.id)?.jobName ?? finance.id,
+      completionBySource.get(financeSourceKey(source))
+        ?? { satisfied: false, basis: null },
     );
   }
 }
 
 /**
  * Draft invoice PDFs are customer-facing generation, so queueing must use the
- * same live completion fence as draft creation and issue.
+ * same live completion fence as draft creation and issue. Internal hour review
+ * state never blocks a customer-authored invoice or its PDF.
  * Issued/paid/void snapshots stay exportable independently of later source edits.
  */
 export async function assertSchedulerInvoicePdfStartReady(
@@ -3242,7 +3342,7 @@ export async function getConsolidatedInvoiceEligibility(
     if (!summary.invoiceReadiness.completionSatisfied) issues.push({
       code: 'job_not_completed',
       message: summary.source.sourceApp === 'solarsense'
-        ? 'Mark this SolarSense assessment complete before generating an invoice'
+        ? 'Mark this assessment complete before generating an invoice'
         : 'Mark this job complete before generating an invoice',
       financeId: summary.financeId,
     });
@@ -3313,6 +3413,7 @@ export async function getConsolidatedInvoiceEligibility(
     eligible: !issues.some((issue) => (
       issue.code === 'mixed_currency'
       || issue.code === 'job_not_completed'
+      || issue.code === 'no_available_charges'
     )),
     commonCurrency: currencies.length === 1 ? currencies[0]! : null,
     gstRate: config.schedulerInvoice.gstRate,
@@ -3569,10 +3670,27 @@ async function updateSchedulerDraftInvoiceForContext(
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId)).for('update').limit(1);
     if (!invoice) throw notFound('Invoice');
-    if (invoice.status !== 'draft') throw conflict('Only draft invoices can be edited');
+    if (invoice.status === 'void') throw conflict('Void invoices cannot be edited');
+    const updatesInvoiceContent = input.notes !== undefined
+      || input.dueDate !== undefined
+      || input.billToName !== undefined
+      || input.billToAbn !== undefined
+      || input.billToAddress !== undefined
+      || input.billToEmail !== undefined
+      || input.purchaseOrderReference !== undefined
+      || input.lines !== undefined;
+    if (invoice.status !== 'draft' && updatesInvoiceContent) {
+      throw conflict('Only draft invoice content can be edited');
+    }
     assertInvoiceVersion(invoice, input.expectedUpdatedAt);
     const mutationUpdatedAt = nextInvoiceUpdatedAt(invoice);
     const patch: Partial<typeof schedulerInvoices.$inferInsert> = {};
+    if (input.xeroInvoiceNumber !== undefined) {
+      patch.xeroInvoiceNumber = optionalText(input.xeroInvoiceNumber, 100);
+    }
+    if (input.xeroDate !== undefined) {
+      patch.xeroDate = parseSchedulerInvoiceXeroDate(input.xeroDate);
+    }
     if (input.notes !== undefined) patch.notes = optionalText(input.notes, 5_000);
     if (input.dueDate !== undefined) patch.dueDate = parseDate(input.dueDate, 'dueDate');
     if (input.billToName !== undefined) {
@@ -3700,7 +3818,7 @@ async function issueSchedulerInvoiceForContext(
       );
     }
     const transitionAt = new Date();
-    const updatedAt = nextInvoiceUpdatedAt(invoice, transitionAt);
+    const normalizationUpdatedAt = nextInvoiceUpdatedAt(invoice, transitionAt);
     await replaceDraftLines(finances, invoice, lines.map((line) => ({
       id: line.id,
       financeId: line.financeId,
@@ -3710,12 +3828,12 @@ async function issueSchedulerInvoiceForContext(
       unitAmountExGst: centsToMoney(line.unitAmountExGstCents),
       showQuantityAndRate: line.showQuantityAndRate,
       expenseId: line.expenseId,
-    })), tx, updatedAt);
+    })), tx, normalizationUpdatedAt);
     lines = await tx.select().from(schedulerInvoiceLines)
       .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
     if (
       invoice.dueDate
-      && utcDateKey(invoice.dueDate) < utcDateKey(transitionAt)
+      && isSchedulerInvoiceDueDateBeforeIssueDate(invoice.dueDate, transitionAt)
     ) {
       throw conflict('Invoice due date cannot be before its issue date');
     }
@@ -3756,8 +3874,9 @@ async function issueSchedulerInvoiceForContext(
     const primaryMetadata = metadataByFinance.get(invoice.financeId)
       ?? metadataByFinance.values().next().value as JobMetadata | undefined;
     if (!primaryMetadata) throw conflict('Invoice has no job snapshot');
+    const issuedUpdatedAt = nextSchedulerInvoiceRevisionAt(normalizationUpdatedAt);
     await markCurrentMultiJobInvoiceWriter(tx);
-    await tx.update(schedulerInvoices).set({
+    const [issuedInvoice] = await tx.update(schedulerInvoices).set({
       status: 'issued',
       issueDate: transitionAt,
       issuedAt: transitionAt,
@@ -3770,11 +3889,13 @@ async function issueSchedulerInvoiceForContext(
       jobDate: primaryMetadata.jobDate,
       jobClientName: primaryMetadata.clientName,
       jobStatus: primaryMetadata.status,
-      updatedAt,
+      updatedAt: issuedUpdatedAt,
     }).where(and(
       eq(schedulerInvoices.id, invoice.id),
       eq(schedulerInvoices.status, 'draft'),
-    ));
+      eq(schedulerInvoices.updatedAt, normalizationUpdatedAt),
+    )).returning({ id: schedulerInvoices.id });
+    if (!issuedInvoice) throw conflict('Invoice changed; refresh before issuing');
     const expenseIds = lines.flatMap((line) => line.expenseId ? [line.expenseId] : []);
     if (expenseIds.length > 0) {
       await tx.update(schedulerJobExpenses).set({ invoiced: true, updatedAt: transitionAt })
@@ -3839,6 +3960,16 @@ async function voidSchedulerInvoiceForContext(
       assertInvoiceVersion(invoice, expectedUpdatedAt);
       if (invoice.status === 'void') return;
       if (invoice.status === 'paid') throw conflict('Paid invoices cannot be voided');
+      const [postedRefund] = await tx.select({ id: schedulerInvoiceRefunds.id })
+        .from(schedulerInvoiceRefunds)
+        .where(and(
+          eq(schedulerInvoiceRefunds.invoiceId, invoice.id),
+          eq(schedulerInvoiceRefunds.status, 'posted'),
+        ))
+        .limit(1);
+      if (postedRefund) {
+        throw conflict('Void or reverse every posted refund before voiding this invoice');
+      }
       const lines = await tx.select().from(schedulerInvoiceLines)
         .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
       const now = new Date();
@@ -4448,8 +4579,8 @@ export async function uploadSchedulerExpenseAttachment(
       )).for('update').limit(1);
     if (!expense) throw notFound('Expense');
     const reservations = await expenseReservations(finance.id, tx);
-    if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
-      throw conflict('Attachments cannot be added after the bill is issued or paid');
+    if (expenseAttachmentMutationIsBlocked(expense, reservations.get(expense.id))) {
+      throw conflict('Attachments cannot be added after an expense is invoiced');
     }
     storageKey = makeLocalStorageKey({
       app: finance.sourceApp as FinanceSourceApp,
@@ -4509,8 +4640,8 @@ export async function uploadSchedulerExpenseAttachment(
         .limit(1);
       if (!pending) throw conflict('Bill attachment confirmation failed');
       const reservations = await expenseReservations(finance.id, tx);
-      if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
-        throw conflict('Attachments cannot be added after the bill is issued or paid');
+      if (expenseAttachmentMutationIsBlocked(expense, reservations.get(expense.id))) {
+        throw conflict('Attachments cannot be added after an expense is invoiced');
       }
       const [row] = await tx.update(schedulerExpenseAttachments).set({
         status: 'confirmed',
@@ -4613,8 +4744,8 @@ export async function deleteSchedulerExpenseAttachment(
     )).for('update').limit(1);
     if (!row) throw notFound('Bill attachment');
     const reservations = await expenseReservations(finance.id, tx);
-    if (expenseAttachmentIsFrozen(expense, reservations.get(expense.id))) {
-      throw conflict('Attachments cannot be deleted after the bill is issued or paid');
+    if (expenseAttachmentMutationIsBlocked(expense, reservations.get(expense.id))) {
+      throw conflict('Attachments for invoiced expenses cannot be deleted');
     }
     taskId = await queueExpenseAttachmentDeletion(row, tx);
   });

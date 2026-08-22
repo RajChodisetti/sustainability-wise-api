@@ -432,7 +432,7 @@ function ExpenseAttachments({
   onDeleteAttachment: (expense: FinanceExpense, attachmentId: string, filename: string) => Promise<void>;
   showState?: boolean;
 }) {
-  // A draft reservation freezes the customer charge, not its private evidence.
+  // Draft reservation freezes the customer charge, not its private evidence.
   const locked = expense.invoiced;
   return (
     <div className="min-w-[10rem] space-y-2">

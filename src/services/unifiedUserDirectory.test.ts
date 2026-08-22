@@ -8,6 +8,7 @@ import {
 
 const sourceCreatedAt = new Date('2026-07-01T00:00:00.000Z');
 const sourceUpdatedAt = new Date('2026-07-02T00:00:00.000Z');
+const globalUpdatedAt = new Date('2026-07-03T00:00:00.000Z');
 
 function registryUser(
   app: UnifiedUserApp,
@@ -24,6 +25,9 @@ function registryUser(
     globalLoginKey: 'username:alex',
     globalDisplayEmail: 'alex@installhub.users.local',
     billingRateCents: 12_345,
+    globalTimezone: 'Australia/Sydney',
+    globalWorkingDaysMask: 62,
+    globalUpdatedAt,
     originApp: app,
     originUserId: userIds[app],
     fieldUserId: 'field-1',
@@ -48,6 +52,9 @@ test('groups one canonical person with all three product memberships', () => {
   assert.equal(result.data.length, 1);
   assert.equal(result.data[0]?.key, 'global-user:installhub:field-1');
   assert.equal(result.data[0]?.billingRate, 123.45);
+  assert.equal(result.data[0]?.timezone, 'Australia/Sydney');
+  assert.equal(result.data[0]?.workingDaysMask, 62);
+  assert.equal(result.data[0]?.updatedAt, globalUpdatedAt);
   assert.equal(result.data[0]?.syncStatus, 'synced');
   assert.deepEqual(result.data[0]?.memberships.map((membership) => ({
     app: membership.app,
@@ -97,6 +104,17 @@ test('fails closed when a stored billing rate cannot be represented safely', () 
     ]),
     /outside the supported accounting range/,
   );
+});
+
+test('fails closed when a stored working-days mask is outside the supported range', () => {
+  for (const globalWorkingDaysMask of [0, 128, 1.5]) {
+    assert.throws(
+      () => buildUnifiedUserDirectory([
+        registryUser('installhub', { globalWorkingDaysMask }),
+      ]),
+      /working-days mask is outside the supported range/,
+    );
+  }
 });
 
 test('marks a missing product projection for attention', () => {

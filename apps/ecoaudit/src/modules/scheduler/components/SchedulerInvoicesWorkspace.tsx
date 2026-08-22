@@ -262,7 +262,7 @@ function GlobalInvoiceDetail({
         setError(null);
         try {
           await update.mutateAsync({ invoiceId, input: { ...input, expectedUpdatedAt: invoice.updatedAt } });
-          toast.success('Draft invoice saved.');
+          toast.success(invoice.status === 'draft' ? 'Draft invoice saved.' : 'Xero reconciliation saved.');
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }

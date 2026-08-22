@@ -266,12 +266,7 @@ export function SchedulerBillsWorkspace({
           toast.error('Bill saved; attachment failed.');
           return;
         }
-        const savedMessage = formMode === 'upload'
-          ? 'Supplier bill and attachment saved.'
-          : 'Cost added.';
-        toast.success(result.expense.invoiceId
-          ? `${savedMessage} Added to the existing draft invoice.`
-          : savedMessage);
+        toast.success(formMode === 'upload' ? 'Supplier bill and attachment saved.' : 'Cost added.');
       }
     } catch (cause) {
       setError(cloudConnectionErrorMessage(cause));
@@ -629,7 +624,7 @@ function CostState({ expense }: { expense: SchedulerGlobalExpense }) {
 function AttachmentList(props: BillActions) {
   const { expense, busy, onUpload, onDownload, onDeleteAttachment } = props;
   const attachments = expense.attachments ?? [];
-  // A draft reservation freezes the customer charge, not its private evidence.
+  // Draft reservation freezes the customer charge, not its private evidence.
   const locked = expense.invoiced;
   return (
     <div className="min-w-[10rem] space-y-2">

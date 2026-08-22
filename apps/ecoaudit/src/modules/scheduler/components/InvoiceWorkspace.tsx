@@ -5,6 +5,7 @@ import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
+import { InvoiceRefundsPanel } from '@/modules/scheduler/components/InvoiceRefundsPanel';
 import { Checkbox, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
 import { useExportJob } from '@/hooks/useExportJob';
@@ -431,7 +432,7 @@ function InvoiceDetail({
             invoiceId,
             input: { ...input, expectedUpdatedAt: query.data.updatedAt },
           });
-          toast.success('Draft invoice saved.');
+          toast.success(query.data.status === 'draft' ? 'Draft invoice saved.' : 'Xero reconciliation saved.');
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }
@@ -507,6 +508,8 @@ export function InvoiceDocument({
   const [billToEmail, setBillToEmail] = useState(invoice.billToEmail ?? '');
   const [billToAbn, setBillToAbn] = useState(invoice.billToAbn ?? '');
   const [purchaseOrderReference, setPurchaseOrderReference] = useState(invoice.purchaseOrderReference ?? '');
+  const [xeroInvoiceNumber, setXeroInvoiceNumber] = useState(invoice.xeroInvoiceNumber ?? '');
+  const [xeroDate, setXeroDate] = useState(dateInput(invoice.xeroDate));
   const [draftLines, setDraftLines] = useState<EditableInvoiceLine[]>(() => (
     invoice.lines.map(editableInvoiceLine)
   ));
@@ -578,7 +581,7 @@ export function InvoiceDocument({
     || pdfExport.active
     || pdfExport.downloading
     || sendEmail.isPending;
-  const invoiceLifecycleBusy = invoiceActionBusy || emailRetryLocked;
+  const reconciliationEditable = invoice.status !== 'void';
   const headerDirty = editable && invoiceDraftIsDirty({
     notes: invoice.notes ?? '',
     dueDate: dateInput(invoice.dueDate),
@@ -589,7 +592,13 @@ export function InvoiceDocument({
     purchaseOrderReference: invoice.purchaseOrderReference ?? '',
   }, { notes, dueDate, billToName, billToAddress, billToEmail, billToAbn, purchaseOrderReference });
   const linesDirty = editable && invoiceLinesAreDirty(invoice.lines, draftLines);
-  const dirty = headerDirty || linesDirty;
+  const reconciliationDirty = reconciliationEditable && invoiceDraftIsDirty({
+    xeroInvoiceNumber: invoice.xeroInvoiceNumber ?? '',
+    xeroDate: dateInput(invoice.xeroDate),
+  }, { xeroInvoiceNumber, xeroDate });
+  const dirty = headerDirty || linesDirty || reconciliationDirty;
+  const reconciliationActionBusy = invoiceActionBusy || emailRetryLocked;
+  const invoiceLifecycleBusy = reconciliationActionBusy || reconciliationDirty;
 
   async function saveDraft() {
     if (!billToName.trim()) {
@@ -628,7 +637,17 @@ export function InvoiceDocument({
       billToEmail: billToEmail.trim() || null,
       billToAbn: billToAbn.trim() || null,
       purchaseOrderReference: purchaseOrderReference.trim() || null,
+      xeroInvoiceNumber: xeroInvoiceNumber.trim() || null,
+      xeroDate: xeroDate || null,
       lines: draftLines.map(editableLinePayload),
+    });
+  }
+
+  async function saveXeroReconciliation() {
+    setValidation(null);
+    await onSave({
+      xeroInvoiceNumber: xeroInvoiceNumber.trim() || null,
+      xeroDate: xeroDate || null,
     });
   }
 
@@ -761,6 +780,7 @@ export function InvoiceDocument({
             <h3 id={`invoice-${invoice.id}`} className="text-lg font-extrabold text-[var(--text)]">{invoice.invoiceNumber}</h3>
             <StatusBadge invoice={invoice} />
           </div>
+          <p className="mt-0.5 text-[10px] font-extrabold uppercase tracking-wide text-[var(--muted)]">Internal invoice number</p>
           {lineJobOptions.length === 1 ? (
             <div className="mt-1">
               <p className="text-base font-extrabold leading-6 text-[var(--text)]">{lineJobOptions[0]!.jobName}</p>
@@ -777,7 +797,7 @@ export function InvoiceDocument({
         <div className="mt-3 rounded-xl border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-3 py-2.5 text-sm text-[var(--text)]">
           <strong>Immutable {invoiceStatusLabel(invoice.status).toLowerCase()} snapshot.</strong>{' '}
           {invoice.issuedAt
-            ? 'Bill-to, seller, job, and line details are retained from issuance and cannot be edited.'
+            ? `Bill-to, seller, job, and line details are retained from issuance and cannot be edited.${reconciliationEditable ? ' Xero reconciliation references remain separately editable.' : ''}`
             : 'This voided draft is retained as an audit record and cannot be edited.'}
         </div>
       ) : null}
@@ -788,18 +808,22 @@ export function InvoiceDocument({
         </div>
       ) : null}
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <InfoBlock label="Bill to">
           <strong>{invoice.billToName || invoice.job.clientName || 'Billing name not set'}</strong>
           <span>{invoice.billToEmail || 'No email'}</span>
           {invoice.billToAbn ? <span>ABN: {invoice.billToAbn}</span> : null}
           <span className="whitespace-pre-line">{invoice.billToAddress || invoice.job.siteAddress || 'No billing address'}</span>
-          {invoice.purchaseOrderReference ? <span>Reference: {invoice.purchaseOrderReference}</span> : null}
+          {invoice.purchaseOrderReference ? <span>Purchase order (PO): {invoice.purchaseOrderReference}</span> : null}
         </InfoBlock>
-        <InfoBlock label="Dates">
-          <span>Issued: {displayDate(invoice.issueDate)}</span>
+        <InfoBlock label="Internal dates">
+          <span>Internal issue date: {displayDate(invoice.issueDate)}</span>
           <span>Due: {displayDate(invoice.dueDate)}</span>
           {invoice.paidAt ? <span>Paid: {displayDate(invoice.paidAt)}</span> : null}
+        </InfoBlock>
+        <InfoBlock label="Xero reconciliation">
+          <span>Xero invoice number: {invoice.xeroInvoiceNumber || '—'}</span>
+          <span>Xero invoice date: {displayDate(invoice.xeroDate)}</span>
         </InfoBlock>
         <InfoBlock label="Total">
           <span>Subtotal: {money(invoice.subtotalExGst, invoice.currency)}</span>
@@ -807,6 +831,31 @@ export function InvoiceDocument({
           <strong>{money(invoice.totalIncGst, invoice.currency)} inc GST</strong>
         </InfoBlock>
       </div>
+
+      <section className="mt-4 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4" aria-labelledby={`invoice-xero-${invoice.id}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 id={`invoice-xero-${invoice.id}`} className="font-extrabold text-[var(--text)]">Xero reconciliation</h4>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Record the Xero invoice identity separately from internal invoice {invoice.invoiceNumber}, its internal issue date, and the customer purchase order.</p>
+          </div>
+          {reconciliationEditable && !editable ? (
+            <Button type="button" variant="secondary" disabled={reconciliationActionBusy || !reconciliationDirty} onClick={() => void saveXeroReconciliation()}>
+              {busy ? 'Saving…' : 'Save Xero reconciliation'}
+            </Button>
+          ) : null}
+        </div>
+        <div className="mt-2 grid gap-x-3 sm:grid-cols-2">
+          <div>
+            <FieldLabel htmlFor={`invoice-xero-number-${invoice.id}`}>Xero invoice number</FieldLabel>
+            <Input id={`invoice-xero-number-${invoice.id}`} value={xeroInvoiceNumber} disabled={!reconciliationEditable} onChange={(event) => setXeroInvoiceNumber(event.target.value)} />
+          </div>
+          <div>
+            <FieldLabel htmlFor={`invoice-xero-date-${invoice.id}`}>Xero invoice date</FieldLabel>
+            <Input id={`invoice-xero-date-${invoice.id}`} type="date" value={xeroDate} disabled={!reconciliationEditable} onChange={(event) => setXeroDate(event.target.value)} />
+          </div>
+        </div>
+        {editable ? <FieldHint>Xero values are saved with the rest of this draft.</FieldHint> : reconciliationEditable ? <FieldHint>Issued and paid invoice content stays immutable; only these Xero reconciliation fields can change.</FieldHint> : <FieldHint>Voided invoices are fully immutable.</FieldHint>}
+      </section>
 
       {invoice.jobs && invoice.jobs.length > 1 ? (
         <section className="mt-4" aria-labelledby={`invoice-jobs-${invoice.id}`}>
@@ -858,7 +907,7 @@ export function InvoiceDocument({
               <Textarea id={`invoice-bill-address-${invoice.id}`} rows={3} value={billToAddress} onChange={(event) => setBillToAddress(event.target.value)} />
             </div>
             <div>
-              <FieldLabel htmlFor={`invoice-reference-${invoice.id}`}>PO / customer reference</FieldLabel>
+              <FieldLabel htmlFor={`invoice-reference-${invoice.id}`}>Purchase order (PO) / customer reference</FieldLabel>
               <Input id={`invoice-reference-${invoice.id}`} value={purchaseOrderReference} onChange={(event) => setPurchaseOrderReference(event.target.value)} />
             </div>
             <div>
@@ -1019,6 +1068,9 @@ export function InvoiceDocument({
       {editable && dirty ? (
         <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save draft changes before issuing or preparing a PDF so the invoice uses the values shown here.</p>
       ) : null}
+      {!editable && reconciliationDirty ? (
+        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save the Xero reconciliation changes before preparing a PDF or changing invoice status.</p>
+      ) : null}
       {editable && !everyJobHasPositiveDraftCharge ? (
         <p className="mt-3 text-xs font-semibold leading-5 text-[var(--amber)]">This draft can be saved, but every included job needs a positive charge before the invoice can be issued.</p>
       ) : null}
@@ -1094,6 +1146,8 @@ export function InvoiceDocument({
         </section>
       ) : null}
 
+      <InvoiceRefundsPanel invoice={invoice} onChanged={onRefresh} />
+
       <div className="mt-5 flex flex-wrap justify-end gap-2">
         <Button
           type="button"
@@ -1105,7 +1159,7 @@ export function InvoiceDocument({
           {editable && !allJobsCompleted
             ? 'Complete jobs before PDF'
             : dirty
-            ? 'Save draft before PDF'
+            ? editable ? 'Save draft before PDF' : 'Save Xero details before PDF'
             : pdfExport.starting || pdfExport.active
             ? 'Preparing PDF…'
             : pdfExport.job?.status === 'failed'
@@ -1116,8 +1170,8 @@ export function InvoiceDocument({
         </Button>
         {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save draft'}</Button> : null}
         {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
-        {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
-        {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
+        {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={reconciliationDirty ? 'Save Xero reconciliation changes before changing invoice status' : emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
+        {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={reconciliationDirty ? 'Save Xero reconciliation changes before changing invoice status' : emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>
     </article>
   );

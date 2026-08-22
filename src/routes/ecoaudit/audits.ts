@@ -172,23 +172,37 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       createdAt,
       observedAt: receivedAt,
     });
-    const [created] = await db.insert(eaAudits).values({
-      id,
-      serverId: randomUUID(),
-      syncStatus: 'synced',
-      updatedAt,
-      siteName: requiredString(body, 'siteName'),
-      siteAddress: requiredString(body, 'siteAddress'),
-      inspectorName: requiredString(body, 'inspectorName'),
-      auditDate: typeof body.auditDate === 'string' ? body.auditDate : null,
-      status,
-      createdByUserId: request.user.userId,
-      // Assignment is controlled by scheduler/admin workflows, never by an
-      // inspector-supplied create payload.
-      assignedInspectorUserId: null,
-      ...timing,
-      createdAt,
-    }).returning();
+    const created = await db.transaction(async (tx) => {
+      const [inserted] = await tx.insert(eaAudits).values({
+        id,
+        serverId: randomUUID(),
+        syncStatus: 'synced',
+        updatedAt,
+        siteName: requiredString(body, 'siteName'),
+        siteAddress: requiredString(body, 'siteAddress'),
+        inspectorName: requiredString(body, 'inspectorName'),
+        auditDate: typeof body.auditDate === 'string' ? body.auditDate : null,
+        status,
+        createdByUserId: request.user.userId,
+        // Assignment is controlled by scheduler/admin workflows, never by an
+        // inspector-supplied create payload.
+        assignedInspectorUserId: null,
+        ...timing,
+        createdAt,
+      }).returning();
+      const foundCreated = assertFound(inserted, 'Audit');
+      if (status === 'Completed') {
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'ecoaudit',
+          sourceType: 'audit',
+          sourceId: id,
+        }, {
+          observedAt: receivedAt,
+          completionProvenance: 'offline_transition',
+        });
+      }
+      return foundCreated;
+    });
     return reply.status(201).send(created);
   });
 
@@ -362,6 +376,17 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
       const found = assertFound(audit, 'Audit');
       assertAuditAccess(found, request.user);
       const now = new Date();
+      if (found.status === 'Completed') {
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'ecoaudit',
+          sourceType: 'audit',
+          sourceId: id,
+        }, {
+          observedAt: now,
+          completionProvenance: 'historical_replay',
+        });
+        return found;
+      }
       const timing = resolveCompletionTiming(found, now);
       const [completed] = await tx.update(eaAudits).set({
         status: 'Completed',
@@ -378,7 +403,10 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
         sourceApp: 'ecoaudit',
         sourceType: 'audit',
         sourceId: id,
-      }, { observedAt: now });
+      }, {
+        observedAt: now,
+        completionProvenance: 'direct_transition',
+      });
       return foundCompleted;
     });
     return reply.send(updated);
@@ -389,21 +417,36 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')],
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
-    const found = assertFound(audit, 'Audit');
-    assertAuditAccess(found, request.user);
-    if (found.status === 'Draft') return reply.send(found);
-    if (found.status !== 'Completed') throw badRequest('Only completed audits can be reopened');
+    const updated = await db.transaction(async (tx) => {
+      const [audit] = await tx.select().from(eaAudits).where(and(
+        eq(eaAudits.id, id),
+        isNull(eaAudits.deletedAt),
+      )).for('update');
+      const found = assertFound(audit, 'Audit');
+      assertAuditAccess(found, request.user);
+      if (found.status === 'Draft') return found;
+      if (found.status !== 'Completed') throw badRequest('Only completed audits can be reopened');
+      if (!found.completedAt) throw conflict('completion_timestamp_missing');
 
-    const now = new Date();
-    const timing = resolveReopenTiming(found);
-    const [updated] = await db.update(eaAudits).set({
-      status: 'Draft',
-      ...timing,
-      updatedAt: now,
-      syncStatus: 'local',
-    }).where(eq(eaAudits.id, id)).returning();
-    return reply.send(assertFound(updated, 'Audit'));
+      const now = new Date();
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'ecoaudit',
+        sourceType: 'audit',
+        sourceId: id,
+      }, {
+        observedAt: now,
+        completionProvenance: 'historical_replay',
+      });
+      const timing = resolveReopenTiming(found);
+      const [reopened] = await tx.update(eaAudits).set({
+        status: 'Draft',
+        ...timing,
+        updatedAt: now,
+        syncStatus: 'local',
+      }).where(eq(eaAudits.id, id)).returning();
+      return assertFound(reopened, 'Audit');
+    });
+    return reply.send(updated);
   });
 
   app.post('/:id/copy', {

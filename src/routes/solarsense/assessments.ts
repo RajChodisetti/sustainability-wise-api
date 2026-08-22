@@ -180,9 +180,8 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const changes = buildAssessmentChanges({ ...body, siteId });
     const status = parseSolarLifecycleStatus(body.status);
 
-    const [created] = await db
-      .insert(ssRooftopAssessments)
-      .values({
+    const created = await db.transaction(async (tx) => {
+      const [inserted] = await tx.insert(ssRooftopAssessments).values({
         id,
         serverId: randomUUID(),
         syncStatus: 'synced',
@@ -234,8 +233,20 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         createdAt: dateOrNow(body.createdAt),
         status,
         completedAt: completionAtFirstObservation(status, receivedAt),
-      })
-      .returning();
+      }).returning();
+      const foundCreated = assertFound(inserted, 'Assessment');
+      if (status === 'Completed') {
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'solarsense',
+          sourceType: 'assessment',
+          sourceId: id,
+        }, {
+          observedAt: receivedAt,
+          completionProvenance: 'offline_transition',
+        });
+      }
+      return foundCreated;
+    });
 
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
     return reply.status(201).send(created);
@@ -520,7 +531,10 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         sourceApp: 'solarsense',
         sourceType: 'assessment',
         sourceId: id,
-      }, { observedAt: completedAt });
+      }, {
+        observedAt: completedAt,
+        completionProvenance: 'direct_transition',
+      });
       return foundCompleted;
     });
 

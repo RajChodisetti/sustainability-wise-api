@@ -26,10 +26,15 @@ test('0043 adds bounded nullable InstallHub completion notes as an expand-only d
   const journal = JSON.parse(await readFile(journalUrl, 'utf8')) as {
     entries: Array<{ idx: number; tag: string }>;
   };
-  assert.deepEqual(journal.entries.slice(-2).map(({ idx, tag }) => ({ idx, tag })), [
+  assert.deepEqual(
+    journal.entries
+      .filter(({ idx }) => idx === 42 || idx === 43)
+      .map(({ idx, tag }) => ({ idx, tag })),
+    [
     { idx: 42, tag: '0042_third_wilson_fisk' },
     { idx: 43, tag: '0043_installhub_completion_notes' },
-  ]);
+    ],
+  );
 
   const previousSnapshot = JSON.parse(await readFile(previousSnapshotUrl, 'utf8')) as {
     id: string;

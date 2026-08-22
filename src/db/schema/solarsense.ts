@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -36,6 +37,17 @@ export const ssSites = pgTable('ss_sites', {
   ...syncCols,
   siteName: text('site_name').notNull(),
   location: text('location'),
+  siteLocality: text('site_locality'),
+  siteState: text('site_state'),
+  sitePostcode: text('site_postcode'),
+  siteCountryCode: text('site_country_code'),
+  siteLatitude: doublePrecision('site_latitude'),
+  siteLongitude: doublePrecision('site_longitude'),
+  siteGeocodeStatus: text('site_geocode_status'),
+  siteGeocodeProvider: text('site_geocode_provider'),
+  siteGeocodePlaceId: text('site_geocode_place_id'),
+  siteAddressFingerprint: text('site_address_fingerprint'),
+  siteGeocodedAt: timestamp('site_geocoded_at'),
   dateOfAssessment: text('date_of_assessment'),
   documentClassification: text('document_classification'),
   electricalInfrastructureSummary: text('electrical_infrastructure_summary'),
@@ -50,7 +62,38 @@ export const ssSites = pgTable('ss_sites', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   status: text('status').notNull().default('Draft'),
   completedAt: timestamp('completed_at'),
-});
+}, (table) => [
+  check('ss_sites_country_check', sql`
+    ${table.siteCountryCode} IS NULL OR ${table.siteCountryCode} = 'AU'
+  `),
+  check('ss_sites_state_check', sql`
+    ${table.siteState} IS NULL OR ${table.siteState} IN ('ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA')
+  `),
+  check('ss_sites_postcode_check', sql`
+    ${table.sitePostcode} IS NULL OR ${table.sitePostcode} ~ '^[0-9]{4}$'
+  `),
+  check('ss_sites_coordinates_check', sql`
+    (${table.siteLatitude} IS NULL AND ${table.siteLongitude} IS NULL)
+    OR (
+      ${table.siteLatitude} IS NOT NULL
+      AND ${table.siteLongitude} IS NOT NULL
+      AND ${table.siteLatitude} BETWEEN -44 AND -9
+      AND ${table.siteLongitude} BETWEEN 112 AND 154
+    )
+  `),
+  check('ss_sites_geocode_status_check', sql`
+    ${table.siteGeocodeStatus} IS NULL
+    OR ${table.siteGeocodeStatus} IN ('unresolved', 'resolved', 'manual', 'failed')
+  `),
+  check('ss_sites_geocode_evidence_check', sql`
+    (${table.siteGeocodeStatus} IS DISTINCT FROM 'resolved')
+    OR (${table.siteLatitude} IS NOT NULL AND ${table.siteLongitude} IS NOT NULL)
+  `),
+  check('ss_sites_address_fingerprint_check', sql`
+    ${table.siteAddressFingerprint} IS NULL
+    OR ${table.siteAddressFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+]);
 
 export const ssRooftopAssessments = pgTable('ss_rooftop_assessments', {
   id: text('id').primaryKey(),
@@ -102,7 +145,14 @@ export const ssRooftopAssessments = pgTable('ss_rooftop_assessments', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   status: text('status').notNull().default('Draft'),
   completedAt: timestamp('completed_at'),
-});
+}, (table) => [
+  index('ss_rooftop_assessments_analytics_completed_idx').on(table.completedAt).where(sql`
+    ${table.completedAt} IS NOT NULL AND ${table.deletedAt} IS NULL
+  `),
+  index('ss_rooftop_assessments_analytics_undated_completed_idx').on(table.id).where(sql`
+    ${table.status} = 'Completed' AND ${table.completedAt} IS NULL
+  `),
+]);
 
 export const ssAssessmentWorkSessions = pgTable('ss_assessment_work_sessions', {
   id: text('id').notNull(),
@@ -126,6 +176,9 @@ export const ssAssessmentWorkSessions = pgTable('ss_assessment_work_sessions', {
     table.assessmentId,
     table.actorUserId,
     table.updatedAt,
+  ),
+  index('ss_assessment_work_sessions_analytics_boundary_idx').on(
+    sql`coalesce(${table.endedAt}, ${table.lastActiveAt})`,
   ),
   check(
     'ss_assessment_work_sessions_active_milliseconds_check',

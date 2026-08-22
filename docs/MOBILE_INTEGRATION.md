@@ -13,6 +13,14 @@ it.
 
 ## Scheduler push notifications
 
+Approved leave is enforced by the unified Scheduler API before a planned or
+in-progress assignment can be created, moved, reassigned, or reactivated. The
+mobile job and sync payloads remain additive compatibility consumers: they do
+not need new leave fields, and they must not be used to bypass the Scheduler's
+canonical assignment decision. The admin leaderboard label **Working hours on
+site** continues to mean the existing persisted app-active milliseconds from
+mobile work sessions; no new attendance capture is required.
+
 After login and notification permission, each app obtains its Expo push token
 and stores it with the authenticated app-scoped JWT:
 
@@ -219,6 +227,20 @@ reopened. Generic sync cannot create the first Draft-to-Completed transition.
 | `PUT /v1/installhub/sync/upload/:sessionId?expires=...&signature=...` | Use a short-lived app/session-bound HMAC capability, then verify size/checksum |
 | `POST /v1/installhub/sync/confirm-upload` | Confirm storage and return the durable URL |
 
+### Installation lifecycle endpoints
+
+| Method and route | Purpose |
+|---|---|
+| `POST /v1/installhub/installations/:installationId/complete` | Atomically complete a ready canonical installation, pin its immutable version, and reconcile linked Scheduler work |
+| `POST /v1/installhub/installations/:installationId/reopen` | Reopen the live installation as Draft while retaining its completed immutable version |
+
+Completion requires `baseTreeRevision` and `idempotencyKey`, and accepts optional
+nullable camelCase `completionNotes`. Notes are trimmed, blank input becomes
+`null`, and meaningful text is limited to 2,000 characters. The exact normalized
+value participates in the idempotency fingerprint, is stored in the completed
+snapshot/report, and is cleared only from the live row when that installation is
+reopened. Generic sync cannot create the first Draft-to-Completed transition.
+
 `push` structurally requires `installation`, `zones`, `electricalAssets`,
 `siteAssets`, and `formSubmissions`. It is a full-snapshot contract: an existing
 child omitted from its corresponding array is soft-deleted. This transport
@@ -236,6 +258,30 @@ completion/readiness. Authentication, ownership/parentage, compare-and-swap
 revisions, stable IDs, and structural tree/form/attachment shape remain
 enforced. This policy is applied server-side and remains compatible with
 installed mobile clients and their accepted aliases.
+
+The installation object also carries additive job metadata for Scheduler and
+Field App Complete: nullable `customerName`, `maas`, `serviceType`,
+`meteringSolutionType`, `plannedMeterType`, structured Australian site fields,
+site-contact name/phone/email, `fergusJobNumber`, `quoteNumber`, `jobComments`,
+`accessInformation`, `warrantyDevice`, `monitoringInstalled`,
+`hardwareInstalled`, `solarCapacityKw`, `additionalMonitoringRequired`, and
+`additionalMonitoringHardware`. Nullable booleans are tri-state: `null` means
+unknown, and must not be converted to `false`. An older client that omits one of
+these additive fields preserves the current server value; an explicit `null`
+clears it. `solarCapacityKw` is nullable and, when present, must be finite and
+between 0 and 1,000,000 inclusive.
+
+These fields do not replace existing authorities. Installation lifecycle owns
+the `Draft`/`Completed` status, and the completion endpoint owns `completedAt`
+and `completedByUserId`. Scheduler owns scheduled time and scheduler actor; for
+compatibility it projects the linked event's local calendar date and resolved
+assignee display name into legacy `auditDate` and `inspectorName` fields. The
+default grid-supply row owns the nullable, trimmed, maximum-100-character
+electricity NMI, while meter/device entities
+and form evidence own actual meter type and existing/new device identifiers;
+`plannedMeterType` is planning metadata only. Contact and access information is
+restricted operational detail and must not be copied into broad list labels,
+notifications, invoice snapshots, or other unrelated exports.
 
 New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
 numbers, and hyphens; maximum 16 characters). Newly unclaimed records receive

@@ -11,8 +11,9 @@ import {
   Select,
   Textarea,
 } from '@/components/ui/FormFields';
-import { cloudConnectionErrorMessage } from '@/api/client';
+import { ApiError, cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
+import { AustralianAddressFields } from '@/modules/scheduler/components/AustralianAddressFields';
 import {
   useCancelScheduleEvent,
   useCreateScheduleEvent,
@@ -36,12 +37,19 @@ import {
   schedulerDefaultSourceApp,
   schedulerEventSupportsMobileNotifications,
 } from '@/modules/scheduler/lib/visibility';
+import {
+  EMPTY_SCHEDULER_JOB_ADDRESS,
+  schedulerAddressDisplay,
+  schedulerAddressIsComplete,
+  schedulerAddressPayload,
+} from '@/modules/scheduler/lib/routing';
 import type {
   ScheduleEvent,
   ScheduleSourceApp,
   ScheduleSourceType,
   ScheduleStatus,
 } from '@/modules/scheduler/types/domain';
+import type { SchedulerJobAddressInput } from '@/modules/scheduler/types/routing';
 
 type Props = {
   open: boolean;
@@ -51,12 +59,127 @@ type Props = {
   isAdmin: boolean;
   visibleSourceApps: ScheduleSourceApp[];
   selectableSourceApps: ScheduleSourceApp[];
+  creatableSourceApps: ScheduleSourceApp[];
   onOpenFinance?: (event: ScheduleEvent) => void;
 };
 
 type CreationMode = 'new' | 'existing';
 
+type InstallHubJobDetails = {
+  electricityNmi: string;
+  customerName: string;
+  maas: boolean | null;
+  serviceType: string;
+  meteringSolutionType: string;
+  plannedMeterType: string;
+  siteContactName: string;
+  siteContactPhone: string;
+  siteContactEmail: string;
+  fergusJobNumber: string;
+  quoteNumber: string;
+  jobComments: string;
+  accessInformation: string;
+  warrantyDevice: boolean | null;
+  monitoringInstalled: boolean | null;
+  hardwareInstalled: boolean | null;
+  solarCapacityKw: string;
+  additionalMonitoringRequired: boolean | null;
+  additionalMonitoringHardware: string;
+};
+
+const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
+  electricityNmi: '',
+  customerName: '',
+  maas: null,
+  serviceType: '',
+  meteringSolutionType: '',
+  plannedMeterType: '',
+  siteContactName: '',
+  siteContactPhone: '',
+  siteContactEmail: '',
+  fergusJobNumber: '',
+  quoteNumber: '',
+  jobComments: '',
+  accessInformation: '',
+  warrantyDevice: null,
+  monitoringInstalled: null,
+  hardwareInstalled: null,
+  solarCapacityKw: '',
+  additionalMonitoringRequired: null,
+  additionalMonitoringHardware: '',
+};
+const MAX_SOLAR_CAPACITY_KW = 1_000_000;
+
+function optionalJobText(value: string): string | null {
+  return value.trim() || null;
+}
+
+function nullableBooleanValue(value: boolean | null): string {
+  return value === null ? '' : value ? 'yes' : 'no';
+}
+
+function nullableBooleanFromValue(value: string): boolean | null {
+  if (value === 'yes') return true;
+  if (value === 'no') return false;
+  return null;
+}
+
+function NullableBooleanSelect({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: boolean | null;
+  onChange: (value: boolean | null) => void;
+}) {
+  return (
+    <div>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Select
+        id={id}
+        value={nullableBooleanValue(value)}
+        onChange={(event) => onChange(nullableBooleanFromValue(event.target.value))}
+      >
+        <option value="">Not recorded</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </Select>
+    </div>
+  );
+}
+
+function installHubJobPayload(details: InstallHubJobDetails) {
+  return {
+    electricityNmi: optionalJobText(details.electricityNmi),
+    customerName: optionalJobText(details.customerName),
+    maas: details.maas,
+    serviceType: optionalJobText(details.serviceType),
+    meteringSolutionType: optionalJobText(details.meteringSolutionType),
+    plannedMeterType: optionalJobText(details.plannedMeterType),
+    siteContactName: optionalJobText(details.siteContactName),
+    siteContactPhone: optionalJobText(details.siteContactPhone),
+    siteContactEmail: optionalJobText(details.siteContactEmail),
+    fergusJobNumber: optionalJobText(details.fergusJobNumber),
+    quoteNumber: optionalJobText(details.quoteNumber),
+    jobComments: optionalJobText(details.jobComments),
+    accessInformation: optionalJobText(details.accessInformation),
+    warrantyDevice: details.warrantyDevice,
+    monitoringInstalled: details.monitoringInstalled,
+    hardwareInstalled: details.hardwareInstalled,
+    solarCapacityKw: details.solarCapacityKw.trim()
+      ? Number(details.solarCapacityKw)
+      : null,
+    additionalMonitoringRequired: details.additionalMonitoringRequired,
+    additionalMonitoringHardware: optionalJobText(details.additionalMonitoringHardware),
+  };
+}
+
 const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
+  { value: 'ecoaudit', label: 'EcoAudit' },
+  { value: 'solarsense', label: 'SolarSense' },
   { value: 'installhub', label: 'Field App installation' },
   { value: 'custom', label: 'Custom job' },
 ];
@@ -81,10 +204,10 @@ function initialFormValues(
       creationMode: 'existing' as CreationMode,
       jobQuery: '',
       jobSiteName: '',
-      jobSiteAddress: '',
-      jobLocation: '',
+      jobAddress: { ...EMPTY_SCHEDULER_JOB_ADDRESS },
       jobBuildingName: '',
       jobClientName: '',
+      installHubJobDetails: { ...EMPTY_INSTALLHUB_JOB_DETAILS },
       title: event.title,
       description: event.description ?? '',
       assigneeFieldUserId: event.assigneeFieldUserId,
@@ -115,10 +238,10 @@ function initialFormValues(
     creationMode: 'new' as CreationMode,
     jobQuery: '',
     jobSiteName: '',
-    jobSiteAddress: '',
-    jobLocation: '',
+    jobAddress: { ...EMPTY_SCHEDULER_JOB_ADDRESS },
     jobBuildingName: '',
     jobClientName: '',
+    installHubJobDetails: { ...EMPTY_INSTALLHUB_JOB_DETAILS },
     title: '',
     description: '',
     assigneeFieldUserId: '',
@@ -137,6 +260,7 @@ export function EventFormModal({
   isAdmin,
   visibleSourceApps,
   selectableSourceApps,
+  creatableSourceApps,
   onOpenFinance,
 }: Props) {
   const toast = useToast();
@@ -150,7 +274,7 @@ export function EventFormModal({
   const initial = initialFormValues(
     event,
     initialDay,
-    schedulerDefaultSourceApp(selectableSourceApps),
+    schedulerDefaultSourceApp(creatableSourceApps),
   );
   const selectableAppOptions = appOptions.filter((option) => (
     selectableSourceApps.includes(option.value)
@@ -162,10 +286,10 @@ export function EventFormModal({
   const [creationMode, setCreationMode] = useState<CreationMode>(initial.creationMode);
   const [jobQuery, setJobQuery] = useState(initial.jobQuery);
   const [jobSiteName, setJobSiteName] = useState(initial.jobSiteName);
-  const [jobSiteAddress, setJobSiteAddress] = useState(initial.jobSiteAddress);
-  const [jobLocation, setJobLocation] = useState(initial.jobLocation);
+  const [jobAddress, setJobAddress] = useState<SchedulerJobAddressInput>(initial.jobAddress);
   const [jobBuildingName, setJobBuildingName] = useState(initial.jobBuildingName);
   const [jobClientName, setJobClientName] = useState(initial.jobClientName);
+  const [installHubJobDetails, setInstallHubJobDetails] = useState<InstallHubJobDetails>(initial.installHubJobDetails);
   const [title, setTitle] = useState(initial.title);
   const [description, setDescription] = useState(initial.description);
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
@@ -181,6 +305,8 @@ export function EventFormModal({
   const onCloseRef = useRef(onClose);
   const busyRef = useRef(false);
   const reminderIdempotencyKeyRef = useRef<string | null>(null);
+  const sourceCanCreateNew = sourceApp !== 'custom'
+    && creatableSourceApps.includes(sourceApp);
 
   const jobs = useJobOptions(
     jobQuery,
@@ -200,11 +326,33 @@ export function EventFormModal({
     if (parsedEstimatedDurationMinutes === undefined) return false;
     if (sourceApp === 'custom') return Boolean(title.trim());
     if (creationMode === 'existing') return Boolean(sourceId);
-    if (sourceApp === 'ecoaudit') return Boolean(jobSiteName.trim() && jobSiteAddress.trim());
+    if (!sourceCanCreateNew) return false;
+    if (sourceApp === 'ecoaudit') return Boolean(
+      jobSiteName.trim() && schedulerAddressIsComplete(jobAddress),
+    );
     if (sourceApp === 'solarsense') {
-      return Boolean(jobSiteName.trim() && jobLocation.trim() && jobBuildingName.trim());
+      return Boolean(
+        jobSiteName.trim()
+        && schedulerAddressIsComplete(jobAddress)
+        && jobBuildingName.trim(),
+      );
     }
-    return Boolean(jobClientName.trim() && jobSiteName.trim() && jobSiteAddress.trim());
+    const solarCapacityKw = installHubJobDetails.solarCapacityKw.trim()
+      ? Number(installHubJobDetails.solarCapacityKw)
+      : null;
+    return Boolean(
+      jobClientName.trim()
+      && jobSiteName.trim()
+      && schedulerAddressIsComplete(jobAddress)
+      && (
+        solarCapacityKw === null
+        || (
+          Number.isFinite(solarCapacityKw)
+          && solarCapacityKw >= 0
+          && solarCapacityKw <= MAX_SOLAR_CAPACITY_KW
+        )
+      )
+    );
   }, [
     isAdmin,
     assigneeFieldUserId,
@@ -214,12 +362,13 @@ export function EventFormModal({
     sourceApp,
     title,
     creationMode,
+    sourceCanCreateNew,
     sourceId,
     jobSiteName,
-    jobSiteAddress,
-    jobLocation,
+    jobAddress,
     jobBuildingName,
     jobClientName,
+    installHubJobDetails,
   ]);
 
   const saving = create.isPending || dispatch.isPending || update.isPending || cancel.isPending;
@@ -318,22 +467,24 @@ export function EventFormModal({
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           job: {
             siteName: jobSiteName.trim(),
+            address: schedulerAddressPayload(jobAddress),
             // Preserve the date selected in the site's scheduling UI instead
             // of deriving it from a UTC-converted instant on the server.
             auditDate: startLocal.slice(0, 10),
             ...(sourceApp === 'ecoaudit'
-              ? { siteAddress: jobSiteAddress.trim() }
+              ? { siteAddress: schedulerAddressDisplay(jobAddress) }
               : {}),
             ...(sourceApp === 'solarsense'
               ? {
-                  location: jobLocation.trim(),
+                  location: schedulerAddressDisplay(jobAddress),
                   buildingIdName: jobBuildingName.trim(),
                 }
               : {}),
             ...(sourceApp === 'installhub'
               ? {
                   clientName: jobClientName.trim(),
-                  siteAddress: jobSiteAddress.trim(),
+                  siteAddress: schedulerAddressDisplay(jobAddress),
+                  ...installHubJobPayload(installHubJobDetails),
                 }
               : {}),
           },
@@ -356,7 +507,13 @@ export function EventFormModal({
       }
       onClose();
     } catch (err) {
-      setError(cloudConnectionErrorMessage(err));
+      setError(
+        err instanceof ApiError
+          && err.status === 409
+          && (err.detail ?? err.message) === 'assignee_on_approved_leave'
+          ? 'This user is on approved leave during the selected time. Choose another person or date.'
+          : cloudConnectionErrorMessage(err),
+      );
     }
   }
 
@@ -396,7 +553,7 @@ export function EventFormModal({
         role="dialog"
         aria-modal="true"
         aria-labelledby="scheduler-event-title"
-        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-md)] sm:p-6"
+        className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-5 shadow-[var(--shadow-md)] sm:p-6"
       >
         <h2 id="scheduler-event-title" className="text-lg font-extrabold tracking-[-0.03em] text-[var(--text)]">
           {editing ? 'Edit scheduled job' : 'Schedule a job'}
@@ -421,9 +578,18 @@ export function EventFormModal({
                     setSourceApp(app);
                     setSourceType(defaultTypeForApp(app));
                     setSourceId('');
-                    setCreationMode('new');
+                    setCreationMode(
+                      app !== 'custom' && creatableSourceApps.includes(app)
+                        ? 'new'
+                        : 'existing',
+                    );
                     setAssigneeFieldUserId('');
                     setTitle('');
+                    setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
+                    setJobSiteName('');
+                    setJobBuildingName('');
+                    setJobClientName('');
+                    setInstallHubJobDetails({ ...EMPTY_INSTALLHUB_JOB_DETAILS });
                   }}
                 >
                   {selectableAppOptions.map((o) => (
@@ -437,11 +603,11 @@ export function EventFormModal({
                       <legend className="mb-1.5 text-sm font-bold text-[var(--text)]">
                         Creation mode
                       </legend>
-                      <div className="grid grid-cols-2 gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-1">
+                      <div className={`grid gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-1 ${sourceCanCreateNew ? 'grid-cols-2' : 'grid-cols-1'}`}>
                       {([
-                        ['new', 'Create new work'],
-                        ['existing', 'Link existing'],
-                      ] as const).map(([value, label]) => (
+                        ...(sourceCanCreateNew ? [['new', 'Create new work'] as const] : []),
+                        ['existing', 'Link existing'] as const,
+                      ]).map(([value, label]) => (
                         <button
                           key={value}
                           type="button"
@@ -462,6 +628,11 @@ export function EventFormModal({
                       ))}
                       </div>
                     </fieldset>
+                    {!sourceCanCreateNew ? (
+                      <p className="mt-2 text-xs font-semibold text-[var(--text-sub)]">
+                        Your portal identity can link existing {appOptions.find((option) => option.value === sourceApp)?.label} work, but it needs an active account in that product to create a new record.
+                      </p>
+                    ) : null}
 
                     {creationMode === 'new' ? (
                       <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
@@ -476,19 +647,100 @@ export function EventFormModal({
                         ) : null}
                         <FieldLabel>Site name</FieldLabel>
                         <Input value={jobSiteName} onChange={(e) => setJobSiteName(e.target.value)} />
+                        <AustralianAddressFields value={jobAddress} onChange={setJobAddress} />
+                        {sourceApp === 'installhub' ? (
+                          <div className="mt-4 space-y-4 border-t border-[var(--border)] pt-4">
+                            <section aria-labelledby="scheduler-field-job-planning">
+                              <h3 id="scheduler-field-job-planning" className="text-sm font-extrabold text-[var(--text)]">Field App job planning</h3>
+                              <div className="grid gap-x-3 sm:grid-cols-2">
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-customer-name">Customer name</FieldLabel>
+                                  <Input id="scheduler-customer-name" value={installHubJobDetails.customerName} maxLength={300} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, customerName: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-electricity-nmi">Electricity NMI</FieldLabel>
+                                  <Input id="scheduler-electricity-nmi" value={installHubJobDetails.electricityNmi} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, electricityNmi: event.target.value }))} />
+                                  <FieldHint>Saved on the canonical incoming grid supply, not as duplicate installation metadata.</FieldHint>
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-service-type">Service type</FieldLabel>
+                                  <Input id="scheduler-service-type" value={installHubJobDetails.serviceType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, serviceType: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-metering-solution">Metering solution type</FieldLabel>
+                                  <Input id="scheduler-metering-solution" value={installHubJobDetails.meteringSolutionType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-planned-meter-type">Planned meter type (planning only)</FieldLabel>
+                                  <Input id="scheduler-planned-meter-type" value={installHubJobDetails.plannedMeterType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, plannedMeterType: event.target.value }))} />
+                                  <FieldHint>Installed device records remain authoritative in Field App Complete.</FieldHint>
+                                </div>
+                                <NullableBooleanSelect id="scheduler-maas" label="MaaS" value={installHubJobDetails.maas} onChange={(maas) => setInstallHubJobDetails((current) => ({ ...current, maas }))} />
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-fergus-job">Fergus job number</FieldLabel>
+                                  <Input id="scheduler-fergus-job" value={installHubJobDetails.fergusJobNumber} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, fergusJobNumber: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-quote-number">Quote number</FieldLabel>
+                                  <Input id="scheduler-quote-number" value={installHubJobDetails.quoteNumber} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, quoteNumber: event.target.value }))} />
+                                </div>
+                              </div>
+                            </section>
+
+                            <section className="border-t border-[var(--border)] pt-4" aria-labelledby="scheduler-field-job-contact">
+                              <h3 id="scheduler-field-job-contact" className="text-sm font-extrabold text-[var(--text)]">Site contact and access</h3>
+                              <div className="grid gap-x-3 sm:grid-cols-2 lg:grid-cols-3">
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-site-contact-name">Contact name</FieldLabel>
+                                  <Input id="scheduler-site-contact-name" value={installHubJobDetails.siteContactName} maxLength={300} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, siteContactName: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-site-contact-phone">Contact phone</FieldLabel>
+                                  <Input id="scheduler-site-contact-phone" type="tel" value={installHubJobDetails.siteContactPhone} maxLength={50} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, siteContactPhone: event.target.value }))} />
+                                </div>
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-site-contact-email">Contact email</FieldLabel>
+                                  <Input id="scheduler-site-contact-email" type="email" value={installHubJobDetails.siteContactEmail} maxLength={320} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, siteContactEmail: event.target.value }))} />
+                                </div>
+                                <div className="sm:col-span-2 lg:col-span-3">
+                                  <FieldLabel htmlFor="scheduler-access-information">Access information (sensitive)</FieldLabel>
+                                  <Textarea id="scheduler-access-information" rows={3} value={installHubJobDetails.accessInformation} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, accessInformation: event.target.value }))} />
+                                  <FieldHint>Stored on the new Field App job and excluded from broad job-option labels.</FieldHint>
+                                </div>
+                              </div>
+                            </section>
+
+                            <section className="border-t border-[var(--border)] pt-4" aria-labelledby="scheduler-field-job-state">
+                              <h3 id="scheduler-field-job-state" className="text-sm font-extrabold text-[var(--text)]">Recorded installation state</h3>
+                              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Leave a selection as Not recorded when the answer is unknown.</p>
+                              <div className="grid gap-x-3 sm:grid-cols-2 lg:grid-cols-3">
+                                <NullableBooleanSelect id="scheduler-warranty-device" label="Warranty device" value={installHubJobDetails.warrantyDevice} onChange={(warrantyDevice) => setInstallHubJobDetails((current) => ({ ...current, warrantyDevice }))} />
+                                <NullableBooleanSelect id="scheduler-monitoring-installed" label="Monitoring installed" value={installHubJobDetails.monitoringInstalled} onChange={(monitoringInstalled) => setInstallHubJobDetails((current) => ({ ...current, monitoringInstalled }))} />
+                                <NullableBooleanSelect id="scheduler-hardware-installed" label="Hardware installed" value={installHubJobDetails.hardwareInstalled} onChange={(hardwareInstalled) => setInstallHubJobDetails((current) => ({ ...current, hardwareInstalled }))} />
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-solar-capacity">Solar capacity (kW)</FieldLabel>
+                                  <Input id="scheduler-solar-capacity" type="number" min="0" max={MAX_SOLAR_CAPACITY_KW} step="any" inputMode="decimal" value={installHubJobDetails.solarCapacityKw} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, solarCapacityKw: event.target.value }))} />
+                                  <FieldHint>Maximum {MAX_SOLAR_CAPACITY_KW.toLocaleString('en-AU')} kW.</FieldHint>
+                                </div>
+                                <NullableBooleanSelect id="scheduler-additional-monitoring" label="Additional monitoring required" value={installHubJobDetails.additionalMonitoringRequired} onChange={(additionalMonitoringRequired) => setInstallHubJobDetails((current) => ({ ...current, additionalMonitoringRequired }))} />
+                                <div>
+                                  <FieldLabel htmlFor="scheduler-additional-hardware">Additional monitoring hardware</FieldLabel>
+                                  <Input id="scheduler-additional-hardware" value={installHubJobDetails.additionalMonitoringHardware} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, additionalMonitoringHardware: event.target.value }))} />
+                                </div>
+                                <div className="sm:col-span-2 lg:col-span-3">
+                                  <FieldLabel htmlFor="scheduler-job-comments">Job comments</FieldLabel>
+                                  <Textarea id="scheduler-job-comments" rows={3} value={installHubJobDetails.jobComments} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, jobComments: event.target.value }))} />
+                                </div>
+                              </div>
+                            </section>
+                          </div>
+                        ) : null}
                         {sourceApp === 'solarsense' ? (
                           <>
-                            <FieldLabel>Site location</FieldLabel>
-                            <Input value={jobLocation} onChange={(e) => setJobLocation(e.target.value)} />
                             <FieldLabel>Building / roof name</FieldLabel>
                             <Input value={jobBuildingName} onChange={(e) => setJobBuildingName(e.target.value)} />
                           </>
-                        ) : (
-                          <>
-                            <FieldLabel>Site address</FieldLabel>
-                            <Input value={jobSiteAddress} onChange={(e) => setJobSiteAddress(e.target.value)} />
-                          </>
-                        )}
+                        ) : null}
                       </div>
                     ) : (
                       <>
@@ -627,8 +879,9 @@ export function EventFormModal({
 
             {supportsMobileNotifications ? (
               <p className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text-sub)]">
-                The assignee is notified on assignment and changes, 24 hours and 1 hour before
-                the start, and again at the scheduled start time. Existing jobs also offer an extra reminder action.
+                The assignee is notified on assignment and changes, 24 hours before the start,
+                one hour before the start, and again at the scheduled start time. Existing jobs
+                also offer an extra reminder action.
               </p>
             ) : editing && sourceApp !== 'custom' ? (
               <p className="mt-3 text-xs font-semibold text-[var(--text-sub)]">

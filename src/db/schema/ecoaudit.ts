@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   index,
   integer,
   jsonb,
@@ -36,6 +37,17 @@ export const eaAudits = pgTable('ea_audits', {
   ...syncCols,
   siteName: text('site_name').notNull(),
   siteAddress: text('site_address').notNull(),
+  siteLocality: text('site_locality'),
+  siteState: text('site_state'),
+  sitePostcode: text('site_postcode'),
+  siteCountryCode: text('site_country_code'),
+  siteLatitude: doublePrecision('site_latitude'),
+  siteLongitude: doublePrecision('site_longitude'),
+  siteGeocodeStatus: text('site_geocode_status'),
+  siteGeocodeProvider: text('site_geocode_provider'),
+  siteGeocodePlaceId: text('site_geocode_place_id'),
+  siteAddressFingerprint: text('site_address_fingerprint'),
+  siteGeocodedAt: timestamp('site_geocoded_at'),
   inspectorName: text('inspector_name').notNull(),
   auditDate: text('audit_date'),
   status: text('status').notNull().default('Draft'),
@@ -46,7 +58,44 @@ export const eaAudits = pgTable('ea_audits', {
   startedAt: timestamp('started_at'),
   completedAt: timestamp('completed_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
-});
+}, (table) => [
+  index('ea_audits_analytics_completed_idx').on(table.completedAt).where(sql`
+    ${table.completedAt} IS NOT NULL AND ${table.deletedAt} IS NULL
+  `),
+  index('ea_audits_analytics_undated_completed_idx').on(table.id).where(sql`
+    ${table.status} = 'Completed' AND ${table.completedAt} IS NULL
+  `),
+  check('ea_audits_site_country_check', sql`
+    ${table.siteCountryCode} IS NULL OR ${table.siteCountryCode} = 'AU'
+  `),
+  check('ea_audits_site_state_check', sql`
+    ${table.siteState} IS NULL OR ${table.siteState} IN ('ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA')
+  `),
+  check('ea_audits_site_postcode_check', sql`
+    ${table.sitePostcode} IS NULL OR ${table.sitePostcode} ~ '^[0-9]{4}$'
+  `),
+  check('ea_audits_site_coordinates_check', sql`
+    (${table.siteLatitude} IS NULL AND ${table.siteLongitude} IS NULL)
+    OR (
+      ${table.siteLatitude} IS NOT NULL
+      AND ${table.siteLongitude} IS NOT NULL
+      AND ${table.siteLatitude} BETWEEN -44 AND -9
+      AND ${table.siteLongitude} BETWEEN 112 AND 154
+    )
+  `),
+  check('ea_audits_site_geocode_status_check', sql`
+    ${table.siteGeocodeStatus} IS NULL
+    OR ${table.siteGeocodeStatus} IN ('unresolved', 'resolved', 'manual', 'failed')
+  `),
+  check('ea_audits_site_geocode_evidence_check', sql`
+    (${table.siteGeocodeStatus} IS DISTINCT FROM 'resolved')
+    OR (${table.siteLatitude} IS NOT NULL AND ${table.siteLongitude} IS NOT NULL)
+  `),
+  check('ea_audits_site_address_fingerprint_check', sql`
+    ${table.siteAddressFingerprint} IS NULL
+    OR ${table.siteAddressFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+]);
 
 export const eaAuditWorkSessions = pgTable('ea_audit_work_sessions', {
   id: text('id').notNull(),
@@ -70,6 +119,9 @@ export const eaAuditWorkSessions = pgTable('ea_audit_work_sessions', {
     table.auditId,
     table.actorUserId,
     table.updatedAt,
+  ),
+  index('ea_audit_work_sessions_analytics_boundary_idx').on(
+    sql`coalesce(${table.endedAt}, ${table.lastActiveAt})`,
   ),
   check(
     'ea_audit_work_sessions_active_milliseconds_check',

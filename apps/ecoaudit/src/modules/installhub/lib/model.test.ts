@@ -74,6 +74,64 @@ function fixtureTree() {
   );
 }
 
+test('new installation trees retain structured job planning fields and nullable booleans', () => {
+  const tree = createInstallationTree({
+    clientName: 'Delivery partner',
+    customerName: 'Example Customer',
+    maas: null,
+    serviceType: 'New installation',
+    meteringSolutionType: 'Whole-site monitoring',
+    plannedMeterType: '6-channel meter',
+    siteName: 'North warehouse',
+    siteAddress: '10 Example Street',
+    siteLocality: 'Newcastle',
+    siteState: 'nsw',
+    sitePostcode: '2300',
+    siteCountryCode: 'au',
+    siteContactName: 'Site contact',
+    siteContactPhone: '0400 000 000',
+    siteContactEmail: 'site@example.test',
+    fergusJobNumber: 'FERGUS-42',
+    quoteNumber: 'QUOTE-7',
+    jobComments: 'Coordinate with facilities.',
+    accessInformation: 'Report to reception.',
+    warrantyDevice: false,
+    monitoringInstalled: null,
+    hardwareInstalled: true,
+    solarCapacityKw: 24.5,
+    additionalMonitoringRequired: false,
+    additionalMonitoringHardware: 'None',
+    inspectorName: 'Installer One',
+    auditDate: '2026-08-22',
+  }, user);
+
+  assert.deepEqual({
+    customerName: tree.installation.customerName,
+    maas: tree.installation.maas,
+    siteLocality: tree.installation.siteLocality,
+    siteState: tree.installation.siteState,
+    sitePostcode: tree.installation.sitePostcode,
+    siteCountryCode: tree.installation.siteCountryCode,
+    warrantyDevice: tree.installation.warrantyDevice,
+    monitoringInstalled: tree.installation.monitoringInstalled,
+    hardwareInstalled: tree.installation.hardwareInstalled,
+    solarCapacityKw: tree.installation.solarCapacityKw,
+    additionalMonitoringRequired: tree.installation.additionalMonitoringRequired,
+  }, {
+    customerName: 'Example Customer',
+    maas: null,
+    siteLocality: 'Newcastle',
+    siteState: 'NSW',
+    sitePostcode: '2300',
+    siteCountryCode: 'AU',
+    warrantyDevice: false,
+    monitoringInstalled: null,
+    hardwareInstalled: true,
+    solarCapacityKw: 24.5,
+    additionalMonitoringRequired: false,
+  });
+});
+
 test('draft forms can be deleted while completed and referenced records remain immutable', () => {
   const tree = fixtureTree();
   const removable = createFormSubmission(tree, 'captis-logger', user);

@@ -194,6 +194,68 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
   }
 });
 
+test('Scheduler map routes are authenticated, Australia-bound, and safely unavailable by default', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+
+  const addressUrl = '/v1/portal/scheduler/address-suggestions';
+  const routeUrl = '/v1/portal/scheduler/route-suggestions';
+  try {
+    assert.equal(app.hasRoute({ method: 'POST', url: addressUrl }), true);
+    assert.equal(app.hasRoute({ method: 'POST', url: routeUrl }), true);
+    assert.equal((await app.inject({
+      method: 'POST',
+      url: addressUrl,
+      payload: { query: '10 George Street' },
+    })).statusCode, 401);
+
+    const fleetToken = signAccessToken({
+      userId: 'fleet-admin',
+      app: 'wattwatchers',
+      role: 'admin',
+    });
+    assert.equal((await app.inject({
+      method: 'POST',
+      url: addressUrl,
+      headers: { authorization: `Bearer ${fleetToken}` },
+      payload: { query: '10 George Street' },
+    })).statusCode, 403);
+
+    const adminToken = signAccessToken({
+      userId: 'eco-admin',
+      app: 'ecoaudit',
+      role: 'admin',
+    });
+    const unavailable = await app.inject({
+      method: 'POST',
+      url: addressUrl,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { postcode: '2000' },
+    });
+    assert.equal(unavailable.statusCode, 200, unavailable.body);
+    assert.deepEqual(unavailable.json(), {
+      available: false,
+      provider: null,
+      attribution: null,
+      suggestions: [],
+    });
+
+    const outsideAustralia = await app.inject({
+      method: 'POST',
+      url: routeUrl,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        date: '2026-08-22',
+        currentLocation: { latitude: 51.5072, longitude: -0.1276 },
+      },
+    });
+    assert.equal(outsideAustralia.statusCode, 400, outsideAustralia.body);
+  } finally {
+    await app.close();
+  }
+});
+
 test('Scheduler finance routes reject fractional billable-hour overrides at the API boundary', async () => {
   const app = Fastify();
   await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
@@ -248,6 +310,9 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
     { method: 'POST', url: '/v1/portal/scheduler/invoices/eligibility' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/quick' },
     { method: 'GET', url: '/v1/portal/scheduler/invoices/:invoiceId' },
+    { method: 'GET', url: '/v1/portal/scheduler/invoices/:invoiceId/refunds' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/refunds' },
+    { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/refunds/:refundId/void' },
     { method: 'PATCH', url: '/v1/portal/scheduler/invoices/:invoiceId' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/issue' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/void' },
@@ -326,6 +391,34 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
     });
     assert.equal(inspectorEmailHistory.statusCode, 403, inspectorEmailHistory.body);
 
+    const inspectorRefund = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/invoices/invoice-1/refunds',
+      headers: { authorization: `Bearer ${inspectorToken}` },
+      payload: {
+        idempotencyKey: 'inspector-refund',
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        amountExGst: 10,
+        gstAmount: 1,
+        reason: 'Must not post',
+      },
+    });
+    assert.equal(inspectorRefund.statusCode, 403, inspectorRefund.body);
+
+    const malformedRefund = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/invoices/invoice-1/refunds',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        idempotencyKey: 'bad-refund',
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        amountExGst: -1,
+        gstAmount: 0,
+        reason: '',
+      },
+    });
+    assert.equal(malformedRefund.statusCode, 400, malformedRefund.body);
+
     const malformedLineEdit = await app.inject({
       method: 'PATCH',
       url: '/v1/portal/scheduler/invoices/invoice-1',
@@ -341,6 +434,153 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
       },
     });
     assert.equal(malformedLineEdit.statusCode, 400, malformedLineEdit.body);
+
+    const missingXeroCas = await app.inject({
+      method: 'PATCH',
+      url: '/v1/portal/scheduler/invoices/invoice-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { xeroInvoiceNumber: 'INV-1001' },
+    });
+    assert.equal(missingXeroCas.statusCode, 400, missingXeroCas.body);
+
+    const malformedXeroDate = await app.inject({
+      method: 'PATCH',
+      url: '/v1/portal/scheduler/invoices/invoice-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        xeroDate: '16/08/2026',
+      },
+    });
+    assert.equal(malformedXeroDate.statusCode, 400, malformedXeroDate.body);
+
+    const oversizedXeroNumber = await app.inject({
+      method: 'PATCH',
+      url: '/v1/portal/scheduler/invoices/invoice-1',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
+        xeroInvoiceNumber: 'X'.repeat(101),
+      },
+    });
+    assert.equal(oversizedXeroNumber.statusCode, 400, oversizedXeroNumber.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Scheduler leave routes preserve self-service, admin review, and strict payload gates', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const inspectorToken = signAccessToken({
+    userId: 'eco-inspector',
+    app: 'ecoaudit',
+    role: 'inspector',
+  });
+  const adminToken = signAccessToken({
+    userId: 'eco-admin',
+    app: 'ecoaudit',
+    role: 'admin',
+  });
+  try {
+    for (const route of [
+      { method: 'GET' as const, url: '/v1/portal/scheduler/leave-requests' },
+      { method: 'POST' as const, url: '/v1/portal/scheduler/leave-requests' },
+      { method: 'POST' as const, url: '/v1/portal/scheduler/leave-requests/:id/decision' },
+      { method: 'POST' as const, url: '/v1/portal/scheduler/leave-requests/:id/cancel' },
+    ]) {
+      assert.equal(app.hasRoute(route), true, `${route.method} ${route.url}`);
+    }
+
+    const unauthenticated = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/leave-requests',
+      payload: {
+        leaveType: 'annual',
+        startDate: '2026-08-24',
+        endDate: '2026-08-25',
+      },
+    });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const inspectorDecision = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/leave-requests/leave-1/decision',
+      headers: { authorization: `Bearer ${inspectorToken}` },
+      payload: {
+        decision: 'approve',
+        expectedUpdatedAt: '2026-08-21T12:00:00.000Z',
+      },
+    });
+    assert.equal(inspectorDecision.statusCode, 403, inspectorDecision.body);
+
+    const invalidDates = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/leave-requests',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        leaveType: 'annual',
+        startDate: '21/08/2026',
+        endDate: '2026-08-25',
+      },
+    });
+    assert.equal(invalidDates.statusCode, 400, invalidDates.body);
+
+    const invalidStatus = await app.inject({
+      method: 'GET',
+      url: '/v1/portal/scheduler/leave-requests?status=secret',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+    assert.equal(invalidStatus.statusCode, 400, invalidStatus.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Scheduler analytics route is admin-only and requires a strict date window', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const inspectorToken = signAccessToken({
+    userId: 'eco-inspector',
+    app: 'ecoaudit',
+    role: 'inspector',
+  });
+  const adminToken = signAccessToken({
+    userId: 'eco-admin',
+    app: 'ecoaudit',
+    role: 'admin',
+  });
+  const url = '/v1/portal/scheduler/analytics';
+  try {
+    assert.equal(app.hasRoute({ method: 'GET', url }), true);
+
+    const unauthenticated = await app.inject({
+      method: 'GET',
+      url: `${url}?from=2026-08-17&to=2026-08-23`,
+    });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const inspector = await app.inject({
+      method: 'GET',
+      url: `${url}?from=2026-08-17&to=2026-08-23`,
+      headers: { authorization: `Bearer ${inspectorToken}` },
+    });
+    assert.equal(inspector.statusCode, 403, inspector.body);
+
+    for (const invalidUrl of [
+      url,
+      `${url}?from=17-08-2026&to=2026-08-23`,
+      `${url}?from=2026-08-17&to=2026-08-23&timezone=${'x'.repeat(101)}`,
+    ]) {
+      const response = await app.inject({
+        method: 'GET',
+        url: invalidUrl,
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      assert.equal(response.statusCode, 400, `${invalidUrl}: ${response.body}`);
+    }
   } finally {
     await app.close();
   }

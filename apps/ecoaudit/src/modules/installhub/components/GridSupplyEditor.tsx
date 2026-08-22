@@ -182,7 +182,7 @@ export function GridSupplyEditor({
             </div>
             <div>
               <FieldLabel htmlFor="grid-supply-nmi" className="mt-0">NMI (optional)</FieldLabel>
-              <Input id="grid-supply-nmi" value={draft.nmi || ''} onChange={(event) => setDraft({ ...draft, nmi: event.target.value })} />
+              <Input id="grid-supply-nmi" value={draft.nmi || ''} maxLength={100} onChange={(event) => setDraft({ ...draft, nmi: event.target.value })} />
             </div>
           </div>
           <label className="mt-3 flex min-h-11 cursor-pointer items-center gap-3 text-sm font-semibold text-[var(--text)]">

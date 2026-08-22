@@ -69,12 +69,27 @@ test('sync gives completed audits a stable first-observed boundary', () => {
 
   assert.deepEqual(resolveSyncedAuditTiming({
     status: 'Completed',
+    existingStatus: 'Completed',
     incomingStartedAt: null,
     incomingCompletedAt: null,
     existingCompletedAt: completedAt,
     createdAt,
     observedAt: new Date('2026-03-02T02:00:00.000Z'),
   }), { startedAt: createdAt, completedAt });
+});
+
+test('sync never invents a boundary for an already-Completed undated audit', () => {
+  const createdAt = new Date('2026-03-01T01:00:00.000Z');
+
+  assert.deepEqual(resolveSyncedAuditTiming({
+    status: 'Completed',
+    existingStatus: 'Completed',
+    incomingStartedAt: null,
+    incomingCompletedAt: new Date('2025-12-01T02:00:00.000Z'),
+    existingCompletedAt: null,
+    createdAt,
+    observedAt: new Date('2026-08-22T02:00:00.000Z'),
+  }), { startedAt: createdAt, completedAt: null });
 });
 
 test('sync does not retain a completion timestamp when an audit is draft', () => {

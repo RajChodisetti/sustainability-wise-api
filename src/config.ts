@@ -26,6 +26,45 @@ function optionalInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+export function normalizeSchedulerMapProviderUrl(
+  name: string,
+  value: string | undefined,
+): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return '';
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${name} must be a valid http(s) URL when configured`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`${name} must be a valid http(s) URL when configured`);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(`${name} must not include credentials, a query string, or a fragment`);
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/u, '');
+  return parsed.toString().replace(/\/$/u, '');
+}
+
+export function parseSchedulerMapRequestTimeoutMs(value: string | undefined): number {
+  return Math.min(20_000, Math.max(500, optionalIntValue(value, 5_000)));
+}
+
+export function parseSchedulerRouteMaxStops(value: string | undefined): number {
+  // One Google Maps URL supports the origin, destination, and at most three
+  // intermediate waypoints on mobile. Four jobs therefore keeps every stop.
+  return Math.min(4, Math.max(1, optionalIntValue(value, 4)));
+}
+
+function optionalIntValue(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function resolvePuppeteerExecutablePath(): string {
   const fromEnv = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
   if (fromEnv) return fromEnv;
@@ -396,6 +435,21 @@ export const config = {
       25 * 1024 * 1024,
       optionalInt('SCHEDULER_BILL_ATTACHMENT_MAX_BYTES', 10 * 1024 * 1024),
     )),
+  },
+  /** Optional server-side, open-source address and route providers. */
+  schedulerMaps: {
+    photonUrl: normalizeSchedulerMapProviderUrl(
+      'SCHEDULER_PHOTON_URL',
+      process.env.SCHEDULER_PHOTON_URL,
+    ),
+    osrmUrl: normalizeSchedulerMapProviderUrl(
+      'SCHEDULER_OSRM_URL',
+      process.env.SCHEDULER_OSRM_URL,
+    ),
+    requestTimeoutMs: parseSchedulerMapRequestTimeoutMs(
+      process.env.SCHEDULER_MAP_REQUEST_TIMEOUT_MS,
+    ),
+    maxStops: parseSchedulerRouteMaxStops(process.env.SCHEDULER_ROUTE_MAX_STOPS),
   },
   schedulerInvoice: {
     sellerName: optional(

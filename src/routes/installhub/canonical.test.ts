@@ -14,6 +14,7 @@ import {
   isValidInstallationZoneCode,
   normalizeInstallationTreeV2,
   projectCanonicalOptionalDefaults,
+  retainOmittedCanonicalInstallationFields,
   type CanonicalFormSubmission,
   type CanonicalInstallationTree,
   type DisplayCode,
@@ -73,6 +74,10 @@ test('canonicalizer backfills an editable meter custom name for legacy wire payl
 });
 
 test('canonical completion notes normalize blanks and enforce the 2,000-character invariant', () => {
+  assert.equal(
+    Object.hasOwn(normalizeInstallationTreeV2(baseTree()).installation, 'completionNotes'),
+    false,
+  );
   const blank = baseTree();
   blank.installation.completionNotes = '  \n\t  ';
   assert.equal(normalizeInstallationTreeV2(blank).installation.completionNotes, null);
@@ -89,6 +94,116 @@ test('canonical completion notes normalize blanks and enforce the 2,000-characte
   assert.throws(
     () => normalizeInstallationTreeV2(oversized),
     /installation\.completionNotes must contain at most 2000 characters/,
+  );
+});
+
+test('canonical installation metadata is additive, nullable, bounded, and mutation-visible', () => {
+  const omitted = normalizeInstallationTreeV2(baseTree());
+  assert.equal(Object.hasOwn(omitted.installation, 'customerName'), false);
+
+  const populated = baseTree();
+  Object.assign(populated.installation, {
+    customerName: '  Site owner  ',
+    maas: false,
+    serviceType: ' Metering install ',
+    meteringSolutionType: ' Embedded network ',
+    plannedMeterType: ' A6M ',
+    siteLocality: ' Sydney ',
+    siteState: 'nsw',
+    sitePostcode: '2000',
+    siteCountryCode: 'au',
+    siteContactName: ' Site Manager ',
+    siteContactPhone: ' 02 9000 0000 ',
+    siteContactEmail: ' manager@example.test ',
+    fergusJobNumber: ' F-100 ',
+    quoteNumber: ' Q-200 ',
+    jobComments: ' Bring PPE ',
+    accessInformation: ' Sign in at reception ',
+    warrantyDevice: true,
+    monitoringInstalled: false,
+    hardwareInstalled: true,
+    solarCapacityKw: 99.75,
+    additionalMonitoringRequired: true,
+    additionalMonitoringHardware: ' Two CTs ',
+  });
+  const normalized = normalizeInstallationTreeV2(populated);
+  assert.deepEqual({
+    customerName: normalized.installation.customerName,
+    maas: normalized.installation.maas,
+    siteState: normalized.installation.siteState,
+    siteCountryCode: normalized.installation.siteCountryCode,
+    solarCapacityKw: normalized.installation.solarCapacityKw,
+    additionalMonitoringHardware: normalized.installation.additionalMonitoringHardware,
+  }, {
+    customerName: 'Site owner',
+    maas: false,
+    siteState: 'NSW',
+    siteCountryCode: 'AU',
+    solarCapacityKw: 99.75,
+    additionalMonitoringHardware: 'Two CTs',
+  });
+  assert.notEqual(
+    canonicalTreeMutationFingerprint(omitted),
+    canonicalTreeMutationFingerprint(normalized),
+  );
+
+  const cleared = structuredClone(populated);
+  cleared.installation.customerName = null;
+  cleared.installation.maas = null;
+  assert.equal(normalizeInstallationTreeV2(cleared).installation.customerName, null);
+  assert.equal(normalizeInstallationTreeV2(cleared).installation.maas, null);
+
+  const invalid = baseTree();
+  Object.assign(invalid.installation, { sitePostcode: '200', solarCapacityKw: -1 });
+  assert.throws(() => normalizeInstallationTreeV2(invalid), /sitePostcode/);
+  invalid.installation.sitePostcode = '2000';
+  assert.throws(() => normalizeInstallationTreeV2(invalid), /solarCapacityKw/);
+});
+
+test('older canonical clients preserve additive server fields while explicit null clears', () => {
+  const current = normalizeInstallationTreeV2({
+    ...baseTree(),
+    installation: {
+      ...baseTree().installation,
+      customerName: 'Authoritative customer',
+      maas: true,
+      siteLocality: 'Sydney',
+      siteState: 'NSW',
+      sitePostcode: '2000',
+      siteCountryCode: 'AU',
+      solarCapacityKw: 25,
+    },
+  });
+  const omitted = normalizeInstallationTreeV2(baseTree());
+  retainOmittedCanonicalInstallationFields(current.installation, omitted.installation);
+  assert.equal(omitted.installation.customerName, 'Authoritative customer');
+  assert.equal(omitted.installation.maas, true);
+  assert.equal(omitted.installation.sitePostcode, '2000');
+  assert.equal(omitted.installation.solarCapacityKw, 25);
+
+  const explicitClear = baseTree();
+  explicitClear.installation.customerName = null;
+  explicitClear.installation.maas = null;
+  const cleared = normalizeInstallationTreeV2(explicitClear);
+  retainOmittedCanonicalInstallationFields(current.installation, cleared.installation);
+  assert.equal(cleared.installation.customerName, null);
+  assert.equal(cleared.installation.maas, null);
+});
+
+test('canonical grid-supply NMI is nullable, trimmed, and bounded to 100 characters', () => {
+  const populated = baseTree();
+  populated.gridSupplies[0].nmi = '  41020000000  ';
+  assert.equal(normalizeInstallationTreeV2(populated).gridSupplies[0].nmi, '41020000000');
+
+  const blank = baseTree();
+  blank.gridSupplies[0].nmi = '   ';
+  assert.equal(normalizeInstallationTreeV2(blank).gridSupplies[0].nmi, null);
+
+  const oversized = baseTree();
+  oversized.gridSupplies[0].nmi = 'n'.repeat(101);
+  assert.throws(
+    () => normalizeInstallationTreeV2(oversized),
+    /gridSupplies\[0\]\.nmi must be at most 100 characters/,
   );
 });
 

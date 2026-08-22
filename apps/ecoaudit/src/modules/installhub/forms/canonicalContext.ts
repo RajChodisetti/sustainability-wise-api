@@ -38,6 +38,6 @@ export function canonicalWwBoardAnswers(
     'auditor.switchboard_name': board.assetName,
     'auditor.switchboard_location': board.locationDescription?.trim() || zone?.zoneName || '',
     'auditor.switchboard_type': boardTypeLabel(board),
-    'auditor.site_nmi': board.siteNmi?.trim() || sourceGrid?.nmi?.trim() || defaultGrid?.nmi?.trim() || '',
+    'auditor.site_nmi': sourceGrid?.nmi?.trim() || defaultGrid?.nmi?.trim() || board.siteNmi?.trim() || '',
   };
 }

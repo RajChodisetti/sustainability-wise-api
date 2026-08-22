@@ -85,14 +85,24 @@ test('invoice PDF publication CAS and cleanup outbox are atomic on PostgreSQL', 
         subtotal_ex_gst_cents, gst_amount_cents, total_inc_gst_cents, gst_rate_bps,
         notes, seller_name, seller_abn, bill_to_name,
         job_site_name, job_name, job_date, job_status,
-        job_source_app, job_source_type, job_source_id, updated_at
+        job_source_app, job_source_type, job_source_id, created_at, updated_at
       ) VALUES (
-        'invoice-export', 'finance-export', 'INV-EXPORT-1', 'issued', 'AUD',
+        'invoice-export', 'finance-export', 'INV-EXPORT-1', 'draft', 'AUD',
         10000, 1000, 11000, 1000,
         'Pinned snapshot', 'Sustainability Wise', '12 345 678 901', 'Invoice Recipient',
         'Export Site', 'Export Audit', '2026-08-16', 'Scheduled',
-        'ecoaudit', 'audit', 'audit-export', TIMESTAMP '2026-08-16 18:15:00'
+        'ecoaudit', 'audit', 'audit-export',
+        TIMESTAMP '2026-08-16 18:15:00', TIMESTAMP '2026-08-16 18:15:00'
       )
+    `);
+    await setup.unsafe(`
+      UPDATE scheduler_invoices
+      SET status = 'issued',
+        issue_date = TIMESTAMP '2026-08-16 18:15:00',
+        issued_at = TIMESTAMP '2026-08-16 18:15:00',
+        due_date = TIMESTAMP '2026-09-15 18:15:00',
+        updated_at = TIMESTAMP '2026-08-16 18:15:01'
+      WHERE id = 'invoice-export'
     `);
 
     const [
@@ -125,7 +135,7 @@ test('invoice PDF publication CAS and cleanup outbox are atomic on PostgreSQL', 
 
     await setup.unsafe(`
       UPDATE scheduler_invoices
-      SET notes = 'Changed during render', updated_at = updated_at + interval '1 second'
+      SET updated_at = updated_at + interval '1 second'
       WHERE id = 'invoice-export'
     `);
     await setup.unsafe(`
@@ -303,8 +313,7 @@ test('invoice PDF publication CAS and cleanup outbox are atomic on PostgreSQL', 
 
     await setup`
       UPDATE scheduler_invoices
-      SET status = 'issued', issue_date = DATE '2026-08-16',
-          updated_at = updated_at + interval '1 second'
+      SET updated_at = updated_at + interval '1 second'
       WHERE id = 'invoice-export'
     `;
     const recoveryInvoice = await financeService.getConsolidatedSchedulerInvoice(

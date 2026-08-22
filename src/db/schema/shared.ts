@@ -3,6 +3,7 @@ import {
   bigint,
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -26,6 +27,10 @@ export const globalUsers = pgTable('global_users', {
   fullName: text('full_name'),
   /** Canonical customer billing rate for this person. Null means admin setup is required. */
   billingRateCents: bigint('billing_rate_cents', { mode: 'number' }),
+  /** IANA timezone used for calendar-day HR rules and date-window reporting. */
+  timezone: text('timezone').notNull().default('Australia/Sydney'),
+  /** Sunday=1 through Saturday=64. The default 62 is Monday-Friday. */
+  workingDaysMask: integer('working_days_mask').notNull().default(62),
   role: text('role').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   fleetEntitled: boolean('fleet_entitled').notNull().default(false),
@@ -50,6 +55,12 @@ export const globalUsers = pgTable('global_users', {
       ${table.billingRateCents} >= 0
       AND ${table.billingRateCents} <= 9007199254740991
     )
+  `),
+  check('global_users_timezone_check', sql`
+    length(btrim(${table.timezone})) BETWEEN 1 AND 100
+  `),
+  check('global_users_working_days_mask_check', sql`
+    ${table.workingDaysMask} BETWEEN 1 AND 127
   `),
 ]);
 
@@ -306,6 +317,85 @@ export const portalScheduleEvents = pgTable('portal_schedule_events', {
       ${table.estimatedDurationMinutes} > 0
       AND ${table.estimatedDurationMinutes} <= 10080
     )
+  `),
+]);
+
+/**
+ * Employee leave request with inclusive local calendar dates. The timezone is
+ * snapshotted so changing a profile later never moves an approved absence.
+ */
+export const schedulerLeaveRequests = pgTable('scheduler_leave_requests', {
+  id: text('id').primaryKey(),
+  globalUserId: text('global_user_id').notNull().references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  leaveType: text('leave_type').notNull().default('annual'),
+  startDate: date('start_date', { mode: 'string' }).notNull(),
+  endDate: date('end_date', { mode: 'string' }).notNull(),
+  timezone: text('timezone').notNull(),
+  employeeNote: text('employee_note'),
+  status: text('status').notNull().default('pending'),
+  reviewedByGlobalUserId: text('reviewed_by_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  reviewerNote: text('reviewer_note'),
+  reviewedAt: timestamp('reviewed_at'),
+  cancelledByGlobalUserId: text('cancelled_by_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  cancelledAt: timestamp('cancelled_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('scheduler_leave_requests_user_dates_idx').on(
+    table.globalUserId,
+    table.startDate,
+    table.endDate,
+  ),
+  index('scheduler_leave_requests_status_dates_idx').on(
+    table.status,
+    table.startDate,
+    table.endDate,
+  ),
+  check('scheduler_leave_requests_type_check', sql`
+    ${table.leaveType} IN ('annual', 'personal', 'unpaid', 'other')
+  `),
+  check('scheduler_leave_requests_date_order_check', sql`
+    ${table.startDate} <= ${table.endDate}
+  `),
+  check('scheduler_leave_requests_timezone_check', sql`
+    length(btrim(${table.timezone})) BETWEEN 1 AND 100
+  `),
+  check('scheduler_leave_requests_status_check', sql`
+    ${table.status} IN ('pending', 'approved', 'rejected', 'cancelled')
+  `),
+  check('scheduler_leave_requests_note_length_check', sql`
+    (${table.employeeNote} IS NULL OR char_length(${table.employeeNote}) <= 2000)
+    AND (${table.reviewerNote} IS NULL OR char_length(${table.reviewerNote}) <= 2000)
+  `),
+  check('scheduler_leave_requests_review_lifecycle_check', sql`
+    (
+      ${table.status} IN ('approved', 'rejected')
+      AND ${table.reviewedByGlobalUserId} IS NOT NULL
+      AND ${table.reviewedAt} IS NOT NULL
+    ) OR (
+      ${table.status} IN ('pending', 'cancelled')
+      AND (
+        (${table.reviewedByGlobalUserId} IS NULL AND ${table.reviewedAt} IS NULL)
+        OR (${table.reviewedByGlobalUserId} IS NOT NULL AND ${table.reviewedAt} IS NOT NULL)
+      )
+    )
+  `),
+  check('scheduler_leave_requests_cancel_lifecycle_check', sql`
+    (${table.status} = 'cancelled'
+      AND ${table.cancelledByGlobalUserId} IS NOT NULL
+      AND ${table.cancelledAt} IS NOT NULL)
+    OR (${table.status} <> 'cancelled'
+      AND ${table.cancelledByGlobalUserId} IS NULL
+      AND ${table.cancelledAt} IS NULL)
   `),
 ]);
 
@@ -569,6 +659,95 @@ export const schedulerJobFinance = pgTable('scheduler_job_finance', {
   `),
 ]);
 
+/**
+ * Immutable first-completion date, attribution, and commercial snapshot.
+ * Historical rows remain unavailable rather than silently borrowing mutable
+ * current-finance values. Any later restatement requires a separate audited
+ * workflow rather than rewriting this fact.
+ */
+export const schedulerJobCompletionFacts = pgTable('scheduler_job_completion_facts', {
+  id: text('id').primaryKey(),
+  sourceApp: text('source_app').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  completedAt: timestamp('completed_at').notNull(),
+  primaryGlobalUserId: text('primary_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  assigneeFieldUserId: text('assignee_field_user_id'),
+  assigneeDisplayName: text('assignee_display_name'),
+  attributionSource: text('attribution_source').notNull(),
+  revenueSnapshotStatus: text('revenue_snapshot_status').notNull().default('unavailable'),
+  currency: text('currency'),
+  amountExGstCents: bigint('amount_ex_gst_cents', { mode: 'number' }),
+  gstAmountCents: bigint('gst_amount_cents', { mode: 'number' }),
+  totalIncGstCents: bigint('total_inc_gst_cents', { mode: 'number' }),
+  gstRateBps: integer('gst_rate_bps'),
+  revenueCapturedAt: timestamp('revenue_captured_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('scheduler_job_completion_facts_source_unique').on(
+    table.sourceApp,
+    table.sourceType,
+    table.sourceId,
+  ),
+  index('scheduler_job_completion_facts_completed_idx').on(table.completedAt),
+  index('scheduler_job_completion_facts_user_completed_idx').on(
+    table.primaryGlobalUserId,
+    table.completedAt,
+  ),
+  check('scheduler_job_completion_facts_source_check', sql`
+    (${table.sourceApp} = 'ecoaudit' AND ${table.sourceType} = 'audit')
+    OR (${table.sourceApp} = 'solarsense' AND ${table.sourceType} = 'assessment')
+    OR (${table.sourceApp} = 'installhub' AND ${table.sourceType} = 'installation')
+  `),
+  check('scheduler_job_completion_facts_attribution_check', sql`
+    ${table.attributionSource} IN (
+      'scheduler_event',
+      'product_assignment',
+      'unattributed'
+    )
+  `),
+  check('scheduler_job_completion_facts_attribution_identity_check', sql`
+    (${table.attributionSource} = 'unattributed' AND ${table.primaryGlobalUserId} IS NULL)
+    OR (
+      ${table.attributionSource} IN ('scheduler_event', 'product_assignment')
+      AND ${table.primaryGlobalUserId} IS NOT NULL
+    )
+  `),
+  check('scheduler_job_completion_facts_revenue_snapshot_check', sql`
+    (
+      ${table.revenueSnapshotStatus} = 'unavailable'
+      AND ${table.currency} IS NULL
+      AND ${table.amountExGstCents} IS NULL
+      AND ${table.gstAmountCents} IS NULL
+      AND ${table.totalIncGstCents} IS NULL
+      AND ${table.gstRateBps} IS NULL
+      AND ${table.revenueCapturedAt} IS NULL
+    ) OR (
+      ${table.revenueSnapshotStatus} IN ('captured', 'incomplete')
+      AND ${table.currency} IS NOT NULL
+      AND length(btrim(${table.currency})) BETWEEN 1 AND 8
+      AND ${table.amountExGstCents} IS NOT NULL
+      AND ${table.amountExGstCents} >= 0
+      AND ${table.amountExGstCents} <= 9007199254740991
+      AND ${table.gstAmountCents} IS NOT NULL
+      AND ${table.gstAmountCents} >= 0
+      AND ${table.gstAmountCents} <= 9007199254740991
+      AND ${table.totalIncGstCents} IS NOT NULL
+      AND ${table.totalIncGstCents} <= 9007199254740991
+      AND ${table.totalIncGstCents} = ${table.amountExGstCents} + ${table.gstAmountCents}
+      AND ${table.gstRateBps} IS NOT NULL
+      AND ${table.gstRateBps} BETWEEN 0 AND 10000
+      AND ${table.revenueCapturedAt} IS NOT NULL
+      AND ${table.gstAmountCents} = floor(
+        (${table.amountExGstCents}::numeric * ${table.gstRateBps} + 5000) / 10000
+      )
+    )
+  `),
+]);
+
 /** Append-only provenance for effective billable/cost-hour overrides. */
 export const schedulerJobHourOverrides = pgTable('scheduler_job_hour_overrides', {
   id: text('id').primaryKey(),
@@ -701,7 +880,10 @@ export const schedulerExpenseAttachments = pgTable('scheduler_expense_attachment
   `),
 ]);
 
-/** Immutable accounting document header; source and party fields are snapshots. */
+/**
+ * Immutable accounting content header; source and party fields are snapshots.
+ * Xero fields are mutable external reconciliation metadata, not invoice identity.
+ */
 export const schedulerInvoices = pgTable('scheduler_invoices', {
   id: text('id').primaryKey(),
   financeId: text('finance_id').notNull().references(
@@ -712,6 +894,9 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   status: text('status').notNull().default('draft'),
   currency: text('currency').notNull().default('AUD'),
   issueDate: timestamp('issue_date'),
+  /** External Xero reconciliation metadata; distinct from our invoice identity and issue date. */
+  xeroInvoiceNumber: text('xero_invoice_number'),
+  xeroDate: date('xero_date', { mode: 'string' }),
   dueDate: timestamp('due_date'),
   subtotalExGstCents: bigint('subtotal_ex_gst_cents', { mode: 'number' }).notNull().default(0),
   gstAmountCents: bigint('gst_amount_cents', { mode: 'number' }).notNull().default(0),
@@ -747,6 +932,10 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   uniqueIndex('scheduler_invoices_number_unique').on(table.invoiceNumber),
   index('scheduler_invoices_finance_created_idx').on(table.financeId, table.createdAt),
   index('scheduler_invoices_finance_status_idx').on(table.financeId, table.status),
+  index('scheduler_invoices_created_idx').on(table.createdAt),
+  index('scheduler_invoices_issued_idx').on(table.issuedAt),
+  index('scheduler_invoices_paid_idx').on(table.paidAt),
+  index('scheduler_invoices_voided_idx').on(table.voidedAt),
   check('scheduler_invoices_status_check', sql`
     ${table.status} IN ('draft', 'issued', 'paid', 'void')
   `),
@@ -763,6 +952,10 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   `),
   check('scheduler_invoices_job_date_check', sql`
     ${table.jobDate} ~ '^\\d{4}-\\d{2}-\\d{2}$'
+  `),
+  check('scheduler_invoices_xero_invoice_number_check', sql`
+    ${table.xeroInvoiceNumber} IS NULL
+    OR length(btrim(${table.xeroInvoiceNumber})) BETWEEN 1 AND 100
   `),
 ]);
 
@@ -848,6 +1041,85 @@ export const schedulerInvoiceLines = pgTable('scheduler_invoice_lines', {
   check('scheduler_invoice_lines_expense_link_check', sql`
     (${table.kind} = 'expense' AND ${table.expenseId} IS NOT NULL)
     OR (${table.kind} <> 'expense' AND ${table.expenseId} IS NULL)
+  `),
+]);
+
+/**
+ * Posted invoice refunds. A voided row is retained as an audited reversal;
+ * refunding does not rewrite the invoice payment status or currency snapshot.
+ */
+export const schedulerInvoiceRefunds = pgTable('scheduler_invoice_refunds', {
+  id: text('id').primaryKey(),
+  invoiceId: text('invoice_id').notNull().references(
+    () => schedulerInvoices.id,
+    { onDelete: 'restrict' },
+  ),
+  idempotencyKey: text('idempotency_key').notNull(),
+  status: text('status').notNull().default('posted'),
+  currency: text('currency').notNull(),
+  amountExGstCents: bigint('amount_ex_gst_cents', { mode: 'number' }).notNull(),
+  gstAmountCents: bigint('gst_amount_cents', { mode: 'number' }).notNull(),
+  totalIncGstCents: bigint('total_inc_gst_cents', { mode: 'number' }).notNull(),
+  refundedAt: timestamp('refunded_at').notNull(),
+  reason: text('reason').notNull(),
+  externalReference: text('external_reference'),
+  createdByGlobalUserId: text('created_by_global_user_id').notNull().references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  createdByDisplayName: text('created_by_display_name'),
+  voidedByGlobalUserId: text('voided_by_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'restrict' },
+  ),
+  voidedByDisplayName: text('voided_by_display_name'),
+  voidReason: text('void_reason'),
+  voidedAt: timestamp('voided_at'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('scheduler_invoice_refunds_invoice_idempotency_unique').on(
+    table.invoiceId,
+    table.idempotencyKey,
+  ),
+  index('scheduler_invoice_refunds_invoice_status_idx').on(table.invoiceId, table.status),
+  index('scheduler_invoice_refunds_refunded_currency_idx').on(
+    table.refundedAt,
+    table.currency,
+  ),
+  index('scheduler_invoice_refunds_refunded_idx').on(table.refundedAt),
+  index('scheduler_invoice_refunds_voided_idx').on(table.voidedAt),
+  check('scheduler_invoice_refunds_status_check', sql`
+    ${table.status} IN ('posted', 'voided')
+  `),
+  check('scheduler_invoice_refunds_currency_check', sql`
+    length(btrim(${table.currency})) BETWEEN 1 AND 8
+  `),
+  check('scheduler_invoice_refunds_money_check', sql`
+    ${table.amountExGstCents} >= 0
+    AND ${table.amountExGstCents} <= 9007199254740991
+    AND ${table.gstAmountCents} >= 0
+    AND ${table.gstAmountCents} <= 9007199254740991
+    AND ${table.totalIncGstCents} > 0
+    AND ${table.totalIncGstCents} <= 9007199254740991
+    AND ${table.amountExGstCents} + ${table.gstAmountCents} = ${table.totalIncGstCents}
+  `),
+  check('scheduler_invoice_refunds_text_check', sql`
+    length(btrim(${table.idempotencyKey})) BETWEEN 1 AND 200
+    AND length(btrim(${table.reason})) BETWEEN 1 AND 2000
+    AND (${table.externalReference} IS NULL OR char_length(${table.externalReference}) <= 200)
+    AND (${table.voidReason} IS NULL OR length(btrim(${table.voidReason})) BETWEEN 1 AND 2000)
+  `),
+  check('scheduler_invoice_refunds_void_lifecycle_check', sql`
+    (${table.status} = 'posted'
+      AND ${table.voidedByGlobalUserId} IS NULL
+      AND ${table.voidedByDisplayName} IS NULL
+      AND ${table.voidReason} IS NULL
+      AND ${table.voidedAt} IS NULL)
+    OR (${table.status} = 'voided'
+      AND ${table.voidedByGlobalUserId} IS NOT NULL
+      AND ${table.voidReason} IS NOT NULL
+      AND ${table.voidedAt} IS NOT NULL)
   `),
 ]);
 

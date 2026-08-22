@@ -524,8 +524,10 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
               <Input id="board-location" value={draft.locationDescription ?? ''} onChange={(event) => set('locationDescription', event.target.value)} />
             </div>
             <div>
-              <FieldLabel htmlFor="board-nmi">Site NMI</FieldLabel>
-              <Input id="board-nmi" value={draft.siteNmi ?? ''} onChange={(event) => set('siteNmi', event.target.value)} />
+              <FieldLabel>Electricity NMI</FieldLabel>
+              <FieldHint>
+                Managed on the incoming Grid supply. Historical board NMI data is retained read-only for compatibility.
+              </FieldHint>
             </div>
             <div>
               <FieldLabel htmlFor="board-amperage">Amperage rating</FieldLabel>

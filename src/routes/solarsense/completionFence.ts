@@ -44,7 +44,11 @@ export function resolveSyncedCompletion(input: {
   return {
     status,
     completedAt: status === 'Completed'
-      ? (input.existing?.completedAt ?? input.receivedAt)
+      // Preserve an explicit lack of historical provenance. An idempotent
+      // sync of an already-Completed legacy row must not invent "now".
+      ? (input.existing?.status === 'Completed'
+          ? (input.existing.completedAt ?? null)
+          : input.receivedAt)
       : null,
   };
 }
