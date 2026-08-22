@@ -1,18 +1,19 @@
 import { and, eq, or, sql } from 'drizzle-orm';
 import { config } from '../config.js';
 import { db } from '../db/client.js';
-import { eaAuditWorkSessions } from '../db/schema/ecoaudit.js';
+import { eaAudits, eaAuditWorkSessions } from '../db/schema/ecoaudit.js';
 import {
   schedulerExpenseAttachments,
   schedulerInvoiceJobs,
   schedulerInvoices,
+  schedulerJobCompletionFacts,
   schedulerJobExpenses,
   schedulerJobFinance,
   schedulerJobHourOverrides,
   portalScheduleEvents,
 } from '../db/schema/shared.js';
-import { ssAssessmentWorkSessions } from '../db/schema/solarsense.js';
-import { ihInstallationWorkSessions } from '../db/schema/installhub.js';
+import { ssAssessmentWorkSessions, ssRooftopAssessments } from '../db/schema/solarsense.js';
+import { ihInstallations, ihInstallationWorkSessions } from '../db/schema/installhub.js';
 import { conflict } from '../utils/errors.js';
 import type { FinanceSource } from './schedulerFinanceService.js';
 
@@ -45,6 +46,40 @@ async function hasRecordedWorkSession(
   return Boolean(session);
 }
 
+async function hasRecordedCompletionEvidence(
+  executor: RetentionExecutor,
+  source: FinanceSource,
+): Promise<boolean> {
+  if (source.sourceApp === 'ecoaudit') {
+    const [audit] = await executor.select({
+      status: eaAudits.status,
+      completedAt: eaAudits.completedAt,
+    })
+      .from(eaAudits)
+      .where(eq(eaAudits.id, source.sourceId))
+      .limit(1);
+    return Boolean(audit?.completedAt) || audit?.status === 'Completed';
+  }
+  if (source.sourceApp === 'solarsense') {
+    const [assessment] = await executor.select({
+      status: ssRooftopAssessments.status,
+      completedAt: ssRooftopAssessments.completedAt,
+    })
+      .from(ssRooftopAssessments)
+      .where(eq(ssRooftopAssessments.id, source.sourceId))
+      .limit(1);
+    return Boolean(assessment?.completedAt) || assessment?.status === 'Completed';
+  }
+  const [installation] = await executor.select({
+    status: ihInstallations.status,
+    completedAt: ihInstallations.completedAt,
+  })
+    .from(ihInstallations)
+    .where(eq(ihInstallations.id, source.sourceId))
+    .limit(1);
+  return Boolean(installation?.completedAt) || installation?.status === 'Completed';
+}
+
 /**
  * Protects the recorded-time and accounting evidence for a product job.
  *
@@ -64,6 +99,23 @@ export async function assertNoSchedulerCommercialEvidenceBeforePurge(
     ))
   `);
   if (await hasRecordedWorkSession(executor, source)) throw conflict(PURGE_BLOCKED);
+  // A pre-fact completion timestamp or an undated Completed status is itself
+  // retained commercial history. Migration 0044 backfills dateable rows, while
+  // this check protects rolling-deploy rows and never invents a missing date.
+  if (await hasRecordedCompletionEvidence(executor, source)) throw conflict(PURGE_BLOCKED);
+
+  // Completion facts are immutable attribution and revenue-history evidence.
+  // They intentionally outlive later reopens, so the underlying source cannot
+  // be purged even when no schedule event or finance ledger remains.
+  const [completionFact] = await executor.select({ id: schedulerJobCompletionFacts.id })
+    .from(schedulerJobCompletionFacts)
+    .where(and(
+      eq(schedulerJobCompletionFacts.sourceApp, source.sourceApp),
+      eq(schedulerJobCompletionFacts.sourceType, source.sourceType),
+      eq(schedulerJobCompletionFacts.sourceId, source.sourceId),
+    ))
+    .limit(1);
+  if (completionFact) throw conflict(PURGE_BLOCKED);
 
   // A Scheduler item is retained business history and would otherwise let the
   // overview fallback recreate a ledger for a source that no longer exists.

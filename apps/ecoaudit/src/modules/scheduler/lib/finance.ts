@@ -441,7 +441,15 @@ export function schedulerFinanceTargetFromSearchParams(
 
 export function schedulerTabTransition(
   currentSearch: string,
-  nextTab: 'overview' | 'calendar' | 'deadlines' | SchedulerFinanceView,
+  nextTab:
+    | 'overview'
+    | 'calendar'
+    | 'my-route'
+    | 'deadlines'
+    | 'team-performance'
+    | 'leave'
+    | 'finance-analytics'
+    | SchedulerFinanceView,
 ): { href: string; financeTarget?: SchedulerFinanceTarget } {
   const params = new URLSearchParams(currentSearch);
   params.set('tab', nextTab);

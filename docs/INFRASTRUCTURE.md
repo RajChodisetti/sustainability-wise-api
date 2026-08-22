@@ -111,6 +111,32 @@ to be added, edited, or removed and retain only the existing currency lock on
 job commercial settings. Apply 0038 before deploying code that reads the new
 columns.
 
+Before applying consolidated migration 0044 in QA, audit existing
+`scheduler_invoices` headers for
+non-draft snapshot rewrites, unsafe or incoherent monetary components, and draft
+rows with prefilled `issue_date`, `issued_at`, `paid_at`, or `voided_at`. The
+migration does not rewrite or add strict money checks to legacy 0033/0038 rows.
+It does fence every updated invoice: identity/accounting basis is immutable in
+all states, draft lifecycle instants must remain empty, and issued/paid/void
+headers accept only their forward lifecycle evidence with a newer revision.
+
+The same 0044 migration adds nullable structured Australian location evidence to `ea_audits`,
+`ss_sites`, and `ih_installations` without replacing their authoritative legacy
+address strings. Apply it before enabling Scheduler address or route UI. Its
+checks require paired coordinates inside the supported mainland/Tasmania
+bounding box, `AU`, a supported state/territory abbreviation, a four-digit
+postcode, a valid geocode state, and a SHA-256 address fingerprint whenever the
+respective values are present. Existing rows remain valid because every added
+column is nullable.
+
+Before applying 0044, also audit `ih_grid_supplies.nmi` for blank trimmed values
+or values longer than 100 characters. The migration deliberately installs the
+canonical nullable 1–100 character fence without truncating or silently
+rewriting historical data. Migration 0044 is the only new journal entry after
+the upstream 0043 completion-notes migration; it also adds the additive
+workforce, refund, completion-fact, InstallHub job-metadata, and Xero
+reconciliation storage required by this release.
+
 0039 adds the non-negative whole-hour database fence for future Billing-hours
 writes. It is `NOT VALID` so historical fractional audit revisions remain
 append-only evidence; new and updated billable-hour revisions must be exact
@@ -179,6 +205,23 @@ both the reviewed customer charge and bill evidence.
 `SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API
 fails startup for an invalid or out-of-range value instead of allowing a later
 integer-column or invoice-total failure.
+
+Scheduler mapping is optional and server-side. `SCHEDULER_PHOTON_URL` must be
+the base URL of a controlled Photon-compatible geocoder, and
+`SCHEDULER_OSRM_URL` the base URL of a controlled OSRM-compatible service using
+an Australia driving extract. Leave either value blank to disable that
+capability safely; never expose the service URLs to portal or mobile clients.
+`SCHEDULER_MAP_REQUEST_TIMEOUT_MS` is clamped to 500-20000 ms, and
+`SCHEDULER_ROUTE_MAX_STOPS` to 1-4 so one Google Maps mobile directions URL can
+contain every optimized stop. Provider requests and responses are bounded,
+country-filtered to AU, and coordinates are rejected outside the supported
+Australian bounding box. The API forwards user-entered address text to the
+configured geocoder and job coordinates to the configured router, so operate
+both services under the approved privacy, retention, logging, and OpenStreetMap
+attribution policy. Route calls do not store the caller's current coordinates
+or transient geocoder result. Google Maps receives coordinates only when the
+user chooses the returned external directions URL.
+
 Currency is normalized to uppercase during legacy conversion, and migration
 fails closed on mixed-currency Field ledgers rather than aggregating unlike
 amounts. Runtime currency changes are blocked once an expense or invoice exists.

@@ -5,13 +5,12 @@ import type {
 } from '@/modules/scheduler/types/domain';
 
 const ALL_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
-const SELECTABLE_SOURCE_APPS = ['installhub', 'custom'] as const;
+const SELECTABLE_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
 
 /**
  * Sources whose already-linked work can be rendered in Scheduler.
  *
- * EcoAudit and SolarSense remain displayable so historical and existing work
- * does not disappear from calendar, deadline, and finance views.
+ * All commercial products and custom work remain visible in shared planning.
  */
 export function schedulerVisibleSourceApps(): ScheduleSourceApp[] {
   return [...ALL_SOURCE_APPS];
@@ -20,6 +19,21 @@ export function schedulerVisibleSourceApps(): ScheduleSourceApp[] {
 /** Sources that can appear as explicit choices in Scheduler controls. */
 export function schedulerSelectableSourceApps(): ScheduleSourceApp[] {
   return [...SELECTABLE_SOURCE_APPS];
+}
+
+/**
+ * Creating EcoAudit or SolarSense product rows requires an active identity in
+ * that product. Field App and custom rows use the shared Field identity.
+ */
+export function schedulerCreatableSourceApps(
+  sourceApps: readonly ScheduleSourceApp[],
+  activeProductApps: readonly ScheduleSourceApp[],
+): ScheduleSourceApp[] {
+  return sourceApps.filter((app) => (
+    app === 'custom'
+    || app === 'installhub'
+    || activeProductApps.includes(app)
+  ));
 }
 
 export function schedulerVisibleFinanceSourceApps(

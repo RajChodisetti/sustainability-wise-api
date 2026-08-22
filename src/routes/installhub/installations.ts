@@ -1,12 +1,12 @@
 import type { FastifyInstance } from 'fastify';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
 import {
   ihInstallationWorkSessions,
   ihInstallations,
 } from '../../db/schema/installhub.js';
-import { unifiedUsers } from '../../db/schema/shared.js';
+import { portalScheduleEvents, unifiedUsers } from '../../db/schema/shared.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
 import {
   assertInstallationAccess,
@@ -270,33 +270,60 @@ export async function installhubInstallationRoutes(
   }, async (request, reply) => {
     const { installationId } = request.params as { installationId: string };
     const body = request.body as { assignedInspectorUserId: string | null };
-    const installation = await loadInstallation(installationId);
     const assignedInspectorUserId =
       typeof body.assignedInspectorUserId === 'string'
         ? body.assignedInspectorUserId.trim()
         : null;
-    if (assignedInspectorUserId) {
-      const [user] = await db
-        .select(unifiedInstallHubUserColumns)
-        .from(unifiedUsers)
+    const updated = await db.transaction(async (tx) => {
+      // Scheduler assignment takes the product row lock first. Sharing that
+      // lock prevents this product-only endpoint from racing and silently
+      // desynchronising an actively scheduled installation.
+      const [installation] = await tx
+        .select()
+        .from(ihInstallations)
         .where(and(
-          eq(unifiedUsers.fieldUserId, assignedInspectorUserId),
-          eq(unifiedUsers.originApp, 'installhub'),
+          eq(ihInstallations.id, installationId),
+          isNull(ihInstallations.deletedAt),
+        ))
+        .for('update')
+        .limit(1);
+      if (!installation) throw notFound('Installation');
+      const [scheduled] = await tx.select({ id: portalScheduleEvents.id })
+        .from(portalScheduleEvents)
+        .where(and(
+          eq(portalScheduleEvents.sourceApp, 'installhub'),
+          eq(portalScheduleEvents.sourceType, 'installation'),
+          eq(portalScheduleEvents.sourceId, installation.id),
+          inArray(portalScheduleEvents.status, ['planned', 'in_progress']),
         ))
         .limit(1);
-      if (!user) throw notFound('Assigned user');
-      if (!isAssignableInstallHubUser(user)) {
-        throw badRequest('Assigned user must be active');
+      if (scheduled) {
+        throw conflict('scheduled_assignment_managed_by_scheduler');
       }
-    }
-    const [updated] = await db
-      .update(ihInstallations)
-      .set({
-        assignedInspectorUserId: assignedInspectorUserId || null,
-        updatedAt: new Date(),
-      })
-      .where(eq(ihInstallations.id, installation.id))
-      .returning();
+      if (assignedInspectorUserId) {
+        const [user] = await tx
+          .select(unifiedInstallHubUserColumns)
+          .from(unifiedUsers)
+          .where(and(
+            eq(unifiedUsers.fieldUserId, assignedInspectorUserId),
+            eq(unifiedUsers.originApp, 'installhub'),
+          ))
+          .limit(1);
+        if (!user) throw notFound('Assigned user');
+        if (!isAssignableInstallHubUser(user)) {
+          throw badRequest('Assigned user must be active');
+        }
+      }
+      const [row] = await tx
+        .update(ihInstallations)
+        .set({
+          assignedInspectorUserId: assignedInspectorUserId || null,
+          updatedAt: new Date(),
+        })
+        .where(eq(ihInstallations.id, installation.id))
+        .returning();
+      return row;
+    });
     if (!updated) throw notFound('Installation');
     return reply.send(await assignmentResponse(updated));
   });

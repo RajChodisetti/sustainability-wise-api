@@ -16,6 +16,57 @@ export const INSTALLATION_ZONE_CODE_PATTERN = /^[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
 export const DISPLAY_CODE_MAX_LENGTH = 64;
 export const VIRTUAL_METER_FORMULA_VERSION = 1;
 
+export const INSTALLATION_METADATA_TEXT_LIMITS = {
+  customerName: 300,
+  serviceType: 120,
+  meteringSolutionType: 120,
+  plannedMeterType: 120,
+  siteContactName: 300,
+  siteContactPhone: 50,
+  siteContactEmail: 320,
+  fergusJobNumber: 100,
+  quoteNumber: 100,
+  jobComments: 5_000,
+  accessInformation: 5_000,
+  additionalMonitoringHardware: 5_000,
+} as const;
+export const GRID_SUPPLY_NMI_MAX_LENGTH = 100;
+
+export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
+  'customerName',
+  'maas',
+  'serviceType',
+  'meteringSolutionType',
+  'plannedMeterType',
+  'siteLocality',
+  'siteState',
+  'sitePostcode',
+  'siteCountryCode',
+  'siteContactName',
+  'siteContactPhone',
+  'siteContactEmail',
+  'fergusJobNumber',
+  'quoteNumber',
+  'jobComments',
+  'accessInformation',
+  'warrantyDevice',
+  'monitoringInstalled',
+  'hardwareInstalled',
+  'solarCapacityKw',
+  'additionalMonitoringRequired',
+  'additionalMonitoringHardware',
+] as const;
+
+export type InstallationSiteState =
+  | 'ACT'
+  | 'NSW'
+  | 'NT'
+  | 'QLD'
+  | 'SA'
+  | 'TAS'
+  | 'VIC'
+  | 'WA';
+
 export const BOARD_TYPE_CODES = [
   'MSB',
   'MSSB',
@@ -103,9 +154,31 @@ export type CanonicalInstallation = {
   externalKey: string;
   siteCode: string;
   timezone: string;
+  customerName?: string | null;
   clientName: string;
+  maas?: boolean | null;
+  serviceType?: string | null;
+  meteringSolutionType?: string | null;
+  plannedMeterType?: string | null;
   siteName: string;
   siteAddress: string;
+  siteLocality?: string | null;
+  siteState?: InstallationSiteState | null;
+  sitePostcode?: string | null;
+  siteCountryCode?: 'AU' | null;
+  siteContactName?: string | null;
+  siteContactPhone?: string | null;
+  siteContactEmail?: string | null;
+  fergusJobNumber?: string | null;
+  quoteNumber?: string | null;
+  jobComments?: string | null;
+  accessInformation?: string | null;
+  warrantyDevice?: boolean | null;
+  monitoringInstalled?: boolean | null;
+  hardwareInstalled?: boolean | null;
+  solarCapacityKw?: number | null;
+  additionalMonitoringRequired?: boolean | null;
+  additionalMonitoringHardware?: string | null;
   inspectorName: string;
   auditDate: string;
   status: 'Draft' | 'Completed';
@@ -455,10 +528,125 @@ function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function boundedOptionalText(value: unknown, label: string): string | null {
+function hasOwn(value: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function nullableBoundedTextProperty(
+  value: JsonRecord,
+  key: string,
+  maxLength: number,
+): Record<string, string | null> {
+  if (!hasOwn(value, key) || value[key] === undefined) return {};
+  if (value[key] === null || value[key] === '') return { [key]: null };
+  if (typeof value[key] !== 'string') {
+    throw new CanonicalInputError(`installation.${key} must be a string or null`);
+  }
+  const normalized = value[key].trim();
+  if (!normalized) return { [key]: null };
+  if (normalized.length > maxLength) {
+    throw new CanonicalInputError(
+      `installation.${key} must contain at most ${maxLength} characters`,
+    );
+  }
+  return { [key]: normalized };
+}
+
+function nullableBooleanProperty(
+  value: JsonRecord,
+  key: string,
+): Record<string, boolean | null> {
+  if (!hasOwn(value, key) || value[key] === undefined) return {};
+  if (value[key] === null) return { [key]: null };
+  if (typeof value[key] !== 'boolean') {
+    throw new CanonicalInputError(`installation.${key} must be a boolean or null`);
+  }
+  return { [key]: value[key] };
+}
+
+function nullableSolarCapacityProperty(value: JsonRecord): { solarCapacityKw?: number | null } {
+  if (!hasOwn(value, 'solarCapacityKw') || value.solarCapacityKw === undefined) return {};
+  if (value.solarCapacityKw === null) return { solarCapacityKw: null };
+  if (
+    typeof value.solarCapacityKw !== 'number'
+    || !Number.isFinite(value.solarCapacityKw)
+    || value.solarCapacityKw < 0
+    || value.solarCapacityKw > 1_000_000
+  ) {
+    throw new CanonicalInputError(
+      'installation.solarCapacityKw must be a finite number between 0 and 1000000, or null',
+    );
+  }
+  return { solarCapacityKw: value.solarCapacityKw };
+}
+
+function nullableSiteStateProperty(value: JsonRecord): { siteState?: InstallationSiteState | null } {
+  if (!hasOwn(value, 'siteState') || value.siteState === undefined) return {};
+  if (value.siteState === null || value.siteState === '') return { siteState: null };
+  if (typeof value.siteState !== 'string') {
+    throw new CanonicalInputError('installation.siteState must be a string or null');
+  }
+  const state = value.siteState.trim().toUpperCase();
+  if (!['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA'].includes(state)) {
+    throw new CanonicalInputError(
+      'installation.siteState must be an Australian state or territory abbreviation',
+    );
+  }
+  return { siteState: state as InstallationSiteState };
+}
+
+function nullableSitePostcodeProperty(value: JsonRecord): { sitePostcode?: string | null } {
+  if (!hasOwn(value, 'sitePostcode') || value.sitePostcode === undefined) return {};
+  if (value.sitePostcode === null || value.sitePostcode === '') return { sitePostcode: null };
+  if (typeof value.sitePostcode !== 'string') {
+    throw new CanonicalInputError('installation.sitePostcode must be a string or null');
+  }
+  const postcode = value.sitePostcode.trim();
+  if (!/^\d{4}$/.test(postcode)) {
+    throw new CanonicalInputError('installation.sitePostcode must contain four digits');
+  }
+  return { sitePostcode: postcode };
+}
+
+function nullableSiteCountryProperty(value: JsonRecord): { siteCountryCode?: 'AU' | null } {
+  if (!hasOwn(value, 'siteCountryCode') || value.siteCountryCode === undefined) return {};
+  if (value.siteCountryCode === null || value.siteCountryCode === '') {
+    return { siteCountryCode: null };
+  }
+  if (
+    typeof value.siteCountryCode !== 'string'
+    || value.siteCountryCode.trim().toUpperCase() !== 'AU'
+  ) {
+    throw new CanonicalInputError('installation.siteCountryCode must be AU or null');
+  }
+  return { siteCountryCode: 'AU' };
+}
+
+/**
+ * Full-snapshot clients predating additive installation fields omit them.
+ * Preserve the locked server values; a present JSON null remains an explicit clear.
+ */
+export function retainOmittedCanonicalInstallationFields(
+  current: CanonicalInstallation,
+  incoming: CanonicalInstallation,
+): void {
+  const currentRecord = current as unknown as Record<string, unknown>;
+  const incomingRecord = incoming as unknown as Record<string, unknown>;
+  for (const field of INSTALLATION_OPTIONAL_WRITE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(incomingRecord, field)) {
+      incomingRecord[field] = currentRecord[field] ?? null;
+    }
+  }
+}
+
+function boundedOptionalText(
+  value: unknown,
+  label: string,
+  maxLength = CUSTOM_LABEL_MAX_LENGTH,
+): string | null {
   const result = optionalText(value);
-  if (result && result.length > CUSTOM_LABEL_MAX_LENGTH) {
-    throw new CanonicalInputError(`${label} must be at most ${CUSTOM_LABEL_MAX_LENGTH} characters`);
+  if (result && result.length > maxLength) {
+    throw new CanonicalInputError(`${label} must be at most ${maxLength} characters`);
   }
   return result;
 }
@@ -764,6 +952,18 @@ export function projectCanonicalOptionalDefaults(
   tree.installation.siteName = tree.installation.siteName.trim()
     || 'Untitled installation';
   tree.installation.siteAddress = tree.installation.siteAddress.trim();
+  const installationRecord = tree.installation as unknown as Record<string, unknown>;
+  for (const field of [
+    ...Object.keys(INSTALLATION_METADATA_TEXT_LIMITS),
+    'siteLocality',
+    'siteState',
+    'sitePostcode',
+    'siteCountryCode',
+  ]) {
+    if (typeof installationRecord[field] === 'string') {
+      installationRecord[field] = installationRecord[field].trim() || null;
+    }
+  }
   tree.installation.inspectorName = tree.installation.inspectorName.trim();
   tree.installation.auditDate = tree.installation.auditDate.trim();
   tree.gridSupplies = tree.gridSupplies.map((supply) => ({
@@ -915,9 +1115,79 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     externalKey: requiredText(item.externalKey, 'installation.externalKey'),
     siteCode,
     timezone: timezoneValueOrDefault(item.timezone, 'installation.timezone'),
+    ...nullableBoundedTextProperty(
+      item,
+      'customerName',
+      INSTALLATION_METADATA_TEXT_LIMITS.customerName,
+    ),
     clientName: stringValue(item.clientName ?? '', 'installation.clientName'),
+    ...nullableBooleanProperty(item, 'maas'),
+    ...nullableBoundedTextProperty(
+      item,
+      'serviceType',
+      INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'meteringSolutionType',
+      INSTALLATION_METADATA_TEXT_LIMITS.meteringSolutionType,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'plannedMeterType',
+      INSTALLATION_METADATA_TEXT_LIMITS.plannedMeterType,
+    ),
     siteName: stringValueOrDefault(item.siteName, 'installation.siteName', 'Untitled installation'),
     siteAddress: stringValue(item.siteAddress ?? '', 'installation.siteAddress'),
+    ...nullableBoundedTextProperty(item, 'siteLocality', 200),
+    ...nullableSiteStateProperty(item),
+    ...nullableSitePostcodeProperty(item),
+    ...nullableSiteCountryProperty(item),
+    ...nullableBoundedTextProperty(
+      item,
+      'siteContactName',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactName,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'siteContactPhone',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactPhone,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'siteContactEmail',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactEmail,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'fergusJobNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.fergusJobNumber,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'quoteNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.quoteNumber,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'jobComments',
+      INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'accessInformation',
+      INSTALLATION_METADATA_TEXT_LIMITS.accessInformation,
+    ),
+    ...nullableBooleanProperty(item, 'warrantyDevice'),
+    ...nullableBooleanProperty(item, 'monitoringInstalled'),
+    ...nullableBooleanProperty(item, 'hardwareInstalled'),
+    ...nullableSolarCapacityProperty(item),
+    ...nullableBooleanProperty(item, 'additionalMonitoringRequired'),
+    ...nullableBoundedTextProperty(
+      item,
+      'additionalMonitoringHardware',
+      INSTALLATION_METADATA_TEXT_LIMITS.additionalMonitoringHardware,
+    ),
     inspectorName: stringValue(item.inspectorName ?? '', 'installation.inspectorName'),
     auditDate: stringValue(item.auditDate ?? '', 'installation.auditDate'),
     status: enumValue(item.status, ['Draft', 'Completed'] as const, 'installation.status'),
@@ -944,15 +1214,7 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     completedFromRevision: item.completedFromRevision == null
       ? null
       : integer(item.completedFromRevision, 0, 'installation.completedFromRevision'),
-    completionNotes: (() => {
-      const notes = optionalText(item.completionNotes);
-      if (notes && notes.length > 2_000) {
-        throw new CanonicalInputError(
-          'installation.completionNotes must contain at most 2000 characters',
-        );
-      }
-      return notes;
-    })(),
+    ...nullableBoundedTextProperty(item, 'completionNotes', 2_000),
     reopenedAt: iso(item.reopenedAt),
     reopenedByUserId: optionalText(item.reopenedByUserId),
     reopenedFromVersionNumber: item.reopenedFromVersionNumber == null
@@ -997,7 +1259,11 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       installationId,
       name: stringValueOrDefault(item.name, `gridSupplies[${index}].name`, 'Incoming grid connection'),
       isDefault: booleanValue(item.isDefault, `gridSupplies[${index}].isDefault`),
-      nmi: optionalText(item.nmi),
+      nmi: boundedOptionalText(
+        item.nmi,
+        `gridSupplies[${index}].nmi`,
+        GRID_SUPPLY_NMI_MAX_LENGTH,
+      ),
       externalKey: optionalText(item.externalKey),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
@@ -2369,9 +2635,31 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       id: ordered.installation.id,
       siteCode: ordered.installation.siteCode,
       timezone: ordered.installation.timezone,
+      customerName: ordered.installation.customerName ?? null,
       clientName: ordered.installation.clientName,
+      maas: ordered.installation.maas ?? null,
+      serviceType: ordered.installation.serviceType ?? null,
+      meteringSolutionType: ordered.installation.meteringSolutionType ?? null,
+      plannedMeterType: ordered.installation.plannedMeterType ?? null,
       siteName: ordered.installation.siteName,
       siteAddress: ordered.installation.siteAddress,
+      siteLocality: ordered.installation.siteLocality ?? null,
+      siteState: ordered.installation.siteState ?? null,
+      sitePostcode: ordered.installation.sitePostcode ?? null,
+      siteCountryCode: ordered.installation.siteCountryCode ?? null,
+      siteContactName: ordered.installation.siteContactName ?? null,
+      siteContactPhone: ordered.installation.siteContactPhone ?? null,
+      siteContactEmail: ordered.installation.siteContactEmail ?? null,
+      fergusJobNumber: ordered.installation.fergusJobNumber ?? null,
+      quoteNumber: ordered.installation.quoteNumber ?? null,
+      jobComments: ordered.installation.jobComments ?? null,
+      accessInformation: ordered.installation.accessInformation ?? null,
+      warrantyDevice: ordered.installation.warrantyDevice ?? null,
+      monitoringInstalled: ordered.installation.monitoringInstalled ?? null,
+      hardwareInstalled: ordered.installation.hardwareInstalled ?? null,
+      solarCapacityKw: ordered.installation.solarCapacityKw ?? null,
+      additionalMonitoringRequired: ordered.installation.additionalMonitoringRequired ?? null,
+      additionalMonitoringHardware: ordered.installation.additionalMonitoringHardware ?? null,
       inspectorName: ordered.installation.inspectorName,
       auditDate: ordered.installation.auditDate,
     },

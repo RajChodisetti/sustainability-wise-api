@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   check,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -47,9 +48,38 @@ export const ihInstallations = pgTable('ih_installations', {
   electricalMapLayout: jsonb('electrical_map_layout'),
   electricalMapLayoutRevision: integer('electrical_map_layout_revision').notNull().default(0),
   electricalMapLayoutUpdatedAt: timestamp('electrical_map_layout_updated_at'),
+  customerName: text('customer_name'),
   clientName: text('client_name').notNull(),
+  maas: boolean('maas'),
+  serviceType: text('service_type'),
+  meteringSolutionType: text('metering_solution_type'),
+  plannedMeterType: text('planned_meter_type'),
   siteName: text('site_name').notNull(),
   siteAddress: text('site_address').notNull(),
+  siteLocality: text('site_locality'),
+  siteState: text('site_state'),
+  sitePostcode: text('site_postcode'),
+  siteCountryCode: text('site_country_code'),
+  siteLatitude: doublePrecision('site_latitude'),
+  siteLongitude: doublePrecision('site_longitude'),
+  siteGeocodeStatus: text('site_geocode_status'),
+  siteGeocodeProvider: text('site_geocode_provider'),
+  siteGeocodePlaceId: text('site_geocode_place_id'),
+  siteAddressFingerprint: text('site_address_fingerprint'),
+  siteGeocodedAt: timestamp('site_geocoded_at'),
+  siteContactName: text('site_contact_name'),
+  siteContactPhone: text('site_contact_phone'),
+  siteContactEmail: text('site_contact_email'),
+  fergusJobNumber: text('fergus_job_number'),
+  quoteNumber: text('quote_number'),
+  jobComments: text('job_comments'),
+  accessInformation: text('access_information'),
+  warrantyDevice: boolean('warranty_device'),
+  monitoringInstalled: boolean('monitoring_installed'),
+  hardwareInstalled: boolean('hardware_installed'),
+  solarCapacityKw: doublePrecision('solar_capacity_kw'),
+  additionalMonitoringRequired: boolean('additional_monitoring_required'),
+  additionalMonitoringHardware: text('additional_monitoring_hardware'),
   inspectorName: text('inspector_name').notNull(),
   auditDate: text('audit_date').notNull(),
   status: text('status').notNull().default('Draft'),
@@ -68,16 +98,104 @@ export const ihInstallations = pgTable('ih_installations', {
   uniqueIndex('ih_installations_external_key_unique').on(table.externalKey),
   index('ih_installations_owner_idx').on(table.createdByUserId, table.updatedAt),
   index('ih_installations_assignee_idx').on(table.assignedInspectorUserId, table.updatedAt),
+  index('ih_installations_analytics_completed_idx').on(table.completedAt).where(sql`
+    ${table.completedAt} IS NOT NULL AND ${table.deletedAt} IS NULL
+  `),
+  index('ih_installations_analytics_undated_completed_idx').on(table.id).where(sql`
+    ${table.status} = 'Completed' AND ${table.completedAt} IS NULL
+  `),
   check('ih_installations_tree_schema_version_check', sql`${table.treeSchemaVersion} IN (1, 2)`),
   check('ih_installations_tree_revision_check', sql`${table.treeRevision} >= 0`),
   check('ih_installations_record_version_check', sql`${table.recordVersionNumber} >= 0`),
   check('ih_installations_electrical_map_layout_revision_check', sql`${table.electricalMapLayoutRevision} >= 0`),
   check('ih_installations_status_check', sql`${table.status} IN ('Draft', 'Completed')`),
+  check('ih_installations_customer_name_length_check', sql`
+    ${table.customerName} IS NULL
+    OR char_length(btrim(${table.customerName})) BETWEEN 1 AND 300
+  `),
+  check('ih_installations_service_type_length_check', sql`
+    ${table.serviceType} IS NULL
+    OR char_length(btrim(${table.serviceType})) BETWEEN 1 AND 120
+  `),
+  check('ih_installations_metering_solution_type_length_check', sql`
+    ${table.meteringSolutionType} IS NULL
+    OR char_length(btrim(${table.meteringSolutionType})) BETWEEN 1 AND 120
+  `),
+  check('ih_installations_planned_meter_type_length_check', sql`
+    ${table.plannedMeterType} IS NULL
+    OR char_length(btrim(${table.plannedMeterType})) BETWEEN 1 AND 120
+  `),
+  check('ih_installations_site_contact_name_length_check', sql`
+    ${table.siteContactName} IS NULL
+    OR char_length(btrim(${table.siteContactName})) BETWEEN 1 AND 300
+  `),
+  check('ih_installations_site_contact_phone_length_check', sql`
+    ${table.siteContactPhone} IS NULL
+    OR char_length(btrim(${table.siteContactPhone})) BETWEEN 1 AND 50
+  `),
+  check('ih_installations_site_contact_email_length_check', sql`
+    ${table.siteContactEmail} IS NULL
+    OR char_length(btrim(${table.siteContactEmail})) BETWEEN 1 AND 320
+  `),
+  check('ih_installations_fergus_job_number_length_check', sql`
+    ${table.fergusJobNumber} IS NULL
+    OR char_length(btrim(${table.fergusJobNumber})) BETWEEN 1 AND 100
+  `),
+  check('ih_installations_quote_number_length_check', sql`
+    ${table.quoteNumber} IS NULL
+    OR char_length(btrim(${table.quoteNumber})) BETWEEN 1 AND 100
+  `),
+  check('ih_installations_job_comments_length_check', sql`
+    ${table.jobComments} IS NULL
+    OR char_length(btrim(${table.jobComments})) BETWEEN 1 AND 5000
+  `),
+  check('ih_installations_access_information_length_check', sql`
+    ${table.accessInformation} IS NULL
+    OR char_length(btrim(${table.accessInformation})) BETWEEN 1 AND 5000
+  `),
+  check('ih_installations_solar_capacity_kw_check', sql`
+    ${table.solarCapacityKw} IS NULL
+    OR (${table.solarCapacityKw} >= 0 AND ${table.solarCapacityKw} <= 1000000)
+  `),
+  check('ih_installations_additional_monitoring_hardware_length_check', sql`
+    ${table.additionalMonitoringHardware} IS NULL
+    OR char_length(btrim(${table.additionalMonitoringHardware})) BETWEEN 1 AND 5000
+  `),
   check(
     'ih_installations_completion_notes_length_check',
     sql`${table.completionNotes} IS NULL OR char_length(${table.completionNotes}) <= 2000`,
   ),
   check('ih_installations_external_key_nonempty_check', sql`length(btrim(${table.externalKey})) > 0`),
+  check('ih_installations_site_country_check', sql`
+    ${table.siteCountryCode} IS NULL OR ${table.siteCountryCode} = 'AU'
+  `),
+  check('ih_installations_site_state_check', sql`
+    ${table.siteState} IS NULL OR ${table.siteState} IN ('ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA')
+  `),
+  check('ih_installations_site_postcode_check', sql`
+    ${table.sitePostcode} IS NULL OR ${table.sitePostcode} ~ '^[0-9]{4}$'
+  `),
+  check('ih_installations_site_coordinates_check', sql`
+    (${table.siteLatitude} IS NULL AND ${table.siteLongitude} IS NULL)
+    OR (
+      ${table.siteLatitude} IS NOT NULL
+      AND ${table.siteLongitude} IS NOT NULL
+      AND ${table.siteLatitude} BETWEEN -44 AND -9
+      AND ${table.siteLongitude} BETWEEN 112 AND 154
+    )
+  `),
+  check('ih_installations_site_geocode_status_check', sql`
+    ${table.siteGeocodeStatus} IS NULL
+    OR ${table.siteGeocodeStatus} IN ('unresolved', 'resolved', 'manual', 'failed')
+  `),
+  check('ih_installations_site_geocode_evidence_check', sql`
+    (${table.siteGeocodeStatus} IS DISTINCT FROM 'resolved')
+    OR (${table.siteLatitude} IS NOT NULL AND ${table.siteLongitude} IS NOT NULL)
+  `),
+  check('ih_installations_site_address_fingerprint_check', sql`
+    ${table.siteAddressFingerprint} IS NULL
+    OR ${table.siteAddressFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
 ]);
 
 export const ihInstallationWorkSessions = pgTable('ih_installation_work_sessions', {
@@ -102,6 +220,9 @@ export const ihInstallationWorkSessions = pgTable('ih_installation_work_sessions
     table.installationId,
     table.actorUserId,
     table.updatedAt,
+  ),
+  index('ih_installation_work_sessions_analytics_boundary_idx').on(
+    sql`coalesce(${table.endedAt}, ${table.lastActiveAt})`,
   ),
   check(
     'ih_installation_work_sessions_active_milliseconds_check',
@@ -134,6 +255,9 @@ export const ihGridSupplies = pgTable('ih_grid_supplies', {
   uniqueIndex('ih_grid_supplies_one_active_default_unique')
     .on(table.installationId)
     .where(sql`${table.isDefault} = true AND ${table.deletedAt} IS NULL`),
+  check('ih_grid_supplies_nmi_length_check', sql`
+    ${table.nmi} IS NULL OR char_length(btrim(${table.nmi})) BETWEEN 1 AND 100
+  `),
   foreignKey({
     columns: [table.installationId],
     foreignColumns: [ihInstallations.id],

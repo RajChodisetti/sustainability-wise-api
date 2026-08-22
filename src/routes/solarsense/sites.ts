@@ -249,6 +249,14 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
       const found = assertFound(site, 'Site');
       assertSiteAccess(found, request.user);
       const completedAt = new Date();
+      if (found.status === 'Completed') {
+        await completeLinkedSchedulerEvents(tx, {
+          sourceApp: 'solarsense',
+          sourceType: 'site',
+          sourceId: id,
+        }, { observedAt: completedAt });
+        return found;
+      }
       const [completed] = await tx
         .update(ssSites)
         .set({

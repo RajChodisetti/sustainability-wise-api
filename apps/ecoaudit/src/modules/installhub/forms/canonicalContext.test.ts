@@ -28,6 +28,7 @@ test('WW duplicate switchboard answers are canonical, stable, and not editable f
   board.locationDescription = 'North wall';
   board.siteNmi = 'NMI-CANONICAL';
   applyBoardElectricalSource(board, { kind: 'GRID', gridSupplyId: tree.gridSupplies![0].id });
+  tree.gridSupplies![0].nmi = 'NMI-GRID';
   tree.zones = [zone];
   tree.electricalAssets = [board];
   ensureCanonicalTree(tree);
@@ -55,7 +56,7 @@ test('WW duplicate switchboard answers are canonical, stable, and not editable f
     'auditor.switchboard_name': 'Canonical main board',
     'auditor.switchboard_location': 'North wall',
     'auditor.switchboard_type': 'Main switchboard',
-    'auditor.site_nmi': 'NMI-CANONICAL',
+    'auditor.site_nmi': 'NMI-GRID',
     'unrelated.answer': 'preserved',
   });
   assert.equal(isWwCanonicalBoardAnswer(form, 'auditor.switchboard_name'), true);

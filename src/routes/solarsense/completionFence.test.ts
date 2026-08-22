@@ -39,7 +39,7 @@ test('repeated Completed sync preserves the first server completion boundary', (
   });
 });
 
-test('a legacy Completed record without a boundary receives one on sync', () => {
+test('a legacy Completed record without a boundary stays explicitly undated on sync', () => {
   assert.deepEqual(resolveSyncedCompletion({
     existing: { status: 'Completed', completedAt: null },
     incomingStatus: 'Completed',
@@ -47,7 +47,7 @@ test('a legacy Completed record without a boundary receives one on sync', () => 
     entity: 'site',
   }), {
     status: 'Completed',
-    completedAt: laterReceivedAt,
+    completedAt: null,
   });
 });
 

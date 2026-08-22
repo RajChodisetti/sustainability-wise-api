@@ -3,8 +3,12 @@ import test from 'node:test';
 import {
   checkConsolidatedSchedulerInvoiceEligibility,
   createConsolidatedSchedulerInvoice,
+  createSchedulerDispatch,
   downloadSchedulerInvoicePdfExport,
+  fetchSchedulerAddressSuggestions,
   fetchSchedulerInvoiceEmailDeliveries,
+  fetchSchedulerAnalytics,
+  fetchSchedulerRouteSuggestion,
   fetchPortalAssignees,
   fetchGlobalSchedulerExpenses,
   fetchGlobalSchedulerInvoices,
@@ -16,6 +20,7 @@ import {
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
   updatePortalUserBillingRate,
+  updatePortalUserWorkforceProfile,
   uploadSchedulerExpenseAttachment,
   voidGlobalSchedulerInvoice,
 } from './client';
@@ -25,6 +30,269 @@ function jwt(role: 'admin' | 'inspector', subject: string): string {
   const payload = Buffer.from(JSON.stringify({ role, sub: subject })).toString('base64url');
   return `header.${payload}.signature`;
 }
+
+test('scheduler analytics preserves the inclusive window and selects an administrator credential', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const ecoInspector = jwt('inspector', 'eco-inspector');
+  const solarAdmin = jwt('admin', 'solar-admin');
+  const values = new Map<string, string>([
+    ['ea_web_jwt', ecoInspector],
+    ['ss_web_jwt', solarAdmin],
+  ]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      authorization: new Headers(init?.headers).get('Authorization'),
+    });
+    return Response.json({ complete: true });
+  };
+
+  try {
+    await fetchSchedulerAnalytics({
+      from: '2026-08-17',
+      to: '2026-08-23',
+      timezone: 'Australia/Sydney',
+    });
+    assert.equal(requests[0]?.authorization, `Bearer ${solarAdmin}`);
+    const url = new URL(requests[0]?.url ?? '', 'http://portal.test');
+    assert.equal(url.pathname, '/v1/portal/scheduler/analytics');
+    assert.deepEqual(Object.fromEntries(url.searchParams), {
+      from: '2026-08-17',
+      to: '2026-08-23',
+      timezone: 'Australia/Sydney',
+    });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('address, route, and dispatch clients keep private job inputs in authenticated POST bodies', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const inspector = jwt('inspector', 'field-user');
+  const admin = jwt('admin', 'scheduler-admin');
+  const values = new Map<string, string>([
+    ['ea_web_jwt', inspector],
+    ['ss_web_jwt', admin],
+  ]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      authorization: new Headers(init?.headers).get('Authorization'),
+      body: String(init?.body ?? ''),
+    });
+    if (String(input).endsWith('/address-suggestions')) {
+      return Response.json({ available: false, provider: null, attribution: null, suggestions: [] });
+    }
+    return Response.json({
+      date: '2026-08-24',
+      timezone: 'Australia/Sydney',
+      assigneeFieldUserId: 'field-user',
+      currentLocation: { latitude: -33.86, longitude: 151.21 },
+      jobs: [],
+      unroutableJobs: [],
+      totalDistanceMeters: 0,
+      totalDurationSeconds: 0,
+      optimization: 'straight_line_distance',
+      googleMapsUrl: null,
+      warnings: [],
+    });
+  };
+
+  try {
+    await fetchSchedulerAddressSuggestions({ query: '10 George Street', limit: 8 });
+    await fetchSchedulerRouteSuggestion({
+      date: '2026-08-24',
+      currentLocation: {
+        latitude: -33.86,
+        longitude: 151.21,
+        accuracyMeters: 20,
+        capturedAt: '2026-08-23T23:00:00.000Z',
+      },
+    });
+    await createSchedulerDispatch({
+      sourceApp: 'installhub',
+      assigneeFieldUserId: 'field-user',
+      scheduledStartAt: '2026-08-24T00:00:00.000Z',
+      deadlineAt: '2026-08-26T07:00:00.000Z',
+      job: {
+        clientName: 'Delivery partner',
+        customerName: 'Example Customer',
+        siteName: 'North warehouse',
+        siteAddress: '10 Example Street, Newcastle NSW 2300',
+        electricityNmi: '41020000000',
+        maas: null,
+        serviceType: 'New installation',
+        meteringSolutionType: 'Whole-site monitoring',
+        plannedMeterType: '6-channel meter',
+        siteContactName: 'Site contact',
+        siteContactPhone: '0400 000 000',
+        siteContactEmail: 'site@example.test',
+        fergusJobNumber: 'FERGUS-42',
+        quoteNumber: 'QUOTE-7',
+        jobComments: 'Coordinate with facilities.',
+        accessInformation: 'Report to reception.',
+        warrantyDevice: false,
+        monitoringInstalled: null,
+        hardwareInstalled: true,
+        solarCapacityKw: 24.5,
+        additionalMonitoringRequired: false,
+        additionalMonitoringHardware: 'None',
+        auditDate: '2026-08-24',
+        address: {
+          freeform: '10 Example Street',
+          locality: 'Newcastle',
+          state: 'NSW',
+          postcode: '2300',
+          countryCode: 'AU',
+        },
+      },
+    });
+    assert.equal(requests.length, 3);
+    assert.equal(new URL(requests[0]?.url ?? '', 'http://portal.test').search, '');
+    assert.deepEqual(JSON.parse(requests[0]?.body ?? ''), {
+      query: '10 George Street',
+      limit: 8,
+    });
+    assert.deepEqual(JSON.parse(requests[1]?.body ?? ''), {
+      date: '2026-08-24',
+      currentLocation: {
+        latitude: -33.86,
+        longitude: 151.21,
+        accuracyMeters: 20,
+        capturedAt: '2026-08-23T23:00:00.000Z',
+      },
+    });
+    assert.equal(requests[0]?.authorization, `Bearer ${inspector}`);
+    assert.equal(requests[1]?.authorization, `Bearer ${inspector}`);
+    assert.equal(requests[2]?.authorization, `Bearer ${admin}`);
+    assert.equal(new URL(requests[2]?.url ?? '', 'http://portal.test').pathname, '/v1/portal/scheduler/dispatches');
+    assert.deepEqual(JSON.parse(requests[2]?.body ?? ''), {
+      sourceApp: 'installhub',
+      assigneeFieldUserId: 'field-user',
+      scheduledStartAt: '2026-08-24T00:00:00.000Z',
+      deadlineAt: '2026-08-26T07:00:00.000Z',
+      job: {
+        clientName: 'Delivery partner',
+        customerName: 'Example Customer',
+        siteName: 'North warehouse',
+        siteAddress: '10 Example Street, Newcastle NSW 2300',
+        electricityNmi: '41020000000',
+        maas: null,
+        serviceType: 'New installation',
+        meteringSolutionType: 'Whole-site monitoring',
+        plannedMeterType: '6-channel meter',
+        siteContactName: 'Site contact',
+        siteContactPhone: '0400 000 000',
+        siteContactEmail: 'site@example.test',
+        fergusJobNumber: 'FERGUS-42',
+        quoteNumber: 'QUOTE-7',
+        jobComments: 'Coordinate with facilities.',
+        accessInformation: 'Report to reception.',
+        warrantyDevice: false,
+        monitoringInstalled: null,
+        hardwareInstalled: true,
+        solarCapacityKw: 24.5,
+        additionalMonitoringRequired: false,
+        additionalMonitoringHardware: 'None',
+        auditDate: '2026-08-24',
+        address: {
+          freeform: '10 Example Street',
+          locality: 'Newcastle',
+          state: 'NSW',
+          postcode: '2300',
+          countryCode: 'AU',
+        },
+      },
+    });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('an explicit admin-planned route selects an administrator credential in mixed-role sessions', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const ecoInspector = jwt('inspector', 'eco-inspector');
+  const solarAdmin = jwt('admin', 'solar-admin');
+  const values = new Map<string, string>([
+    ['ea_web_jwt', ecoInspector],
+    ['ss_web_jwt', solarAdmin],
+  ]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  let authorization: string | null = null;
+  globalThis.fetch = async (_input, init) => {
+    authorization = new Headers(init?.headers).get('Authorization');
+    return Response.json({
+      date: '2026-08-24',
+      timezone: 'Australia/Perth',
+      assigneeFieldUserId: 'field-user',
+      currentLocation: { latitude: -31.95, longitude: 115.86 },
+      jobs: [],
+      unroutableJobs: [],
+      totalDistanceMeters: 0,
+      totalDurationSeconds: 0,
+      optimization: 'straight_line_distance',
+      googleMapsUrl: null,
+      warnings: [],
+    });
+  };
+
+  try {
+    await fetchSchedulerRouteSuggestion({
+      date: '2026-08-24',
+      assigneeFieldUserId: 'field-user',
+      currentLocation: { latitude: -31.95, longitude: 115.86 },
+    });
+    assert.equal(authorization, `Bearer ${solarAdmin}`);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
 
 test('scheduler invoice export start/latest/status/download stay on one selected admin credential', async () => {
   const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -105,6 +373,8 @@ test('scheduler invoice export start/latest/status/download stay on one selected
   try {
     await updateSchedulerInvoice('finance/9', 'invoice/42', {
       expectedUpdatedAt: '2026-08-16T18:15:00.000Z',
+      xeroInvoiceNumber: 'XERO-9001',
+      xeroDate: '2026-08-17',
       notes: 'Current intent',
       lines: [{
         id: 'line/1',
@@ -139,6 +409,8 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     const update = requests.find((request) => request.method === 'PATCH');
     assert.deepEqual(JSON.parse(update?.body ?? ''), {
       expectedUpdatedAt: '2026-08-16T18:15:00.000Z',
+      xeroInvoiceNumber: 'XERO-9001',
+      xeroDate: '2026-08-17',
       notes: 'Current intent',
       lines: [{
         id: 'line/1',
@@ -338,8 +610,16 @@ test('portal assignees retain canonical user ids and billing-rate updates use th
     const method = init?.method ?? 'GET';
     const body = typeof init?.body === 'string' ? init.body : null;
     requests.push({ url, method, body });
-    if (method === 'PATCH') {
+    if (method === 'PATCH' && url.endsWith('/billing-rate')) {
       return Response.json({ globalUserId: 'global/user 1', billingRate: 185.5 });
+    }
+    if (method === 'PATCH' && url.endsWith('/workforce-profile')) {
+      return Response.json({
+        globalUserId: 'global/user 1',
+        timezone: 'Australia/Brisbane',
+        workingDaysMask: 30,
+        updatedAt: '2026-08-21T02:00:00.000Z',
+      });
     }
     return Response.json({
       data: [{
@@ -347,6 +627,9 @@ test('portal assignees retain canonical user ids and billing-rate updates use th
         fullName: 'Alex Auditor',
         displayEmail: 'alex@example.test',
         billingRate: 175,
+        timezone: 'Australia/Sydney',
+        workingDaysMask: 62,
+        updatedAt: '2026-08-21T01:00:00.000Z',
         memberships: [{
           app: 'ecoaudit',
           userId: 'eco-1',
@@ -362,12 +645,28 @@ test('portal assignees retain canonical user ids and billing-rate updates use th
     const users = await fetchPortalAssignees();
     assert.equal(users[0]?.key, 'global/user 1');
     assert.equal(users[0]?.billingRate, 175);
+    assert.equal(users[0]?.timezone, 'Australia/Sydney');
+    assert.equal(users[0]?.workingDaysMask, 62);
 
     const updated = await updatePortalUserBillingRate(users[0]!.key, 185.5);
     assert.deepEqual(updated, { globalUserId: 'global/user 1', billingRate: 185.5 });
-    const patchRequest = requests.find((request) => request.method === 'PATCH');
-    assert.match(patchRequest?.url ?? '', /\/v1\/portal\/users\/global%2Fuser%201\/billing-rate$/);
-    assert.deepEqual(JSON.parse(patchRequest?.body ?? ''), { billingRate: 185.5 });
+    const billingPatch = requests.find((request) => request.url.endsWith('/billing-rate'));
+    assert.match(billingPatch?.url ?? '', /\/v1\/portal\/users\/global%2Fuser%201\/billing-rate$/);
+    assert.deepEqual(JSON.parse(billingPatch?.body ?? ''), { billingRate: 185.5 });
+
+    const workforce = await updatePortalUserWorkforceProfile(users[0]!.key, {
+      timezone: 'Australia/Brisbane',
+      workingDaysMask: 30,
+      expectedUpdatedAt: users[0]!.updatedAt,
+    });
+    assert.equal(workforce.updatedAt, '2026-08-21T02:00:00.000Z');
+    const workforcePatch = requests.find((request) => request.url.endsWith('/workforce-profile'));
+    assert.match(workforcePatch?.url ?? '', /\/v1\/portal\/users\/global%2Fuser%201\/workforce-profile$/);
+    assert.deepEqual(JSON.parse(workforcePatch?.body ?? ''), {
+      timezone: 'Australia/Brisbane',
+      workingDaysMask: 30,
+      expectedUpdatedAt: '2026-08-21T01:00:00.000Z',
+    });
   } finally {
     globalThis.fetch = priorFetch;
     if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);

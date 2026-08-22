@@ -51,6 +51,25 @@ import type {
   UpdateSchedulerInvoiceInput,
   UpdateScheduleEventInput,
 } from '@/modules/scheduler/types/domain';
+import type {
+  CreateSchedulerLeaveInput,
+  ReviewSchedulerLeaveInput,
+  SchedulerLeaveFilters,
+  SchedulerLeaveRequest,
+} from '@/modules/scheduler/types/workforce';
+import type {
+  PostSchedulerInvoiceRefundInput,
+  SchedulerInvoiceRefund,
+} from '@/modules/scheduler/types/refunds';
+import type {
+  SchedulerAnalyticsDto,
+  SchedulerAnalyticsFilters,
+} from '@/modules/scheduler/types/analytics';
+import type {
+  SchedulerAddressSuggestionsResponse,
+  SchedulerCurrentLocation,
+  SchedulerRouteSuggestion,
+} from '@/modules/scheduler/types/routing';
 
 type PortalRequest = <T>(method: string, path: string, body?: unknown) => Promise<T>;
 type PortalDownload = (
@@ -163,6 +182,9 @@ type PortalUsersResponse = {
     fullName: string | null;
     displayEmail: string;
     billingRate: number | null;
+    timezone: string;
+    workingDaysMask: number;
+    updatedAt: string;
     memberships: Array<{
       app: string;
       userId: string;
@@ -205,6 +227,30 @@ export async function createSchedulerDispatch(
   input: CreateSchedulerDispatchInput,
 ): Promise<ScheduleEvent> {
   return portalRequest(true)<ScheduleEvent>('POST', '/v1/portal/scheduler/dispatches', input);
+}
+
+export function fetchSchedulerAddressSuggestions(input: {
+  query?: string;
+  postcode?: string;
+  limit?: number;
+}): Promise<SchedulerAddressSuggestionsResponse> {
+  return portalRequest()<SchedulerAddressSuggestionsResponse>(
+    'POST',
+    '/v1/portal/scheduler/address-suggestions',
+    input,
+  );
+}
+
+export function fetchSchedulerRouteSuggestion(input: {
+  date: string;
+  currentLocation: SchedulerCurrentLocation;
+  assigneeFieldUserId?: string;
+}): Promise<SchedulerRouteSuggestion> {
+  return portalRequest(Boolean(input.assigneeFieldUserId))<SchedulerRouteSuggestion>(
+    'POST',
+    '/v1/portal/scheduler/route-suggestions',
+    input,
+  );
 }
 
 export async function updateScheduleEvent(
@@ -271,6 +317,9 @@ export async function fetchPortalAssignees(): Promise<PortalDirectoryUser[]> {
       email: entry.displayEmail,
       role: fieldMembership.role,
       billingRate: entry.billingRate ?? null,
+      timezone: entry.timezone,
+      workingDaysMask: entry.workingDaysMask,
+      updatedAt: entry.updatedAt,
       appMemberships: entry.memberships
         .filter((membership) => membership.isActive)
         .map((membership) => membership.app)
@@ -296,6 +345,26 @@ export function updatePortalUserBillingRate(
     'PATCH',
     `/v1/portal/users/${encodeURIComponent(globalUserId)}/billing-rate`,
     { billingRate },
+  );
+}
+
+export function updatePortalUserWorkforceProfile(
+  globalUserId: string,
+  input: {
+    timezone: string;
+    workingDaysMask: number;
+    expectedUpdatedAt: string;
+  },
+): Promise<{
+  globalUserId: string;
+  timezone: string;
+  workingDaysMask: number;
+  updatedAt: string;
+}> {
+  return portalRequest(true)(
+    'PATCH',
+    `/v1/portal/users/${encodeURIComponent(globalUserId)}/workforce-profile`,
+    input,
   );
 }
 
@@ -368,6 +437,20 @@ export async function fetchSchedulerPortfolioSummary(): Promise<SchedulerPortfol
   return portalRequest(true)<SchedulerPortfolioSummary>(
     'GET',
     '/v1/portal/scheduler/finance/portfolio-summary',
+  );
+}
+
+export function fetchSchedulerAnalytics(
+  filters: SchedulerAnalyticsFilters,
+): Promise<SchedulerAnalyticsDto> {
+  const query = new URLSearchParams({
+    from: filters.from,
+    to: filters.to,
+    timezone: filters.timezone,
+  });
+  return portalRequest(true)<SchedulerAnalyticsDto>(
+    'GET',
+    `/v1/portal/scheduler/analytics?${query}`,
   );
 }
 
@@ -677,4 +760,88 @@ export async function downloadSchedulerInvoicePdfExport(
   return response.blob.type
     ? response.blob
     : new Blob([response.blob], { type: job.contentType });
+}
+
+export async function fetchSchedulerLeaveRequests(
+  filters: SchedulerLeaveFilters = {},
+  adminView = false,
+): Promise<SchedulerLeaveRequest[]> {
+  const query = new URLSearchParams();
+  if (filters.globalUserId) query.set('globalUserId', filters.globalUserId);
+  if (filters.status) query.set('status', filters.status);
+  if (filters.from) query.set('from', filters.from);
+  if (filters.to) query.set('to', filters.to);
+  const suffix = query.size > 0 ? `?${query}` : '';
+  const response = await portalRequest(adminView)<{ requests: SchedulerLeaveRequest[] }>(
+    'GET',
+    `/v1/portal/scheduler/leave-requests${suffix}`,
+  );
+  return response.requests ?? [];
+}
+
+export function createSchedulerLeaveRequest(
+  input: CreateSchedulerLeaveInput,
+): Promise<SchedulerLeaveRequest> {
+  return portalRequest()<SchedulerLeaveRequest>(
+    'POST',
+    '/v1/portal/scheduler/leave-requests',
+    input,
+  );
+}
+
+export function reviewSchedulerLeaveRequest(
+  id: string,
+  input: ReviewSchedulerLeaveInput,
+): Promise<SchedulerLeaveRequest> {
+  return portalRequest(true)<SchedulerLeaveRequest>(
+    'POST',
+    `/v1/portal/scheduler/leave-requests/${encodeURIComponent(id)}/decision`,
+    input,
+  );
+}
+
+export function cancelSchedulerLeaveRequest(
+  id: string,
+  expectedUpdatedAt: string,
+  adminAction = false,
+): Promise<SchedulerLeaveRequest> {
+  return portalRequest(adminAction)<SchedulerLeaveRequest>(
+    'POST',
+    `/v1/portal/scheduler/leave-requests/${encodeURIComponent(id)}/cancel`,
+    { expectedUpdatedAt },
+  );
+}
+
+export async function fetchSchedulerInvoiceRefunds(
+  invoiceId: string,
+): Promise<SchedulerInvoiceRefund[]> {
+  const response = await portalRequest(true)<{ items: SchedulerInvoiceRefund[] }>(
+    'GET',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/refunds`,
+  );
+  return response.items ?? [];
+}
+
+export function postSchedulerInvoiceRefund(
+  invoiceId: string,
+  input: PostSchedulerInvoiceRefundInput,
+): Promise<SchedulerInvoiceRefund> {
+  return portalRequest(true)<SchedulerInvoiceRefund>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/refunds`,
+    input,
+  );
+}
+
+export function voidSchedulerInvoiceRefund(
+  invoiceId: string,
+  refundId: string,
+  expectedUpdatedAt: string,
+  reason: string,
+): Promise<SchedulerInvoiceRefund> {
+  return portalRequest(true)<SchedulerInvoiceRefund>(
+    'POST',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/refunds/${encodeURIComponent(refundId)}/void`,
+    { expectedUpdatedAt, reason },
+  );
 }

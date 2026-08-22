@@ -45,6 +45,7 @@ import {
 } from '../../auth/uploadCapability.js';
 import {
   CanonicalInputError,
+  INSTALLATION_METADATA_TEXT_LIMITS,
   INSTALLATION_ZONE_CODE_MAX_LENGTH,
   canonicalTreeMutationFingerprint,
   deriveSiteCode,
@@ -52,6 +53,7 @@ import {
   installationReadiness,
   isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
+  retainOmittedCanonicalInstallationFields,
   type CanonicalFormSubmission,
 } from './canonical.js';
 import {
@@ -73,6 +75,11 @@ import {
   retainPendingCommsReplacementMeterState,
   type CommsReplacementTransition,
 } from './meterHistory.js';
+import {
+  AUSTRALIAN_STATES,
+  normalizeSchedulerAddressText,
+  schedulerAddressFingerprint,
+} from '../../services/schedulerAddressService.js';
 
 type PushBody = {
   syncStage?: 'metadata' | 'complete';
@@ -317,6 +324,166 @@ function requireParentId(item: JsonRecord, installationId: string): void {
 
 export const deriveInstallHubSiteCode = deriveSiteCode;
 
+/**
+ * Installation lifecycle is server-owned. Canonical sync can replay an
+ * already-completed row, but only POST /installations/:id/complete may create
+ * the first Draft -> Completed transition (and its immutable sign-off).
+ */
+export function installHubInstallationStatusForSync(
+  existingStatus?: string | null,
+): 'Draft' | 'Completed' {
+  return existingStatus === 'Completed' ? 'Completed' : 'Draft';
+}
+
+/** Legacy full-snapshot clients must upgrade/delegate installation completion. */
+export function assertLegacyInstallHubCompletionUsesCanonicalRoute(
+  incomingStatus: string,
+  existingStatus?: string | null,
+): void {
+  if (incomingStatus === 'Completed' && existingStatus !== 'Completed') {
+    throw conflict('upgrade_required');
+  }
+}
+
+function payloadOwns(payload: JsonRecord, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, key) && payload[key] !== undefined;
+}
+
+function legacyNullableText(
+  payload: JsonRecord,
+  key: string,
+  maxLength: number,
+  existingValue?: string | null,
+): string | null {
+  if (!payloadOwns(payload, key)) return existingValue ?? null;
+  const value = payload[key];
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') throw badRequest(`${key} must be a string or null`);
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (normalized.length > maxLength) {
+    throw badRequest(`${key} must contain at most ${maxLength} characters`);
+  }
+  return normalized;
+}
+
+function legacyNullableBoolean(
+  payload: JsonRecord,
+  key: string,
+  existingValue?: boolean | null,
+): boolean | null {
+  if (!payloadOwns(payload, key)) return existingValue ?? null;
+  const value = payload[key];
+  if (value === null) return null;
+  if (typeof value !== 'boolean') throw badRequest(`${key} must be a boolean or null`);
+  return value;
+}
+
+function legacyNullableSolarCapacity(
+  payload: JsonRecord,
+  existingValue?: number | null,
+): number | null {
+  if (!payloadOwns(payload, 'solarCapacityKw')) return existingValue ?? null;
+  const value = payload.solarCapacityKw;
+  if (value === null) return null;
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || value < 0
+    || value > 1_000_000
+  ) {
+    throw badRequest('solarCapacityKw must be a finite number between 0 and 1000000, or null');
+  }
+  return value;
+}
+
+function legacyNullableSiteState(
+  payload: JsonRecord,
+  existingValue?: string | null,
+): typeof AUSTRALIAN_STATES[number] | null {
+  if (!payloadOwns(payload, 'siteState')) {
+    return (existingValue as typeof AUSTRALIAN_STATES[number] | null | undefined) ?? null;
+  }
+  const value = payload.siteState;
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string') throw badRequest('siteState must be a string or null');
+  const normalized = value.trim().toUpperCase();
+  if (!AUSTRALIAN_STATES.includes(normalized as typeof AUSTRALIAN_STATES[number])) {
+    throw badRequest('siteState must be an Australian state or territory abbreviation');
+  }
+  return normalized as typeof AUSTRALIAN_STATES[number];
+}
+
+function legacyNullableSitePostcode(
+  payload: JsonRecord,
+  existingValue?: string | null,
+): string | null {
+  const postcode = legacyNullableText(payload, 'sitePostcode', 4, existingValue);
+  if (postcode !== null && !/^\d{4}$/.test(postcode)) {
+    throw badRequest('sitePostcode must contain four digits');
+  }
+  return postcode;
+}
+
+function legacyNullableSiteCountry(
+  payload: JsonRecord,
+  existingValue?: string | null,
+): 'AU' | null {
+  if (!payloadOwns(payload, 'siteCountryCode')) {
+    return existingValue === 'AU' ? 'AU' : null;
+  }
+  const value = payload.siteCountryCode;
+  if (value === null || value === '') return null;
+  if (typeof value !== 'string' || value.trim().toUpperCase() !== 'AU') {
+    throw badRequest('siteCountryCode must be AU or null');
+  }
+  return 'AU';
+}
+
+type InstallHubAddressComparable = {
+  siteAddress: string;
+  siteLocality?: string | null;
+  siteState?: string | null;
+  sitePostcode?: string | null;
+  siteCountryCode?: string | null;
+};
+
+function normalizedOptionalAddressPart(value: string | null | undefined): string | null {
+  return value && value.trim() ? normalizeSchedulerAddressText(value) : null;
+}
+
+export function installHubSiteAddressChanged(
+  current: InstallHubAddressComparable,
+  next: InstallHubAddressComparable,
+): boolean {
+  return normalizeSchedulerAddressText(current.siteAddress)
+      !== normalizeSchedulerAddressText(next.siteAddress)
+    || normalizedOptionalAddressPart(current.siteLocality)
+      !== normalizedOptionalAddressPart(next.siteLocality)
+    || normalizedOptionalAddressPart(current.siteState)
+      !== normalizedOptionalAddressPart(next.siteState)
+    || normalizedOptionalAddressPart(current.sitePostcode)
+      !== normalizedOptionalAddressPart(next.sitePostcode)
+    || normalizedOptionalAddressPart(current.siteCountryCode)
+      !== normalizedOptionalAddressPart(next.siteCountryCode);
+}
+
+function installHubGeocodeInvalidation(
+  current: InstallHubAddressComparable | undefined,
+  next: InstallHubAddressComparable,
+) {
+  if (current && !installHubSiteAddressChanged(current, next)) return {};
+  return {
+    siteLatitude: null,
+    siteLongitude: null,
+    siteGeocodeStatus: 'unresolved' as const,
+    siteGeocodeProvider: null,
+    siteGeocodePlaceId: null,
+    siteAddressFingerprint: schedulerAddressFingerprint(next.siteAddress),
+    siteGeocodedAt: null,
+  };
+}
+
 export function installationValuesFromPayload(
   payload: JsonRecord,
   actor: { userId: string; role: string },
@@ -324,7 +491,13 @@ export function installationValuesFromPayload(
 ) {
   const id = requiredString(payload, 'id');
   const siteName = requiredString(payload, 'siteName');
+  const clientName = requiredString(payload, 'clientName');
+  const siteAddress = requiredString(payload, 'siteAddress');
   const derivedSiteCode = deriveInstallHubSiteCode(siteName);
+  const siteLocality = legacyNullableText(payload, 'siteLocality', 200, existing?.siteLocality);
+  const siteState = legacyNullableSiteState(payload, existing?.siteState);
+  const sitePostcode = legacyNullableSitePostcode(payload, existing?.sitePostcode);
+  const siteCountryCode = legacyNullableSiteCountry(payload, existing?.siteCountryCode);
   return {
     id,
     serverId: existing?.serverId ?? optionalString(payload, 'serverId') ?? randomUUID(),
@@ -340,9 +513,110 @@ export function installationValuesFromPayload(
     treeSchemaVersion: existing?.treeSchemaVersion ?? 1,
     treeRevision: existing?.treeRevision ?? 0,
     recordVersionNumber: existing?.recordVersionNumber ?? 0,
-    clientName: requiredString(payload, 'clientName'),
+    customerName: legacyNullableText(
+      payload,
+      'customerName',
+      INSTALLATION_METADATA_TEXT_LIMITS.customerName,
+      existing?.customerName,
+    ),
+    clientName,
+    maas: legacyNullableBoolean(payload, 'maas', existing?.maas),
+    serviceType: legacyNullableText(
+      payload,
+      'serviceType',
+      INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
+      existing?.serviceType,
+    ),
+    meteringSolutionType: legacyNullableText(
+      payload,
+      'meteringSolutionType',
+      INSTALLATION_METADATA_TEXT_LIMITS.meteringSolutionType,
+      existing?.meteringSolutionType,
+    ),
+    plannedMeterType: legacyNullableText(
+      payload,
+      'plannedMeterType',
+      INSTALLATION_METADATA_TEXT_LIMITS.plannedMeterType,
+      existing?.plannedMeterType,
+    ),
     siteName,
-    siteAddress: requiredString(payload, 'siteAddress'),
+    siteAddress,
+    siteLocality,
+    siteState,
+    sitePostcode,
+    siteCountryCode,
+    siteContactName: legacyNullableText(
+      payload,
+      'siteContactName',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactName,
+      existing?.siteContactName,
+    ),
+    siteContactPhone: legacyNullableText(
+      payload,
+      'siteContactPhone',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactPhone,
+      existing?.siteContactPhone,
+    ),
+    siteContactEmail: legacyNullableText(
+      payload,
+      'siteContactEmail',
+      INSTALLATION_METADATA_TEXT_LIMITS.siteContactEmail,
+      existing?.siteContactEmail,
+    ),
+    fergusJobNumber: legacyNullableText(
+      payload,
+      'fergusJobNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.fergusJobNumber,
+      existing?.fergusJobNumber,
+    ),
+    quoteNumber: legacyNullableText(
+      payload,
+      'quoteNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.quoteNumber,
+      existing?.quoteNumber,
+    ),
+    jobComments: legacyNullableText(
+      payload,
+      'jobComments',
+      INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
+      existing?.jobComments,
+    ),
+    accessInformation: legacyNullableText(
+      payload,
+      'accessInformation',
+      INSTALLATION_METADATA_TEXT_LIMITS.accessInformation,
+      existing?.accessInformation,
+    ),
+    warrantyDevice: legacyNullableBoolean(payload, 'warrantyDevice', existing?.warrantyDevice),
+    monitoringInstalled: legacyNullableBoolean(
+      payload,
+      'monitoringInstalled',
+      existing?.monitoringInstalled,
+    ),
+    hardwareInstalled: legacyNullableBoolean(
+      payload,
+      'hardwareInstalled',
+      existing?.hardwareInstalled,
+    ),
+    solarCapacityKw: legacyNullableSolarCapacity(payload, existing?.solarCapacityKw),
+    additionalMonitoringRequired: legacyNullableBoolean(
+      payload,
+      'additionalMonitoringRequired',
+      existing?.additionalMonitoringRequired,
+    ),
+    additionalMonitoringHardware: legacyNullableText(
+      payload,
+      'additionalMonitoringHardware',
+      INSTALLATION_METADATA_TEXT_LIMITS.additionalMonitoringHardware,
+      existing?.additionalMonitoringHardware,
+    ),
+    ...installHubGeocodeInvalidation(existing, {
+      siteAddress,
+      siteLocality,
+      siteState,
+      sitePostcode,
+      siteCountryCode,
+    }),
     inspectorName: requiredString(payload, 'inspectorName'),
     auditDate: requiredString(payload, 'auditDate'),
     status: optionalString(payload, 'status') ?? existing?.status ?? 'Draft',
@@ -1178,9 +1452,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       incomingTree.installation.timezone = incomingTree.installation.timezone
         || existingInstallation?.timezone
         || 'Australia/Sydney';
-      incomingTree.installation.status = existingInstallation?.status === 'Completed'
-        ? 'Completed'
-        : 'Draft';
+      incomingTree.installation.status = installHubInstallationStatusForSync(
+        existingInstallation?.status,
+      );
       // Completion notes are pinned only by the canonical completion route.
       // Restore the server value so clients predating this additive field can
       // still replay an exact completed snapshot without erasing the sign-off.
@@ -1232,6 +1506,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             incomingTree.installation.recordVersionNumber = current.recordVersionNumber;
             const currentTree = await loadCanonicalInstallationTree(installationId, tx);
             if (!currentTree) throw notFound('Installation');
+            retainOmittedCanonicalInstallationFields(
+              currentTree.installation,
+              incomingTree.installation,
+            );
             if (syncStage === 'metadata') {
               // Installed clients stage server-completed forms as Draft during
               // metadata sync. Restore those first so only a genuinely pending
@@ -1320,9 +1598,34 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             }
             const nextRevision = current.treeRevision + 1;
             const [updated] = await tx.update(ihInstallations).set({
+              customerName: incomingTree.installation.customerName ?? null,
               clientName: incomingTree.installation.clientName,
+              maas: incomingTree.installation.maas ?? null,
+              serviceType: incomingTree.installation.serviceType ?? null,
+              meteringSolutionType: incomingTree.installation.meteringSolutionType ?? null,
+              plannedMeterType: incomingTree.installation.plannedMeterType ?? null,
               siteName: incomingTree.installation.siteName,
               siteAddress: incomingTree.installation.siteAddress,
+              siteLocality: incomingTree.installation.siteLocality ?? null,
+              siteState: incomingTree.installation.siteState ?? null,
+              sitePostcode: incomingTree.installation.sitePostcode ?? null,
+              siteCountryCode: incomingTree.installation.siteCountryCode ?? null,
+              siteContactName: incomingTree.installation.siteContactName ?? null,
+              siteContactPhone: incomingTree.installation.siteContactPhone ?? null,
+              siteContactEmail: incomingTree.installation.siteContactEmail ?? null,
+              fergusJobNumber: incomingTree.installation.fergusJobNumber ?? null,
+              quoteNumber: incomingTree.installation.quoteNumber ?? null,
+              jobComments: incomingTree.installation.jobComments ?? null,
+              accessInformation: incomingTree.installation.accessInformation ?? null,
+              warrantyDevice: incomingTree.installation.warrantyDevice ?? null,
+              monitoringInstalled: incomingTree.installation.monitoringInstalled ?? null,
+              hardwareInstalled: incomingTree.installation.hardwareInstalled ?? null,
+              solarCapacityKw: incomingTree.installation.solarCapacityKw ?? null,
+              additionalMonitoringRequired:
+                incomingTree.installation.additionalMonitoringRequired ?? null,
+              additionalMonitoringHardware:
+                incomingTree.installation.additionalMonitoringHardware ?? null,
+              ...installHubGeocodeInvalidation(current, incomingTree.installation),
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
               siteCode: incomingTree.installation.siteCode,
@@ -1367,9 +1670,34 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               treeSchemaVersion: 2,
               treeRevision: 1,
               recordVersionNumber: 0,
+              customerName: incomingTree.installation.customerName ?? null,
               clientName: incomingTree.installation.clientName,
+              maas: incomingTree.installation.maas ?? null,
+              serviceType: incomingTree.installation.serviceType ?? null,
+              meteringSolutionType: incomingTree.installation.meteringSolutionType ?? null,
+              plannedMeterType: incomingTree.installation.plannedMeterType ?? null,
               siteName: incomingTree.installation.siteName,
               siteAddress: incomingTree.installation.siteAddress,
+              siteLocality: incomingTree.installation.siteLocality ?? null,
+              siteState: incomingTree.installation.siteState ?? null,
+              sitePostcode: incomingTree.installation.sitePostcode ?? null,
+              siteCountryCode: incomingTree.installation.siteCountryCode ?? null,
+              siteContactName: incomingTree.installation.siteContactName ?? null,
+              siteContactPhone: incomingTree.installation.siteContactPhone ?? null,
+              siteContactEmail: incomingTree.installation.siteContactEmail ?? null,
+              fergusJobNumber: incomingTree.installation.fergusJobNumber ?? null,
+              quoteNumber: incomingTree.installation.quoteNumber ?? null,
+              jobComments: incomingTree.installation.jobComments ?? null,
+              accessInformation: incomingTree.installation.accessInformation ?? null,
+              warrantyDevice: incomingTree.installation.warrantyDevice ?? null,
+              monitoringInstalled: incomingTree.installation.monitoringInstalled ?? null,
+              hardwareInstalled: incomingTree.installation.hardwareInstalled ?? null,
+              solarCapacityKw: incomingTree.installation.solarCapacityKw ?? null,
+              additionalMonitoringRequired:
+                incomingTree.installation.additionalMonitoringRequired ?? null,
+              additionalMonitoringHardware:
+                incomingTree.installation.additionalMonitoringHardware ?? null,
+              ...installHubGeocodeInvalidation(undefined, incomingTree.installation),
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
               status: 'Draft',
@@ -1535,13 +1863,13 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
     );
     installationValues.treeSchemaVersion = 1;
     installationValues.treeRevision = (existingInstallation?.treeRevision ?? 0) + 1;
-    if (
-      installationValues.status === 'Completed'
-      && existingInstallation?.status !== 'Completed'
-    ) {
-      throw conflict('upgrade_required');
-    }
-    installationValues.status = existingInstallation?.status ?? 'Draft';
+    assertLegacyInstallHubCompletionUsesCanonicalRoute(
+      installationValues.status,
+      existingInstallation?.status,
+    );
+    installationValues.status = installHubInstallationStatusForSync(
+      existingInstallation?.status,
+    );
 
     const zoneIds = new Set(zones.map((item) => {
       requireParentId(item, installationId);
@@ -1632,13 +1960,13 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         : installationValues;
       persistedInstallationValues.treeSchemaVersion = 1;
       persistedInstallationValues.treeRevision = (lockedInstallation?.treeRevision ?? 0) + 1;
-      if (
-        persistedInstallationValues.status === 'Completed'
-        && lockedInstallation?.status !== 'Completed'
-      ) {
-        throw conflict('upgrade_required');
-      }
-      persistedInstallationValues.status = lockedInstallation?.status ?? 'Draft';
+      assertLegacyInstallHubCompletionUsesCanonicalRoute(
+        persistedInstallationValues.status,
+        lockedInstallation?.status,
+      );
+      persistedInstallationValues.status = installHubInstallationStatusForSync(
+        lockedInstallation?.status,
+      );
       const { id: _installationId, ...installationUpdate } = persistedInstallationValues;
       if (lockedInstallation) {
         const [updated] = await tx.update(ihInstallations).set(installationUpdate).where(and(

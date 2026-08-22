@@ -711,7 +711,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
           sourceApp: 'installhub',
           sourceType: 'installation',
           sourceId: installationId,
-        });
+        }, { completionProvenance: 'historical_replay' });
         return {
           kind: 'success' as const,
           result: {
@@ -793,7 +793,10 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         sourceApp: 'installhub',
         sourceType: 'installation',
         sourceId: installationId,
-      }, { observedAt: completedAt });
+      }, {
+        observedAt: completedAt,
+        completionProvenance: 'direct_transition',
+      });
       return { kind: 'success' as const, result };
     });
     if (outcome.kind === 'not_ready') {
@@ -840,7 +843,16 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       if (installation.treeSchemaVersion < 2) throw conflict('upgrade_required');
       if (installation.status !== 'Completed') throw conflict('installation_not_completed');
       if (installation.treeRevision !== baseTreeRevision) throw conflict('snapshot_conflict');
+      if (!installation.completedAt) throw conflict('completion_timestamp_missing');
       const reopenedAt = new Date();
+      await completeLinkedSchedulerEvents(tx, {
+        sourceApp: 'installhub',
+        sourceType: 'installation',
+        sourceId: installationId,
+      }, {
+        observedAt: reopenedAt,
+        completionProvenance: 'historical_replay',
+      });
       const nextRevision = installation.treeRevision + 1;
       const [updated] = await tx.update(ihInstallations).set({
         status: 'Draft',

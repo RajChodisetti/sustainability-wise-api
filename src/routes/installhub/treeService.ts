@@ -29,6 +29,7 @@ import {
 } from '../../storage/photoCopyReferences.js';
 import {
   INSTALLATION_CANONICALIZER_VERSION,
+  INSTALLATION_OPTIONAL_WRITE_FIELDS,
   INSTALLATION_TAXONOMY_VERSION,
   INSTALLATION_VALIDATOR_VERSION,
   DISPLAY_CODE_RULE_VERSION,
@@ -163,9 +164,31 @@ export async function loadCanonicalInstallationTree(
       externalKey: installation.externalKey,
       siteCode: installation.siteCode,
       timezone: installation.timezone,
+      customerName: installation.customerName,
       clientName: installation.clientName,
+      maas: installation.maas,
+      serviceType: installation.serviceType,
+      meteringSolutionType: installation.meteringSolutionType,
+      plannedMeterType: installation.plannedMeterType,
       siteName: installation.siteName,
       siteAddress: installation.siteAddress,
+      siteLocality: installation.siteLocality,
+      siteState: installation.siteState as CanonicalInstallationTree['installation']['siteState'],
+      sitePostcode: installation.sitePostcode,
+      siteCountryCode: installation.siteCountryCode as 'AU' | null,
+      siteContactName: installation.siteContactName,
+      siteContactPhone: installation.siteContactPhone,
+      siteContactEmail: installation.siteContactEmail,
+      fergusJobNumber: installation.fergusJobNumber,
+      quoteNumber: installation.quoteNumber,
+      jobComments: installation.jobComments,
+      accessInformation: installation.accessInformation,
+      warrantyDevice: installation.warrantyDevice,
+      monitoringInstalled: installation.monitoringInstalled,
+      hardwareInstalled: installation.hardwareInstalled,
+      solarCapacityKw: installation.solarCapacityKw,
+      additionalMonitoringRequired: installation.additionalMonitoringRequired,
+      additionalMonitoringHardware: installation.additionalMonitoringHardware,
       inspectorName: installation.inspectorName,
       auditDate: installation.auditDate,
       status: installation.status === 'Completed' ? 'Completed' : 'Draft',
@@ -1780,17 +1803,27 @@ export function canonicalSnapshotContentHash(
   const canonicalizerComparable = withoutHash.canonicalizerVersion === 'installation-canonical-v2.1'
     ? { ...withoutHash, canonicalizerVersion: INSTALLATION_CANONICALIZER_VERSION }
     : withoutHash;
-  // completionNotes was added as nullable. Historical snapshots omit it, while
-  // current live-tree projection emits null. Normalize only the comparison
-  // shape; never rewrite the immutable snapshot or its stored payload hash.
+  // Additive nullable installation fields are omitted by historical snapshots,
+  // while the current live-tree projection emits null. Normalize only the
+  // comparison shape; never rewrite the immutable snapshot or stored hash.
   const installation = canonicalizerComparable.installationTree.installation;
-  const comparable = Object.prototype.hasOwnProperty.call(installation, 'completionNotes')
+  const nullableInstallationFields = [
+    ...INSTALLATION_OPTIONAL_WRITE_FIELDS,
+    'completionNotes',
+  ] as const;
+  const missingFields = nullableInstallationFields.filter((field) => (
+    !Object.prototype.hasOwnProperty.call(installation, field)
+  ));
+  const comparable = missingFields.length === 0
     ? canonicalizerComparable
     : {
         ...canonicalizerComparable,
         installationTree: {
           ...canonicalizerComparable.installationTree,
-          installation: { ...installation, completionNotes: null },
+          installation: {
+            ...installation,
+            ...Object.fromEntries(missingFields.map((field) => [field, null])),
+          },
         },
       };
   return canonicalPayloadHash(comparable);

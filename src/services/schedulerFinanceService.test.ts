@@ -9,35 +9,92 @@ import {
   computeSchedulerCommercialTotals,
   effectiveUserLabourBilling,
   invoiceLineTotalCents,
+  isSchedulerInvoiceDueDateBeforeIssueDate,
   isCompletedSchedulerJobStatus,
   mergeResolvedRecordedActorTime,
+  nextSchedulerInvoiceRevisionAt,
+  parseSchedulerInvoiceXeroDate,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
-  schedulerInternalHoursNeedReview,
 } from './schedulerFinanceService.js';
 
-test('invoice completion readiness follows each product lifecycle fence', () => {
+test('invoice issue allocates two strictly increasing revisions in one timestamp tick', () => {
+  const original = new Date('2026-08-22T10:00:00.000Z');
+  const transition = new Date('2026-08-22T10:00:00.000Z');
+  const normalized = nextSchedulerInvoiceRevisionAt(original, transition);
+  const issued = nextSchedulerInvoiceRevisionAt(normalized, transition);
+
+  assert.equal(normalized.toISOString(), '2026-08-22T10:00:00.001Z');
+  assert.equal(issued.toISOString(), '2026-08-22T10:00:00.002Z');
+  assert.ok(issued > normalized);
+});
+
+test('invoice due dates compare UTC calendar days rather than timestamp time-of-day', () => {
+  const issueDate = new Date('2026-08-22T23:59:59.999Z');
+
+  assert.equal(
+    isSchedulerInvoiceDueDateBeforeIssueDate(
+      new Date('2026-08-22T00:00:00.000Z'),
+      issueDate,
+    ),
+    false,
+  );
+  assert.equal(
+    isSchedulerInvoiceDueDateBeforeIssueDate(
+      new Date('2026-08-21T23:59:59.999Z'),
+      issueDate,
+    ),
+    true,
+  );
+  assert.equal(
+    isSchedulerInvoiceDueDateBeforeIssueDate(
+      new Date('2026-08-23T00:00:00.000Z'),
+      issueDate,
+    ),
+    false,
+  );
+});
+
+test('Xero invoice dates are strict nullable calendar dates', () => {
+  assert.equal(parseSchedulerInvoiceXeroDate(null), null);
+  assert.equal(parseSchedulerInvoiceXeroDate(''), null);
+  assert.equal(parseSchedulerInvoiceXeroDate('2028-02-29'), '2028-02-29');
+  for (const invalid of ['2026-02-29', '2026-02-30', '2026-2-09', '09/02/2026']) {
+    assert.throws(
+      () => parseSchedulerInvoiceXeroDate(invalid),
+      (error: unknown) => error instanceof AppError
+        && error.statusCode === 400
+        && error.detail === 'xeroDate must be a valid YYYY-MM-DD calendar date',
+    );
+  }
+});
+
+test('invoice completion readiness requires completed status and authoritative completion time', () => {
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'ecoaudit', jobStatus: 'Completed',
+    jobStatus: 'Completed',
+    completedAt: new Date('2026-08-22T00:00:00.000Z'),
   }), { satisfied: true, basis: 'job' });
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'installhub', jobStatus: 'Draft',
+    jobStatus: 'Draft',
+    completedAt: null,
   }), { satisfied: false, basis: null });
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'solarsense', jobStatus: 'Completed',
-  }), { satisfied: true, basis: 'job' });
+    jobStatus: 'Completed',
+    completedAt: null,
+  }), { satisfied: false, basis: null });
   assert.deepEqual(schedulerInvoiceCompletionReadiness({
-    sourceApp: 'solarsense', jobStatus: 'Draft',
+    jobStatus: 'Draft',
+    completedAt: new Date('2026-08-22T00:00:00.000Z'),
   }), { satisfied: false, basis: null });
 });
 
-test('internal hours evidence never gates invoice readiness', () => {
+test('missing app time requires both explicit admin hour values, including valid zeroes', () => {
   assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, null), {
     satisfied: true,
     basis: 'app_time',
   });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, null), {
-    satisfied: true,
+    satisfied: false,
     basis: null,
   });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
@@ -45,25 +102,10 @@ test('internal hours evidence never gates invoice readiness', () => {
   }), { satisfied: true, basis: 'admin_override' });
   assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
     source: 'admin', billableMilliseconds: 0, costMilliseconds: null,
-  }), { satisfied: true, basis: 'admin_override' });
+  }), { satisfied: false, basis: null });
   assert.deepEqual(schedulerInvoiceHoursReadiness(3_600_000, {
     source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
-  }), { satisfied: true, basis: 'app_time' });
-  assert.deepEqual(schedulerInvoiceHoursReadiness(0, {
-    source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
-  }), { satisfied: true, basis: null });
-
-  assert.equal(schedulerInternalHoursNeedReview(3_600_000, null), false);
-  assert.equal(schedulerInternalHoursNeedReview(0, null), true);
-  assert.equal(schedulerInternalHoursNeedReview(0, {
-    source: 'admin', billableMilliseconds: 0, costMilliseconds: 0,
-  }), false);
-  assert.equal(schedulerInternalHoursNeedReview(0, {
-    source: 'admin', billableMilliseconds: 0, costMilliseconds: null,
-  }), true);
-  assert.equal(schedulerInternalHoursNeedReview(3_600_000, {
-    source: 'legacy_estimate', billableMilliseconds: 3_600_000, costMilliseconds: 3_600_000,
-  }), true);
+  }), { satisfied: false, basis: null });
 });
 
 test('billable hour overrides accept whole nonnegative hours only', () => {
@@ -322,8 +364,9 @@ test('invoice snapshots no longer lock job settings or require migrated legacy h
   );
   assert.doesNotMatch(
     service,
-    /Confirm or replace migrated legacy hours .* before issuing/,
+    /Confirm or replace migrated legacy hours/,
   );
+  assert.doesNotMatch(service, /requireInvoiceHoursReady/);
   assert.match(service, /Existing invoices are immutable commercial snapshots/);
 });
 

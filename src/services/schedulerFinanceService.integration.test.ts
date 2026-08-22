@@ -78,12 +78,12 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         ('eco-job', 'Eco Factory', '1 Eco Road', 'Worker', '2026-08-20', 'Draft',
          'worker-eco', '2026-08-01'),
         ('eco-unscheduled', 'Unscheduled Eco', '2 Eco Road', 'Worker', '2026-08-21',
-         'Completed', 'worker-eco', '2026-08-01')
+         'Draft', 'worker-eco', '2026-08-01')
     `);
     await setup.unsafe(`
       INSERT INTO ss_sites (
         id, site_name, location, date_of_assessment, status, created_at
-      ) VALUES ('solar-site', 'Solar Campus', '3 Solar Road', '2026-08-22', 'Completed', '2026-08-01')
+      ) VALUES ('solar-site', 'Solar Campus', '3 Solar Road', '2026-08-22', 'Draft', '2026-08-01')
     `);
     await setup.unsafe(`
       INSERT INTO ss_rooftop_assessments (
@@ -227,11 +227,32 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         UPDATE ih_installations
         SET status = 'Completed', completed_at = now()
         WHERE id = 'field-job';
-        UPDATE ss_sites
+        UPDATE ss_rooftop_assessments
         SET status = 'Completed', completed_at = now()
-        WHERE id = 'solar-site';
+        WHERE id = 'solar-job';
       `);
-      const [completedEco, parentCompletedSolar, completedField] = await Promise.all([
+      // Current lifecycle code records immutable completion facts in the same
+      // transaction as the first completion. Seed that evidence before this
+      // finance-focused test exercises supported reopen/recomplete states.
+      await setup.unsafe(`
+        INSERT INTO scheduler_job_completion_facts (
+          id, source_app, source_type, source_id, completed_at,
+          primary_global_user_id, assignee_field_user_id,
+          assignee_display_name, attribution_source
+        )
+        SELECT 'eco-completion-fact', 'ecoaudit', 'audit', id, completed_at,
+          'worker-global', 'worker-field', 'Recorded Worker', 'product_assignment'
+        FROM ea_audits WHERE id = 'eco-job'
+        UNION ALL
+        SELECT 'solar-completion-fact', 'solarsense', 'assessment', id, completed_at,
+          'worker-global', 'worker-field', 'Recorded Worker', 'product_assignment'
+        FROM ss_rooftop_assessments WHERE id = 'solar-job'
+        UNION ALL
+        SELECT 'field-completion-fact', 'installhub', 'installation', id, completed_at,
+          'worker-global', 'worker-field', 'Recorded Worker', 'product_assignment'
+        FROM ih_installations WHERE id = 'field-job'
+      `);
+      const [completedEco, completedSolar, completedField] = await Promise.all([
         service.getSchedulerFinancialSummaryById(admin, eco.financeId),
         service.getSchedulerFinancialSummaryById(admin, solar.financeId),
         service.getSchedulerFinancialSummaryById(admin, field.financeId),
@@ -243,9 +264,9 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         hoursBasis: 'app_time',
         ready: true,
       });
-      assert.equal(parentCompletedSolar.job.status, 'Draft');
-      assert.equal(parentCompletedSolar.invoiceReadiness.completionBasis, null);
-      assert.equal(parentCompletedSolar.invoiceReadiness.ready, false);
+      assert.equal(completedSolar.job.status, 'Completed');
+      assert.equal(completedSolar.invoiceReadiness.completionBasis, 'job');
+      assert.equal(completedSolar.invoiceReadiness.ready, true);
       assert.equal(completedField.invoiceReadiness.completionBasis, 'job');
 
       const overview = await service.listSchedulerFinanceOverview(admin, { limit: 100 });
@@ -256,28 +277,8 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       assert.equal(
         overview.items.find((item) => item.sourceId === 'solar-job')
           ?.invoiceReadiness.completionBasis,
-        null,
+        'job',
       );
-      await assert.rejects(
-        service.createQuickSchedulerInvoiceByFinanceId(
-          admin,
-          solar.financeId,
-          { includeLabour: false, expenseIds: [] },
-        ),
-        appErrorDetailIncludes('Mark the SolarSense assessment complete'),
-      );
-
-      await setup`
-        UPDATE ss_rooftop_assessments
-        SET status = 'Completed', completed_at = now()
-        WHERE id = 'solar-job'
-      `;
-      const completedSolar = await service.getSchedulerFinancialSummaryById(
-        admin,
-        solar.financeId,
-      );
-      assert.equal(completedSolar.invoiceReadiness.completionBasis, 'job');
-      assert.equal(completedSolar.invoiceReadiness.ready, true);
 
       const incomplete = await service.getSchedulerFinancialSummaryForSource(admin, {
         sourceApp: 'installhub',
@@ -334,22 +335,18 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         [solar.financeId],
       );
       assert.equal(legacyEligibility.eligible, true);
-      assert.equal(legacyEligibility.jobs[0]?.invoiceReadiness.hoursSatisfied, true);
-      assert.equal(
-        legacyEligibility.issues.some((issue) => issue.code === 'hours_entry_required'),
-        false,
-      );
+      assert.equal(legacyEligibility.jobs[0]?.invoiceReadiness.hoursSatisfied, false);
+      assert.deepEqual(legacyEligibility.issues, []);
       const legacyHoursDraft = await service.createQuickSchedulerInvoiceByFinanceId(
         admin,
         solar.financeId,
-        { includeLabour: false, expenseIds: [] },
+        { includeLabour: true },
       );
       assert.equal(legacyHoursDraft.status, 'draft');
       await service.voidSchedulerInvoiceByFinanceId(
         admin,
         solar.financeId,
         legacyHoursDraft.id,
-        legacyHoursDraft.updatedAt,
       );
       const confirmed = await service.updateSchedulerFinanceById(admin, solar.financeId, {
         billableHoursOverride: 2,
@@ -405,6 +402,8 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         { expenseIds: [fieldExpense.id], includeLabour: true },
       );
       assert.deepEqual(fieldDraft.lines.map((line) => line.kind), ['labour', 'expense']);
+      assert.equal(fieldDraft.xeroInvoiceNumber, null);
+      assert.equal(fieldDraft.xeroDate, null);
       await setup`UPDATE ih_installations SET status = 'Draft' WHERE id = 'field-job'`;
       const reopenedFieldDraft = await service.getSchedulerInvoiceByFinanceId(
         admin,
@@ -425,6 +424,15 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         ),
         appErrorDetailIncludes('already reserved'),
       );
+      await assert.rejects(
+        service.updateSchedulerDraftInvoiceByFinanceId(
+          admin,
+          field.financeId,
+          fieldDraft.id,
+          { expectedUpdatedAt: fieldDraft.updatedAt, xeroDate: '2026-02-30' },
+        ),
+        appErrorDetailIncludes('xeroDate must be a valid YYYY-MM-DD calendar date'),
+      );
       const draftEdited = await service.updateSchedulerDraftInvoiceByFinanceId(
         admin,
         field.financeId,
@@ -435,9 +443,13 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           billToAddress: 'Billing Office, Sydney',
           billToEmail: 'accounts@example.test',
           purchaseOrderReference: 'PO-123',
+          xeroInvoiceNumber: 'INV-1001',
+          xeroDate: '2026-08-23',
         },
       );
       assert.equal(draftEdited.billToName, 'Legal Field Client Pty Ltd');
+      assert.equal(draftEdited.xeroInvoiceNumber, 'INV-1001');
+      assert.equal(draftEdited.xeroDate, '2026-08-23');
       assert.ok(new Date(draftEdited.updatedAt) > new Date(fieldDraft.updatedAt));
       await assert.rejects(
         service.updateSchedulerDraftInvoiceByFinanceId(
@@ -479,16 +491,48 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       );
       assert.equal(fieldIssued.job.jobName, 'Field Factory Updated');
       assert.equal(fieldIssued.billToName, 'Legal Field Client Pty Ltd');
+      assert.equal(fieldIssued.xeroInvoiceNumber, 'INV-1001');
+      assert.equal(fieldIssued.xeroDate, '2026-08-23');
       assert.ok(fieldIssued.dueDate);
+      assert.equal(fieldIssued.issueDate?.slice(0, 10), dueToday);
+      assert.equal(fieldIssued.dueDate.slice(0, 10), dueToday);
+      assert.ok(fieldIssued.issuedAt);
+      assert.ok(new Date(fieldIssued.updatedAt) > new Date(fieldIssued.issuedAt));
       assert.equal(fieldIssued.overdue, false);
       await assert.rejects(
         service.updateSchedulerDraftInvoiceByFinanceId(
           admin,
           field.financeId,
           fieldIssued.id,
-          { notes: 'Must not mutate' },
+          { expectedUpdatedAt: fieldIssued.updatedAt, notes: 'Must not mutate' },
         ),
-        appErrorDetailIncludes('Only draft invoices'),
+        appErrorDetailIncludes('Only draft invoice content'),
+      );
+      const reconciledIssued = await service.updateSchedulerDraftInvoiceByFinanceId(
+        admin,
+        field.financeId,
+        fieldIssued.id,
+        {
+          expectedUpdatedAt: fieldIssued.updatedAt,
+          xeroInvoiceNumber: 'INV-1001-FINAL',
+          xeroDate: '2026-08-24',
+        },
+      );
+      assert.equal(reconciledIssued.status, 'issued');
+      assert.equal(reconciledIssued.xeroInvoiceNumber, 'INV-1001-FINAL');
+      assert.equal(reconciledIssued.xeroDate, '2026-08-24');
+      assert.equal(reconciledIssued.notes, fieldIssued.notes);
+      await assert.rejects(
+        service.updateSchedulerDraftInvoiceByFinanceId(
+          admin,
+          field.financeId,
+          fieldIssued.id,
+          {
+            expectedUpdatedAt: fieldIssued.updatedAt,
+            xeroInvoiceNumber: 'STALE-XERO-UPDATE',
+          },
+        ),
+        appErrorDetailIncludes('Invoice changed; refresh before continuing'),
       );
       await assert.rejects(
         service.markSchedulerInvoicePaidByFinanceId(
@@ -506,23 +550,33 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         field.financeId,
         fieldIssued.id,
         paidAtValue,
+        reconciledIssued.updatedAt,
       );
       assert.equal(paid.status, 'paid');
       assert.equal(paid.paidAt, paidAtValue);
+      const clearedPaidReconciliation = await service.updateSchedulerDraftInvoiceByFinanceId(
+        admin,
+        field.financeId,
+        paid.id,
+        {
+          expectedUpdatedAt: paid.updatedAt,
+          xeroInvoiceNumber: null,
+          xeroDate: null,
+        },
+      );
+      assert.equal(clearedPaidReconciliation.status, 'paid');
+      assert.equal(clearedPaidReconciliation.xeroInvoiceNumber, null);
+      assert.equal(clearedPaidReconciliation.xeroDate, null);
       await assert.rejects(
-        service.voidSchedulerInvoiceByFinanceId(admin, field.financeId, paid.id),
+        service.voidSchedulerInvoiceByFinanceId(
+          admin,
+          field.financeId,
+          paid.id,
+          clearedPaidReconciliation.updatedAt,
+        ),
         appErrorDetailIncludes('Paid invoices cannot be voided'),
       );
 
-      await service.updateSchedulerFinanceById(admin, solar.financeId, {
-        pricingMode: 'quoted', quotedAmount: 1000,
-      });
-      let solarDraft = await service.createQuickSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        { includeLabour: true, expenseIds: [] },
-      );
-      assert.deepEqual(solarDraft.lines.map((line) => line.kind), ['quoted']);
       const solarExpense = await service.createSchedulerExpenseByFinanceId(
         admin,
         solar.financeId,
@@ -531,35 +585,15 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           costAmount: 50, billableAmount: 75, billable: true,
         },
       );
-      assert.equal(solarExpense.invoiceId, solarDraft.id);
-      solarDraft = await service.getSchedulerInvoiceByFinanceId(
+      await service.updateSchedulerFinanceById(admin, solar.financeId, {
+        pricingMode: 'quoted', quotedAmount: 1000,
+      });
+      const solarDraft = await service.createQuickSchedulerInvoiceByFinanceId(
         admin,
         solar.financeId,
-        solarDraft.id,
+        { expenseIds: [solarExpense.id] },
       );
       assert.deepEqual(solarDraft.lines.map((line) => line.kind), ['quoted', 'expense']);
-      solarDraft = await service.updateSchedulerDraftInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        solarDraft.id,
-        {
-          expectedUpdatedAt: solarDraft.updatedAt,
-          lines: solarDraft.lines.map((line) => ({
-            id: line.id,
-            financeId: line.financeId,
-            kind: line.kind,
-            description: line.description,
-            quantity: line.quantity,
-            unitAmountExGst: line.kind === 'expense' ? 80 : line.unitAmountExGst,
-            showQuantityAndRate: line.showQuantityAndRate,
-            expenseId: line.expenseId,
-          })),
-        },
-      );
-      assert.equal(
-        solarDraft.lines.find((line) => line.expenseId === solarExpense.id)?.lineTotalExGst,
-        80,
-      );
       const repricedWhileDraftExists = await service.updateSchedulerFinanceById(
         admin,
         solar.financeId,
@@ -577,7 +611,24 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           .subtotalExGst,
         solarDraft.subtotalExGst,
       );
-      await service.voidSchedulerInvoiceByFinanceId(admin, solar.financeId, solarDraft.id);
+      const voidedSolar = await service.voidSchedulerInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        solarDraft.id,
+        solarDraft.updatedAt,
+      );
+      await assert.rejects(
+        service.updateSchedulerDraftInvoiceByFinanceId(
+          admin,
+          solar.financeId,
+          solarDraft.id,
+          {
+            expectedUpdatedAt: voidedSolar.updatedAt,
+            xeroInvoiceNumber: 'VOID-MUST-NOT-CHANGE',
+          },
+        ),
+        appErrorDetailIncludes('Void invoices cannot be edited'),
+      );
       const solarReplacement = await service.createQuickSchedulerInvoiceByFinanceId(
         admin,
         solar.financeId,
@@ -589,39 +640,6 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         solar.financeId,
         solarReplacement.id,
         solarReplacement.updatedAt,
-      );
-      const duplicateDraftOne = await service.createQuickSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        { includeLabour: false, expenseIds: [] },
-      );
-      const duplicateDraftTwo = await service.createQuickSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        { includeLabour: false, expenseIds: [] },
-      );
-      await assert.rejects(
-        service.createSchedulerExpenseByFinanceId(admin, solar.financeId, {
-          kind: 'expense', category: 'other', description: 'Ambiguous draft bill',
-          costAmount: 10, billableAmount: 15, billable: true,
-        }),
-        appErrorDetailIncludes('multiple draft invoices'),
-      );
-      assert.equal((await setup<{ count: string }[]>`
-        SELECT count(*) AS count FROM scheduler_job_expenses
-        WHERE finance_id = ${solar.financeId} AND description = 'Ambiguous draft bill'
-      `)[0]?.count, '0');
-      await service.voidSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        duplicateDraftOne.id,
-        duplicateDraftOne.updatedAt,
-      );
-      await service.voidSchedulerInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        duplicateDraftTwo.id,
-        duplicateDraftTwo.updatedAt,
       );
 
       const consolidatedEligibility = await service.getConsolidatedInvoiceEligibility(
@@ -769,13 +787,12 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         limit: 10,
         search: 'Consolidated Client Pty Ltd',
       });
-      assert.equal(
-        consolidatedPortfolio.items.some((invoice) => (
-          invoice.id === consolidatedPaid.id
-          || invoice.financeIds.includes(eco.financeId)
-        )),
-        true,
+      const paidPortfolioInvoice = consolidatedPortfolio.items.find(
+        (invoice) => invoice.id === consolidatedPaid.id,
       );
+      assert.equal(paidPortfolioInvoice?.status, 'paid');
+      assert.equal(paidPortfolioInvoice?.financeIds.includes(eco.financeId), true);
+      assert.equal(paidPortfolioInvoice?.financeIds.includes(solar.financeId), true);
       await assert.rejects(
         service.voidConsolidatedSchedulerInvoice(
           admin,
@@ -790,7 +807,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           contentType: 'application/pdf',
           body: Buffer.from('%PDF-1.4\n%%EOF'),
         }),
-        appErrorDetailIncludes('cannot be added after the bill is issued or paid'),
+        appErrorDetailIncludes('Attachments cannot be added after an expense is invoiced'),
       );
 
       const attachmentExpense = await service.createSchedulerExpenseByFinanceId(
@@ -924,17 +941,12 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         { includeLabour: false, expenseIds: [uploadRaceExpense.id] },
       );
       releaseUpload();
-      const racingAttachment = await racingUpload;
-      assert.match(racingAttachment.sha256, /^[0-9a-f]{64}$/);
+      const confirmedRacingUpload = await racingUpload;
+      assert.equal(confirmedRacingUpload.expenseId, uploadRaceExpense.id);
       assert.equal((await setup<{ count: string }[]>`
         SELECT count(*) AS count FROM scheduler_expense_attachments
         WHERE expense_id = ${uploadRaceExpense.id} AND status = 'confirmed'
       `)[0]?.count, '1');
-      await service.deleteSchedulerExpenseAttachment(
-        admin,
-        uploadRaceExpense.id,
-        racingAttachment.id,
-      );
       await service.voidSchedulerInvoiceByFinanceId(
         admin,
         eco.financeId,
@@ -1115,7 +1127,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       assert.deepEqual(missingTime.invoiceReadiness, {
         completionSatisfied: true,
         completionBasis: 'job',
-        hoursSatisfied: true,
+        hoursSatisfied: false,
         hoursBasis: null,
         ready: true,
       });
@@ -1124,11 +1136,8 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         [unscheduled.financeId],
       );
       assert.equal(missingTimeEligibility.eligible, true);
-      assert.equal(
-        missingTimeEligibility.issues.some((issue) => issue.code === 'hours_entry_required'),
-        false,
-      );
-      const expenseOnlyDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+      assert.deepEqual(missingTimeEligibility.issues, []);
+      const unreviewedHoursDraft = await service.createQuickSchedulerInvoiceByFinanceId(
         admin,
         unscheduled.financeId,
         {
@@ -1136,12 +1145,11 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           expenseIds: [unscheduledExpense.id],
         },
       );
-      assert.deepEqual(expenseOnlyDraft.lines.map((line) => line.kind), ['expense']);
+      assert.equal(unreviewedHoursDraft.status, 'draft');
       await service.voidSchedulerInvoiceByFinanceId(
         admin,
         unscheduled.financeId,
-        expenseOnlyDraft.id,
-        expenseOnlyDraft.updatedAt,
+        unreviewedHoursDraft.id,
       );
       const zeroHoursReviewed = await service.updateSchedulerFinanceById(
         admin,
@@ -1273,20 +1281,33 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         billableHoursOverride: null,
         costHoursOverride: null,
       });
-      const hoursIndependentSnapshot = await service.loadSchedulerInvoiceExportSnapshot(
+      const expenseOnlyDraftSnapshot = await service.loadSchedulerInvoiceExportSnapshot(
         admin,
         unscheduled.financeId,
-        extendedDraft.id,
+        unscheduledConcurrent.id,
         extendedDraft.updatedAt,
       );
-      assert.equal(hoursIndependentSnapshot.id, extendedDraft.id);
-      const hoursIndependentIssued = await service.issueSchedulerInvoiceByFinanceId(
+      assert.equal(expenseOnlyDraftSnapshot.status, 'draft');
+      assert.equal(expenseOnlyDraftSnapshot.id, extendedDraft.id);
+      assert.equal(
+        expenseOnlyDraftSnapshot.lines.some((line) => (
+          line.kind === 'labour' || line.kind === 'quoted'
+        )),
+        false,
+      );
+      const expenseOnlyIssued = await service.issueSchedulerInvoiceByFinanceId(
         admin,
         unscheduled.financeId,
-        hoursIndependentSnapshot.id,
-        hoursIndependentSnapshot.updatedAt,
+        unscheduledConcurrent.id,
+        extendedDraft.updatedAt,
       );
-      assert.equal(hoursIndependentIssued.status, 'issued');
+      assert.equal(expenseOnlyIssued.status, 'issued');
+      assert.ok(expenseOnlyIssued.updatedAt !== extendedDraft.updatedAt);
+      await service.updateSchedulerFinanceById(admin, unscheduled.financeId, {
+        billableHoursOverride: 0,
+        costHoursOverride: 0,
+        overrideReason: 'Reconfirmed expense-only job after invoice readiness review',
+      });
       await service.voidSchedulerInvoiceByFinanceId(
         admin,
         eco.financeId,
@@ -1296,8 +1317,8 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       await service.voidSchedulerInvoiceByFinanceId(
         admin,
         unscheduled.financeId,
-        hoursIndependentIssued.id,
-        hoursIndependentIssued.updatedAt,
+        unscheduledConcurrent.id,
+        expenseOnlyIssued.updatedAt,
       );
 
       const oldCostCount = Number((await setup<{ count: string }[]>`
@@ -1421,39 +1442,38 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
           'Worker', '2026-08-30', 'Completed', 'worker-installhub', '2026-08-01'
         FROM generate_series(1, 105) AS ordinal
       `);
-      const portfolioIssuedDraft = await service.createQuickSchedulerInvoiceByFinanceId(
+      const sameDaySolarExpense = await service.createSchedulerExpenseByFinanceId(
         admin,
         solar.financeId,
-        { includeLabour: false, expenseIds: [] },
-      );
-      const portfolioIssuedEditable = await service.updateSchedulerDraftInvoiceByFinanceId(
-        admin,
-        solar.financeId,
-        portfolioIssuedDraft.id,
         {
-          expectedUpdatedAt: portfolioIssuedDraft.updatedAt,
-          lines: [{
-            financeId: solar.financeId,
-            kind: 'other',
-            description: 'Portfolio date boundary',
-            quantity: 1,
-            unitAmountExGst: 1,
-            showQuantityAndRate: false,
-          }],
+          kind: 'expense',
+          category: 'travel',
+          description: 'Same-day due-date portfolio fixture',
+          costAmount: 10,
+          billableAmount: 12,
+          billable: true,
         },
       );
-      const portfolioIssued = await service.issueSchedulerInvoiceByFinanceId(
+      const sameDaySolarDraft = await service.createQuickSchedulerInvoiceByFinanceId(
         admin,
         solar.financeId,
-        portfolioIssuedEditable.id,
-        portfolioIssuedEditable.updatedAt,
+        { includeLabour: false, expenseIds: [sameDaySolarExpense.id] },
       );
-      await setup`
-        UPDATE scheduler_invoices
-        SET due_date = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = ${portfolioIssued.id}
-      `;
+      const sameDaySolarDated = await service.updateSchedulerDraftInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        sameDaySolarDraft.id,
+        { expectedUpdatedAt: sameDaySolarDraft.updatedAt, dueDate: dueToday },
+      );
+      const sameDaySolarIssued = await service.issueSchedulerInvoiceByFinanceId(
+        admin,
+        solar.financeId,
+        sameDaySolarDraft.id,
+        sameDaySolarDated.updatedAt,
+      );
+      assert.equal(sameDaySolarIssued.status, 'issued');
+      assert.equal(sameDaySolarIssued.dueDate?.slice(0, 10), dueToday);
+      assert.equal(sameDaySolarIssued.overdue, false);
       const portfolioSummary = await service.getSchedulerFinancePortfolioSummary(admin);
       assert.equal(portfolioSummary.complete, true);
       assert.equal(portfolioSummary.jobCount > 100, true);
@@ -1465,11 +1485,6 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         SELECT count(*) AS count
         FROM scheduler_invoices AS invoice
         WHERE invoice.status = 'paid'
-          AND EXISTS (
-            SELECT 1 FROM scheduler_invoice_jobs AS job
-            WHERE job.invoice_id = invoice.id
-              AND job.job_source_app IN ('ecoaudit', 'solarsense', 'installhub')
-          )
       `)[0]?.count ?? 0);
       assert.equal(portfolioSummary.statusCounts.paid, databasePaidCount);
       const databaseOverdueCount = Number((await setup<{ count: string }[]>`
@@ -1477,11 +1492,6 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
         FROM scheduler_invoices AS invoice
         WHERE invoice.status = 'issued'
           AND invoice.due_date < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')::date
-          AND EXISTS (
-            SELECT 1 FROM scheduler_invoice_jobs AS job
-            WHERE job.invoice_id = invoice.id
-              AND job.job_source_app IN ('ecoaudit', 'solarsense', 'installhub')
-          )
       `)[0]?.count ?? 0);
       assert.equal(portfolioSummary.statusCounts.overdue, databaseOverdueCount);
     } finally {

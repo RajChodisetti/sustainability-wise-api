@@ -567,7 +567,7 @@ export function InstallHubFormEditorPage() {
               { label: 'Type', value: boardTypeLabel(canonicalBoard) },
               { label: 'Zone', value: canonicalBoardZone?.zoneName || 'Unknown zone' },
               { label: 'Location', value: canonicalBoard.locationDescription?.trim() || canonicalBoardZone?.zoneName || 'Not recorded' },
-              { label: 'Site NMI', value: canonicalBoard.siteNmi?.trim() || 'Not recorded' },
+              { label: 'Electricity NMI', value: String(answers['auditor.site_nmi'] ?? '').trim() || 'Not recorded' },
               ...(canonicalMeter ? [{ label: 'Device', value: `${humanDeviceName(canonicalMeter)} · ${canonicalMeter.serialNumber}` }] : []),
             ]} />
           </Card>

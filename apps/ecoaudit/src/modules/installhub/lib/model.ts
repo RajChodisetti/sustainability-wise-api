@@ -89,8 +89,30 @@ export function cloneTree(tree: InstallationTree): InstallationTree {
 export function createInstallationTree(
   input: {
     clientName: string;
+    customerName?: string | null;
+    maas?: boolean | null;
+    serviceType?: string | null;
+    meteringSolutionType?: string | null;
+    plannedMeterType?: string | null;
     siteName: string;
     siteAddress: string;
+    siteLocality?: string | null;
+    siteState?: string | null;
+    sitePostcode?: string | null;
+    siteCountryCode?: string | null;
+    siteContactName?: string | null;
+    siteContactPhone?: string | null;
+    siteContactEmail?: string | null;
+    fergusJobNumber?: string | null;
+    quoteNumber?: string | null;
+    jobComments?: string | null;
+    accessInformation?: string | null;
+    warrantyDevice?: boolean | null;
+    monitoringInstalled?: boolean | null;
+    hardwareInstalled?: boolean | null;
+    solarCapacityKw?: number | null;
+    additionalMonitoringRequired?: boolean | null;
+    additionalMonitoringHardware?: string | null;
     inspectorName: string;
     auditDate: string;
     siteCode?: string;
@@ -112,8 +134,30 @@ export function createInstallationTree(
       treeRevision: 0,
       recordVersionNumber: 0,
       clientName: input.clientName.trim(),
+      customerName: input.customerName?.trim() || null,
+      maas: input.maas ?? null,
+      serviceType: input.serviceType?.trim() || null,
+      meteringSolutionType: input.meteringSolutionType?.trim() || null,
+      plannedMeterType: input.plannedMeterType?.trim() || null,
       siteName,
       siteAddress: input.siteAddress.trim(),
+      siteLocality: input.siteLocality?.trim() || null,
+      siteState: input.siteState?.trim().toUpperCase() || null,
+      sitePostcode: input.sitePostcode?.trim() || null,
+      siteCountryCode: input.siteCountryCode?.trim().toUpperCase() || 'AU',
+      siteContactName: input.siteContactName?.trim() || null,
+      siteContactPhone: input.siteContactPhone?.trim() || null,
+      siteContactEmail: input.siteContactEmail?.trim() || null,
+      fergusJobNumber: input.fergusJobNumber?.trim() || null,
+      quoteNumber: input.quoteNumber?.trim() || null,
+      jobComments: input.jobComments?.trim() || null,
+      accessInformation: input.accessInformation?.trim() || null,
+      warrantyDevice: input.warrantyDevice ?? null,
+      monitoringInstalled: input.monitoringInstalled ?? null,
+      hardwareInstalled: input.hardwareInstalled ?? null,
+      solarCapacityKw: input.solarCapacityKw ?? null,
+      additionalMonitoringRequired: input.additionalMonitoringRequired ?? null,
+      additionalMonitoringHardware: input.additionalMonitoringHardware?.trim() || null,
       inspectorName: input.inspectorName.trim(),
       auditDate: input.auditDate || todayIso(),
       siteCode: canonicalSiteCode(siteName, input.siteCode),

@@ -540,7 +540,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
           })
           .returning({ id: ssSites.id });
         if (!upserted) throw conflict('site_completed_reopen_requires_explicit_transition');
-        if (!values.deletedAt && values.status === 'Completed') {
+        if (values.status === 'Completed') {
           await completeLinkedSchedulerEvents(tx, {
             sourceApp: 'solarsense',
             sourceType: 'site',
@@ -557,31 +557,33 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     for (const assessment of assessments) {
       const localId = requiredString(assessment, 'id');
       const siteId = requiredString(assessment, 'siteId');
-      const site = await loadAnyAccessibleSite(siteId, request);
-
-      const [existing] = await db
-        .select()
-        .from(ssRooftopAssessments)
-        .where(eq(ssRooftopAssessments.id, localId));
-      if (existing) {
-        if (existing.siteId !== siteId) throw badRequest('Assessment siteId cannot change');
-        assertAssessmentAccess(site, existing, request.user);
-      } else {
-        assertSiteAccess(site, request.user);
-      }
-      const values = assessmentValuesFromPayload(
-        assessment,
-        request.user,
-        receivedAt,
-        existing,
-      );
-      const { id: _id, ...updateValues } = values;
-      const excludedStatus = sql.raw(`excluded.${ssRooftopAssessments.status.name}`);
-      const excludedCompletedAt = sql.raw(`excluded.${ssRooftopAssessments.completedAt.name}`);
-      await db.transaction(async (tx) => {
+      const values = await db.transaction(async (tx) => {
+        const [site] = await tx.select().from(ssSites)
+          .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
+          .for('update');
+        const lockedSite = assertFound(site, 'Site');
+        assertDraftMutable(lockedSite, 'Site');
+        const [existing] = await tx.select().from(ssRooftopAssessments)
+          .where(eq(ssRooftopAssessments.id, localId))
+          .for('update');
+        if (existing) {
+          if (existing.siteId !== siteId) throw badRequest('Assessment siteId cannot change');
+          assertAssessmentAccess(lockedSite, existing, request.user);
+        } else {
+          assertSiteAccess(lockedSite, request.user);
+        }
+        const lockedValues = assessmentValuesFromPayload(
+          assessment,
+          request.user,
+          receivedAt,
+          existing,
+        );
+        const { id: _id, ...updateValues } = lockedValues;
+        const excludedStatus = sql.raw(`excluded.${ssRooftopAssessments.status.name}`);
+        const excludedCompletedAt = sql.raw(`excluded.${ssRooftopAssessments.completedAt.name}`);
         const [upserted] = await tx
           .insert(ssRooftopAssessments)
-          .values(values)
+          .values(lockedValues)
           .onConflictDoUpdate({
             target: ssRooftopAssessments.id,
             set: {
@@ -599,13 +601,19 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
         if (!upserted) {
           throw conflict('assessment_completed_reopen_requires_explicit_transition');
         }
-        if (!values.deletedAt && values.status === 'Completed') {
+        if (lockedValues.status === 'Completed') {
           await completeLinkedSchedulerEvents(tx, {
             sourceApp: 'solarsense',
             sourceType: 'assessment',
             sourceId: localId,
-          }, { observedAt: receivedAt });
+          }, {
+            observedAt: receivedAt,
+            completionProvenance: !existing || existing.status !== 'Completed'
+              ? 'offline_transition'
+              : 'historical_replay',
+          });
         }
+        return lockedValues;
       });
       assessmentIds[localId] = values.serverId;
       if (values.deletedAt) {

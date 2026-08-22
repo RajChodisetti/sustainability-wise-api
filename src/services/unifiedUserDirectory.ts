@@ -21,6 +21,9 @@ export interface UnifiedUserRegistryRow {
   globalLoginKey: string;
   globalDisplayEmail: string;
   billingRateCents: number | null;
+  globalTimezone: string;
+  globalWorkingDaysMask: number;
+  globalUpdatedAt: Date;
   originApp: UnifiedUserApp;
   originUserId: string;
   fieldUserId: string;
@@ -55,6 +58,9 @@ export interface UnifiedUserDirectoryEntry {
   fullName: string | null;
   displayEmail: string;
   billingRate: number | null;
+  timezone: string;
+  workingDaysMask: number;
+  updatedAt: Date;
   candidateKey: string | null;
   possibleDuplicateCount: number;
   memberships: UnifiedUserMembership[];
@@ -124,6 +130,19 @@ function directoryEntry(users: readonly UnifiedUserRegistryRow[]): UnifiedUserDi
   ) {
     throw new Error('Unified user billing rate is outside the supported accounting range');
   }
+  if (
+    !Number.isInteger(representative.globalWorkingDaysMask)
+    || representative.globalWorkingDaysMask < 1
+    || representative.globalWorkingDaysMask > 127
+  ) {
+    throw new Error('Unified user working-days mask is outside the supported range');
+  }
+  if (
+    !(representative.globalUpdatedAt instanceof Date)
+    || Number.isNaN(representative.globalUpdatedAt.getTime())
+  ) {
+    throw new Error('Unified user canonical update timestamp is invalid');
+  }
   const memberships = users
     .map((user) => membership(user))
     .sort((left, right) => left.app.localeCompare(right.app));
@@ -142,6 +161,9 @@ function directoryEntry(users: readonly UnifiedUserRegistryRow[]): UnifiedUserDi
     billingRate: representative.billingRateCents === null
       ? null
       : representative.billingRateCents / 100,
+    timezone: representative.globalTimezone,
+    workingDaysMask: representative.globalWorkingDaysMask,
+    updatedAt: representative.globalUpdatedAt,
     candidateKey: representative.globalLoginKey
       || canonicalCandidateKey(representative.globalDisplayEmail),
     possibleDuplicateCount: 0,
