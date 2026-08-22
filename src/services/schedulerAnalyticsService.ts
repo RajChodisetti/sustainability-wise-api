@@ -701,8 +701,8 @@ async function loadSessions(
       endedAt: eaAuditWorkSessions.endedAt,
       activeMilliseconds: eaAuditWorkSessions.activeMilliseconds,
     }).from(eaAuditWorkSessions).where(and(
-      gte(auditBoundary, window.startAt),
-      lt(auditBoundary, window.endAt),
+      gte(auditBoundary, sql.param(window.startAt, eaAuditWorkSessions.lastActiveAt)),
+      lt(auditBoundary, sql.param(window.endAt, eaAuditWorkSessions.lastActiveAt)),
     )).limit(MAX_SESSIONS_PER_APP + 1),
     executor.select({
       actorUserId: ssAssessmentWorkSessions.actorUserId,
@@ -710,8 +710,8 @@ async function loadSessions(
       endedAt: ssAssessmentWorkSessions.endedAt,
       activeMilliseconds: ssAssessmentWorkSessions.activeMilliseconds,
     }).from(ssAssessmentWorkSessions).where(and(
-      gte(assessmentBoundary, window.startAt),
-      lt(assessmentBoundary, window.endAt),
+      gte(assessmentBoundary, sql.param(window.startAt, ssAssessmentWorkSessions.lastActiveAt)),
+      lt(assessmentBoundary, sql.param(window.endAt, ssAssessmentWorkSessions.lastActiveAt)),
     )).limit(MAX_SESSIONS_PER_APP + 1),
     executor.select({
       actorUserId: ihInstallationWorkSessions.actorUserId,
@@ -719,8 +719,8 @@ async function loadSessions(
       endedAt: ihInstallationWorkSessions.endedAt,
       activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
     }).from(ihInstallationWorkSessions).where(and(
-      gte(installationBoundary, window.startAt),
-      lt(installationBoundary, window.endAt),
+      gte(installationBoundary, sql.param(window.startAt, ihInstallationWorkSessions.lastActiveAt)),
+      lt(installationBoundary, sql.param(window.endAt, ihInstallationWorkSessions.lastActiveAt)),
     )).limit(MAX_SESSIONS_PER_APP + 1),
   ]);
   assertBounded(audits, MAX_SESSIONS_PER_APP, 'EcoAudit work sessions');
@@ -752,8 +752,8 @@ async function loadCompletions(
       fact.total_inc_gst_cents AS "totalIncGstCents",
       fact.gst_rate_bps AS "gstRateBps"
     FROM scheduler_job_completion_facts fact
-    WHERE fact.completed_at >= ${window.startAt}
-      AND fact.completed_at < ${window.endAt}
+    WHERE fact.completed_at >= ${sql.param(window.startAt, schedulerJobCompletionFacts.completedAt)}
+      AND fact.completed_at < ${sql.param(window.endAt, schedulerJobCompletionFacts.completedAt)}
     UNION ALL
     SELECT
       'ecoaudit', 'audit', product.id, product.completed_at,
@@ -761,8 +761,8 @@ async function loadCompletions(
       'historical_product_fallback', 'unavailable',
       NULL::text, NULL::bigint, NULL::bigint, NULL::bigint, NULL::integer
     FROM ea_audits product
-    WHERE product.completed_at >= ${window.startAt}
-      AND product.completed_at < ${window.endAt}
+    WHERE product.completed_at >= ${sql.param(window.startAt, eaAudits.completedAt)}
+      AND product.completed_at < ${sql.param(window.endAt, eaAudits.completedAt)}
       AND product.deleted_at IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM scheduler_job_completion_facts fact
@@ -777,8 +777,8 @@ async function loadCompletions(
       'historical_product_fallback', 'unavailable',
       NULL::text, NULL::bigint, NULL::bigint, NULL::bigint, NULL::integer
     FROM ss_rooftop_assessments product
-    WHERE product.completed_at >= ${window.startAt}
-      AND product.completed_at < ${window.endAt}
+    WHERE product.completed_at >= ${sql.param(window.startAt, ssRooftopAssessments.completedAt)}
+      AND product.completed_at < ${sql.param(window.endAt, ssRooftopAssessments.completedAt)}
       AND product.deleted_at IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM scheduler_job_completion_facts fact
@@ -793,8 +793,8 @@ async function loadCompletions(
       'historical_product_fallback', 'unavailable',
       NULL::text, NULL::bigint, NULL::bigint, NULL::bigint, NULL::integer
     FROM ih_installations product
-    WHERE product.completed_at >= ${window.startAt}
-      AND product.completed_at < ${window.endAt}
+    WHERE product.completed_at >= ${sql.param(window.startAt, ihInstallations.completedAt)}
+      AND product.completed_at < ${sql.param(window.endAt, ihInstallations.completedAt)}
       AND product.deleted_at IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM scheduler_job_completion_facts fact

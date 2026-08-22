@@ -156,6 +156,7 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
     `);
 
     const service = await import('./schedulerFinanceService.js');
+    const analyticsService = await import('./schedulerAnalyticsService.js');
     const legacyFinance = await import('./installHubFinanceService.js');
     const legacyInvoices = await import('./installHubInvoiceService.js');
     const { purgeInstallHubInstallationTree } = await import('../routes/installhub/purge.js');
@@ -198,6 +199,19 @@ test('shared Scheduler finance covers all apps and enforces commercial lifecycle
       assert.equal(eco.invoiceReadiness.completionSatisfied, false);
       assert.equal(eco.invoiceReadiness.hoursSatisfied, true);
       assert.equal(eco.invoiceReadiness.ready, false);
+
+      const analytics = await analyticsService.getSchedulerAnalytics(admin, {
+        from: '2026-08-20',
+        to: '2026-08-23',
+        timezone: 'UTC',
+      });
+      const workerAnalytics = analytics.leaderboard.find(
+        (row) => row.userId === 'worker-global',
+      );
+      assert.ok(workerAnalytics);
+      assert.equal(analytics.quality.sessions.included, 4);
+      assert.equal(workerAnalytics.workingHoursOnSiteMilliseconds, 23_400_000);
+      assert.equal(workerAnalytics.workingHoursOnSite, 6.5);
 
       const incompleteEligibility = await service.getConsolidatedInvoiceEligibility(
         admin,
