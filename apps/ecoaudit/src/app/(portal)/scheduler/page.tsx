@@ -1,4 +1,5 @@
-import SchedulerPage, { type SchedulerTab } from '@/modules/scheduler/pages/SchedulerPage';
+import SchedulerPage from '@/modules/scheduler/pages/SchedulerPage';
+import { schedulerTabFromQuery } from '@/modules/scheduler/lib/navigation';
 import {
   schedulerSelectableSourceApps,
   schedulerVisibleFinanceSourceApps,
@@ -21,19 +22,7 @@ export default async function Page({
   const visibleFinanceSourceApps = schedulerVisibleFinanceSourceApps(visibleSourceApps);
   const tabValue = value(params.tab);
   const invoiceId = value(params.invoiceId);
-  const initialTab: SchedulerTab = tabValue === 'overview'
-    || tabValue === 'my-route'
-    || tabValue === 'deadlines'
-    || tabValue === 'finance-analytics'
-    || tabValue === 'financial-summary'
-    || tabValue === 'bills'
-    || tabValue === 'invoices'
-    ? tabValue
-    : tabValue === 'finance'
-      ? invoiceId
-        ? 'invoices'
-        : 'financial-summary'
-    : 'calendar';
+  const initialTab = schedulerTabFromQuery(tabValue, invoiceId);
   const sourceAppValue = value(params.sourceApp);
   const parsedSourceApp: FinanceSourceApp | undefined = sourceAppValue === 'ecoaudit'
     || sourceAppValue === 'solarsense'
@@ -47,6 +36,14 @@ export default async function Page({
 
   return (
     <SchedulerPage
+      key={[
+        initialTab,
+        value(params.financeId) ?? '',
+        value(params.eventId) ?? '',
+        sourceApp ?? '',
+        sourceId ?? '',
+        invoiceId ?? '',
+      ].join(':')}
       initialTab={initialTab}
       visibleSourceApps={visibleSourceApps}
       selectableSourceApps={selectableSourceApps}

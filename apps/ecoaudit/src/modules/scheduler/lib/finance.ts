@@ -326,6 +326,30 @@ export function resolveHourOverrideValues(
   return explicit ?? current;
 }
 
+export function quotedAmountForBillableTotal(input: {
+  billableTotal: number;
+  billableExpenseRevenue: number;
+}): { quotedAmount: number | null; error: string | null } {
+  const totalCents = Math.round(input.billableTotal * 100);
+  const expenseCents = Math.round(input.billableExpenseRevenue * 100);
+  if (!Number.isFinite(input.billableTotal) || !Number.isSafeInteger(totalCents) || totalCents < 0) {
+    return { quotedAmount: null, error: 'Enter a billable amount of zero or more.' };
+  }
+  if (!Number.isFinite(input.billableExpenseRevenue) || !Number.isSafeInteger(expenseCents) || expenseCents < 0) {
+    return { quotedAmount: null, error: 'The current billable costs are invalid.' };
+  }
+  if (totalCents < expenseCents) {
+    return {
+      quotedAmount: null,
+      error: 'Billable cannot be lower than the billable costs already recorded for this job.',
+    };
+  }
+  return {
+    quotedAmount: (totalCents - expenseCents) / 100,
+    error: null,
+  };
+}
+
 export function manualHoursEntryIssue(input: {
   actualHours: number;
   billableHoursOverride: number | null;
@@ -452,6 +476,7 @@ export function schedulerTabTransition(
     | 'team-performance'
     | 'leave'
     | 'inventory'
+    | 'meter-register'
     | 'finance-analytics'
     | SchedulerFinanceView,
 ): { href: string; financeTarget?: SchedulerFinanceTarget } {

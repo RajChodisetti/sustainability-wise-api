@@ -20,6 +20,7 @@ import {
   fetchSchedulerAddressSuggestions,
   fetchSchedulerFinancialSummary,
   fetchSchedulerInventory,
+  fetchSchedulerMeterRegister,
   fetchSchedulerFinanceOverview,
   fetchSchedulerInvoice,
   fetchSchedulerInvoiceRefunds,
@@ -79,6 +80,7 @@ export const schedulerKeys = {
   all: ['portal', 'scheduler'] as const,
   summary: () => [...schedulerKeys.all, 'summary'] as const,
   inventory: () => [...schedulerKeys.all, 'inventory'] as const,
+  meterRegister: (search: string) => [...schedulerKeys.all, 'meter-register', search] as const,
   events: (filters: Record<string, string | undefined>) =>
     [...schedulerKeys.all, 'events', filters] as const,
   assignees: () => [...schedulerKeys.all, 'assignees'] as const,
@@ -131,6 +133,13 @@ export function useSchedulerInventory() {
   return useQuery({
     queryKey: schedulerKeys.inventory(),
     queryFn: fetchSchedulerInventory,
+  });
+}
+
+export function useSchedulerMeterRegister(search: string) {
+  return useQuery({
+    queryKey: schedulerKeys.meterRegister(search),
+    queryFn: () => fetchSchedulerMeterRegister(search),
   });
 }
 

@@ -1,9 +1,9 @@
 'use client';
 
-import { useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PageHeader } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { Icon, type IconName } from '@/components/ui/Icon';
+import { Icon } from '@/components/ui/Icon';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { DeadlineTable } from '@/modules/scheduler/components/DeadlineTable';
 import { DynamicSchedulerBoard } from '@/modules/scheduler/components/DynamicSchedulerBoard';
@@ -12,9 +12,14 @@ import { SchedulerDashboard } from '@/modules/scheduler/components/SchedulerDash
 import { SchedulerFinanceAnalytics } from '@/modules/scheduler/components/SchedulerFinanceAnalytics';
 import { SchedulerFinanceWorkspace } from '@/modules/scheduler/components/SchedulerFinanceWorkspace';
 import { SchedulerInventoryDashboard } from '@/modules/scheduler/components/SchedulerInventoryDashboard';
+import { SchedulerMeterRegister } from '@/modules/scheduler/components/SchedulerMeterRegister';
 import { SchedulerRouteWorkspace } from '@/modules/scheduler/components/SchedulerRouteWorkspace';
 import { UserFilter } from '@/modules/scheduler/components/UserFilter';
 import { schedulerFinanceHref, schedulerTabTransition } from '@/modules/scheduler/lib/finance';
+import {
+  schedulerTabIsAdminOnly,
+  type SchedulerTab,
+} from '@/modules/scheduler/lib/navigation';
 import {
   schedulerCreatableSourceApps,
   schedulerIsFieldOnly,
@@ -25,49 +30,12 @@ import type {
   SchedulerFinanceTarget,
 } from '@/modules/scheduler/types/domain';
 
-export type SchedulerTab =
-  | 'overview'
-  | 'calendar'
-  | 'my-route'
-  | 'deadlines'
-  | 'inventory'
-  | 'finance-analytics'
-  | 'financial-summary'
-  | 'bills'
-  | 'invoices';
-
-type SchedulerTabItem = {
-  id: SchedulerTab;
-  label: string;
-  icon: IconName;
-};
-
-const PLANNING_TABS: SchedulerTabItem[] = [
-  { id: 'overview', label: 'Overview', icon: 'gauge' },
-  { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-  { id: 'my-route', label: 'My route', icon: 'map-pin' },
-  { id: 'deadlines', label: 'Deadlines', icon: 'clipboard' },
-];
-
-const INVENTORY_TABS: SchedulerTabItem[] = [
-  { id: 'inventory', label: 'Inventory', icon: 'clipboard' },
-];
-
-const FINANCE_TABS: SchedulerTabItem[] = [
-  { id: 'finance-analytics', label: 'Analytics', icon: 'activity' },
-  { id: 'financial-summary', label: 'Summary', icon: 'activity' },
-  { id: 'bills', label: 'Bills & expenses', icon: 'file-text' },
-  { id: 'invoices', label: 'Invoices', icon: 'file-text' },
-];
-
 function isFinanceWorkspaceTab(tab: SchedulerTab): tab is 'financial-summary' | 'bills' | 'invoices' {
   return tab === 'financial-summary' || tab === 'bills' || tab === 'invoices';
 }
 
 function isAdminOnlyTab(tab: SchedulerTab): boolean {
-  return tab === 'inventory'
-    || tab === 'finance-analytics'
-    || isFinanceWorkspaceTab(tab);
+  return schedulerTabIsAdminOnly(tab);
 }
 
 export default function SchedulerPage({
@@ -102,18 +70,8 @@ export default function SchedulerPage({
   const [slotDay, setSlotDay] = useState<Date | null>(null);
   const [editing, setEditing] = useState<ScheduleEvent | null>(null);
   const [financeTarget, setFinanceTarget] = useState<SchedulerFinanceTarget | undefined>(initialFinanceTarget);
-  const tabRefs = useRef<Partial<Record<SchedulerTab, HTMLButtonElement | null>>>({});
   const activeTab: SchedulerTab = isAdminOnlyTab(tab) && !isAdmin ? 'calendar' : tab;
   const fieldOnly = schedulerIsFieldOnly(selectableSourceApps);
-
-  const tabs = useMemo(
-    () => [
-      ...PLANNING_TABS,
-      ...(isAdmin ? INVENTORY_TABS : []),
-      ...(isAdmin ? FINANCE_TABS : []),
-    ],
-    [isAdmin],
-  );
 
   function openCreate(day?: Date) {
     setEditing(null);
@@ -140,20 +98,6 @@ export default function SchedulerPage({
     window.history.replaceState(null, '', transition.href);
   }
 
-  function handleTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
-    let nextIndex: number | null = null;
-    if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
-    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
-    if (event.key === 'Home') nextIndex = 0;
-    if (event.key === 'End') nextIndex = tabs.length - 1;
-    if (nextIndex == null) return;
-    event.preventDefault();
-    const nextTab = tabs[nextIndex]?.id;
-    if (!nextTab) return;
-    activateTab(nextTab);
-    tabRefs.current[nextTab]?.focus();
-  }
-
   return (
     <div className={`mx-auto w-full ${activeTab === 'calendar' || activeTab === 'my-route' || activeTab === 'finance-analytics' || isFinanceWorkspaceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
       <PageHeader
@@ -169,67 +113,18 @@ export default function SchedulerPage({
         }
       />
 
-      <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div
-          className="subtle-scrollbar max-w-full overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-2 shadow-[var(--shadow-xs)]"
-          role="tablist"
-          aria-label="Scheduler views"
-          aria-orientation="horizontal"
-        >
-          <div className="flex min-w-max items-center gap-2">
-            {[
-              { label: 'Planning', items: PLANNING_TABS },
-              ...(isAdmin ? [{ label: 'Finance', items: FINANCE_TABS }] : []),
-              ...(isAdmin ? [{ label: 'Inventory', items: INVENTORY_TABS }] : []),
-            ].map((group, groupIndex) => (
-              <div
-                key={group.label}
-                role="presentation"
-                className={`flex items-center gap-1 ${groupIndex > 0 ? 'border-l border-[var(--border)] pl-2' : ''}`}
-              >
-                <span className="px-2 text-[10px] font-extrabold uppercase tracking-[0.1em] text-[var(--muted)]">
-                  {group.label}
-                </span>
-                {group.items.map((item) => {
-                  const index = tabs.findIndex((candidate) => candidate.id === item.id);
-                  return (
-                    <button
-                      key={item.id}
-                      ref={(node) => { tabRefs.current[item.id] = node; }}
-                      type="button"
-                      role="tab"
-                      id={`scheduler-tab-${item.id}`}
-                      aria-selected={activeTab === item.id}
-                      aria-controls={`scheduler-panel-${item.id}`}
-                      tabIndex={activeTab === item.id ? 0 : -1}
-                      onClick={() => activateTab(item.id)}
-                      onKeyDown={(event) => handleTabKeyDown(event, index)}
-                      className={`inline-flex min-h-11 items-center gap-2 rounded-[var(--radius-sm)] px-3 py-2 text-sm font-extrabold transition-colors ${
-                        activeTab === item.id
-                          ? 'bg-[var(--primary-soft)] text-[var(--primary)] shadow-[var(--shadow-xs)]'
-                          : 'text-[var(--text-sub)] hover:bg-[var(--surface2)] hover:text-[var(--text)]'
-                      }`}
-                    >
-                      <Icon name={item.icon} size={16} />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        </div>
-        {activeTab === 'deadlines' && isAdmin ? (
+      {activeTab === 'deadlines' && isAdmin ? (
+        <div className="mb-5 flex justify-end">
           <UserFilter
             enabled={isAdmin}
             value={assigneeFilter}
             onChange={setAssigneeFilter}
           />
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       {activeTab === 'overview' ? (
-        <div id="scheduler-panel-overview" role="tabpanel" aria-labelledby="scheduler-tab-overview" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-overview" role="region" aria-label="Planning overview" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerDashboard
             canCreate={isAdmin}
             visibleSourceApps={visibleSourceApps}
@@ -240,7 +135,7 @@ export default function SchedulerPage({
       ) : null}
 
       {activeTab === 'calendar' ? (
-        <div id="scheduler-panel-calendar" role="tabpanel" aria-labelledby="scheduler-tab-calendar" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-calendar" role="region" aria-label="Planning calendar" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <DynamicSchedulerBoard
             isAdmin={isAdmin}
             visibleSourceApps={visibleSourceApps}
@@ -254,13 +149,13 @@ export default function SchedulerPage({
       ) : null}
 
       {activeTab === 'my-route' ? (
-        <div id="scheduler-panel-my-route" role="tabpanel" aria-labelledby="scheduler-tab-my-route" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-my-route" role="region" aria-label="Planning route" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerRouteWorkspace />
         </div>
       ) : null}
 
       {activeTab === 'deadlines' ? (
-        <div id="scheduler-panel-deadlines" role="tabpanel" aria-labelledby="scheduler-tab-deadlines" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-deadlines" role="region" aria-label="Planning deadlines" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <DeadlineTable
             assigneeFieldUserId={assigneeFilter || undefined}
             visibleSourceApps={visibleSourceApps}
@@ -270,19 +165,25 @@ export default function SchedulerPage({
       ) : null}
 
       {activeTab === 'inventory' && isAdmin ? (
-        <div id="scheduler-panel-inventory" role="tabpanel" aria-labelledby="scheduler-tab-inventory" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-inventory" role="region" aria-label="Inventory dashboard" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerInventoryDashboard />
         </div>
       ) : null}
 
+      {activeTab === 'meter-register' && isAdmin ? (
+        <div id="scheduler-panel-meter-register" role="region" aria-label="Meter Register" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+          <SchedulerMeterRegister />
+        </div>
+      ) : null}
+
       {activeTab === 'finance-analytics' && isAdmin ? (
-        <div id="scheduler-panel-finance-analytics" role="tabpanel" aria-labelledby="scheduler-tab-finance-analytics" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id="scheduler-panel-finance-analytics" role="region" aria-label="Finance analytics" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerFinanceAnalytics />
         </div>
       ) : null}
 
       {isFinanceWorkspaceTab(activeTab) && isAdmin ? (
-        <div id={`scheduler-panel-${activeTab}`} role="tabpanel" aria-labelledby={`scheduler-tab-${activeTab}`} tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+        <div id={`scheduler-panel-${activeTab}`} role="region" aria-label="Finance workspace" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerFinanceWorkspace
             view={activeTab}
             initialTarget={financeTarget}
@@ -333,6 +234,9 @@ function schedulerSubtitle(tab: SchedulerTab, fieldOnly: boolean): string {
   }
   if (tab === 'inventory') {
     return 'See company stock and the meters currently held by each Field user.';
+  }
+  if (tab === 'meter-register') {
+    return 'Search every installed meter by device, client, site, address, or Field job.';
   }
   if (tab === 'finance-analytics') {
     return 'Analyse completed-work, invoice, payment, void, GST, and refund progress for any reporting window.';

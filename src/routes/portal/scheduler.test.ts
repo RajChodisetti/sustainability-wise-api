@@ -15,6 +15,59 @@ const validDispatch = {
   },
 };
 
+test('Scheduler meter register route is admin-only and bounds search input', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const url = '/v1/portal/scheduler/meter-register';
+  try {
+    assert.equal(app.hasRoute({ method: 'GET', url }), true);
+    const unauthenticated = await app.inject({ method: 'GET', url });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const inspector = await app.inject({
+      method: 'GET',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'eco-inspector',
+          app: 'ecoaudit',
+          role: 'inspector',
+        })}`,
+      },
+    });
+    assert.equal(inspector.statusCode, 403, inspector.body);
+
+    const wrongApp = await app.inject({
+      method: 'GET',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'fleet-admin',
+          app: 'wattwatchers',
+          role: 'admin',
+        })}`,
+      },
+    });
+    assert.equal(wrongApp.statusCode, 403, wrongApp.body);
+
+    const oversizedSearch = await app.inject({
+      method: 'GET',
+      url: `${url}?search=${'x'.repeat(201)}`,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'eco-admin',
+          app: 'ecoaudit',
+          role: 'admin',
+        })}`,
+      },
+    });
+    assert.equal(oversizedSearch.statusCode, 400, oversizedSearch.body);
+  } finally {
+    await app.close();
+  }
+});
+
 test('scheduler dispatch route is admin-only and rejects client-owned lifecycle fields', async () => {
   const app = Fastify();
   await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });

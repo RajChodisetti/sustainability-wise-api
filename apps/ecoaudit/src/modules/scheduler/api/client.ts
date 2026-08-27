@@ -37,6 +37,7 @@ import type {
   ScheduleReminderResponse,
   SchedulerFinancialSummary,
   SchedulerInventorySummary,
+  SchedulerMeterRegister,
   SchedulerExpensePage,
   SchedulerInvoiceEligibility,
   SchedulerInvoiceEmailDelivery,
@@ -203,6 +204,16 @@ export async function fetchScheduleSummary(): Promise<ScheduleSummary> {
 
 export async function fetchSchedulerInventory(): Promise<SchedulerInventorySummary> {
   return portalRequest(true)<SchedulerInventorySummary>('GET', '/v1/portal/scheduler/inventory');
+}
+
+export async function fetchSchedulerMeterRegister(search = ''): Promise<SchedulerMeterRegister> {
+  const qs = new URLSearchParams();
+  if (search.trim()) qs.set('search', search.trim());
+  const suffix = qs.toString() ? `?${qs}` : '';
+  return portalRequest(true)<SchedulerMeterRegister>(
+    'GET',
+    `/v1/portal/scheduler/meter-register${suffix}`,
+  );
 }
 
 export async function fetchScheduleEvents(params: {

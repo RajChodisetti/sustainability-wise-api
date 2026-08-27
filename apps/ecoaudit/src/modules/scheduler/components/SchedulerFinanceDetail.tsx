@@ -1,12 +1,26 @@
 'use client';
 
+import { useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
+import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
+import { FieldHint, FieldLabel, Input } from '@/components/ui/FormFields';
+import { useToast } from '@/contexts/ToastContext';
 import { ExpenseLedger } from '@/modules/scheduler/components/ExpenseLedger';
 import { FinanceSettingsPanel } from '@/modules/scheduler/components/FinanceSettingsPanel';
-import { useSchedulerFinancialSummary } from '@/modules/scheduler/hooks/useScheduler';
-import { financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
-import type { FinanceOverviewItem } from '@/modules/scheduler/types/domain';
+import {
+  useSchedulerFinancialSummary,
+  useUpdateSchedulerFinance,
+} from '@/modules/scheduler/hooks/useScheduler';
+import {
+  financeAppLabel,
+  marginTone,
+  quotedAmountForBillableTotal,
+} from '@/modules/scheduler/lib/finance';
+import type {
+  FinanceOverviewItem,
+  SchedulerFinancialSummary,
+} from '@/modules/scheduler/types/domain';
 
 function money(value: number, currency: string): string {
   try {
@@ -87,7 +101,7 @@ export function SchedulerFinanceDetail({
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3" aria-label="Commercial position">
-        <Metric label="Billable (ex GST)" value={money(summary.totals.billableAmount, summary.currency)} detail={`${money(summary.totals.labourRevenue, summary.currency)} labour · ${money(summary.totals.expenseRevenue, summary.currency)} costs`} />
+        <BillableMetricEditor financeId={financeId} summary={summary} />
         <Metric label="Total cost" value={money(summary.totals.totalCost, summary.currency)} detail={`${money(summary.totals.labourCost, summary.currency)} labour · ${money(summary.totals.expenseCost, summary.currency)} expenses`} />
         <Metric label="Gross profit" value={money(summary.totals.grossProfit, summary.currency)} detail={summary.totals.marginPct == null ? 'Margin pending' : `${summary.totals.marginPct.toFixed(1)}% current margin`} tone={tone === 'neutral' ? 'neutral' : tone} />
       </section>
@@ -130,6 +144,107 @@ export function SchedulerFinanceDetail({
         expenses={summary.expenses}
       />
 
+    </div>
+  );
+}
+
+function BillableMetricEditor({
+  financeId,
+  summary,
+}: {
+  financeId: string;
+  summary: SchedulerFinancialSummary;
+}) {
+  const toast = useToast();
+  const update = useUpdateSchedulerFinance(financeId);
+  const [editing, setEditing] = useState(false);
+  const [amount, setAmount] = useState(String(summary.totals.billableAmount));
+  const [error, setError] = useState<string | null>(null);
+
+  function closeEditor() {
+    setAmount(String(summary.totals.billableAmount));
+    setError(null);
+    setEditing(false);
+  }
+
+  async function saveBillable() {
+    if (!amount.trim()) {
+      setError('Enter a billable amount of zero or more.');
+      return;
+    }
+    const conversion = quotedAmountForBillableTotal({
+      billableTotal: Number(amount),
+      billableExpenseRevenue: summary.totals.expenseRevenue,
+    });
+    if (conversion.error || conversion.quotedAmount === null) {
+      setError(conversion.error ?? 'Enter a valid billable amount.');
+      return;
+    }
+    setError(null);
+    try {
+      await update.mutateAsync({
+        pricingMode: 'quoted',
+        quotedAmount: conversion.quotedAmount,
+      });
+      setEditing(false);
+      toast.success('Billable amount updated. Gross profit and margin were recalculated.');
+    } catch (cause) {
+      setError(cloudConnectionErrorMessage(cause));
+    }
+  }
+
+  return (
+    <div className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold uppercase tracking-wide text-[var(--text-sub)]">Billable (ex GST)</p>
+          {!editing ? (
+            <>
+              <p className="mt-2 text-xl font-extrabold tracking-tight text-[var(--text)]">{money(summary.totals.billableAmount, summary.currency)}</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+                {summary.pricing.mode === 'quoted'
+                  ? `${money(summary.pricing.quotedAmount ?? 0, summary.currency)} fixed amount · ${money(summary.totals.expenseRevenue, summary.currency)} costs`
+                  : `${money(summary.totals.labourRevenue, summary.currency)} labour · ${money(summary.totals.expenseRevenue, summary.currency)} costs`}
+              </p>
+            </>
+          ) : null}
+        </div>
+        {!editing ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="!min-h-9 !px-2.5 !py-1 text-xs"
+            onClick={() => {
+              setAmount(String(summary.totals.billableAmount));
+              setEditing(true);
+            }}
+          >
+            Edit
+          </Button>
+        ) : null}
+      </div>
+      {editing ? (
+        <div className="mt-2">
+          <FieldLabel className="!mt-0" htmlFor={`billable-total-${financeId}`}>Billable total (ex GST)</FieldLabel>
+          <Input
+            id={`billable-total-${financeId}`}
+            type="number"
+            min={summary.totals.expenseRevenue}
+            step="0.01"
+            inputMode="decimal"
+            value={amount}
+            disabled={update.isPending}
+            aria-invalid={Boolean(error)}
+            onChange={(event) => setAmount(event.target.value)}
+          />
+          <FieldHint>Sets a fixed job amount. Recorded billable costs remain included and invoice history is unchanged.</FieldHint>
+          {error ? <p className="mt-2 text-xs font-semibold text-[var(--red)]" role="alert">{error}</p> : null}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" disabled={update.isPending} onClick={() => void saveBillable()}>{update.isPending ? 'Saving…' : 'Save billable'}</Button>
+            <Button type="button" variant="secondary" disabled={update.isPending} onClick={closeEditor}>Cancel</Button>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

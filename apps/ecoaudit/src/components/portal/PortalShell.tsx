@@ -1,8 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
+import {
+  Suspense,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { checkHealth } from '@/api/client';
 import { API_DISPLAY_URL } from '@/lib/config';
@@ -12,6 +19,12 @@ import { BrandMark, Icon, type IconName } from '@/components/ui/Icon';
 import { PORTAL_FEATURES } from '@/lib/portalFeatures';
 import { portalApplicationIsVisible } from '@/lib/portalApplications';
 import { portalNavigationScopeForPath } from '@/lib/portalNavigation';
+import {
+  SCHEDULER_NAVIGATION_GROUPS,
+  schedulerTabFromQuery,
+  schedulerTabHref,
+  type SchedulerTab,
+} from '@/modules/scheduler/lib/navigation';
 
 function isActive(pathname: string, href: string, exact = false) {
   if (exact) return pathname === href;
@@ -244,8 +257,78 @@ function AppNavigationSection({
   );
 }
 
+function SchedulerNavigation({
+  currentTab,
+  isAdmin,
+  activeScope,
+  onNavigate,
+}: {
+  currentTab: SchedulerTab;
+  isAdmin: boolean;
+  activeScope: boolean;
+  onNavigate?: () => void;
+}) {
+  const visibleGroups = SCHEDULER_NAVIGATION_GROUPS.filter((group) => !group.adminOnly || isAdmin);
+  const [groupChoices, setGroupChoices] = useState<Record<string, boolean>>({});
+  return (
+    <section aria-label="Scheduler navigation">
+      <Link
+        href={schedulerTabHref('calendar')}
+        onClick={onNavigate}
+        className="mb-2 flex min-h-11 items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm font-extrabold text-white hover:bg-white/[0.07]"
+      >
+        <Icon name="calendar" size={19} />
+        <span>Scheduler</span>
+      </Link>
+      <div className="space-y-1 border-l border-[var(--sidebar-border)] pl-2">
+        {visibleGroups.map((group) => {
+          const active = activeScope && group.items.some((item) => item.id === currentTab);
+          const open = groupChoices[group.id] ?? activeScope;
+          const regionId = `scheduler-${group.id}-navigation`;
+          return (
+            <div key={group.id}>
+              <button
+                type="button"
+                onClick={() => setGroupChoices((current) => ({ ...current, [group.id]: !open }))}
+                className={`flex min-h-11 w-full items-center gap-3 rounded-[var(--radius-sm)] px-3 text-left text-sm font-bold ${active ? 'bg-white/[0.08] text-white' : 'text-[var(--sidebar-muted)] hover:bg-white/[0.06] hover:text-white'}`}
+                aria-expanded={open}
+                aria-controls={regionId}
+              >
+                <Icon name={group.icon} size={18} />
+                <span className="flex-1">{group.label}</span>
+                <Icon name="chevron-down" size={16} className={open ? 'rotate-180' : ''} />
+              </button>
+              {open ? (
+                <div id={regionId} className="mt-1 space-y-1 border-l border-[var(--sidebar-border)] pl-2">
+                  {group.items.map((item) => {
+                    const itemActive = activeScope && currentTab === item.id;
+                    return (
+                      <Link
+                        key={item.id}
+                        href={schedulerTabHref(item.id)}
+                        onClick={onNavigate}
+                        aria-current={itemActive ? 'page' : undefined}
+                        className={`group relative flex min-h-10 items-center gap-3 rounded-[var(--radius-sm)] px-3 text-sm font-semibold ${itemActive ? 'bg-white/14 text-white shadow-[inset_3px_0_0_var(--accent)]' : 'text-[var(--sidebar-muted)] hover:bg-white/[0.07] hover:text-white'}`}
+                      >
+                        <Icon name={item.icon} size={17} className="shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function SidebarNavigation({
   pathname,
+  schedulerTab,
+  schedulerAdmin,
   idPrefix,
   appsOpen,
   setAppsOpen,
@@ -269,6 +352,8 @@ function SidebarNavigation({
   onNavigate,
 }: {
   pathname: string;
+  schedulerTab: SchedulerTab;
+  schedulerAdmin: boolean;
   idPrefix: string;
   appsOpen: boolean;
   setAppsOpen: (value: boolean) => void;
@@ -303,7 +388,7 @@ function SidebarNavigation({
       </Link>
 
       <nav className="subtle-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto pr-1" aria-label="Primary navigation">
-        <NavLink href="/scheduler" label="Scheduler" icon="calendar" onNavigate={onNavigate} />
+        <SchedulerNavigation currentTab={schedulerTab} isAdmin={schedulerAdmin} activeScope={pathname.startsWith('/scheduler')} onNavigate={onNavigate} />
 
         <div className="pt-4">
           <button
@@ -392,6 +477,21 @@ function SidebarNavigation({
   );
 }
 
+function QueryAwareSidebarNavigation(
+  props: Omit<ComponentProps<typeof SidebarNavigation>, 'schedulerTab'>,
+) {
+  const searchParams = useSearchParams();
+  return (
+    <SidebarNavigation
+      {...props}
+      schedulerTab={schedulerTabFromQuery(
+        searchParams.get('tab'),
+        searchParams.get('invoiceId'),
+      )}
+    />
+  );
+}
+
 function workspaceFor(pathname: string) {
   if (pathname.startsWith('/ecoaudit')) return { name: 'Eco Audit', icon: 'leaf' as IconName };
   if (pathname.startsWith('/solar')) return { name: 'Solar Sense', icon: 'sun' as IconName };
@@ -409,6 +509,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
   const ihAdmin = ihUser?.role === 'admin';
+  const schedulerAdmin = Boolean(eaAdmin || ssAdmin || ihAdmin);
   const navigationScope = portalNavigationScopeForPath(pathname);
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
   const [ecoChoice, setEcoChoice] = useState<{ scope: string; value: boolean } | null>(null);
@@ -556,6 +657,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   );
   const navigationProps = {
     pathname,
+    schedulerAdmin,
     appsOpen,
     setAppsOpen,
     ecoOpen,
@@ -622,7 +724,9 @@ export function PortalShell({ children }: { children: ReactNode }) {
       <a href="#main-content" className="skip-link">Skip to content</a>
 
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-[280px] border-r border-[var(--sidebar-border)] bg-[var(--sidebar)] p-5 lg:block">
-        <SidebarNavigation {...navigationProps} idPrefix="desktop" />
+        <Suspense fallback={<SidebarNavigation {...navigationProps} schedulerTab="calendar" idPrefix="desktop" />}>
+          <QueryAwareSidebarNavigation {...navigationProps} idPrefix="desktop" />
+        </Suspense>
       </aside>
 
       {mobileOpen ? (
@@ -650,11 +754,13 @@ export function PortalShell({ children }: { children: ReactNode }) {
             >
               <Icon name="close" size={21} />
             </button>
-            <SidebarNavigation
-              {...navigationProps}
-              idPrefix="mobile"
-              onNavigate={() => setMobileOpen(false)}
-            />
+            <Suspense fallback={<SidebarNavigation {...navigationProps} schedulerTab="calendar" idPrefix="mobile" onNavigate={() => setMobileOpen(false)} />}>
+              <QueryAwareSidebarNavigation
+                {...navigationProps}
+                idPrefix="mobile"
+                onNavigate={() => setMobileOpen(false)}
+              />
+            </Suspense>
           </aside>
         </div>
       ) : null}

@@ -47,6 +47,26 @@ export type SchedulerInventorySummary = {
   }>;
 };
 
+export type SchedulerMeterRegisterItem = {
+  inventoryMeterId: string;
+  deviceId: string;
+  deviceModel: string;
+  meterName: string;
+  clientName: string;
+  siteName: string;
+  siteAddress: string;
+  customJobNumber: string | null;
+  installationId: string;
+  meterId: string;
+  installedAt: string;
+};
+
+export type SchedulerMeterRegister = {
+  items: SchedulerMeterRegisterItem[];
+  total: number;
+  truncated: boolean;
+};
+
 export type JobOption = {
   id: string;
   label: string;

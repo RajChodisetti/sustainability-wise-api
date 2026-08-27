@@ -1,8 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../auth/middleware.js';
-import { and, count, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNull, or } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { ihInventoryMeters, ihUsers } from '../../db/schema/installhub.js';
+import {
+  ihInstallations,
+  ihInventoryMeters,
+  ihMeterDevices,
+  ihUsers,
+} from '../../db/schema/installhub.js';
 import { config } from '../../config.js';
 import {
   assertPortalSchedulerApp,
@@ -260,6 +265,97 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         email: user.email,
         meterCount: Number(user.meterCount),
       })).sort((a, b) => b.meterCount - a.meterCount || a.name.localeCompare(b.name)),
+    });
+  });
+
+  app.get('/scheduler/meter-register', {
+    schema: {
+      tags: ['Portal Scheduler Inventory'],
+      summary: 'Search the current installed Field meter register',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          search: { type: 'string', maxLength: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const query = request.query as { search?: string };
+    const search = query.search?.trim() ?? '';
+    const searchFilter = search
+      ? or(
+          ilike(ihInventoryMeters.deviceId, `%${search}%`),
+          ilike(ihInventoryMeters.deviceModel, `%${search}%`),
+          ilike(ihMeterDevices.customName, `%${search}%`),
+          ilike(ihInstallations.customerName, `%${search}%`),
+          ilike(ihInstallations.clientName, `%${search}%`),
+          ilike(ihInstallations.siteName, `%${search}%`),
+          ilike(ihInstallations.siteAddress, `%${search}%`),
+          ilike(ihInstallations.customJobNumber, `%${search}%`),
+        )
+      : undefined;
+    const where = and(
+      isNull(ihInventoryMeters.deletedAt),
+      eq(ihInventoryMeters.status, 'installed'),
+      isNull(ihInstallations.deletedAt),
+      isNull(ihMeterDevices.deletedAt),
+      searchFilter,
+    );
+    const [items, totalRows] = await Promise.all([
+      db.select({
+        inventoryMeterId: ihInventoryMeters.id,
+        deviceId: ihInventoryMeters.deviceId,
+        deviceModel: ihInventoryMeters.deviceModel,
+        meterName: ihMeterDevices.customName,
+        customerName: ihInstallations.customerName,
+        clientName: ihInstallations.clientName,
+        siteName: ihInstallations.siteName,
+        siteAddress: ihInstallations.siteAddress,
+        customJobNumber: ihInstallations.customJobNumber,
+        installationId: ihInstallations.id,
+        meterId: ihMeterDevices.id,
+        installedAt: ihInventoryMeters.updatedAt,
+      }).from(ihInventoryMeters)
+        .innerJoin(
+          ihInstallations,
+          eq(ihInstallations.id, ihInventoryMeters.installedInstallationId),
+        )
+        .innerJoin(
+          ihMeterDevices,
+          and(
+            eq(ihMeterDevices.id, ihInventoryMeters.installedMeterId),
+            eq(ihMeterDevices.installationId, ihInstallations.id),
+          ),
+        )
+        .where(where)
+        .orderBy(desc(ihInventoryMeters.updatedAt), ihInventoryMeters.deviceId)
+        .limit(500),
+      db.select({ total: count() }).from(ihInventoryMeters)
+        .innerJoin(
+          ihInstallations,
+          eq(ihInstallations.id, ihInventoryMeters.installedInstallationId),
+        )
+        .innerJoin(
+          ihMeterDevices,
+          and(
+            eq(ihMeterDevices.id, ihInventoryMeters.installedMeterId),
+            eq(ihMeterDevices.installationId, ihInstallations.id),
+          ),
+        )
+        .where(where),
+    ]);
+    const total = Number(totalRows[0]?.total ?? 0);
+    return reply.send({
+      items: items.map(({ customerName, ...item }) => ({
+        ...item,
+        clientName: customerName?.trim() || item.clientName,
+        installedAt: item.installedAt.toISOString(),
+      })),
+      total,
+      truncated: total > items.length,
     });
   });
 

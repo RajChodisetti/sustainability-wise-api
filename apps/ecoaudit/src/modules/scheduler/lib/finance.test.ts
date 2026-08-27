@@ -26,6 +26,7 @@ import {
   marginTone,
   MAX_CONSOLIDATED_INVOICE_JOBS,
   persistExpenseBeforeAttachment,
+  quotedAmountForBillableTotal,
   resolveHourOverrideValues,
   schedulerFinanceOverviewQuery,
   schedulerFinanceHref,
@@ -154,7 +155,7 @@ test('scheduler tab transitions keep URL and in-memory finance targets in parity
     schedulerTabTransition('?tab=financial-summary&financeId=finance-7&eventId=event-7', 'calendar'),
     { href: '/scheduler?tab=calendar', financeTarget: undefined },
   );
-  for (const tab of ['my-route', 'team-performance', 'leave', 'finance-analytics'] as const) {
+  for (const tab of ['my-route', 'team-performance', 'leave', 'inventory', 'meter-register', 'finance-analytics'] as const) {
     assert.deepEqual(
       schedulerTabTransition('?tab=invoices&financeId=finance-7&invoiceId=invoice-7', tab),
       { href: `/scheduler?tab=${tab}`, financeTarget: undefined },
@@ -458,6 +459,25 @@ test('explicit null hour overrides are preserved for clear-all requests', () => 
       { billableHoursOverride: null, costHoursOverride: null },
     ),
     { billableHoursOverride: null, costHoursOverride: null },
+  );
+});
+
+test('direct billable edits preserve recorded billable costs and set the quoted balance', () => {
+  assert.deepEqual(quotedAmountForBillableTotal({
+    billableTotal: 550,
+    billableExpenseRevenue: 125.25,
+  }), { quotedAmount: 424.75, error: null });
+  assert.deepEqual(quotedAmountForBillableTotal({
+    billableTotal: 125.25,
+    billableExpenseRevenue: 125.25,
+  }), { quotedAmount: 0, error: null });
+  assert.equal(
+    quotedAmountForBillableTotal({ billableTotal: 100, billableExpenseRevenue: 125.25 }).error,
+    'Billable cannot be lower than the billable costs already recorded for this job.',
+  );
+  assert.equal(
+    quotedAmountForBillableTotal({ billableTotal: Number.NaN, billableExpenseRevenue: 0 }).error,
+    'Enter a billable amount of zero or more.',
   );
 });
 
