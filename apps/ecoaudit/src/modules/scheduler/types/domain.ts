@@ -4,6 +4,7 @@ export type ScheduleStatus = 'planned' | 'in_progress' | 'done' | 'cancelled';
 
 export type ScheduleEvent = {
   id: string;
+  jobId: string | null;
   title: string;
   description: string | null;
   sourceApp: ScheduleSourceApp;
@@ -34,12 +35,59 @@ export type ScheduleSummary = {
   byApp: Partial<Record<ScheduleSourceApp, number>>;
 };
 
+export type SchedulerInventorySummary = {
+  companyMeters: number;
+  userMeters: number;
+  totalMetersInInventory: number;
+  users: Array<{
+    userId: string;
+    name: string;
+    email: string;
+    meterCount: number;
+  }>;
+};
+
 export type JobOption = {
   id: string;
   label: string;
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>;
   sourceType: Exclude<ScheduleSourceType, 'custom'>;
   subtitle?: string | null;
+  assigneeFieldUserId?: string | null;
+  assigneeDisplayName?: string | null;
+  scheduledEventId?: string | null;
+  scheduledStartAt?: string | null;
+};
+
+export type SchedulerSiteOption = {
+  id: string;
+  clientId: string;
+  clientName: string;
+  clientContactName: string | null;
+  clientContactPhone: string | null;
+  clientContactEmail: string | null;
+  siteName: string;
+  address: string;
+  locality: string | null;
+  state: string | null;
+  postcode: string | null;
+  countryCode: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  timezone: string;
+  siteContactName: string | null;
+  siteContactPhone: string | null;
+  siteContactEmail: string | null;
+  accessInformation: string | null;
+  latestWorkType: string | null;
+  latestMeteringSolutionType: string | null;
+  latestCustomJobNumber: string | null;
+  latestJobComments: string | null;
+  latestMaas: boolean | null;
+  latestElectricityNmi: string | null;
+  latestJobId: string | null;
+  latestSourceId: string | null;
+  latestRevisionNumber: number | null;
 };
 
 export type CreateScheduleEventInput = {
@@ -59,28 +107,38 @@ export type CreateSchedulerDispatchInput = {
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>;
   title?: string;
   description?: string | null;
-  assigneeFieldUserId: string;
+  assigneeFieldUserId?: string;
   scheduledStartAt: string;
   estimatedDurationMinutes?: number | null;
   deadlineAt: string;
   job: {
+    siteMode?: 'new' | 'existing';
+    existingSiteId?: string | null;
     siteName: string;
     siteAddress?: string;
     location?: string;
     buildingIdName?: string;
     clientName?: string;
+    clientContactName?: string | null;
+    clientContactPhone?: string | null;
+    clientContactEmail?: string | null;
     /** Written to the canonical default grid supply, not installation metadata. */
     electricityNmi?: string | null;
     customerName?: string | null;
     maas?: boolean | null;
+    workType?: string | null;
+    /** @deprecated Legacy dispatch compatibility only. */
     serviceType?: string | null;
     meteringSolutionType?: string | null;
     /** Planning context only; installed device records remain authoritative. */
     plannedMeterType?: string | null;
+    customJobNumber?: string | null;
     siteContactName?: string | null;
     siteContactPhone?: string | null;
     siteContactEmail?: string | null;
+    /** @deprecated Legacy migration/import compatibility only. */
     fergusJobNumber?: string | null;
+    /** @deprecated Legacy migration/import compatibility only. */
     quoteNumber?: string | null;
     jobComments?: string | null;
     accessInformation?: string | null;
@@ -199,7 +257,10 @@ export type FinanceOverviewItem = {
   sourceId: string;
   eventId: string | null;
   jobName: string;
+  clientName: string | null;
   siteName: string;
+  siteAddress: string | null;
+  userNames: string[];
   jobDate: string;
   jobStatus: string;
   eventStatus: string | null;

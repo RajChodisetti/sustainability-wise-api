@@ -100,7 +100,7 @@ test('scheduler invoice PDF identity follows the exact server revision contract'
   const version = { id: 'invoice-42', updatedAt: '2026-08-16T18:15:00.000Z' };
   assert.equal(
     schedulerInvoicePdfReportVariantKey(version),
-    'scheduler-invoice-pdf:v2:invoice-42:2026-08-16T18:15:00.000Z',
+    'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
   );
   assert.notEqual(
     schedulerInvoicePdfReportVariantKey({ ...version, updatedAt: '2026-08-16T18:16:00.000Z' }),
@@ -204,7 +204,7 @@ test('same-route portfolio invoice links activate in-page state without breaking
 
 test('hours review uses the audited backend state even when recorded hours are zero', () => {
   const base = {
-    financeId: 'f', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a', eventId: 'e', jobName: 'Job', siteName: 'Site',
+    financeId: 'f', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'a', eventId: 'e', jobName: 'Job', clientName: null, siteName: 'Site', siteAddress: null, userNames: [] as string[],
     jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: 'planned', currency: 'AUD', actualHours: 0, billableHours: 2, costHours: 2,
     billableAmount: 0, totalCost: 0, invoicedAmount: 0, unbilledAmount: 0, grossProfit: 0,
     marginPct: null, invoiceCount: 0, hasOverdueInvoice: false,
@@ -225,7 +225,10 @@ test('finance exception queue derives only job-level states present in the overv
     sourceId: 'audit-neutral',
     eventId: 'event-neutral',
     jobName: 'Neutral job',
+    clientName: null,
     siteName: 'Neutral site',
+    siteAddress: null,
+    userNames: [],
     jobDate: '2026-08-16',
     jobStatus: 'Draft',
     eventStatus: 'planned',
@@ -511,7 +514,7 @@ test('exact source overview requests keep legacy Field deep links to one filtere
 test('deep-linked finance targets are found beyond the first cursor page', () => {
   const first: FinanceOverviewItem = {
     financeId: 'finance-1', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'audit-1',
-    eventId: 'event-1', jobName: 'First', siteName: 'First site', jobDate: '2026-08-15', jobStatus: 'Draft',
+    eventId: 'event-1', jobName: 'First', clientName: null, siteName: 'First site', siteAddress: null, userNames: [], jobDate: '2026-08-15', jobStatus: 'Draft',
     eventStatus: 'planned', currency: 'AUD', actualHours: 1, billableHours: 1, costHours: 1,
     billableAmount: 100, totalCost: 50, invoicedAmount: 0, unbilledAmount: 100,
     grossProfit: 50, marginPct: 50, invoiceCount: 0, hasOverdueInvoice: false,
@@ -604,7 +607,7 @@ test('direct finance summaries produce selectable overview rows without cursor s
   } as unknown as SchedulerFinancialSummary;
   assert.deepEqual(financeOverviewFromSummary(summary), {
     financeId: 'finance-direct', sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'assessment-9',
-    eventId: null, jobName: 'Warehouse solar', siteName: 'Warehouse', jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: null,
+    eventId: null, jobName: 'Warehouse solar', clientName: null, siteName: 'Warehouse', siteAddress: null, userNames: [], jobDate: '2026-08-16', jobStatus: 'Draft', eventStatus: null,
     currency: 'AUD', actualHours: 0, billableHours: 4, costHours: 3, billableAmount: 800, totalCost: 300,
     invoicedAmount: 400, unbilledAmount: 400, grossProfit: 500, marginPct: 62.5, invoiceCount: 1,
     hasOverdueInvoice: true, needsHoursReview: false,

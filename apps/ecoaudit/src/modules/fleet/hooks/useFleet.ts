@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getDashboardSummary,
   getDashboardTrends,
@@ -9,6 +9,8 @@ import {
   listDevices,
   listReports,
   listRuns,
+  removeClientApiKey,
+  saveClientApiKey,
   type DeviceListParams,
 } from '@/modules/fleet/api/fleet';
 import type { FleetQueryFilters } from '@/modules/fleet/types/domain';
@@ -55,6 +57,24 @@ export function useFleetClients(runId?: string) {
     queryKey: ['wattwatchers', 'clients', runId ?? 'latest'],
     queryFn: () => listClients(runId),
     staleTime: 2 * 60_000,
+  });
+}
+
+export function useSaveFleetClientApiKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ clientId, apiKey }: { clientId: string; apiKey: string }) => (
+      saveClientApiKey(clientId, apiKey)
+    ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wattwatchers', 'clients'] }),
+  });
+}
+
+export function useRemoveFleetClientApiKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (clientId: string) => removeClientApiKey(clientId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['wattwatchers', 'clients'] }),
   });
 }
 

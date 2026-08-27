@@ -1,22 +1,29 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
+import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
-import { useFleetClients } from '@/modules/fleet/hooks/useFleet';
+import { useFleetClients, useRemoveFleetClientApiKey, useSaveFleetClientApiKey } from '@/modules/fleet/hooks/useFleet';
 import { formatDate, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
 
 export default function ClientsPage() {
+  const { wwUser } = usePortalAuth();
   const query = useFleetClients();
+  const saveApiKey = useSaveFleetClientApiKey();
+  const removeApiKey = useRemoveFleetClientApiKey();
   const [search, setSearch] = useState('');
   const [maas, setMaas] = useState<'all' | 'true' | 'false'>('all');
   const [quality, setQuality] = useState<'all' | 'healthy' | 'issues'>('all');
+  const [apiKeyFilter, setApiKeyFilter] = useState<'all' | 'configured' | 'missing'>('all');
+  const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState('');
   const clients = useMemo(() => query.data?.data ?? [], [query.data?.data]);
   const run = query.data?.run;
 
@@ -27,9 +34,21 @@ export default function ClientsPage() {
       const matchesMaas = maas === 'all' || client.isMaas === (maas === 'true');
       const healthy = ['complete', 'completed', 'success', 'successful', 'published'].includes(client.collectionStatus?.toLowerCase() ?? '');
       const matchesQuality = quality === 'all' || (quality === 'healthy' ? healthy : !healthy || Boolean(client.collectionError));
-      return matchesSearch && matchesMaas && matchesQuality;
+      const matchesApiKey = apiKeyFilter === 'all'
+        || client.apiKeyConfigured === (apiKeyFilter === 'configured');
+      return matchesSearch && matchesMaas && matchesQuality && matchesApiKey;
     });
-  }, [clients, maas, quality, search]);
+  }, [apiKeyFilter, clients, maas, quality, search]);
+
+  const editingClient = clients.find((client) => client.id === editingClientId) ?? null;
+
+  async function submitApiKey(event: FormEvent) {
+    event.preventDefault();
+    if (!editingClient || apiKey.trim().length < 8) return;
+    await saveApiKey.mutateAsync({ clientId: editingClient.id, apiKey: apiKey.trim() });
+    setApiKey('');
+    setEditingClientId(null);
+  }
 
   const totals = useMemo(() => clients.reduce(
     (acc, client) => ({
@@ -70,7 +89,7 @@ export default function ClientsPage() {
           </div>
 
           <Card className="mb-5 !p-4 sm:!p-5">
-            <fieldset className="grid min-w-0 gap-3 sm:grid-cols-3">
+            <fieldset className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <legend className="sr-only">Client filters</legend>
               <label className="block text-xs font-bold text-[var(--text-sub)]">
                 Search client
@@ -78,6 +97,14 @@ export default function ClientsPage() {
                   <Icon name="search" size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
                   <Input className="pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name or code" />
                 </div>
+              </label>
+              <label className="block text-xs font-bold text-[var(--text-sub)]">
+                API key
+                <Select className="mt-1.5" value={apiKeyFilter} onChange={(event) => setApiKeyFilter(event.target.value as typeof apiKeyFilter)}>
+                  <option value="all">All clients</option>
+                  <option value="missing">API key not added</option>
+                  <option value="configured">API key configured</option>
+                </Select>
               </label>
               <label className="block text-xs font-bold text-[var(--text-sub)]">
                 MaaS classification
@@ -121,6 +148,7 @@ export default function ClientsPage() {
                       <th className={`${tableHeadClass} text-right`} scope="col">Inactive / unknown</th>
                       <th className={`${tableHeadClass} text-right`} scope="col">Report offline</th>
                       <th className={tableHeadClass} scope="col">Collection</th>
+                      <th className={tableHeadClass} scope="col">API key</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -147,6 +175,28 @@ export default function ClientsPage() {
                           <ProcessStatusBadge status={client.collectionStatus} />
                           {client.collectionError ? <p className="mt-2 max-w-64 text-xs leading-5 text-[var(--red)]">{client.collectionError}</p> : null}
                         </td>
+                        <td className={`${tableCellClass} min-w-44`}>
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${
+                            client.apiKeyConfigured
+                              ? 'bg-[var(--green-soft)] text-[var(--green)]'
+                              : 'bg-[var(--amber-soft)] text-[var(--amber)]'
+                          }`}>
+                            {client.apiKeyConfigured ? 'API key configured' : 'API key not added'}
+                          </span>
+                          {wwUser?.role === 'admin' ? (
+                            <Button
+                              className="mt-2 !min-h-9 !px-3 !py-1.5"
+                              type="button"
+                              variant="secondary"
+                              onClick={() => {
+                                setApiKey('');
+                                setEditingClientId(client.id);
+                              }}
+                            >
+                              {client.apiKeyConfigured ? 'Replace key' : 'Add key'}
+                            </Button>
+                          ) : null}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -155,6 +205,53 @@ export default function ClientsPage() {
             </Card>
           )}
         </>
+      ) : null}
+
+      {editingClient && wwUser?.role === 'admin' ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="presentation" onMouseDown={(event) => {
+          if (event.currentTarget === event.target) setEditingClientId(null);
+        }}>
+          <Card className="w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="fleet-api-key-title">
+            <h2 id="fleet-api-key-title" className="text-lg font-extrabold text-[var(--text)]">
+              {editingClient.apiKeyConfigured ? 'Replace' : 'Add'} API key for {editingClient.name}
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
+              The key is encrypted after submission and is never displayed again.
+            </p>
+            <form className="mt-4" onSubmit={(event) => void submitApiKey(event)}>
+              <label className="block text-xs font-bold text-[var(--text-sub)]">
+                Wattwatchers API key
+                <Input className="mt-1.5" type="password" autoComplete="new-password" minLength={8} required value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoFocus />
+              </label>
+              {saveApiKey.error || removeApiKey.error ? (
+                <div className="mt-3"><ErrorBanner message={fleetConnectionErrorMessage(saveApiKey.error ?? removeApiKey.error)} /></div>
+              ) : null}
+              <div className="mt-5 flex flex-wrap justify-between gap-2">
+                <div>
+                  {editingClient.apiKeyConfigured ? (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      disabled={removeApiKey.isPending || saveApiKey.isPending}
+                      onClick={() => {
+                        if (!window.confirm(`Remove the API key for ${editingClient.name}? Collection for this client will stop.`)) return;
+                        void removeApiKey.mutateAsync(editingClient.id).then(() => setEditingClientId(null));
+                      }}
+                    >
+                      Remove key
+                    </Button>
+                  ) : null}
+                </div>
+                <div className="flex gap-2">
+                  <Button type="button" variant="secondary" onClick={() => setEditingClientId(null)}>Cancel</Button>
+                  <Button type="submit" disabled={apiKey.trim().length < 8 || saveApiKey.isPending || removeApiKey.isPending}>
+                    {saveApiKey.isPending ? 'Saving…' : 'Save API key'}
+                  </Button>
+                </div>
+              </div>
+            </form>
+          </Card>
+        </div>
       ) : null}
     </div>
   );

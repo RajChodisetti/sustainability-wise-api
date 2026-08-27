@@ -36,6 +36,7 @@ import type {
   ScheduleEvent,
   ScheduleReminderResponse,
   SchedulerFinancialSummary,
+  SchedulerInventorySummary,
   SchedulerExpensePage,
   SchedulerInvoiceEligibility,
   SchedulerInvoiceEmailDelivery,
@@ -43,6 +44,7 @@ import type {
   SchedulerInvoicePage,
   SchedulerInvoiceListItem,
   SchedulerPortfolioSummary,
+  SchedulerSiteOption,
   ScheduleSummary,
   ScheduleSourceApp,
   SendSchedulerInvoiceEmailInput,
@@ -199,6 +201,10 @@ export async function fetchScheduleSummary(): Promise<ScheduleSummary> {
   return portalRequest()<ScheduleSummary>('GET', '/v1/portal/scheduler/summary');
 }
 
+export async function fetchSchedulerInventory(): Promise<SchedulerInventorySummary> {
+  return portalRequest(true)<SchedulerInventorySummary>('GET', '/v1/portal/scheduler/inventory');
+}
+
 export async function fetchScheduleEvents(params: {
   from?: string;
   to?: string;
@@ -225,8 +231,8 @@ export async function createScheduleEvent(input: CreateScheduleEventInput): Prom
 
 export async function createSchedulerDispatch(
   input: CreateSchedulerDispatchInput,
-): Promise<ScheduleEvent> {
-  return portalRequest(true)<ScheduleEvent>('POST', '/v1/portal/scheduler/dispatches', input);
+): Promise<ScheduleEvent | JobOption> {
+  return portalRequest(true)<ScheduleEvent | JobOption>('POST', '/v1/portal/scheduler/dispatches', input);
 }
 
 export function fetchSchedulerAddressSuggestions(input: {
@@ -290,17 +296,36 @@ export async function fetchUnscheduledJobs(params: {
   q?: string;
   sourceApp?: ScheduleSourceApp;
   limit?: number;
+  unscheduledOnly?: boolean;
 } = {}): Promise<JobOption[]> {
   const qs = new URLSearchParams();
   if (params.q) qs.set('q', params.q);
   if (params.sourceApp && params.sourceApp !== 'custom') qs.set('sourceApp', params.sourceApp);
   if (params.limit) qs.set('limit', String(params.limit));
+  if (params.unscheduledOnly !== undefined) {
+    qs.set('unscheduledOnly', String(params.unscheduledOnly));
+  }
   const suffix = qs.toString() ? `?${qs}` : '';
   const res = await portalRequest(true)<{ jobs: JobOption[] }>(
     'GET',
     `/v1/portal/scheduler/unscheduled-jobs${suffix}`,
   );
   return res.jobs ?? [];
+}
+
+export async function fetchSchedulerSites(params: {
+  q?: string;
+  sourceApp: Exclude<ScheduleSourceApp, 'custom'>;
+  limit?: number;
+}): Promise<SchedulerSiteOption[]> {
+  const qs = new URLSearchParams({ sourceApp: params.sourceApp });
+  if (params.q) qs.set('q', params.q);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const res = await portalRequest(true)<{ sites: SchedulerSiteOption[] }>(
+    'GET',
+    `/v1/portal/scheduler/sites?${qs}`,
+  );
+  return res.sites ?? [];
 }
 
 export async function fetchPortalAssignees(): Promise<PortalDirectoryUser[]> {

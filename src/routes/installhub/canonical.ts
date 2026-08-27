@@ -21,6 +21,7 @@ export const INSTALLATION_METADATA_TEXT_LIMITS = {
   serviceType: 120,
   meteringSolutionType: 120,
   plannedMeterType: 120,
+  customJobNumber: 100,
   siteContactName: 300,
   siteContactPhone: 50,
   siteContactEmail: 320,
@@ -38,6 +39,7 @@ export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
   'serviceType',
   'meteringSolutionType',
   'plannedMeterType',
+  'customJobNumber',
   'siteLocality',
   'siteState',
   'sitePostcode',
@@ -160,6 +162,7 @@ export type CanonicalInstallation = {
   serviceType?: string | null;
   meteringSolutionType?: string | null;
   plannedMeterType?: string | null;
+  customJobNumber?: string | null;
   siteName: string;
   siteAddress: string;
   siteLocality?: string | null;
@@ -1136,6 +1139,11 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
       item,
       'plannedMeterType',
       INSTALLATION_METADATA_TEXT_LIMITS.plannedMeterType,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'customJobNumber',
+      INSTALLATION_METADATA_TEXT_LIMITS.customJobNumber,
     ),
     siteName: stringValueOrDefault(item.siteName, 'installation.siteName', 'Untitled installation'),
     siteAddress: stringValue(item.siteAddress ?? '', 'installation.siteAddress'),
@@ -2641,6 +2649,7 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       serviceType: ordered.installation.serviceType ?? null,
       meteringSolutionType: ordered.installation.meteringSolutionType ?? null,
       plannedMeterType: ordered.installation.plannedMeterType ?? null,
+      customJobNumber: ordered.installation.customJobNumber ?? null,
       siteName: ordered.installation.siteName,
       siteAddress: ordered.installation.siteAddress,
       siteLocality: ordered.installation.siteLocality ?? null,

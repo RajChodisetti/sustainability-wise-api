@@ -82,6 +82,7 @@ test('new installation trees retain structured job planning fields and nullable 
     serviceType: 'New installation',
     meteringSolutionType: 'Whole-site monitoring',
     plannedMeterType: '6-channel meter',
+    customJobNumber: 'CUSTOM-42',
     siteName: 'North warehouse',
     siteAddress: '10 Example Street',
     siteLocality: 'Newcastle',
@@ -174,6 +175,17 @@ test('meter-linked reconciliation keeps the WW installation form available', () 
       .some((definition) => definition.type === 'comms-fault'),
     false,
   );
+});
+
+test('M2 and M3 work types expose only the device-linked comms replacement workflow', () => {
+  for (const workType of ['comms_fault_m2', 'meter_replacement_m3']) {
+    assert.deepEqual(
+      allowedFormDefinitions({ meterId: 'meter-1' }, workType)
+        .map((definition) => definition.type),
+      ['comms-fault'],
+    );
+    assert.deepEqual(allowedFormDefinitions({}, workType), []);
+  }
 });
 
 test('stale optional form context is cleared instead of blocking completion', () => {

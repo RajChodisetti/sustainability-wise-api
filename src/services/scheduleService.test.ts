@@ -5,6 +5,9 @@ import {
   assertPortalSchedulerApp,
   createScheduleEvent,
   deriveScheduledEndAt,
+  dispatchSiteSelection,
+  fieldScopeNumber,
+  generatedFieldJobTitle,
   installHubSchedulerAuditDate,
   MAX_ESTIMATED_DURATION_MINUTES,
   parseDispatchJob,
@@ -24,6 +27,33 @@ const ecoAdmin = {
 
 test('Eco Audit administrators retain Scheduler access', () => {
   assert.doesNotThrow(() => assertPortalSchedulerApp(ecoAdmin));
+});
+
+test('job creation distinguishes new sites from existing-site versions', () => {
+  assert.deepEqual(dispatchSiteSelection({}), { mode: 'new', existingSiteId: null });
+  assert.deepEqual(
+    dispatchSiteSelection({ siteMode: 'existing', existingSiteId: 'site-1' }),
+    { mode: 'existing', existingSiteId: 'site-1' },
+  );
+  assert.throws(
+    () => dispatchSiteSelection({ siteMode: 'existing' }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingSiteId is required for an existing site',
+  );
+  assert.throws(
+    () => dispatchSiteSelection({ siteMode: 'new', existingSiteId: 'site-1' }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingSiteId is allowed only for an existing site',
+  );
+});
+
+test('Field job titles use the hardcoded scope number and a three-character suffix', () => {
+  assert.equal(fieldScopeNumber('M2 - Faults / COMMS fault'), 'M2');
+  assert.equal(fieldScopeNumber('legacy custom scope'), 'M5');
+  assert.equal(
+    generatedFieldJobTitle('M3 - Inspection', 'Client Co', 'North Site', 'A7Z'),
+    'M3 - Client Co - North Site - A7Z',
+  );
 });
 
 test('sortByDeadlineUrgency puts overdue and soonest first; done last', () => {
@@ -183,6 +213,7 @@ test('InstallHub Scheduler dispatch accepts bounded setup and outcome metadata',
     serviceType: 'Metering install',
     meteringSolutionType: 'Commercial',
     plannedMeterType: 'A6M',
+    customJobNumber: 'CUSTOM-100',
     siteName: 'Sydney branch',
     siteAddress: '42 Example Road, Sydney NSW 2000',
     siteContactName: 'Site manager',

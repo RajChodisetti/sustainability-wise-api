@@ -22,6 +22,7 @@ import {
   getUser,
   listUnifiedPortalUsers,
   updateUser,
+  updateUserMaintainer,
 } from '@/modules/installhub/api/installhub';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
 import {
@@ -573,6 +574,9 @@ function SourceManagedFieldUserDetails({
   user: ManagedInstallHubUser;
   isCurrentUser: boolean;
 }) {
+  const toast = useToast();
+  const [account, setAccount] = useState(user);
+  const [changingMaintainer, setChangingMaintainer] = useState(false);
   const sourceName = user.sourceApp
     ? portalAppLabels[user.sourceApp]
     : 'source application';
@@ -628,7 +632,8 @@ function SourceManagedFieldUserDetails({
               'Role',
               user.role === 'admin' ? 'Administrator' : 'Inspector',
             ],
-            ['Status', user.isActive ? 'Active' : 'Inactive'],
+            ['Status', account.isActive ? 'Active' : 'Inactive'],
+            ['Inventory access', account.isMaintainer ? 'Maintainer' : 'User inventory only'],
             ['Managed by', sourceUnavailable ? 'Source unavailable' : sourceName],
           ].map(([label, value]) => (
             <div
@@ -644,6 +649,35 @@ function SourceManagedFieldUserDetails({
             </div>
           ))}
         </dl>
+
+        <div className="mt-5 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)] p-4">
+          <p className="text-sm font-bold text-[var(--text)]">Company inventory maintainer</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+            This independent permission allows company meter list add, edit, assignment, and deletion.
+          </p>
+          <Button
+            className="mt-3"
+            type="button"
+            variant="secondary"
+            disabled={changingMaintainer || !account.isActive}
+            onClick={() => {
+              setChangingMaintainer(true);
+              void updateUserMaintainer(account.id, !account.isMaintainer)
+                .then((updated) => {
+                  setAccount(updated);
+                  toast.success(updated.isMaintainer ? 'Maintainer access granted.' : 'Maintainer access revoked.');
+                })
+                .catch((error) => toast.error(installHubConnectionErrorMessage(error)))
+                .finally(() => setChangingMaintainer(false));
+            }}
+          >
+            {changingMaintainer
+              ? 'Updating…'
+              : account.isMaintainer
+                ? 'Revoke maintainer access'
+                : 'Grant maintainer access'}
+          </Button>
+        </div>
 
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <LinkButton href="/installhub/admin/users" variant="secondary">
@@ -684,6 +718,7 @@ function UserEditorForm({
   const [saving, setSaving] = useState(false);
   const [changingAccess, setChangingAccess] = useState(false);
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [changingMaintainer, setChangingMaintainer] = useState(false);
   const isEditing = mode === 'edit';
   const isCurrentUser = account?.id === currentUser.id;
 
@@ -924,6 +959,39 @@ function UserEditorForm({
           </div>
         </Card>
       </form>
+
+      {account ? (
+        <Card className="mt-5">
+          <h2 className="text-lg font-extrabold text-[var(--text)]">Inventory access</h2>
+          <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
+            {account.isMaintainer
+              ? 'This user can manage company meter stock as well as their own inventory.'
+              : 'This user can register and use meters in their own inventory only.'}
+          </p>
+          <Button
+            className="mt-4"
+            type="button"
+            variant="secondary"
+            disabled={saving || changingAccess || resettingPassword || changingMaintainer || !account.isActive}
+            onClick={() => {
+              setChangingMaintainer(true);
+              void updateUserMaintainer(account.id, !account.isMaintainer)
+                .then((updated) => {
+                  setAccount(updated);
+                  toast.success(updated.isMaintainer ? 'Maintainer access granted.' : 'Maintainer access revoked.');
+                })
+                .catch((error) => toast.error(installHubConnectionErrorMessage(error)))
+                .finally(() => setChangingMaintainer(false));
+            }}
+          >
+            {changingMaintainer
+              ? 'Updating…'
+              : account.isMaintainer
+                ? 'Revoke maintainer access'
+                : 'Grant maintainer access'}
+          </Button>
+        </Card>
+      ) : null}
 
       {account ? (
         <Card className="mt-5">

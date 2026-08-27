@@ -19,6 +19,7 @@ import {
   fetchSchedulerAnalytics,
   fetchSchedulerAddressSuggestions,
   fetchSchedulerFinancialSummary,
+  fetchSchedulerInventory,
   fetchSchedulerFinanceOverview,
   fetchSchedulerInvoice,
   fetchSchedulerInvoiceRefunds,
@@ -26,6 +27,7 @@ import {
   fetchSchedulerInvoices,
   fetchSchedulerPortfolioSummary,
   fetchSchedulerRouteSuggestion,
+  fetchSchedulerSites,
   fetchPortalAssignees,
   fetchScheduleEvents,
   fetchSchedulerLeaveRequests,
@@ -76,13 +78,15 @@ import type { SchedulerCurrentLocation } from '@/modules/scheduler/types/routing
 export const schedulerKeys = {
   all: ['portal', 'scheduler'] as const,
   summary: () => [...schedulerKeys.all, 'summary'] as const,
+  inventory: () => [...schedulerKeys.all, 'inventory'] as const,
   events: (filters: Record<string, string | undefined>) =>
     [...schedulerKeys.all, 'events', filters] as const,
   assignees: () => [...schedulerKeys.all, 'assignees'] as const,
   jobOptions: (q: string, app?: string) =>
     [...schedulerKeys.all, 'job-options', q, app ?? ''] as const,
-  unscheduled: (q: string, app?: string) =>
-    [...schedulerKeys.all, 'unscheduled', q, app ?? ''] as const,
+  sites: (q: string, app: string) => [...schedulerKeys.all, 'sites', q, app] as const,
+  unscheduled: (q: string, app?: string, unscheduledOnly = true) =>
+    [...schedulerKeys.all, 'unscheduled', q, app ?? '', unscheduledOnly] as const,
   finance: () => [...schedulerKeys.all, 'finance'] as const,
   financeOverview: () => [...schedulerKeys.finance(), 'overview'] as const,
   financeOverviewTarget: (sourceApp: string, sourceId: string) =>
@@ -120,6 +124,13 @@ export function useScheduleSummary() {
   return useQuery({
     queryKey: schedulerKeys.summary(),
     queryFn: fetchScheduleSummary,
+  });
+}
+
+export function useSchedulerInventory() {
+  return useQuery({
+    queryKey: schedulerKeys.inventory(),
+    queryFn: fetchSchedulerInventory,
   });
 }
 
@@ -225,14 +236,33 @@ export function useSchedulerRouteSuggestion() {
 }
 
 export function useUnscheduledJobs(
-  filters: { q?: string; sourceApp?: ScheduleSourceApp } = {},
+  filters: { q?: string; sourceApp?: ScheduleSourceApp; unscheduledOnly?: boolean } = {},
   enabled = true,
 ) {
   const q = filters.q ?? '';
   const app = filters.sourceApp;
+  const unscheduledOnly = filters.unscheduledOnly ?? true;
   return useQuery({
-    queryKey: schedulerKeys.unscheduled(q, app),
-    queryFn: () => fetchUnscheduledJobs({ q, sourceApp: app, limit: 80 }),
+    queryKey: schedulerKeys.unscheduled(q, app, unscheduledOnly),
+    queryFn: () => fetchUnscheduledJobs({
+      q,
+      sourceApp: app,
+      limit: 500,
+      unscheduledOnly,
+    }),
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useSchedulerSites(
+  q: string,
+  sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: schedulerKeys.sites(q, sourceApp),
+    queryFn: () => fetchSchedulerSites({ q, sourceApp, limit: 100 }),
     enabled,
     staleTime: 15_000,
   });

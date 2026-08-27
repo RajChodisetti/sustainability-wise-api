@@ -36,6 +36,7 @@ import {
   estimatedDurationError,
   parseEstimatedDurationMinutes,
 } from '@/modules/scheduler/lib/estimatedDuration';
+import { scheduledJobWeek } from '@/modules/scheduler/lib/jobsPool';
 import { schedulerSourceAppIsSelectable } from '@/modules/scheduler/lib/visibility';
 import {
   dayKey,
@@ -105,7 +106,9 @@ export function DynamicSchedulerBoard({
 
   const staff = useMemo(() => assignees.data ?? [], [assignees.data]);
   const allEvents = useMemo(() => (
-    (eventsQuery.data ?? []).filter((event) => visibleSourceApps.includes(event.sourceApp))
+    (eventsQuery.data ?? []).filter((event) => (
+      event.status !== 'done' && visibleSourceApps.includes(event.sourceApp)
+    ))
   ), [eventsQuery.data, visibleSourceApps]);
   const visibleEvents = useMemo(() => {
     if (staffFilter.length === 0) return allEvents;
@@ -156,7 +159,12 @@ export function DynamicSchedulerBoard({
         const job = activeData.job;
         if (!schedulerSourceAppIsSelectable(selectableSourceApps, job.sourceApp)) return;
         setPendingAssign({ job, day: overData.day, hour: overData.hour });
-        setPickAssignee(staffFilter[0] ?? staff[0]?.fieldUserId ?? '');
+        setPickAssignee(
+          job.assigneeFieldUserId
+            ?? staffFilter[0]
+            ?? staff[0]?.fieldUserId
+            ?? '',
+        );
         return;
       }
 
@@ -186,6 +194,13 @@ export function DynamicSchedulerBoard({
   function onDragStart(event: DragStartEvent) {
     const data = event.active.data.current as JobDragData | EventDragData | undefined;
     setActiveDrag(data ?? null);
+  }
+
+  function showScheduledJob(job: JobOption) {
+    const week = scheduledJobWeek(job);
+    if (!week) return;
+    setCursor(week);
+    if (job.assigneeFieldUserId) setStaffFilter([job.assigneeFieldUserId]);
   }
 
   async function confirmPendingAssign(estimatedDurationMinutes: number | null) {
@@ -308,7 +323,7 @@ export function DynamicSchedulerBoard({
                 onClick={() => setJobsPanelOpen((open) => !open)}
               >
                 <Icon name="clipboard" size={17} />
-                Unscheduled jobs
+                Jobs
                 <Icon name="chevron-down" size={15} className={jobsPanelOpen ? 'rotate-180' : ''} />
               </Button>
             </div>
@@ -319,7 +334,7 @@ export function DynamicSchedulerBoard({
           <Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" />
           <p>
             {isAdmin
-              ? 'Open Unscheduled jobs to drag work onto a time. Drag scheduled events to move them, or drop one on a person to reassign it.'
+              ? 'Open Jobs to filter Field work by person. Drag unscheduled work onto a time, or select scheduled work to open its week.'
               : 'View your scheduled work for the week. Select an event to review its full details.'}
           </p>
         </div>
@@ -348,7 +363,7 @@ export function DynamicSchedulerBoard({
           {isAdmin && jobsPanelOpen ? (
             <JobsPoolPanel
               enabled={isAdmin}
-              selectableSourceApps={selectableSourceApps}
+              onScheduledJobClick={showScheduledJob}
               className="order-1 max-h-[30rem] 2xl:order-2 2xl:max-h-[calc(100vh-8rem)] 2xl:self-start"
             />
           ) : null}

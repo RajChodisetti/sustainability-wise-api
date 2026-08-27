@@ -262,7 +262,7 @@ installed mobile clients and their accepted aliases.
 The installation object also carries additive job metadata for Scheduler and
 Field App Complete: nullable `customerName`, `maas`, `serviceType`,
 `meteringSolutionType`, `plannedMeterType`, structured Australian site fields,
-site-contact name/phone/email, `fergusJobNumber`, `quoteNumber`, `jobComments`,
+site-contact name/phone/email, `customJobNumber`, `fergusJobNumber`, `quoteNumber`, `jobComments`,
 `accessInformation`, `warrantyDevice`, `monitoringInstalled`,
 `hardwareInstalled`, `solarCapacityKw`, `additionalMonitoringRequired`, and
 `additionalMonitoringHardware`. Nullable booleans are tri-state: `null` means
@@ -270,6 +270,13 @@ unknown, and must not be converted to `false`. An older client that omits one of
 these additive fields preserves the current server value; an explicit `null`
 clears it. `solarCapacityKw` is nullable and, when present, must be finite and
 between 0 and 1,000,000 inclusive.
+
+`fergusJobNumber`, `quoteNumber`, and `plannedMeterType` are retained legacy
+migration/import fields. Current Scheduler and Field App authoring UIs do not
+request or write them. New authoring uses `customJobNumber`, M1-M5 scope values
+in `serviceType`, and the controlled NEM/revenue/monitoring/water values (or
+free-text Other) in `meteringSolutionType`. `serviceType` remains the compatibility
+projection of the shared Field job detail `workType` for installed clients.
 
 These fields do not replace existing authorities. Installation lifecycle owns
 the `Draft`/`Completed` status, and the completion endpoint owns `completedAt`
@@ -660,6 +667,18 @@ general_water:            photos[], extra_photos[]
 general_electricity:      photos[], extra_photos[]
 ```
 
+## Scheduler existing-site versions
+
+When Scheduler creates Field work for an existing canonical site, the API
+creates a new Draft installation with fresh installation and child IDs. It
+copies the latest known grid supplies, zones, electrical hierarchy, site
+assets, meters, meter channels, and measurement assignments. Completed forms
+and active-time history are not copied into the new job. Original evidence is
+authorized through `photo_copy_references` rather than duplicated. The normal
+assigned-work pull then delivers this independent Draft to the selected Field
+user, who may replace a copied meter or add another meter without mutating the
+previous installation.
+
 ---
 
 ## SecureStore Keys
@@ -705,3 +724,17 @@ npx expo install expo-background-fetch expo-task-manager
 
 `expo-crypto` (for SHA-256) and `expo-file-system` are already installed in both apps.
 `expo-secure-store` is already installed in both apps (used by authRepository).
+## Field App Complete meter inventory
+
+Inventory is a separate authenticated tab. Every Field user can scan a Device
+ID into their own inventory through `POST /v1/installhub/inventory/meters/scan`;
+an existing company-stock row is claimed atomically and a duplicate user or
+installed assignment is rejected. `GET /v1/installhub/inventory/meters?scope=mine`
+supplies the meters offered during installation entry.
+
+`GET /v1/installhub/inventory/me` also returns `isMaintainer`. Maintainers can
+switch to the company register, register company stock, assign it to active
+Field users, edit it with `expectedRevision`, and soft-delete uninstalled rows.
+The app does not remove a selected meter at local form-save time: server-side
+canonical installation completion performs the custody transfer atomically so
+offline drafts and failed syncs cannot lose stock.

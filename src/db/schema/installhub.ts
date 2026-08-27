@@ -70,6 +70,7 @@ export const ihInstallations = pgTable('ih_installations', {
   siteContactName: text('site_contact_name'),
   siteContactPhone: text('site_contact_phone'),
   siteContactEmail: text('site_contact_email'),
+  customJobNumber: text('custom_job_number'),
   fergusJobNumber: text('fergus_job_number'),
   quoteNumber: text('quote_number'),
   jobComments: text('job_comments'),
@@ -136,6 +137,10 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_site_contact_email_length_check', sql`
     ${table.siteContactEmail} IS NULL
     OR char_length(btrim(${table.siteContactEmail})) BETWEEN 1 AND 320
+  `),
+  check('ih_installations_custom_job_number_length_check', sql`
+    ${table.customJobNumber} IS NULL
+    OR char_length(btrim(${table.customJobNumber})) BETWEEN 1 AND 100
   `),
   check('ih_installations_fergus_job_number_length_check', sql`
     ${table.fergusJobNumber} IS NULL
@@ -454,6 +459,71 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   }).onDelete('restrict'),
   check('ih_meter_devices_family_check', sql`${table.deviceFamily} IN ('WATTWATCHERS', 'OTHER')`),
   check('ih_meter_devices_model_check', sql`${table.deviceModel} IN ('A3RM', 'A6M', 'OTHER')`),
+]);
+
+/** Company meter register and current custody. Installed rows remain as durable history. */
+export const ihInventoryMeters = pgTable('ih_inventory_meters', {
+  id: text('id').primaryKey(),
+  deviceId: text('device_id').notNull(),
+  deviceModel: text('device_model').notNull(),
+  customManufacturerName: text('custom_manufacturer_name'),
+  customModelName: text('custom_model_name'),
+  status: text('status').notNull().default('company'),
+  custodianUserId: text('custodian_user_id').references(() => ihUsers.id, { onDelete: 'restrict' }),
+  installedInstallationId: text('installed_installation_id').references(
+    () => ihInstallations.id,
+    { onDelete: 'restrict' },
+  ),
+  installedMeterId: text('installed_meter_id').references(() => ihMeterDevices.id, { onDelete: 'restrict' }),
+  businessClientId: text('business_client_id'),
+  businessSiteId: text('business_site_id'),
+  businessJobId: text('business_job_id'),
+  notes: text('notes'),
+  revision: integer('revision').notNull().default(1),
+  createdByUserId: text('created_by_user_id'),
+  updatedByUserId: text('updated_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at'),
+}, (table) => [
+  uniqueIndex('ih_inventory_meters_device_id_unique').on(table.deviceId),
+  index('ih_inventory_meters_custody_idx').on(table.status, table.custodianUserId),
+  index('ih_inventory_meters_installation_idx').on(table.installedInstallationId),
+  check('ih_inventory_meters_model_check', sql`${table.deviceModel} IN ('A3RM', 'A6M', 'OTHER')`),
+  check('ih_inventory_meters_status_check', sql`${table.status} IN ('company', 'user', 'installed')`),
+  check('ih_inventory_meters_revision_check', sql`${table.revision} >= 1`),
+  check('ih_inventory_meters_device_id_check', sql`char_length(btrim(${table.deviceId})) BETWEEN 1 AND 200`),
+  check('ih_inventory_meters_notes_check', sql`${table.notes} IS NULL OR char_length(${table.notes}) <= 2000`),
+  check('ih_inventory_meters_custody_check', sql`
+    (${table.status} = 'company' AND ${table.custodianUserId} IS NULL AND ${table.installedInstallationId} IS NULL AND ${table.installedMeterId} IS NULL)
+    OR (${table.status} = 'user' AND ${table.custodianUserId} IS NOT NULL AND ${table.installedInstallationId} IS NULL AND ${table.installedMeterId} IS NULL)
+    OR (${table.status} = 'installed' AND ${table.custodianUserId} IS NULL AND ${table.installedInstallationId} IS NOT NULL AND ${table.installedMeterId} IS NOT NULL)
+  `),
+]);
+
+/** Append-only custody ledger for stock, user assignment, and installation transfer. */
+export const ihInventoryMeterMovements = pgTable('ih_inventory_meter_movements', {
+  id: text('id').primaryKey(),
+  inventoryMeterId: text('inventory_meter_id').notNull().references(
+    () => ihInventoryMeters.id,
+    { onDelete: 'restrict' },
+  ),
+  action: text('action').notNull(),
+  fromStatus: text('from_status'),
+  toStatus: text('to_status').notNull(),
+  fromCustodianUserId: text('from_custodian_user_id'),
+  toCustodianUserId: text('to_custodian_user_id'),
+  installationId: text('installation_id'),
+  meterId: text('meter_id'),
+  actorUserId: text('actor_user_id').notNull(),
+  occurredAt: timestamp('occurred_at').notNull().defaultNow(),
+}, (table) => [
+  index('ih_inventory_meter_movements_meter_idx').on(table.inventoryMeterId, table.occurredAt),
+  check('ih_inventory_meter_movements_action_check', sql`${table.action} IN ('registered', 'claimed', 'assigned', 'returned', 'installed', 'edited', 'deleted')`),
+  check('ih_inventory_meter_movements_status_check', sql`
+    (${table.fromStatus} IS NULL OR ${table.fromStatus} IN ('company', 'user', 'installed'))
+    AND ${table.toStatus} IN ('company', 'user', 'installed')
+  `),
 ]);
 
 export const ihMeterChannels = pgTable('ih_meter_channels', {

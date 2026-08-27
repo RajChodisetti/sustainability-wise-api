@@ -4,6 +4,7 @@ import {
   boolean,
   check,
   date,
+  doublePrecision,
   foreignKey,
   index,
   integer,
@@ -34,6 +35,8 @@ export const globalUsers = pgTable('global_users', {
   role: text('role').notNull(),
   isActive: boolean('is_active').notNull().default(true),
   fleetEntitled: boolean('fleet_entitled').notNull().default(false),
+  /** Independent Field inventory authority; admins are not maintainers by default. */
+  isMaintainer: boolean('is_maintainer').notNull().default(false),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
@@ -267,6 +270,147 @@ export const storageDeletionTasks = pgTable('storage_deletion_tasks', {
   index('storage_deletion_tasks_app_created_idx').on(table.app, table.createdAt),
 ]);
 
+/** Canonical customer identity shared by Scheduler and all product jobs. */
+export const businessClients = pgTable('business_clients', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  contactName: text('contact_name'),
+  contactPhone: text('contact_phone'),
+  contactEmail: text('contact_email'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('business_clients_name_idx').on(table.name),
+  check('business_clients_name_check', sql`char_length(btrim(${table.name})) BETWEEN 1 AND 300`),
+  check('business_clients_contact_check', sql`
+    (${table.contactName} IS NULL OR char_length(btrim(${table.contactName})) BETWEEN 1 AND 300)
+    AND (${table.contactPhone} IS NULL OR char_length(btrim(${table.contactPhone})) BETWEEN 1 AND 50)
+    AND (${table.contactEmail} IS NULL OR char_length(btrim(${table.contactEmail})) BETWEEN 1 AND 320)
+  `),
+]);
+
+/** A client owns one or more physical sites and all site-specific contact data. */
+export const businessSites = pgTable('business_sites', {
+  id: text('id').primaryKey(),
+  clientId: text('client_id').notNull().references(
+    () => businessClients.id,
+    { onDelete: 'restrict' },
+  ),
+  name: text('name').notNull(),
+  address: text('address').notNull(),
+  locality: text('locality'),
+  state: text('state'),
+  postcode: text('postcode'),
+  countryCode: text('country_code'),
+  latitude: doublePrecision('latitude'),
+  longitude: doublePrecision('longitude'),
+  timezone: text('timezone').notNull().default('Australia/Sydney'),
+  contactName: text('contact_name'),
+  contactPhone: text('contact_phone'),
+  contactEmail: text('contact_email'),
+  accessInformation: text('access_information'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('business_sites_client_idx').on(table.clientId, table.name),
+  check('business_sites_name_check', sql`char_length(btrim(${table.name})) BETWEEN 1 AND 300`),
+  check('business_sites_address_check', sql`char_length(btrim(${table.address})) BETWEEN 1 AND 1000`),
+  check('business_sites_timezone_check', sql`char_length(btrim(${table.timezone})) BETWEEN 1 AND 100`),
+  check('business_sites_state_check', sql`${table.state} IS NULL OR ${table.state} IN ('ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA')`),
+  check('business_sites_postcode_check', sql`${table.postcode} IS NULL OR ${table.postcode} ~ '^[0-9]{4}$'`),
+  check('business_sites_country_check', sql`${table.countryCode} IS NULL OR ${table.countryCode} = 'AU'`),
+  check('business_sites_coordinates_check', sql`
+    (${table.latitude} IS NULL AND ${table.longitude} IS NULL)
+    OR (
+      ${table.latitude} IS NOT NULL
+      AND ${table.longitude} IS NOT NULL
+      AND ${table.latitude} BETWEEN -44 AND -9
+      AND ${table.longitude} BETWEEN 112 AND 154
+    )
+  `),
+  check('business_sites_contact_check', sql`
+    (${table.contactName} IS NULL OR char_length(btrim(${table.contactName})) BETWEEN 1 AND 300)
+    AND (${table.contactPhone} IS NULL OR char_length(btrim(${table.contactPhone})) BETWEEN 1 AND 50)
+    AND (${table.contactEmail} IS NULL OR char_length(btrim(${table.contactEmail})) BETWEEN 1 AND 320)
+    AND (${table.accessInformation} IS NULL OR char_length(btrim(${table.accessInformation})) BETWEEN 1 AND 5000)
+  `),
+]);
+
+/** Generic work identity. Product-specific data belongs in the detail tables below. */
+export const businessJobs = pgTable('business_jobs', {
+  id: text('id').primaryKey(),
+  siteId: text('site_id').notNull().references(
+    () => businessSites.id,
+    { onDelete: 'restrict' },
+  ),
+  jobType: text('job_type').notNull(),
+  title: text('title').notNull(),
+  description: text('description'),
+  status: text('status').notNull().default('planned'),
+  sourceApp: text('source_app').notNull(),
+  sourceType: text('source_type').notNull(),
+  sourceId: text('source_id').notNull(),
+  revisionNumber: integer('revision_number').notNull().default(1),
+  previousJobId: text('previous_job_id'),
+  createdByUserId: text('created_by_user_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('business_jobs_source_unique').on(table.sourceApp, table.sourceType, table.sourceId),
+  uniqueIndex('business_jobs_site_app_revision_unique').on(
+    table.siteId,
+    table.sourceApp,
+    table.revisionNumber,
+  ),
+  index('business_jobs_site_idx').on(table.siteId, table.createdAt),
+  index('business_jobs_type_status_idx').on(table.jobType, table.status),
+  foreignKey({
+    columns: [table.previousJobId],
+    foreignColumns: [table.id],
+    name: 'business_jobs_previous_job_fk',
+  }).onDelete('restrict'),
+  check('business_jobs_type_check', sql`${table.jobType} IN ('field', 'ecoaudit', 'solarsense')`),
+  check('business_jobs_source_app_check', sql`${table.sourceApp} IN ('installhub', 'ecoaudit', 'solarsense')`),
+  check('business_jobs_status_check', sql`${table.status} IN ('planned', 'in_progress', 'done', 'cancelled')`),
+  check('business_jobs_revision_check', sql`${table.revisionNumber} >= 1`),
+  check('business_jobs_title_check', sql`char_length(btrim(${table.title})) BETWEEN 1 AND 300`),
+  check('business_jobs_description_check', sql`${table.description} IS NULL OR char_length(${table.description}) <= 5000`),
+]);
+
+/** Field App-only planning data. Installed assets/forms remain authoritative outcomes. */
+export const fieldAppJobDetails = pgTable('field_app_job_details', {
+  jobId: text('job_id').primaryKey().references(() => businessJobs.id, { onDelete: 'cascade' }),
+  workType: text('work_type').notNull(),
+  maas: boolean('maas'),
+  meteringSolutionType: text('metering_solution_type'),
+  plannedMeterType: text('planned_meter_type'),
+  customJobNumber: text('custom_job_number'),
+  jobComments: text('job_comments'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  check('field_app_job_details_work_type_check', sql`char_length(btrim(${table.workType})) BETWEEN 1 AND 120`),
+  check('field_app_job_details_metering_solution_check', sql`${table.meteringSolutionType} IS NULL OR char_length(btrim(${table.meteringSolutionType})) BETWEEN 1 AND 120`),
+  check('field_app_job_details_planned_meter_check', sql`${table.plannedMeterType} IS NULL OR char_length(btrim(${table.plannedMeterType})) BETWEEN 1 AND 120`),
+  check('field_app_job_details_custom_job_number_check', sql`${table.customJobNumber} IS NULL OR char_length(btrim(${table.customJobNumber})) BETWEEN 1 AND 100`),
+  check('field_app_job_details_comments_check', sql`${table.jobComments} IS NULL OR char_length(btrim(${table.jobComments})) BETWEEN 1 AND 5000`),
+]);
+
+export const ecoauditJobDetails = pgTable('ecoaudit_job_details', {
+  jobId: text('job_id').primaryKey().references(() => businessJobs.id, { onDelete: 'cascade' }),
+  auditId: text('audit_id').notNull().unique(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const solarsenseJobDetails = pgTable('solarsense_job_details', {
+  jobId: text('job_id').primaryKey().references(() => businessJobs.id, { onDelete: 'cascade' }),
+  assessmentId: text('assessment_id').notNull().unique(),
+  buildingName: text('building_name'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  check('solarsense_job_details_building_check', sql`${table.buildingName} IS NULL OR char_length(btrim(${table.buildingName})) BETWEEN 1 AND 300`),
+]);
+
 /**
  * Portal-scoped work calendar events (phase 1 scheduler).
  * Soft-links to product jobs via source_app / source_type / source_id.
@@ -274,6 +418,7 @@ export const storageDeletionTasks = pgTable('storage_deletion_tasks', {
  */
 export const portalScheduleEvents = pgTable('portal_schedule_events', {
   id: text('id').primaryKey(),
+  jobId: text('job_id').references(() => businessJobs.id, { onDelete: 'restrict' }),
   title: text('title').notNull(),
   description: text('description'),
   sourceApp: text('source_app').notNull(),
@@ -294,6 +439,7 @@ export const portalScheduleEvents = pgTable('portal_schedule_events', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
   cancelledAt: timestamp('cancelled_at'),
 }, (table) => [
+  index('portal_schedule_events_job_idx').on(table.jobId),
   index('portal_schedule_events_assignee_start_idx').on(
     table.assigneeFieldUserId,
     table.scheduledStartAt,

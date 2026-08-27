@@ -11,10 +11,8 @@ import { EventFormModal } from '@/modules/scheduler/components/EventFormModal';
 import { SchedulerDashboard } from '@/modules/scheduler/components/SchedulerDashboard';
 import { SchedulerFinanceAnalytics } from '@/modules/scheduler/components/SchedulerFinanceAnalytics';
 import { SchedulerFinanceWorkspace } from '@/modules/scheduler/components/SchedulerFinanceWorkspace';
-import { SchedulerLeaveWorkspace } from '@/modules/scheduler/components/SchedulerLeaveWorkspace';
-import { SchedulerPeopleLeaderboard } from '@/modules/scheduler/components/SchedulerPeopleLeaderboard';
+import { SchedulerInventoryDashboard } from '@/modules/scheduler/components/SchedulerInventoryDashboard';
 import { SchedulerRouteWorkspace } from '@/modules/scheduler/components/SchedulerRouteWorkspace';
-import { SchedulerWorkforceProfiles } from '@/modules/scheduler/components/SchedulerWorkforceProfiles';
 import { UserFilter } from '@/modules/scheduler/components/UserFilter';
 import { schedulerFinanceHref, schedulerTabTransition } from '@/modules/scheduler/lib/finance';
 import {
@@ -32,8 +30,7 @@ export type SchedulerTab =
   | 'calendar'
   | 'my-route'
   | 'deadlines'
-  | 'team-performance'
-  | 'leave'
+  | 'inventory'
   | 'finance-analytics'
   | 'financial-summary'
   | 'bills'
@@ -52,9 +49,8 @@ const PLANNING_TABS: SchedulerTabItem[] = [
   { id: 'deadlines', label: 'Deadlines', icon: 'clipboard' },
 ];
 
-const PEOPLE_TABS: SchedulerTabItem[] = [
-  { id: 'team-performance', label: 'Team performance', icon: 'users' },
-  { id: 'leave', label: 'Leave', icon: 'calendar' },
+const INVENTORY_TABS: SchedulerTabItem[] = [
+  { id: 'inventory', label: 'Inventory', icon: 'clipboard' },
 ];
 
 const FINANCE_TABS: SchedulerTabItem[] = [
@@ -69,7 +65,7 @@ function isFinanceWorkspaceTab(tab: SchedulerTab): tab is 'financial-summary' | 
 }
 
 function isAdminOnlyTab(tab: SchedulerTab): boolean {
-  return tab === 'team-performance'
+  return tab === 'inventory'
     || tab === 'finance-analytics'
     || isFinanceWorkspaceTab(tab);
 }
@@ -113,7 +109,7 @@ export default function SchedulerPage({
   const tabs = useMemo(
     () => [
       ...PLANNING_TABS,
-      ...(isAdmin ? PEOPLE_TABS : PEOPLE_TABS.filter((item) => item.id === 'leave')),
+      ...(isAdmin ? INVENTORY_TABS : []),
       ...(isAdmin ? FINANCE_TABS : []),
     ],
     [isAdmin],
@@ -159,7 +155,7 @@ export default function SchedulerPage({
   }
 
   return (
-    <div className={`mx-auto w-full ${activeTab === 'calendar' || activeTab === 'my-route' || activeTab === 'team-performance' || activeTab === 'finance-analytics' || isFinanceWorkspaceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
+    <div className={`mx-auto w-full ${activeTab === 'calendar' || activeTab === 'my-route' || activeTab === 'finance-analytics' || isFinanceWorkspaceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
       <PageHeader
         title="Scheduler"
         subtitle={schedulerSubtitle(activeTab, fieldOnly)}
@@ -183,13 +179,8 @@ export default function SchedulerPage({
           <div className="flex min-w-max items-center gap-2">
             {[
               { label: 'Planning', items: PLANNING_TABS },
-              {
-                label: 'People',
-                items: isAdmin
-                  ? PEOPLE_TABS
-                  : PEOPLE_TABS.filter((item) => item.id === 'leave'),
-              },
               ...(isAdmin ? [{ label: 'Finance', items: FINANCE_TABS }] : []),
+              ...(isAdmin ? [{ label: 'Inventory', items: INVENTORY_TABS }] : []),
             ].map((group, groupIndex) => (
               <div
                 key={group.label}
@@ -278,18 +269,9 @@ export default function SchedulerPage({
         </div>
       ) : null}
 
-      {activeTab === 'team-performance' && isAdmin ? (
-        <div id="scheduler-panel-team-performance" role="tabpanel" aria-labelledby="scheduler-tab-team-performance" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
-          <div className="space-y-5">
-            <SchedulerPeopleLeaderboard />
-            <SchedulerWorkforceProfiles />
-          </div>
-        </div>
-      ) : null}
-
-      {activeTab === 'leave' ? (
-        <div id="scheduler-panel-leave" role="tabpanel" aria-labelledby="scheduler-tab-leave" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
-          <SchedulerLeaveWorkspace isAdmin={isAdmin} />
+      {activeTab === 'inventory' && isAdmin ? (
+        <div id="scheduler-panel-inventory" role="tabpanel" aria-labelledby="scheduler-tab-inventory" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+          <SchedulerInventoryDashboard />
         </div>
       ) : null}
 
@@ -349,11 +331,8 @@ function schedulerSubtitle(tab: SchedulerTab, fieldOnly: boolean): string {
   if (tab === 'my-route') {
     return 'Order assigned Australian jobs from your current location and open the suggested route in Google Maps.';
   }
-  if (tab === 'team-performance') {
-    return 'Compare Working hours on site, completed jobs, backlog, pipeline, leave-adjusted working days, and attributed revenue.';
-  }
-  if (tab === 'leave') {
-    return 'Apply for leave, review approval status, and keep scheduled work clear of approved dates.';
+  if (tab === 'inventory') {
+    return 'See company stock and the meters currently held by each Field user.';
   }
   if (tab === 'finance-analytics') {
     return 'Analyse completed-work, invoice, payment, void, GST, and refund progress for any reporting window.';

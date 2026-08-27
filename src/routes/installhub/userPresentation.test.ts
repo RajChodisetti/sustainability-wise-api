@@ -45,6 +45,7 @@ test('native Field users retain the legacy public account envelope', () => {
     createdAt,
     updatedAt,
     sourceManaged: false,
+    isMaintainer: false,
     sourceApp: null,
     sourceState: 'explicit',
   });
@@ -52,6 +53,15 @@ test('native Field users retain the legacy public account envelope', () => {
     isSourceManagedInstallHubUser(registryUser()),
     false,
   );
+});
+
+test('maintainer authority is exposed independently from administrator role', () => {
+  const presented = presentUnifiedInstallHubUser({
+    ...registryUser({ role: 'inspector' }),
+    isMaintainer: true,
+  });
+  assert.equal(presented.role, 'inspector');
+  assert.equal(presented.isMaintainer, true);
 });
 
 test('Eco Audit registry rows expose their synthetic Field subject and current source role', () => {

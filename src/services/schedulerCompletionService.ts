@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { eaAudits } from '../db/schema/ecoaudit.js';
 import { ihInstallations } from '../db/schema/installhub.js';
 import {
+  businessJobs,
   globalUsers,
   portalScheduleEvents,
   schedulerJobCompletionFacts,
@@ -248,6 +249,7 @@ export async function completeLinkedSchedulerEvents(
   const matched = await executor
     .select({
       id: portalScheduleEvents.id,
+      jobId: portalScheduleEvents.jobId,
       status: portalScheduleEvents.status,
       assigneeFieldUserId: portalScheduleEvents.assigneeFieldUserId,
       assigneeDisplayName: portalScheduleEvents.assigneeDisplayName,
@@ -278,6 +280,14 @@ export async function completeLinkedSchedulerEvents(
         ne(portalScheduleEvents.status, 'cancelled'),
         ne(portalScheduleEvents.status, 'done'),
       ));
+    const transitionedJobIds = matched
+      .filter((event) => event.status !== 'done' && event.jobId)
+      .map((event) => event.jobId as string);
+    if (transitionedJobIds.length > 0) {
+      await executor.update(businessJobs)
+        .set({ status: 'done', updatedAt: observedAt })
+        .where(inArray(businessJobs.id, transitionedJobIds));
+    }
   }
 
   for (const event of matched) {

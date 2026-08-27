@@ -164,6 +164,8 @@ export type FleetClient = FleetClientReference & {
   availabilityPercent: number | null;
   collectionStatus?: string | null;
   collectionError?: string | null;
+  apiKeyConfigured: boolean;
+  apiKeyUpdatedAt?: string | null;
 };
 
 export type ClientsResponse = { run: FleetRunReference | null; data: FleetClient[] };

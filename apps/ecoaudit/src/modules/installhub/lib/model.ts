@@ -94,6 +94,7 @@ export function createInstallationTree(
     serviceType?: string | null;
     meteringSolutionType?: string | null;
     plannedMeterType?: string | null;
+    customJobNumber?: string | null;
     siteName: string;
     siteAddress: string;
     siteLocality?: string | null;
@@ -139,6 +140,7 @@ export function createInstallationTree(
       serviceType: input.serviceType?.trim() || null,
       meteringSolutionType: input.meteringSolutionType?.trim() || null,
       plannedMeterType: input.plannedMeterType?.trim() || null,
+      customJobNumber: input.customJobNumber?.trim() || null,
       siteName,
       siteAddress: input.siteAddress.trim(),
       siteLocality: input.siteLocality?.trim() || null,
@@ -572,9 +574,16 @@ function prefillWwInstallationAnswers(
   }
 }
 
-export function allowedFormDefinitions(context: FormContext): FormDefinition[] {
+export function allowedFormDefinitions(
+  context: FormContext,
+  workType?: string | null,
+): FormDefinition[] {
   return FORM_DEFINITIONS.filter((definition) => {
     if (definition.availableForNew === false) return false;
+    if (
+      (workType === 'comms_fault_m2' || workType === 'meter_replacement_m3')
+      && definition.type !== 'comms-fault'
+    ) return false;
     if (context.meterId) {
       // A meter detail can start a comms-fault record. Reconciliation links
       // carry both board and meter IDs so the optional WW installation form

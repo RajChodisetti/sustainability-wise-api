@@ -1,5 +1,6 @@
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -10,6 +11,7 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 const instant = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -37,6 +39,8 @@ export const wwClients = pgTable('ww_clients', {
   normalizedName: text('normalized_name').notNull(),
   isMaas: boolean('is_maas').notNull().default(false),
   isActive: boolean('is_active').notNull().default(true),
+  /** Canonical business client populated by completed Field work when available. */
+  sourceBusinessClientId: text('source_business_client_id'),
   metadata: jsonb('metadata').notNull().$type<Record<string, unknown>>().default({}),
   firstSeenAt: instant('first_seen_at').notNull().defaultNow(),
   lastSeenAt: instant('last_seen_at').notNull().defaultNow(),
@@ -44,7 +48,22 @@ export const wwClients = pgTable('ww_clients', {
   updatedAt: instant('updated_at').notNull().defaultNow(),
 }, (table) => [
   uniqueIndex('ww_clients_code_unique').on(table.code),
+  uniqueIndex('ww_clients_business_client_unique').on(table.sourceBusinessClientId),
   index('ww_clients_name_idx').on(table.normalizedName),
+]);
+
+/** Encrypted Wattwatchers credential. API responses expose presence, never ciphertext. */
+export const wwClientCredentials = pgTable('ww_client_credentials', {
+  clientId: text('client_id').primaryKey().references(() => wwClients.id, { onDelete: 'cascade' }),
+  ciphertext: text('ciphertext').notNull(),
+  iv: text('iv').notNull(),
+  authTag: text('auth_tag').notNull(),
+  keyVersion: integer('key_version').notNull().default(1),
+  updatedByUserId: text('updated_by_user_id').notNull(),
+  createdAt: instant('created_at').notNull().defaultNow(),
+  updatedAt: instant('updated_at').notNull().defaultNow(),
+}, (table) => [
+  check('ww_client_credentials_key_version_check', sql`${table.keyVersion} >= 1`),
 ]);
 
 export const wwDevices = pgTable('ww_devices', {

@@ -81,7 +81,7 @@ describe('invoice PDF branding and source context', () => {
       assert.match(html, /class="brand-logo"/);
       assert.match(html, /ABN 98 765 432 109/);
       assert.match(html, /data-pdf-page-numbers|data-page-numbers="true"/);
-      assert.doesNotMatch(html, /private-internal-source-id/);
+      assert.match(html, /Job ID: private-internal-source-id/);
     }
   });
 
@@ -168,10 +168,10 @@ describe('invoice PDF branding and source context', () => {
     assert.match(html, /2 jobs included/);
     assert.match(html, /Job 1 of 2/);
     assert.match(html, /North Roof Upgrade/);
-    assert.match(html, /Reference: EA-2041/);
+    assert.match(html, /Job ID: EA-2041/);
     assert.match(html, /Job 2 of 2/);
     assert.match(html, /South Plant Solar Assessment/);
-    assert.match(html, /Reference: SS-8830/);
+    assert.match(html, /Job ID: SS-8830/);
     assert.match(html, /Job subtotal \(ex GST\)/);
     assert.match(html, /Consolidated subtotal \(ex GST\)/);
     assert.match(html, /display: table-header-group/);

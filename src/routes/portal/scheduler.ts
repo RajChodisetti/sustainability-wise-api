@@ -1,5 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../auth/middleware.js';
+import { and, count, eq, isNull } from 'drizzle-orm';
+import { db } from '../../db/client.js';
+import { ihInventoryMeters, ihUsers } from '../../db/schema/installhub.js';
 import { config } from '../../config.js';
 import {
   assertPortalSchedulerApp,
@@ -10,6 +13,7 @@ import {
   getScheduleSummary,
   isSchedulerAdmin,
   listScheduleEvents,
+  listSchedulerSites,
   listUnscheduledJobs,
   MAX_ESTIMATED_DURATION_MINUTES,
   searchJobOptions,
@@ -212,6 +216,51 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const summary = await getScheduleSummary(request.user);
     return reply.send(summary);
+  });
+
+  app.get('/scheduler/inventory', {
+    schema: {
+      tags: ['Portal Scheduler Inventory'],
+      summary: 'Company and Field user meter custody counts',
+      security: [{ bearerAuth: [] }],
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (_request, reply) => {
+    const [totals, users] = await Promise.all([
+      db.select({ status: ihInventoryMeters.status, meterCount: count() })
+        .from(ihInventoryMeters)
+        .where(and(
+          isNull(ihInventoryMeters.deletedAt),
+          // Installed meters belong to sites and are no longer available inventory.
+          eq(ihInventoryMeters.status, 'company'),
+        ))
+        .groupBy(ihInventoryMeters.status),
+      db.select({
+        userId: ihUsers.id,
+        fullName: ihUsers.fullName,
+        email: ihUsers.email,
+        meterCount: count(),
+      }).from(ihInventoryMeters)
+        .innerJoin(ihUsers, eq(ihUsers.id, ihInventoryMeters.custodianUserId))
+        .where(and(
+          isNull(ihInventoryMeters.deletedAt),
+          eq(ihInventoryMeters.status, 'user'),
+        ))
+        .groupBy(ihUsers.id, ihUsers.fullName, ihUsers.email),
+    ]);
+    const companyMeters = Number(totals[0]?.meterCount ?? 0);
+    const userMeters = users.reduce((sum, user) => sum + Number(user.meterCount), 0);
+    return reply.send({
+      companyMeters,
+      userMeters,
+      totalMetersInInventory: companyMeters + userMeters,
+      users: users.map((user) => ({
+        userId: user.userId,
+        name: user.fullName?.trim() || user.email,
+        email: user.email,
+        meterCount: Number(user.meterCount),
+      })).sort((a, b) => b.meterCount - a.meterCount || a.name.localeCompare(b.name)),
+    });
   });
 
   app.get('/scheduler/analytics', {
@@ -484,14 +533,13 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
   app.post('/scheduler/dispatches', {
     schema: {
       tags: ['Portal Scheduler'],
-      summary: 'Create a new product job and planned scheduler event atomically',
+      summary: 'Create a product job, with a planned event when an assignee is supplied',
       security: [{ bearerAuth: [] }],
       body: {
         type: 'object',
         additionalProperties: false,
         required: [
           'sourceApp',
-          'assigneeFieldUserId',
           'scheduledStartAt',
           'deadlineAt',
           'job',
@@ -500,7 +548,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
           sourceApp: { type: 'string', enum: ['ecoaudit', 'solarsense', 'installhub'] },
           title: { type: 'string', maxLength: 300 },
           description: { type: ['string', 'null'] },
-          assigneeFieldUserId: { type: 'string', minLength: 1 },
+          assigneeFieldUserId: { type: 'string' },
           scheduledStartAt: { type: 'string' },
           estimatedDurationMinutes: {
             type: ['integer', 'null'],
@@ -1623,16 +1671,16 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     return reply.send({ options });
   });
 
-  app.get('/scheduler/unscheduled-jobs', {
+  app.get('/scheduler/sites', {
     schema: {
       tags: ['Portal Scheduler'],
-      summary: 'List product jobs not yet on the work calendar',
+      summary: 'List canonical client sites for new-version job creation',
       security: [{ bearerAuth: [] }],
       querystring: {
         type: 'object',
         properties: {
           q: { type: 'string' },
-          sourceApp: { type: 'string' },
+          sourceApp: { type: 'string', enum: ['ecoaudit', 'solarsense', 'installhub'] },
           limit: { type: 'string' },
         },
       },
@@ -1641,10 +1689,45 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
   }, async (request, reply) => {
     const q = request.query as { q?: string; sourceApp?: string; limit?: string };
     const limit = q.limit ? Number(q.limit) : undefined;
+    const sites = await listSchedulerSites(request.user, {
+      q: q.q,
+      sourceApp: q.sourceApp as Exclude<ScheduleSourceApp, 'custom'> | undefined,
+      limit: Number.isFinite(limit) ? limit : undefined,
+    });
+    return reply.send({ sites });
+  });
+
+  app.get('/scheduler/unscheduled-jobs', {
+    schema: {
+      tags: ['Portal Scheduler'],
+      summary: 'List product jobs for the Scheduler jobs panel',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          q: { type: 'string' },
+          sourceApp: { type: 'string' },
+          limit: { type: 'string' },
+          unscheduledOnly: { type: 'string', enum: ['true', 'false'] },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const q = request.query as {
+      q?: string;
+      sourceApp?: string;
+      limit?: string;
+      unscheduledOnly?: string;
+    };
+    const limit = q.limit ? Number(q.limit) : undefined;
     const jobs = await listUnscheduledJobs(request.user, {
       q: q.q ?? '',
       sourceApp: q.sourceApp as ScheduleSourceApp | undefined,
       limit: Number.isFinite(limit) ? limit : undefined,
+      unscheduledOnly: q.unscheduledOnly === undefined
+        ? true
+        : q.unscheduledOnly === 'true',
     });
     return reply.send({ jobs });
   });

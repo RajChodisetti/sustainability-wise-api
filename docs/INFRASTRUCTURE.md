@@ -148,6 +148,18 @@ existing rows receive null and retain their historical `scheduled_end_at`.
 Deploy the migration before code that writes or reads the estimate; no table
 backfill or inferred default duration is required.
 
+0045 additively introduces `business_clients`, `business_sites`,
+`business_jobs`, and the Field/EcoAudit/SolarSense job-detail tables. It
+backfills active legacy product rows without deleting or rewriting them, then
+links matching Scheduler events through nullable `portal_schedule_events.job_id`.
+Legacy Fergus and quote columns are retained for migration compatibility.
+
+0046 adds deterministic per-site/per-product job revision numbers and
+previous-job lineage. It ranks migrated jobs before creating the unique
+revision index, so an existing site with several historical jobs remains
+deployable. Apply 0045 and 0046 before releasing Scheduler code that creates
+existing-site versions; older code tolerates both additive migrations.
+
 For the portal/API rollout, start the new API first and then the new portal. The
 API temporarily accepts and ignores deprecated `scheduledEndAt` values from a
 cached old portal, while the old API does not understand the new estimate field.
@@ -415,3 +427,11 @@ If load grows:
    point-in-time recovery, automatic failover, read replicas
 4. **Global users:** Add Cloudflare free plan in front of the API — photo downloads served
    from edge cache, API calls still hit Sydney origin
+### Wattwatchers per-client credential encryption
+
+Set `WATTWATCHERS_CLIENT_KEY_ENCRYPTION_SECRET` to a dedicated high-entropy
+secret before enabling Fleet API-key management. It must be stable across API
+releases and distinct from JWT, upload, and file-capability secrets. A missing
+secret fails create/replace and collector credential reads closed; ordinary
+Fleet client reads continue to expose presence only. Rotation requires a
+versioned decrypt-and-re-encrypt procedure before changing the runtime value.

@@ -5,7 +5,7 @@ import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { ExpenseLedger } from '@/modules/scheduler/components/ExpenseLedger';
 import { FinanceSettingsPanel } from '@/modules/scheduler/components/FinanceSettingsPanel';
 import { useSchedulerFinancialSummary } from '@/modules/scheduler/hooks/useScheduler';
-import { draftReservedAmount, financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
+import { financeAppLabel, marginTone } from '@/modules/scheduler/lib/finance';
 import type { FinanceOverviewItem } from '@/modules/scheduler/types/domain';
 
 function money(value: number, currency: string): string {
@@ -86,16 +86,10 @@ export function SchedulerFinanceDetail({
         </div>
       </header>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Commercial position">
+      <section className="grid gap-3 sm:grid-cols-3" aria-label="Commercial position">
         <Metric label="Billable (ex GST)" value={money(summary.totals.billableAmount, summary.currency)} detail={`${money(summary.totals.labourRevenue, summary.currency)} labour · ${money(summary.totals.expenseRevenue, summary.currency)} costs`} />
         <Metric label="Total cost" value={money(summary.totals.totalCost, summary.currency)} detail={`${money(summary.totals.labourCost, summary.currency)} labour · ${money(summary.totals.expenseCost, summary.currency)} expenses`} />
         <Metric label="Gross profit" value={money(summary.totals.grossProfit, summary.currency)} detail={summary.totals.marginPct == null ? 'Margin pending' : `${summary.totals.marginPct.toFixed(1)}% current margin`} tone={tone === 'neutral' ? 'neutral' : tone} />
-        <Metric
-          label="Unbilled"
-          value={money(summary.totals.unbilledAmount, summary.currency)}
-          detail={`${money(summary.totals.invoicedAmount, summary.currency)} issued/paid · ${money(draftReservedAmount(summary.totals.reservedAmount, summary.totals.invoicedAmount), summary.currency)} held in drafts`}
-          tone={summary.totals.unbilledAmount > 0 ? 'warning' : 'success'}
-        />
       </section>
 
       {(!summary.invoiceReadiness.completionSatisfied || legacyHoursNeedReview || missingBillingRateNames.length > 0 || overdueCount > 0 || summary.totals.unbilledQuoteBalance > 0) ? (

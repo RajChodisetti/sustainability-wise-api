@@ -6,10 +6,12 @@ import { installhubPdfRoutes } from './pdf.js';
 import { installhubCanonicalRoutes } from './canonicalRoutes.js';
 import { installhubFinanceRoutes } from './finance.js';
 import { installhubInvoiceRoutes } from './invoices.js';
+import { installhubInventoryRoutes } from './inventory.js';
 
 export async function installhubRoutes(app: FastifyInstance): Promise<void> {
   await app.register(installhubSyncRoutes, { prefix: '/sync' });
   await app.register(installhubUserRoutes, { prefix: '/users' });
+  await app.register(installhubInventoryRoutes, { prefix: '/inventory' });
   await app.register(installhubInstallationRoutes, {
     prefix: '/installations',
   });

@@ -582,12 +582,10 @@ export function InstallHubInstallationDetailPage() {
           <InstallationDetailItem label="Customer" value={optionalValue(installation.customerName)} />
           <InstallationDetailItem label="Site" value={optionalValue(installation.siteName)} />
           <InstallationDetailItem label="Australian site address" value={structuredSiteAddress(installation)} wide />
-          <InstallationDetailItem label="Service type" value={optionalValue(installation.serviceType)} />
-          <InstallationDetailItem label="Metering solution" value={optionalValue(installation.meteringSolutionType)} />
-          <InstallationDetailItem label="Planned meter type (planning only)" value={optionalValue(installation.plannedMeterType)} />
+          <InstallationDetailItem label="Scope categorization" value={optionalValue(installation.serviceType)} />
+          <InstallationDetailItem label="Metering type" value={optionalValue(installation.meteringSolutionType)} />
           <InstallationDetailItem label="MaaS" value={triStateValue(installation.maas)} />
-          <InstallationDetailItem label="Fergus job number" value={optionalValue(installation.fergusJobNumber)} />
-          <InstallationDetailItem label="Quote number" value={optionalValue(installation.quoteNumber)} />
+          <InstallationDetailItem label="Custom job number" value={optionalValue(installation.customJobNumber)} />
           <InstallationDetailItem label="Warranty device" value={triStateValue(installation.warrantyDevice)} />
           <InstallationDetailItem label="Monitoring installed" value={triStateValue(installation.monitoringInstalled)} />
           <InstallationDetailItem label="Hardware installed" value={triStateValue(installation.hardwareInstalled)} />

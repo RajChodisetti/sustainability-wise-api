@@ -8,7 +8,6 @@ import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { useSchedulerPortfolioSummary } from '@/modules/scheduler/hooks/useScheduler';
 import { wholeBillingHours } from '@/modules/scheduler/lib/billingHours';
 import {
-  draftReservedAmount,
   financeAppLabel,
   marginTone,
   schedulerTabLinkShouldActivateInPlace,
@@ -120,11 +119,10 @@ export function SchedulerPortfolioSummary({
                     {currencySummary.actualHours.toFixed(2)} active hours
                   </span>
                 </div>
-                <dl className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <dl className="mt-4 grid gap-3 sm:grid-cols-3">
                   <PortfolioMetric label="Billable" value={money(currencySummary.billableAmount, currencySummary.currency)} detail={`${wholeBillingHours(currencySummary.billableHours)} billable hours`} />
                   <PortfolioMetric label="Total cost" value={money(currencySummary.totalCost, currencySummary.currency)} detail={`${currencySummary.costHours.toFixed(2)} cost hours`} />
                   <PortfolioMetric label="Gross profit" value={money(currencySummary.grossProfit, currencySummary.currency)} detail={marginPct == null ? 'Margin pending' : `${marginPct.toFixed(1)}% margin`} valueClass={toneClass[tone]} />
-                  <PortfolioMetric label="Unbilled" value={money(currencySummary.unbilledAmount, currencySummary.currency)} detail={`${money(currencySummary.invoicedAmount, currencySummary.currency)} issued/paid · ${money(draftReservedAmount(currencySummary.reservedAmount, currencySummary.invoicedAmount), currencySummary.currency)} held in drafts`} valueClass={currencySummary.unbilledAmount > 0 ? toneClass.warning : toneClass.success} />
                 </dl>
               </article>
             );

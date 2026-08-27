@@ -262,7 +262,7 @@ function GlobalInvoiceDetail({
         setError(null);
         try {
           await update.mutateAsync({ invoiceId, input: { ...input, expectedUpdatedAt: invoice.updatedAt } });
-          toast.success(invoice.status === 'draft' ? 'Draft invoice saved.' : 'Xero reconciliation saved.');
+          toast.success('Draft invoice saved.');
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }
@@ -348,7 +348,7 @@ function ConsolidatedInvoiceBuilder({
   const [error, setError] = useState<string | null>(null);
   const matchingJobs = useMemo(() => {
     const needle = jobSearch.trim().toLocaleLowerCase();
-    return jobs.filter((job) => !needle || `${job.jobName} ${job.siteName} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle));
+    return jobs.filter((job) => !needle || `${job.jobName} ${job.clientName ?? ''} ${job.siteName} ${job.siteAddress ?? ''} ${job.userNames.join(' ')} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle));
   }, [jobSearch, jobs]);
 
   async function review() {
@@ -432,12 +432,12 @@ function ConsolidatedInvoiceBuilder({
 
   return (
     <section className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-4 shadow-[var(--shadow-sm)] sm:p-5" aria-labelledby="invoice-builder-heading">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="invoice-builder-heading" className="font-extrabold text-[var(--text)]">{minimumJobs === 2 ? 'New consolidated invoice' : 'New single-job invoice'}</h2><p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">{eligibility ? 'Choose the charges for each job, resolve one billing recipient, and review the consolidated totals.' : minimumJobs === 2 ? 'Select two or more jobs. Currency, billing identity, and invoiceable balances are checked before draft creation.' : 'Select a job and review its available invoice charges.'}</p></div><Button variant="ghost" disabled={eligibilityMutation.isPending || create.isPending} onClick={onCancel}>Close</Button></div>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="invoice-builder-heading" className="font-extrabold text-[var(--text)]">{minimumJobs === 2 ? 'New consolidated invoice' : 'New single-job invoice'}</h2><p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">{eligibility ? 'Billable items and their selling prices are selected automatically. Review the charges and recipient before creating the draft.' : minimumJobs === 2 ? 'Select two or more sites. Billable items and selling prices will be added automatically.' : 'Select a site. Its billable items and selling prices will be added automatically.'}</p></div><Button variant="ghost" disabled={eligibilityMutation.isPending || create.isPending} onClick={onCancel}>Close</Button></div>
 
       {!eligibility ? (
         <>
           <FieldLabel htmlFor="invoice-job-search">Find jobs</FieldLabel>
-          <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="Job, site, product, or ID" />
+          <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="User, job, client, site, or address" className="w-full" />
           <p className="mt-2 text-sm font-bold text-[var(--text)]" aria-live="polite">{selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} selected {minimumJobs === 2 ? '· minimum 2' : ''}</p>
           <fieldset className="mt-2 grid min-w-0 max-h-[28rem] w-full gap-2 overflow-y-auto rounded-xl border border-[var(--border)] p-2 sm:grid-cols-2 xl:grid-cols-3">
             <legend className="sr-only">Jobs to invoice</legend>
@@ -454,7 +454,7 @@ function ConsolidatedInvoiceBuilder({
                   <span className="min-w-0">
                     <strong className="block truncate text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
                     <span className="block truncate text-xs leading-5 text-[var(--text-sub)]">{job.siteName || 'Site not set'}</span>
-                    <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.unbilledAmount, job.currency)} unbilled</span>
+                    <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
                     {!completed ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span> : job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Internal billing setup needs review</span> : null}
                   </span>
                 </label>

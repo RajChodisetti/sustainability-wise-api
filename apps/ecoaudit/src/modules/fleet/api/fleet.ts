@@ -71,6 +71,21 @@ export function listClients(runId?: string) {
   );
 }
 
+export function saveClientApiKey(clientId: string, apiKey: string) {
+  return fleetRequest<{ clientId: string; apiKeyConfigured: true; apiKeyUpdatedAt: string }>(
+    'PUT',
+    `/v1/wattwatchers/clients/${encodeURIComponent(clientId)}/api-key`,
+    { apiKey },
+  );
+}
+
+export function removeClientApiKey(clientId: string) {
+  return fleetRequest<void>(
+    'DELETE',
+    `/v1/wattwatchers/clients/${encodeURIComponent(clientId)}/api-key`,
+  );
+}
+
 export function listRuns(filters: { limit?: number; offset?: number; status?: string } = {}) {
   return fleetRequest<PaginatedResponse<FleetRun>>(
     'GET',

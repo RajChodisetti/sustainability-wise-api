@@ -357,7 +357,10 @@ export type SchedulerFinanceOverviewItemDto = {
   sourceType: FinanceSourceType;
   sourceId: string;
   jobName: string;
+  clientName: string | null;
   siteName: string;
+  siteAddress: string | null;
+  userNames: string[];
   jobDate: string;
   jobStatus: string;
   eventStatus: string | null;
@@ -546,12 +549,47 @@ type HourOverrideForReadiness = Pick<
 export function schedulerInvoiceCompletionReadiness(input: {
   jobStatus: string | null;
   completedAt: Date | string | null;
+  schedulerEventStatus?: string | null;
 }): InvoiceCompletionReadiness {
   // A status-only historical row is not auditable completed-work evidence.
   if (isCompletedSchedulerJobStatus(input.jobStatus ?? '') && input.completedAt) {
     return { satisfied: true, basis: 'job' };
   }
+  if (input.schedulerEventStatus === 'done') {
+    return { satisfied: true, basis: 'job' };
+  }
   return { satisfied: false, basis: null };
+}
+
+async function schedulerManualCompletionReadiness(
+  source: FinanceSource,
+  executor: FinanceExecutor = db,
+): Promise<InvoiceCompletionReadiness> {
+  const [event] = await executor.select({ status: portalScheduleEvents.status })
+    .from(portalScheduleEvents)
+    .where(and(
+      eq(portalScheduleEvents.sourceApp, source.sourceApp),
+      eq(portalScheduleEvents.sourceType, source.sourceType),
+      eq(portalScheduleEvents.sourceId, source.sourceId),
+    ))
+    .orderBy(desc(portalScheduleEvents.updatedAt), desc(portalScheduleEvents.createdAt))
+    .limit(1);
+  return schedulerInvoiceCompletionReadiness({
+    jobStatus: null,
+    completedAt: null,
+    schedulerEventStatus: event?.status ?? null,
+  });
+}
+
+async function productOrSchedulerCompletionReadiness(
+  source: FinanceSource,
+  input: { jobStatus: string | null; completedAt: Date | string | null },
+  executor: FinanceExecutor,
+): Promise<InvoiceCompletionReadiness> {
+  const productCompletion = schedulerInvoiceCompletionReadiness(input);
+  return productCompletion.satisfied
+    ? productCompletion
+    : schedulerManualCompletionReadiness(source, executor);
 }
 
 /** Zero is a valid reviewed value, but both accounting hour values must be explicit without app time. */
@@ -889,6 +927,7 @@ async function loadJobMetadata(
   executor: FinanceExecutor = db,
 ): Promise<JobMetadata> {
   const fallbackDate = event?.scheduledStartAt ?? new Date();
+  const schedulerCompleted = event?.status === 'done';
   if (source.sourceApp === 'ecoaudit') {
     const [audit] = await executor.select().from(eaAudits)
       .where(eq(eaAudits.id, source.sourceId)).limit(1);
@@ -899,7 +938,7 @@ async function loadJobMetadata(
         clientName: null,
         siteName: audit.siteName,
         siteAddress: audit.siteAddress,
-        status: audit.deletedAt ? 'Deleted' : audit.status,
+        status: audit.deletedAt ? 'Deleted' : schedulerCompleted ? 'Completed' : audit.status,
       };
     }
   } else if (source.sourceApp === 'solarsense') {
@@ -922,7 +961,7 @@ async function loadJobMetadata(
         clientName: null,
         siteName: assessment.siteName,
         siteAddress: assessment.siteLocation,
-        status: assessment.deletedAt ? 'Deleted' : assessment.status,
+        status: assessment.deletedAt ? 'Deleted' : schedulerCompleted ? 'Completed' : assessment.status,
       };
     }
   } else {
@@ -935,7 +974,7 @@ async function loadJobMetadata(
         clientName: installation.clientName,
         siteName: installation.siteName,
         siteAddress: installation.siteAddress,
-        status: installation.deletedAt ? 'Deleted' : installation.status,
+        status: installation.deletedAt ? 'Deleted' : schedulerCompleted ? 'Completed' : installation.status,
       };
     }
   }
@@ -1011,10 +1050,10 @@ async function sourceCompletionReadiness(
           .limit(1);
     const audit = rows[0];
     if (!audit || audit.deletedAt) return { satisfied: false, basis: null };
-    return schedulerInvoiceCompletionReadiness({
+    return productOrSchedulerCompletionReadiness(source, {
       jobStatus: audit.status,
       completedAt: audit.completedAt,
-    });
+    }, executor);
   }
 
   if (source.sourceApp === 'installhub') {
@@ -1036,10 +1075,10 @@ async function sourceCompletionReadiness(
           .limit(1);
     const installation = rows[0];
     if (!installation || installation.deletedAt) return { satisfied: false, basis: null };
-    return schedulerInvoiceCompletionReadiness({
+    return productOrSchedulerCompletionReadiness(source, {
       jobStatus: installation.status,
       completedAt: installation.completedAt,
-    });
+    }, executor);
   }
 
   const assessmentRows = lock
@@ -1062,10 +1101,10 @@ async function sourceCompletionReadiness(
   if (!assessment || assessment.deletedAt) {
     return { satisfied: false, basis: null };
   }
-  return schedulerInvoiceCompletionReadiness({
+  return productOrSchedulerCompletionReadiness(source, {
     jobStatus: assessment.status,
     completedAt: assessment.completedAt,
-  });
+  }, executor);
 }
 
 function assertInvoiceCompletionReady(
@@ -1093,7 +1132,11 @@ async function currentJobStatusForSource(
       deletedAt: eaAudits.deletedAt,
     }).from(eaAudits).where(eq(eaAudits.id, source.sourceId)).limit(1);
     const [job] = lock ? await query.for('update') : await query;
-    return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+    if (!job || job.deletedAt) return 'Deleted';
+    if (isCompletedSchedulerJobStatus(job.status)) return job.status;
+    return (await schedulerManualCompletionReadiness(source, executor)).satisfied
+      ? 'Completed'
+      : job.status;
   }
   if (source.sourceApp === 'solarsense') {
     const query = executor.select({
@@ -1102,14 +1145,22 @@ async function currentJobStatusForSource(
     }).from(ssRooftopAssessments)
       .where(eq(ssRooftopAssessments.id, source.sourceId)).limit(1);
     const [job] = lock ? await query.for('update') : await query;
-    return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+    if (!job || job.deletedAt) return 'Deleted';
+    if (isCompletedSchedulerJobStatus(job.status)) return job.status;
+    return (await schedulerManualCompletionReadiness(source, executor)).satisfied
+      ? 'Completed'
+      : job.status;
   }
   const query = executor.select({
     status: ihInstallations.status,
     deletedAt: ihInstallations.deletedAt,
   }).from(ihInstallations).where(eq(ihInstallations.id, source.sourceId)).limit(1);
   const [job] = lock ? await query.for('update') : await query;
-  return job ? (job.deletedAt ? 'Deleted' : job.status) : 'Deleted';
+  if (!job || job.deletedAt) return 'Deleted';
+  if (isCompletedSchedulerJobStatus(job.status)) return job.status;
+  return (await schedulerManualCompletionReadiness(source, executor)).satisfied
+    ? 'Completed'
+    : job.status;
 }
 
 function financeSourceKey(source: FinanceSource): string {
@@ -3172,7 +3223,7 @@ async function createQuickSchedulerInvoiceForContext(
       billToAbn: finance.billToAbn,
       billToAddress: finance.billToAddress,
       billToEmail: finance.billToEmail,
-      purchaseOrderReference: finance.billingReference,
+      purchaseOrderReference: finance.billingReference ?? context.source.sourceId,
       jobSiteName: metadata.siteName,
       jobSiteAddress: metadata.siteAddress,
       jobName: metadata.jobName,
@@ -3191,7 +3242,7 @@ async function createQuickSchedulerInvoiceForContext(
       invoiceId,
       financeId: finance.id,
       sortOrder: 0,
-      billingReference: finance.billingReference,
+      billingReference: finance.billingReference ?? context.source.sourceId,
       jobSiteName: metadata.siteName,
       jobSiteAddress: metadata.siteAddress,
       jobName: metadata.jobName,
@@ -3530,8 +3581,8 @@ export async function createConsolidatedSchedulerInvoice(
         ? optionalText(explicitBillTo.email, 320)
         : anchor.billToEmail,
       purchaseOrderReference: explicitBillTo
-        ? optionalText(explicitBillTo.purchaseOrderReference, 200)
-        : anchor.billingReference,
+        ? optionalText(explicitBillTo.purchaseOrderReference, 200) ?? primary.source.sourceId
+        : anchor.billingReference ?? primary.source.sourceId,
       jobSiteName: primary.metadata.siteName,
       jobSiteAddress: primary.metadata.siteAddress,
       jobName: primary.metadata.jobName,
@@ -3550,7 +3601,7 @@ export async function createConsolidatedSchedulerInvoice(
       invoiceId,
       financeId: context.finance.id,
       sortOrder: index,
-      billingReference: context.finance.billingReference,
+      billingReference: context.finance.billingReference ?? context.source.sourceId,
       jobSiteName: context.metadata.siteName,
       jobSiteAddress: context.metadata.siteAddress,
       jobName: context.metadata.jobName,
@@ -4947,7 +4998,10 @@ export async function listSchedulerFinanceOverview(
     sourceType: summary.source.sourceType,
     sourceId: summary.source.sourceId,
     jobName: summary.job.jobName,
+    clientName: summary.job.clientName,
     siteName: summary.job.siteName,
+    siteAddress: summary.job.siteAddress,
+    userNames: summary.time.actors.map((actor) => actor.displayName || actor.userId),
     jobDate: summary.job.jobDate,
     jobStatus: summary.job.status,
     eventStatus: summary.event?.status ?? null,

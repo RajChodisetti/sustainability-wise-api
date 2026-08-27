@@ -156,9 +156,6 @@ export function AustralianAddressFields({
           </div>
         ) : null}
       </div>
-      <FieldHint>
-        Choose a suggestion to make routing precise, or keep any address you type and complete the fields below.
-      </FieldHint>
       {addressQuery.isFetching ? <FieldHint>Searching Australian addresses…</FieldHint> : null}
       {addressQuery.isError ? (
         <FieldHint>Address suggestions are temporarily unavailable. You can still enter the address manually.</FieldHint>
@@ -234,12 +231,6 @@ export function AustralianAddressFields({
       {postcodeQuery.isFetching ? <FieldHint>Looking up postcode localities…</FieldHint> : null}
       {postcodeQuery.isError ? (
         <FieldHint>Postcode lookup is temporarily unavailable. Enter the suburb and state manually.</FieldHint>
-      ) : null}
-      {(addressQuery.data && !addressQuery.data.available)
-        || (postcodeQuery.data && !postcodeQuery.data.available) ? (
-        <FieldHint>
-          Address suggestions are not configured right now. Manual Australian addresses still work.
-        </FieldHint>
       ) : null}
     </div>
   );

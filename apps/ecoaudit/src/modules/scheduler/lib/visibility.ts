@@ -5,7 +5,7 @@ import type {
 } from '@/modules/scheduler/types/domain';
 
 const ALL_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
-const SELECTABLE_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
+const SELECTABLE_SOURCE_APPS = ['installhub', 'custom'] as const;
 
 /**
  * Sources whose already-linked work can be rendered in Scheduler.
@@ -16,7 +16,11 @@ export function schedulerVisibleSourceApps(): ScheduleSourceApp[] {
   return [...ALL_SOURCE_APPS];
 }
 
-/** Sources that can appear as explicit choices in Scheduler controls. */
+/**
+ * Sources that can appear as explicit choices in Scheduler controls.
+ * EcoAudit and SolarSense history remains visible, but new work is authored
+ * only through Field App or as a custom calendar entry.
+ */
 export function schedulerSelectableSourceApps(): ScheduleSourceApp[] {
   return [...SELECTABLE_SOURCE_APPS];
 }

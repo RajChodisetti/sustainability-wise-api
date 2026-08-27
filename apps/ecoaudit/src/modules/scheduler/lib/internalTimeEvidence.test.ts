@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-test('internal finance UI shows only app-active evidence by named actor', async () => {
+test('finance summary keeps employee rates behind one expandable action', async () => {
   const panelSource = await readFile(
     new URL('../components/FinanceSettingsPanel.tsx', import.meta.url),
     'utf8',
@@ -12,12 +12,11 @@ test('internal finance UI shows only app-active evidence by named actor', async 
     'utf8',
   );
 
-  assert.match(panelSource, /label="App-active hours"/);
-  assert.match(panelSource, /activeHours=\{actor\.hours\}/);
+  assert.match(panelSource, /Fix employee rates/);
+  assert.match(panelSource, /aria-expanded=\{ratesOpen\}/);
   assert.match(panelSource, /displayName=\{actor\.displayName \|\| actor\.userId\}/);
-  assert.match(panelSource, /label="Billing hours"/);
-  assert.match(panelSource, /label="Cost hours"/);
-  assert.match(panelSource, /label="Scheduled hours"/);
+  assert.doesNotMatch(panelSource, /Internal calculation/);
+  assert.doesNotMatch(panelSource, /Billing details/);
   assert.doesNotMatch(panelSource, /resting|inactive time/i);
   assert.doesNotMatch(domainSource, /restingHours|restingMilliseconds/);
 });

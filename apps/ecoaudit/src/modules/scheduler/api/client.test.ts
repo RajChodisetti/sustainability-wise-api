@@ -331,7 +331,7 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     recordVersionPayloadHash: null,
     reportSource: null,
     detailMode: null,
-    reportVariantKey: 'scheduler-invoice-pdf:v2:invoice-42:2026-08-16T18:15:00.000Z',
+    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
     createdAt: '2026-08-16T18:15:01.000Z',
     updatedAt: '2026-08-16T18:15:02.000Z',
   };
@@ -435,7 +435,7 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     assert.match(start?.url ?? '', /\/scheduler\/finance\/finance%2F9\/invoices\/invoice%2F42\/pdf\/jobs$/);
     const latest = requests.find((request) => request.url.includes('/latest?'));
     assert.match(latest?.url ?? '', /\/v1\/export\/jobs\/latest\?.*entityId=invoice%2F42/);
-    assert.match(latest?.url ?? '', /reportVariantKey=scheduler-invoice-pdf%3Av2%3Ainvoice-42/);
+    assert.match(latest?.url ?? '', /reportVariantKey=scheduler-invoice-pdf%3Av3%3Ainvoice-42/);
     assert.equal(requests.some((request) => /\/v1\/export\/jobs\/job-1$/.test(request.url)), true);
     assert.equal(requests.some((request) => request.url.endsWith('/job-1/download')), true);
   } finally {

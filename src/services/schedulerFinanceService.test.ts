@@ -86,6 +86,11 @@ test('invoice completion readiness requires completed status and authoritative c
     jobStatus: 'Draft',
     completedAt: new Date('2026-08-22T00:00:00.000Z'),
   }), { satisfied: false, basis: null });
+  assert.deepEqual(schedulerInvoiceCompletionReadiness({
+    jobStatus: 'Draft',
+    completedAt: null,
+    schedulerEventStatus: 'done',
+  }), { satisfied: true, basis: 'job' });
 });
 
 test('missing app time requires both explicit admin hour values, including valid zeroes', () => {

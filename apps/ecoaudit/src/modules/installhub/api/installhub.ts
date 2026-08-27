@@ -615,6 +615,17 @@ export function updateUser(
   );
 }
 
+export function updateUserMaintainer(
+  id: string,
+  isMaintainer: boolean,
+): Promise<ManagedInstallHubUser> {
+  return installHubRequest(
+    'PATCH',
+    `/v1/installhub/users/${encodeURIComponent(id)}/maintainer`,
+    { isMaintainer },
+  );
+}
+
 export function changeUserPassword(
   id: string,
   input: { currentPassword?: string; newPassword: string },

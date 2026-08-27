@@ -163,6 +163,7 @@ export type InstallHubUser = {
   isActive?: boolean;
   sourceManaged?: boolean;
   sourceApp?: 'ecoaudit' | 'solarsense' | null;
+  isMaintainer?: boolean;
 };
 
 export type ManagedInstallHubUser = InstallHubUser & {
@@ -261,6 +262,7 @@ export type Installation = {
   meteringSolutionType?: string | null;
   /** Planning context only; installed device records remain authoritative for field work. */
   plannedMeterType?: string | null;
+  customJobNumber?: string | null;
   siteName: string;
   siteAddress: string;
   siteLocality?: string | null;

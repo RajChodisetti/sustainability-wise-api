@@ -303,7 +303,7 @@ export function buildInvoiceHtml(
                 <div class="job-context">
                   <span>${esc(productLabel)} ${esc(jobTypeLabel)}</span>
                   <span>Job date: ${esc(formatDate(jobDate))}</span>
-                  <span>Reference: ${reference ? esc(reference) : '-'}</span>
+                  <span>Job ID: ${reference ? esc(reference) : esc(group.job.sourceId)}</span>
                 </div>
                 ${siteName && siteName !== group.job.jobName ? `<div class="job-site">Site: ${esc(siteName)}</div>` : ''}
                 ${siteAddress ? `<div class="job-site seller-address">${esc(siteAddress)}</div>` : ''}
@@ -362,7 +362,7 @@ export function buildInvoiceHtml(
       padding-bottom: 18px;
       border-bottom: 2px solid #142f70;
     }
-    .identity { min-width: 220px; max-width: 54%; }
+    .identity { min-width: 220px; max-width: 46%; }
     .brand-logo {
       display: block;
       width: 190px;
@@ -371,9 +371,10 @@ export function buildInvoiceHtml(
       object-position: left center;
       margin: 0 0 12px;
     }
+    .seller { margin-bottom: 14px; }
     .seller strong { color: #1a1f2c; font-size: 14px; }
     .seller-address, .notes-body { white-space: pre-line; }
-    .meta { min-width: 220px; text-align: right; }
+    .meta { min-width: 250px; max-width: 48%; text-align: right; }
     .meta .number { color: #1a1f2c; font-size: 16px; font-weight: 700; }
     .details {
       display: grid;
@@ -384,9 +385,8 @@ export function buildInvoiceHtml(
     .detail-card {
       min-width: 0;
       padding: 14px 16px;
-      border: 1px solid #cbd5e1;
-      border-left: 3px solid #142f70;
-      border-radius: 5px;
+      border-top: 3px solid #142f70;
+      background: #f8fafc;
       break-inside: avoid;
     }
     .detail-card h2, .notes h2 {
@@ -422,7 +422,7 @@ export function buildInvoiceHtml(
     .job-heading-row th {
       padding: 10px 12px;
       border-bottom: 1px solid #aab8cc;
-      background: #eef4ff;
+      background: #e8eef8;
       text-align: left;
       text-transform: none;
       letter-spacing: normal;
@@ -498,14 +498,15 @@ export function buildInvoiceHtml(
   <div class="header">
     <div class="identity">
       ${options.logoDataUri ? `<img class="brand-logo" src="${esc(options.logoDataUri)}" alt="Sustainability Wise" />` : ''}
+      ${!options.logoDataUri ? `<div class="seller"><strong>${esc(model.seller.name || 'Supplier')}</strong></div>` : ''}
+    </div>
+    <div class="meta">
       <div class="seller">
         <strong>${esc(model.seller.name || 'Supplier')}</strong>
         ${model.seller.abn ? `<div class="muted">ABN ${esc(model.seller.abn)}</div>` : ''}
         ${model.seller.address ? `<div class="muted seller-address">${esc(model.seller.address)}</div>` : ''}
         ${model.seller.email ? `<div class="muted">${esc(model.seller.email)}</div>` : ''}
       </div>
-    </div>
-    <div class="meta">
       <h1>${esc(title)}</h1>
       <div class="number">${esc(model.invoiceNumber)}</div>
       <div class="muted">Issue date: ${esc(formatDate(model.issueDate))}</div>
@@ -522,7 +523,7 @@ export function buildInvoiceHtml(
       ${billToAbn ? `<div class="muted">ABN ${esc(billToAbn)}</div>` : ''}
       ${billToAddress ? `<div class="muted seller-address">${esc(billToAddress)}</div>` : ''}
       ${billToEmail ? `<div class="muted">${esc(billToEmail)}</div>` : ''}
-      ${model.purchaseOrderReference ? `<div class="muted">PO: ${esc(model.purchaseOrderReference)}</div>` : ''}
+      <div class="muted">Customer reference: ${esc(model.purchaseOrderReference?.trim() || primaryJob.sourceId)}</div>
     </section>
     <section class="detail-card">
       <h2>${isMultiJob ? 'Invoice scope' : 'Job summary'}</h2>
@@ -533,6 +534,7 @@ export function buildInvoiceHtml(
         ? `Detailed by job below · First job date: ${esc(formatDate(primaryJobDate))}`
         : `${esc(sourceProductLabel(primaryJob.sourceApp))} ${esc(sourceTypeLabel(primaryJob.sourceType))}`}</div>
       ${!isMultiJob ? `<div class="muted">Job date: ${esc(formatDate(primaryJobDate))}</div>` : ''}
+      <div class="muted">Job ID: ${esc(primaryJob.sourceId)}</div>
       <div class="muted">Currency: ${esc(model.currency || 'AUD')}</div>
     </section>
   </div>

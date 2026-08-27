@@ -190,7 +190,7 @@ export function SchedulerFinanceWorkspace({
       if (sourceApp !== 'all' && job.sourceApp !== sourceApp) return false;
       if (!financeJobMatchesExceptionFilter(job, exceptionFilter)) return false;
       if (!needle) return true;
-      return `${job.jobName} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`
+      return `${job.jobName} ${job.clientName ?? ''} ${job.siteName} ${job.siteAddress ?? ''} ${job.userNames.join(' ')} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`
         .toLocaleLowerCase()
         .includes(needle);
     });
@@ -355,8 +355,8 @@ function FinanceJobPicker({
         selected={exceptionFilter}
         onSelect={onExceptionFilter}
       />
-      <label className="mt-4 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-job-search">Search jobs</label>
-      <Input id="finance-job-search" type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Job name or ID" className="mt-1" />
+      <label className="mt-4 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-job-search">Find a site or job</label>
+      <Input id="finance-job-search" type="search" value={search} onChange={(event) => onSearch(event.target.value)} placeholder="User, job, client, site, or address" className="mt-1 w-full" />
       <label className="mt-3 block text-xs font-bold text-[var(--text-sub)]" htmlFor="finance-app-filter">Product</label>
       <Select id="finance-app-filter" value={sourceApp} onChange={(event) => onSourceApp(event.target.value as FinanceSourceApp | 'all')} className="mt-1">
         <option value="all">All jobs</option>
@@ -366,7 +366,7 @@ function FinanceJobPicker({
       <nav className="mt-3 space-y-2" aria-label="Financial summary jobs">
         {filtered.map((job) => {
           const selected = financeJobKey(job) === selectedJobKey;
-          const exceptions = financeJobExceptionKinds(job);
+          const exceptions = financeJobExceptionKinds(job).filter((kind) => kind !== 'unbilled');
           const tone = marginTone(job.marginPct);
           return (
             <button key={job.financeId} type="button" aria-current={selected ? 'true' : undefined} onClick={() => onSelect(job)} className={`block min-h-11 w-full rounded-xl border px-3 py-3 text-left transition-colors ${selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-[var(--border)] bg-[var(--surface)] hover:border-[var(--border-strong)] hover:bg-[var(--surface2)]'}`}>
@@ -376,7 +376,7 @@ function FinanceJobPicker({
                   {exceptions.slice(1).map((kind) => <FinanceExceptionBadge key={kind} kind={kind} />)}
                 </span>
               ) : null}
-              <span className="mt-2 flex items-end justify-between gap-2 text-xs"><span className="text-[var(--text-sub)]">Unbilled {money(job.unbilledAmount, job.currency)}</span><span className={`font-extrabold ${toneClasses[tone]}`}>{job.marginPct == null ? 'No margin' : `${job.marginPct.toFixed(1)}% margin`}</span></span>
+              <span className="mt-2 flex items-end justify-between gap-2 text-xs"><span className="text-[var(--text-sub)]">Billable {money(job.billableAmount, job.currency)}</span><span className={`font-extrabold ${toneClasses[tone]}`}>{job.marginPct == null ? 'No margin' : `${job.marginPct.toFixed(1)}% margin`}</span></span>
             </button>
           );
         })}
@@ -418,7 +418,6 @@ function FinanceExceptionFilters({
     { key: 'overdue', label: 'Overdue', count: counts.overdue },
     { key: 'hours_review', label: 'Hours', count: counts.hours_review },
     { key: 'completed_without_invoice', label: 'No invoice', count: counts.completed_without_invoice },
-    { key: 'unbilled', label: 'Unbilled', count: counts.unbilled },
   ];
   return (
     <div className="mt-4 grid grid-cols-2 gap-2" aria-label="Finance exception filters">

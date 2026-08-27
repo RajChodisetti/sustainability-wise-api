@@ -59,6 +59,7 @@ import {
   normalizeInstallHubCompletionNotes,
 } from './completionNotes.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { projectCompletedFieldInstallation } from '../../services/fieldCompletionProjectionService.js';
 
 function positiveVersion(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -712,6 +713,11 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
           sourceType: 'installation',
           sourceId: installationId,
         }, { completionProvenance: 'historical_replay' });
+        await projectCompletedFieldInstallation(tx, {
+          installationId,
+          actorUserId: request.user.userId,
+          observedAt: installation.completedAt ?? new Date(),
+        });
         return {
           kind: 'success' as const,
           result: {
@@ -796,6 +802,11 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       }, {
         observedAt: completedAt,
         completionProvenance: 'direct_transition',
+      });
+      await projectCompletedFieldInstallation(tx, {
+        installationId,
+        actorUserId: request.user.userId,
+        observedAt: completedAt,
       });
       return { kind: 'success' as const, result };
     });

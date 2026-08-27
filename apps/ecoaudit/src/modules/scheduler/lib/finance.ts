@@ -13,7 +13,7 @@ import type {
   SchedulerInvoiceEligibilityJob,
 } from '@/modules/scheduler/types/domain';
 
-export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v2';
+export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v3';
 export const MAX_CONSOLIDATED_INVOICE_JOBS = 50;
 
 /**
@@ -148,7 +148,10 @@ export function financeOverviewFromSummary(
     sourceId: summary.source.sourceId,
     eventId: summary.event?.id ?? null,
     jobName: summary.job.jobName,
+    clientName: summary.job.clientName,
     siteName: summary.job.siteName ?? '',
+    siteAddress: summary.job.siteAddress,
+    userNames: (summary.time.actors ?? []).map((actor) => actor.displayName || actor.userId),
     jobDate: summary.job.jobDate,
     jobStatus: summary.job.status,
     eventStatus: summary.event?.status ?? null,
@@ -448,6 +451,7 @@ export function schedulerTabTransition(
     | 'deadlines'
     | 'team-performance'
     | 'leave'
+    | 'inventory'
     | 'finance-analytics'
     | SchedulerFinanceView,
 ): { href: string; financeTarget?: SchedulerFinanceTarget } {

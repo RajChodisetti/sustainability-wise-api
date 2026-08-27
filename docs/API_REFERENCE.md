@@ -109,7 +109,14 @@ global projections never grant it.
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
-| GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List active Draft jobs without an active event |
+| GET | `/v1/portal/scheduler/sites?sourceApp=installhub&q=...` | admin | Search canonical client sites and the latest same-product job revision used to seed new work |
+| GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List Draft jobs; defaults to jobs without an active event |
+
+`GET /scheduler/unscheduled-jobs` accepts `unscheduledOnly=false` to include
+scheduled Draft jobs. Scheduled Field options include the assigned Field user,
+display name, schedule event ID, and scheduled start time so the portal can
+group jobs by user and open the correct calendar week. Omitting the parameter
+preserves the legacy unscheduled-only response.
 
 The analytics endpoint reads one repeatable-read database snapshot. Its report
 timezone defines the selected UTC interval and daily financial buckets; each
@@ -166,15 +173,32 @@ For Field App Complete, the dispatch `job` object may additionally carry the
 nullable installation metadata documented in the mobile integration guide and
 `electricityNmi`. The API stores `electricityNmi` as nullable, trimmed text of
 at most 100 characters on the installation's default grid supply rather than
-duplicating it on the installation. Service type,
-metering solution type, and planned meter type are bounded free text until a
-separate approved business vocabulary exists. External Fergus and quote
-references are not assumed globally unique. Omitting an additive field keeps an
+duplicating it on the installation. New Field jobs use controlled M1-M5 scope
+values in `serviceType`; M5 carries the free-text Other scope.
+`meteringSolutionType` uses NEM meter, revenue metering, monitoring/sub-meter,
+water meter, or free-text Other. `customJobNumber` is the current optional job
+reference. Legacy `serviceType` values remain accepted for installed-client
+compatibility. Planned meter type, Fergus, and quote references are legacy
+migration/import fields only and are not requested by Scheduler or Field App
+UIs. Omitting an additive field keeps an
 existing value during legacy synchronization; sending `null` explicitly clears
 it. Nullable booleans preserve unknown as `null`.
 
-The Scheduler's new Field App job form collects planning, scope, contact,
-access, reference, and optional NMI values. It does not ask for installation
+Scheduler creates a shared Client, a Site belonging to that Client, a generic
+Job belonging to the Site, and one app-specific detail row. Exact existing
+client names are reused so one client can own multiple sites. Job creation
+explicitly chooses a new site or an existing site. An existing-site request must
+carry the selected canonical `existingSiteId`; its submitted site fields are the
+editable copy shown to the user and become the site's current known details.
+The new `business_jobs` row receives the next per-site/per-app `revisionNumber`
+and `previousJobId`. The source product row is always new: Field copies known
+electrical topology, meters, channels, and assignments without copying completed
+forms; EcoAudit copies its audit zones and equipment; SolarSense copies its site
+and latest assessment. Existing evidence remains available through explicit
+copy references rather than duplicated storage. This lets Field users replace
+an existing meter or add another meter without changing the prior job version.
+The Field App job form collects
+work type, planning, scope, contact, access, and optional NMI values. It does not ask for installation
 outcomes such as installed hardware or monitoring during job creation. Those
 nullable outcome fields remain accepted by the API for older clients and remain
 editable on an existing installation.
@@ -183,8 +207,10 @@ The supplied business labels map to existing domain authorities: status is the
 product lifecycle, install schedule/date/by is the Scheduler event and actor,
 electricity NMI is grid-supply data, actual meter/device IDs and types remain on
 meter/device/form records, and completion date/by is server-owned lifecycle
-evidence. Client name and site address retain their existing installation
-fields. This avoids conflicting copies of operational facts.
+evidence. Client identity/contact belongs to `business_clients`; address,
+site contact, and access belong to `business_sites`; generic title/status/source
+belongs to `business_jobs`; app-only planning belongs to the corresponding job
+detail table. Legacy product columns remain compatibility projections.
 
 For linked Field App Complete events, Scheduler projects the event start's local
 calendar date and resolved assignee display name into the legacy installation
@@ -800,3 +826,33 @@ than falling back to mutable `updatedAt`.
   "alreadyExists": false
 }
 ```
+## Field meter inventory
+
+Field inspector JWTs can call `GET /v1/installhub/inventory/me`, list their own
+meters with `GET /v1/installhub/inventory/meters?scope=mine`, and register or
+claim a scanned serial with `POST /v1/installhub/inventory/meters/scan`.
+Maintainers are granted independently through `global_users.is_maintainer`.
+They can list the company register with `scope=company`, create stock with
+`POST /meters`, edit with revision CAS using `PATCH /meters/:meterId`, and
+soft-delete uninstalled stock with `DELETE /meters/:meterId`. Every custody
+change is written to the append-only movement ledger.
+
+Field administrators grant or revoke that independent permission through
+`PATCH /v1/installhub/users/:id/maintainer`. Scheduler administrators can read
+company, user, and per-user counts from `GET /v1/portal/scheduler/inventory`.
+
+Completing a canonical Field installation atomically marks its meter serials
+installed, clears user custody, and projects the client/device memberships into
+Wattwatchers Fleet. An installation with no meter rows does not create a Fleet
+client.
+
+## Wattwatchers client credentials
+
+Fleet administrators can create or replace a client key with
+`PUT /v1/wattwatchers/clients/:clientId/api-key` and remove it with `DELETE` on
+the same path. Reads expose only `apiKeyConfigured` and `apiKeyUpdatedAt`; key
+material is AES-256-GCM encrypted with
+`WATTWATCHERS_CLIENT_KEY_ENCRYPTION_SECRET` and is never returned to a human
+session. Only a Wattwatchers `service_account` may call
+`GET /v1/wattwatchers/clients/collector/configured` to retrieve configured keys
+for collection.

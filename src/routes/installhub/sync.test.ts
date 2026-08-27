@@ -158,6 +158,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     serviceType: 'Meter install',
     meteringSolutionType: 'Commercial',
     plannedMeterType: 'A6M',
+    customJobNumber: 'CUSTOM-100',
     siteAddress: '42 Example Road',
     siteLocality: 'Sydney',
     siteState: 'NSW',

@@ -514,6 +514,9 @@ export const config = {
     max: optionalInt('RATE_LIMIT_MAX', 300),
     timeWindowMs: optionalInt('RATE_LIMIT_WINDOW_MS', 60_000),
   },
+  wattwatchersClientCredentials: {
+    encryptionSecret: optional('WATTWATCHERS_CLIENT_KEY_ENCRYPTION_SECRET'),
+  },
   databaseUrl: required('DATABASE_URL'),
   jwtSecret,
   jwtRefreshSecret: required('JWT_REFRESH_SECRET'),

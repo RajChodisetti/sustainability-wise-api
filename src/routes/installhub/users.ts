@@ -4,7 +4,7 @@ import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { eaUsers } from '../../db/schema/ecoaudit.js';
 import { ihUsers } from '../../db/schema/installhub.js';
-import { refreshTokens, unifiedUsers } from '../../db/schema/shared.js';
+import { globalUsers, refreshTokens, unifiedUsers } from '../../db/schema/shared.js';
 import { ssUsers } from '../../db/schema/solarsense.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { hashPassword } from '../../auth/apiKey.js';
@@ -48,7 +48,7 @@ export type UnifiedInstallHubUserView = Pick<
   | 'sourceCreatedAt'
   | 'sourceUpdatedAt'
   | 'deletedAt'
->;
+> & { isMaintainer?: boolean };
 
 export const unifiedInstallHubUserColumns = {
   id: unifiedUsers.id,
@@ -62,6 +62,11 @@ export const unifiedInstallHubUserColumns = {
   sourceCreatedAt: unifiedUsers.sourceCreatedAt,
   sourceUpdatedAt: unifiedUsers.sourceUpdatedAt,
   deletedAt: unifiedUsers.deletedAt,
+};
+
+const unifiedInstallHubUserWithMaintainerColumns = {
+  ...unifiedInstallHubUserColumns,
+  isMaintainer: globalUsers.isMaintainer,
 };
 
 function sourceApp(value: string): SourceApp | null {
@@ -113,6 +118,7 @@ export function presentUnifiedInstallHubUser(user: UnifiedInstallHubUserView) {
     createdAt: user.sourceCreatedAt,
     updatedAt: user.sourceUpdatedAt,
     sourceManaged: managedSourceApp !== null,
+    isMaintainer: user.isMaintainer === true,
     sourceApp: managedSourceApp,
     sourceState: managedSourceApp
       ? user.deletedAt
@@ -182,8 +188,9 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
     preHandler: installHubAdmin,
   }, async (_request, reply) => {
     const users = await db
-      .select(unifiedInstallHubUserColumns)
+      .select(unifiedInstallHubUserWithMaintainerColumns)
       .from(unifiedUsers)
+      .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
       .where(eq(unifiedUsers.originApp, 'installhub'))
       .orderBy(asc(unifiedUsers.sourceCreatedAt));
     return reply.send({
@@ -235,6 +242,7 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         .returning(publicColumns);
       return reply.status(201).send({
         ...created,
+        isMaintainer: false,
         sourceManaged: false,
         sourceApp: null,
         sourceState: 'explicit',
@@ -258,8 +266,9 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       throw forbidden('Cannot access another user');
     }
     const [user] = await db
-      .select(unifiedInstallHubUserColumns)
+      .select(unifiedInstallHubUserWithMaintainerColumns)
       .from(unifiedUsers)
+      .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
       .where(and(
         eq(unifiedUsers.fieldUserId, id),
         eq(unifiedUsers.originApp, 'installhub'),
@@ -368,8 +377,9 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         }
 
         const [updatedRegistryUser] = await tx
-          .select(unifiedInstallHubUserColumns)
+          .select(unifiedInstallHubUserWithMaintainerColumns)
           .from(unifiedUsers)
+          .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
           .where(and(
             eq(unifiedUsers.fieldUserId, id),
             eq(unifiedUsers.originApp, 'installhub'),
@@ -381,6 +391,37 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
       if (isUniqueViolation(error)) throw conflict('Email already exists');
       throw error;
     }
+  });
+
+  app.patch('/:id/maintainer', {
+    schema: {
+      tags: ['Field App Complete Users'],
+      summary: 'Grant or revoke company inventory maintainer access',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['isMaintainer'],
+        additionalProperties: false,
+        properties: { isMaintainer: { type: 'boolean' } },
+      },
+    },
+    preHandler: installHubAdmin,
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { isMaintainer } = request.body as { isMaintainer: boolean };
+    const [updated] = await db.update(globalUsers).set({
+      isMaintainer,
+      updatedAt: new Date(),
+    }).where(eq(globalUsers.fieldUserId, id)).returning({ id: globalUsers.id });
+    if (!updated) throw notFound('User');
+    const [user] = await db.select(unifiedInstallHubUserWithMaintainerColumns)
+      .from(unifiedUsers)
+      .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
+      .where(and(
+        eq(unifiedUsers.fieldUserId, id),
+        eq(unifiedUsers.originApp, 'installhub'),
+      ));
+    return reply.send(presentUnifiedInstallHubUser(assertFound(user, 'User')));
   });
 
   app.patch('/:id/password', {
@@ -482,8 +523,9 @@ export async function installhubUserRoutes(app: FastifyInstance): Promise<void> 
         await revokeRefreshTokens(tx, target.app, target.userId);
       }
       const [updatedRegistryUser] = await tx
-        .select(unifiedInstallHubUserColumns)
+        .select(unifiedInstallHubUserWithMaintainerColumns)
         .from(unifiedUsers)
+        .innerJoin(globalUsers, eq(globalUsers.id, unifiedUsers.globalUserId))
         .where(and(
           eq(unifiedUsers.fieldUserId, found.fieldUserId),
           eq(unifiedUsers.originApp, 'installhub'),

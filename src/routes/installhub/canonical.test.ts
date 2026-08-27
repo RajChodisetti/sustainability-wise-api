@@ -108,6 +108,7 @@ test('canonical installation metadata is additive, nullable, bounded, and mutati
     serviceType: ' Metering install ',
     meteringSolutionType: ' Embedded network ',
     plannedMeterType: ' A6M ',
+    customJobNumber: ' CUSTOM-100 ',
     siteLocality: ' Sydney ',
     siteState: 'nsw',
     sitePostcode: '2000',

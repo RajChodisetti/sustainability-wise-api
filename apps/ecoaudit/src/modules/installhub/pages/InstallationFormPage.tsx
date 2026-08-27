@@ -40,11 +40,10 @@ import {
 
 type FormState = {
   clientName: string;
-  customerName: string;
   maas: boolean | null;
   serviceType: string;
   meteringSolutionType: string;
-  plannedMeterType: string;
+  customJobNumber: string;
   siteName: string;
   siteAddress: string;
   siteLocality: string;
@@ -54,8 +53,6 @@ type FormState = {
   siteContactName: string;
   siteContactPhone: string;
   siteContactEmail: string;
-  fergusJobNumber: string;
-  quoteNumber: string;
   jobComments: string;
   accessInformation: string;
   warrantyDevice: boolean | null;
@@ -72,11 +69,10 @@ type FormState = {
 
 const emptyForm: FormState = {
   clientName: '',
-  customerName: '',
   maas: null,
   serviceType: '',
   meteringSolutionType: '',
-  plannedMeterType: '',
+  customJobNumber: '',
   siteName: '',
   siteAddress: '',
   siteLocality: '',
@@ -86,8 +82,6 @@ const emptyForm: FormState = {
   siteContactName: '',
   siteContactPhone: '',
   siteContactEmail: '',
-  fergusJobNumber: '',
-  quoteNumber: '',
   jobComments: '',
   accessInformation: '',
   warrantyDevice: null,
@@ -103,6 +97,15 @@ const emptyForm: FormState = {
 };
 
 const AUSTRALIAN_STATES = ['ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA'] as const;
+const FIELD_WORK_TYPES = [
+  ['M1 - New install', 'M1 — New install'],
+  ['M2 - Faults / COMMS fault', 'M2 — Faults / COMMS fault'],
+  ['M3 - Inspection', 'M3 — Inspection'],
+  ['M4 - BD/Upselling', 'M4 — BD/Upselling'],
+] as const;
+const OTHER_WORK_TYPE = 'M5 - ';
+const METERING_TYPES = ['NEM meter', 'Revenue metering', 'Monitoring / sub-meter', 'Water meter'] as const;
+const OTHER_METERING_TYPE = '__other_metering_type__';
 const MAX_SOLAR_CAPACITY_KW = 1_000_000;
 const DEFAULT_INSTALLATION_TIMEZONE = 'Australia/Sydney';
 
@@ -149,11 +152,10 @@ function NullableBooleanField({
 function formStateFromInstallation(installation: Installation): FormState {
   return {
     clientName: installation.clientName,
-    customerName: installation.customerName ?? '',
     maas: installation.maas ?? null,
     serviceType: installation.serviceType ?? '',
     meteringSolutionType: installation.meteringSolutionType ?? '',
-    plannedMeterType: installation.plannedMeterType ?? '',
+    customJobNumber: installation.customJobNumber ?? '',
     siteName: installation.siteName,
     siteAddress: installation.siteAddress,
     siteLocality: installation.siteLocality ?? '',
@@ -163,8 +165,6 @@ function formStateFromInstallation(installation: Installation): FormState {
     siteContactName: installation.siteContactName ?? '',
     siteContactPhone: installation.siteContactPhone ?? '',
     siteContactEmail: installation.siteContactEmail ?? '',
-    fergusJobNumber: installation.fergusJobNumber ?? '',
-    quoteNumber: installation.quoteNumber ?? '',
     jobComments: installation.jobComments ?? '',
     accessInformation: installation.accessInformation ?? '',
     warrantyDevice: installation.warrantyDevice ?? null,
@@ -287,6 +287,14 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       router.replace(`/installhub/installations/${acknowledgedCreateId}`);
       return;
     }
+    if (mode === 'new' && (!form.serviceType || form.serviceType === OTHER_WORK_TYPE)) {
+      toast.error('Select the scope category and enter the Other scope when applicable.');
+      return;
+    }
+    if (form.meteringSolutionType === OTHER_METERING_TYPE) {
+      toast.error('Enter the Other metering type.');
+      return;
+    }
     const solarCapacityKw = form.solarCapacityKw.trim()
       ? Number(form.solarCapacityKw)
       : null;
@@ -303,11 +311,10 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
     }
     const normalizedForm = {
       clientName: form.clientName.trim(),
-      customerName: optionalText(form.customerName),
       maas: form.maas,
       serviceType: optionalText(form.serviceType),
       meteringSolutionType: optionalText(form.meteringSolutionType),
-      plannedMeterType: optionalText(form.plannedMeterType),
+      customJobNumber: optionalText(form.customJobNumber),
       siteName: form.siteName.trim() || 'Untitled installation',
       siteAddress: form.siteAddress.trim(),
       siteLocality: optionalText(form.siteLocality),
@@ -317,8 +324,6 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       siteContactName: optionalText(form.siteContactName),
       siteContactPhone: optionalText(form.siteContactPhone),
       siteContactEmail: optionalText(form.siteContactEmail),
-      fergusJobNumber: optionalText(form.fergusJobNumber),
-      quoteNumber: optionalText(form.quoteNumber),
       jobComments: optionalText(form.jobComments),
       accessInformation: optionalText(form.accessInformation),
       warrantyDevice: form.warrantyDevice,
@@ -557,10 +562,6 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
                 <FieldLabel htmlFor="installation-client-name">Client name</FieldLabel>
                 <Input id="installation-client-name" value={form.clientName} disabled={formLocked} onChange={(event) => updateForm({ clientName: event.target.value })} />
               </div>
-              <div>
-                <FieldLabel htmlFor="installation-customer-name">Customer name (optional)</FieldLabel>
-                <Input id="installation-customer-name" value={form.customerName} maxLength={300} disabled={formLocked} onChange={(event) => updateForm({ customerName: event.target.value })} />
-              </div>
               <div className="sm:col-span-2">
                 <FieldLabel htmlFor="installation-site-name">Site name</FieldLabel>
                 <Input id="installation-site-name" value={form.siteName} disabled={formLocked} placeholder="Defaults to Untitled installation" onChange={(event) => updateForm({ siteName: event.target.value })} />
@@ -625,27 +626,32 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
             <h2 id="installation-planning" className="text-base font-extrabold text-[var(--text)]">Service and metering plan</h2>
             <div className="mt-2 grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
               <div>
-                <FieldLabel htmlFor="installation-service-type">Service type</FieldLabel>
-                <Input id="installation-service-type" value={form.serviceType} maxLength={120} disabled={formLocked} onChange={(event) => updateForm({ serviceType: event.target.value })} />
+                <FieldLabel htmlFor="installation-service-type">Scope categorization</FieldLabel>
+                <Select id="installation-service-type" value={form.serviceType.startsWith(OTHER_WORK_TYPE) || (form.serviceType && !FIELD_WORK_TYPES.some(([value]) => value === form.serviceType)) ? OTHER_WORK_TYPE : form.serviceType} disabled={formLocked} onChange={(event) => updateForm({ serviceType: event.target.value })}>
+                  <option value="">Select scope</option>
+                  {FIELD_WORK_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  <option value={OTHER_WORK_TYPE}>M5 — Other</option>
+                </Select>
+                {form.serviceType.startsWith(OTHER_WORK_TYPE) || (form.serviceType && !FIELD_WORK_TYPES.some(([value]) => value === form.serviceType)) ? (
+                  <Input aria-label="Other scope" placeholder="Enter other scope" value={form.serviceType.startsWith(OTHER_WORK_TYPE) ? form.serviceType.slice(OTHER_WORK_TYPE.length) : form.serviceType} maxLength={115} disabled={formLocked} onChange={(event) => updateForm({ serviceType: `${OTHER_WORK_TYPE}${event.target.value}` })} />
+                ) : null}
               </div>
               <div>
-                <FieldLabel htmlFor="installation-metering-solution">Metering solution type</FieldLabel>
-                <Input id="installation-metering-solution" value={form.meteringSolutionType} maxLength={120} disabled={formLocked} onChange={(event) => updateForm({ meteringSolutionType: event.target.value })} />
+                <FieldLabel htmlFor="installation-metering-solution">Metering type selection</FieldLabel>
+                <Select id="installation-metering-solution" value={METERING_TYPES.some((value) => value === form.meteringSolutionType) ? form.meteringSolutionType : form.meteringSolutionType ? OTHER_METERING_TYPE : ''} disabled={formLocked} onChange={(event) => updateForm({ meteringSolutionType: event.target.value })}>
+                  <option value="">Select metering type</option>
+                  {METERING_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}
+                  <option value={OTHER_METERING_TYPE}>Other</option>
+                </Select>
+                {form.meteringSolutionType === OTHER_METERING_TYPE || (form.meteringSolutionType && !METERING_TYPES.some((value) => value === form.meteringSolutionType)) ? (
+                  <Input aria-label="Other metering type" placeholder="Enter other metering type" value={form.meteringSolutionType === OTHER_METERING_TYPE ? '' : form.meteringSolutionType} maxLength={120} disabled={formLocked} onChange={(event) => updateForm({ meteringSolutionType: event.target.value || OTHER_METERING_TYPE })} />
+                ) : null}
               </div>
               <div>
-                <FieldLabel htmlFor="installation-planned-meter">Planned meter type (planning only)</FieldLabel>
-                <Input id="installation-planned-meter" value={form.plannedMeterType} maxLength={120} disabled={formLocked} onChange={(event) => updateForm({ plannedMeterType: event.target.value })} />
-                <FieldHint>Installed device records remain authoritative during field work.</FieldHint>
+                <FieldLabel htmlFor="installation-custom-job-number">Custom job number</FieldLabel>
+                <Input id="installation-custom-job-number" value={form.customJobNumber} maxLength={100} disabled={formLocked} onChange={(event) => updateForm({ customJobNumber: event.target.value })} />
               </div>
               <NullableBooleanField id="installation-maas" label="MaaS" value={form.maas} disabled={formLocked} onChange={(maas) => updateForm({ maas })} />
-              <div>
-                <FieldLabel htmlFor="installation-fergus-job">Fergus job number</FieldLabel>
-                <Input id="installation-fergus-job" value={form.fergusJobNumber} maxLength={100} disabled={formLocked} onChange={(event) => updateForm({ fergusJobNumber: event.target.value })} />
-              </div>
-              <div>
-                <FieldLabel htmlFor="installation-quote-number">Quote number</FieldLabel>
-                <Input id="installation-quote-number" value={form.quoteNumber} maxLength={100} disabled={formLocked} onChange={(event) => updateForm({ quoteNumber: event.target.value })} />
-              </div>
               <div className="sm:col-span-2 lg:col-span-3">
                 <FieldLabel htmlFor="installation-job-comments">Job comments</FieldLabel>
                 <Textarea id="installation-job-comments" rows={3} value={form.jobComments} maxLength={5000} disabled={formLocked} onChange={(event) => updateForm({ jobComments: event.target.value })} />

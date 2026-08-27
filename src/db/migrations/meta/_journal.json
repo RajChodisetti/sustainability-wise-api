@@ -316,6 +316,34 @@
       "when": 1787413707649,
       "tag": "0044_integrated_scheduler_entity_features",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1787441416498,
+      "tag": "0045_little_warstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1787443381602,
+      "tag": "0046_sweet_vulture",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1787445670878,
+      "tag": "0047_lucky_richard_fisk",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1787790691953,
+      "tag": "0048_jittery_wallow",
+      "breakpoints": true
     }
   ]
 }

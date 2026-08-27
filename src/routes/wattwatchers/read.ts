@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import {
   wwClients,
+  wwClientCredentials,
   wwClientRunResults,
   wwCollectionRuns,
   wwDeviceClients,
@@ -416,9 +417,23 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
     const run = await selectedRun();
     const limit = boundedInt(query.limit, 50, 1, 200);
     const offset = boundedInt(query.offset, 0, 0, 1_000_000);
-    if (!run) return reply.send({ run: null, data: [], meta: { total: 0, limit, offset } });
-    const observations = await loadObservations([run.id]);
-    const attributions = await loadAttributions([run.id]);
+    const [observations, attributions, registeredDevices] = await Promise.all([
+      run ? loadObservations([run.id]) : [],
+      run ? loadAttributions([run.id]) : [],
+      db.select({
+        internalDeviceId: wwDevices.id,
+        deviceId: wwDevices.deviceId,
+        label: wwDevices.label,
+        model: wwDevices.model,
+        installDate: wwDevices.installDate,
+        firmwareVersion: wwDevices.firmwareVersion,
+        deviceTimezone: wwDevices.deviceTimezone,
+        clientId: wwClients.id,
+        clientCode: wwClients.code,
+        clientName: wwClients.name,
+        clientIsMaas: wwClients.isMaas,
+      }).from(wwDevices).leftJoin(wwClients, eq(wwClients.id, wwDevices.primaryClientId)),
+    ]);
     const attributionMap = attributionsByObservation(attributions);
     let filtered = filterObservations(observations, attributionMap, query);
     if (query.status) filtered = filtered.filter((row) => row.status === query.status);
@@ -436,19 +451,73 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
           || clients.some((client) => client.name.toLowerCase().includes(search));
       });
     }
+    const observedInternalIds = new Set(observations.map((row) => row.internalDeviceId));
+    const attributedDeviceClientPairs = new Set(attributions.map((row) => `${row.internalDeviceId}:${row.clientId}`));
+    const projected = registeredDevices.filter((row) => {
+      if (observedInternalIds.has(row.internalDeviceId) && (
+        !query.clientId || attributedDeviceClientPairs.has(`${row.internalDeviceId}:${query.clientId}`)
+      )) return false;
+      if (query.clientId && row.clientId !== query.clientId) return false;
+      const maas = parseBoolean(query.maas, 'maas');
+      if (maas !== null && (row.clientIsMaas ?? false) !== maas) return false;
+      if (query.status && query.status !== 'unknown') return false;
+      if (query.reportOffline !== undefined && query.reportOffline !== '') {
+        const reportOffline = parseBoolean(query.reportOffline, 'reportOffline');
+        if (reportOffline === true) return false;
+      }
+      if (query.model && row.model !== query.model) return false;
+      if (query.q) {
+        const search = query.q.toLowerCase().trim();
+        if (![row.deviceId, row.label, row.model, row.clientName]
+          .some((value) => value?.toLowerCase().includes(search))) return false;
+      }
+      return true;
+    }).map((row) => ({
+      deviceId: row.deviceId,
+      label: row.label,
+      model: row.model,
+      installDate: row.installDate,
+      firmwareVersion: row.firmwareVersion,
+      deviceTimezone: row.deviceTimezone,
+      client: row.clientId && row.clientCode && row.clientName && row.clientIsMaas !== null
+        ? { id: row.clientId, code: row.clientCode, name: row.clientName, isMaas: row.clientIsMaas }
+        : null,
+      status: 'unknown' as const,
+      reportOffline: false,
+      reportTransition: null,
+      lastHeardAt: null,
+      latestStatusAt: null,
+      observedAt: null,
+      communicationAgeSeconds: null,
+      fetchStatus: 'not_collected',
+      uninitialised: true,
+      commsType: null,
+      commsMode: null,
+      lastHeardVia: null,
+      signalQualityDbm: null,
+      cellQuality: null,
+      metrics: null,
+    }));
+    const data = [
+      ...filtered.map((row) => mapObservation(
+        row, attributionMap.get(row.observationId) ?? [], query.clientId,
+      )),
+      ...projected,
+    ];
     const direction = query.direction === 'asc' ? 1 : -1;
-    filtered.sort((a, b) => {
+    data.sort((a, b) => {
       if (query.sort === 'label') {
-        return (a.labelSnapshot ?? a.deviceLabel ?? '').localeCompare(b.labelSnapshot ?? b.deviceLabel ?? '') * direction;
+        return (a.label ?? '').localeCompare(b.label ?? '') * direction;
       }
       const aValue = query.sort === 'lastHeardAt' ? a.lastHeardAt?.getTime() : a.communicationAgeSeconds;
       const bValue = query.sort === 'lastHeardAt' ? b.lastHeardAt?.getTime() : b.communicationAgeSeconds;
       return ((aValue ?? -1) - (bValue ?? -1)) * direction;
     });
-    const data = filtered.slice(offset, offset + limit).map((row) => mapObservation(
-      row, attributionMap.get(row.observationId) ?? [], query.clientId,
-    ));
-    return reply.send({ run: runReference(run), data, meta: { total: filtered.length, limit, offset } });
+    return reply.send({
+      run: runReference(run),
+      data: data.slice(offset, offset + limit),
+      meta: { total: data.length, limit, offset },
+    });
   });
 
   app.get('/devices/:deviceId', {
@@ -524,41 +593,64 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
   }, async (request, reply) => {
     const { runId } = request.query as { runId?: string };
     const run = await selectedRun(runId);
-    if (!run) return reply.send({ run: null, data: [] });
-    const [observations, attributions, results] = await Promise.all([
-      loadObservations([run.id]),
-      loadAttributions([run.id]),
-      db.select({ result: wwClientRunResults, client: wwClients }).from(wwClientRunResults)
-        .innerJoin(wwClients, eq(wwClientRunResults.clientId, wwClients.id))
-        .where(eq(wwClientRunResults.runId, run.id)),
+    const [observations, attributions, results, clients, currentMemberships] = await Promise.all([
+      run ? loadObservations([run.id]) : [],
+      run ? loadAttributions([run.id]) : [],
+      run
+        ? db.select().from(wwClientRunResults).where(eq(wwClientRunResults.runId, run.id))
+        : [],
+      db.select({
+        client: wwClients,
+        credentialClientId: wwClientCredentials.clientId,
+        apiKeyUpdatedAt: wwClientCredentials.updatedAt,
+      }).from(wwClients).leftJoin(
+        wwClientCredentials,
+        eq(wwClientCredentials.clientId, wwClients.id),
+      ).orderBy(asc(wwClients.name)),
+      db.select({ clientId: wwDeviceClients.clientId, deviceId: wwDeviceClients.deviceId })
+        .from(wwDeviceClients)
+        .where(eq(wwDeviceClients.isCurrent, true))
+        .orderBy(wwDeviceClients.clientId),
     ]);
     const observationById = new Map(observations.map((row) => [row.observationId, row]));
-    const data = results.map(({ result, client }) => {
+    const resultByClient = new Map(results.map((result) => [result.clientId, result]));
+    const selectedClientIds = runId ? new Set(resultByClient.keys()) : null;
+    const data = clients.filter(({ client }) => (
+      selectedClientIds === null || selectedClientIds.has(client.id)
+    )).map(({ client, credentialClientId, apiKeyUpdatedAt }) => {
+      const result = resultByClient.get(client.id);
       const clientAttributions = attributions.filter((row) => row.clientId === client.id);
       const snapshot = clientAttributions[0];
       const clientObservationIds = new Set(clientAttributions.map((row) => row.observationId));
+      const attributedDeviceIds = new Set(clientAttributions.map((row) => row.internalDeviceId));
       const clientObservations = [...clientObservationIds]
         .map((id) => observationById.get(id)).filter((row): row is SafeObservation => Boolean(row));
       const summary = summaryFor(clientObservations, attributionsByObservation(attributions), { clientId: client.id });
+      const projectedUnknown = runId ? 0 : currentMemberships.filter((membership) => (
+        membership.clientId === client.id && !attributedDeviceIds.has(membership.deviceId)
+      )).length;
+      const totalDevices = summary.totalDevices + projectedUnknown;
       return {
         id: client.id,
         code: snapshot?.code ?? client.code,
         name: snapshot?.name ?? client.name,
         isMaas: snapshot?.isMaas ?? client.isMaas,
         isActive: client.isActive,
-        totalDevices: summary.totalDevices,
+        totalDevices,
         communicating: summary.communicating,
         delayed: summary.delayed,
         offline: summary.offline,
         inactive: summary.inactive,
-        unknown: summary.unknown,
+        unknown: summary.unknown + projectedUnknown,
         reportOffline: summary.reportOffline,
         availabilityPercent: summary.availabilityPercent,
-        collectionStatus: result.status,
-        collectionError: result.error,
+        collectionStatus: result?.status ?? null,
+        collectionError: result?.error ?? null,
+        apiKeyConfigured: credentialClientId !== null,
+        apiKeyUpdatedAt,
       };
     });
-    return reply.send({ run: runReference(run), data });
+    return reply.send({ run: run ? runReference(run) : null, data });
   });
 
   app.get('/runs', {

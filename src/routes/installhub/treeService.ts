@@ -170,6 +170,7 @@ export async function loadCanonicalInstallationTree(
       serviceType: installation.serviceType,
       meteringSolutionType: installation.meteringSolutionType,
       plannedMeterType: installation.plannedMeterType,
+      customJobNumber: installation.customJobNumber,
       siteName: installation.siteName,
       siteAddress: installation.siteAddress,
       siteLocality: installation.siteLocality,

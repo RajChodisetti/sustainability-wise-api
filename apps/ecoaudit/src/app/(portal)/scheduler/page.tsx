@@ -24,8 +24,6 @@ export default async function Page({
   const initialTab: SchedulerTab = tabValue === 'overview'
     || tabValue === 'my-route'
     || tabValue === 'deadlines'
-    || tabValue === 'team-performance'
-    || tabValue === 'leave'
     || tabValue === 'finance-analytics'
     || tabValue === 'financial-summary'
     || tabValue === 'bills'

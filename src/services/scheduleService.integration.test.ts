@@ -11,9 +11,18 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
   const [
     { db, closeDb },
     { eaAudits },
-    { ihGridSupplies, ihInstallations },
+    {
+      ihElectricalAssets,
+      ihGridSupplies,
+      ihInstallations,
+      ihMeterDevices,
+      ihZones,
+    },
     { ssRooftopAssessments, ssSites },
     {
+      businessClients,
+      businessJobs,
+      businessSites,
       globalUsers,
       photoCopyReferences,
       photoRegistry,
@@ -196,7 +205,28 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         },
       },
     });
+    const unassignedField = await createSchedulerDispatch(admin, {
+      sourceApp: 'installhub',
+      scheduledStartAt: '2026-08-20T12:00:00.000Z',
+      deadlineAt: '2026-08-22T17:00:00.000Z',
+      job: {
+        clientName: `Unassigned client ${runId}`,
+        siteName: `Unassigned field ${runId}`,
+        siteAddress: '4 Field Street',
+        workType: 'M1 - New install',
+        jobComments: 'Unassigned scope',
+        address: {
+          freeform: '4 Field Street',
+          locality: 'Sydney',
+          state: 'NSW',
+          postcode: '2003',
+          countryCode: 'AU',
+        },
+      },
+    });
     createdProductIds.push(eco.sourceId!, solar.sourceId!, field.sourceId!);
+    assert.ok('scheduledEventId' in unassignedField);
+    createdProductIds.push(unassignedField.id);
 
     assert.equal(eco.sourceType, 'audit');
     assert.equal(solar.sourceType, 'assessment');
@@ -204,6 +234,18 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(eco.status, 'planned');
     assert.equal(solar.status, 'planned');
     assert.equal(field.status, 'planned');
+    assert.equal(unassignedField.assigneeFieldUserId, null);
+    assert.equal(unassignedField.scheduledEventId, null);
+    const [[unassignedInstallation], unassignedEvents] = await Promise.all([
+      db.select().from(ihInstallations).where(eq(ihInstallations.id, unassignedField.id)),
+      db.select().from(portalScheduleEvents).where(eq(
+        portalScheduleEvents.sourceId,
+        unassignedField.id,
+      )),
+    ]);
+    assert.equal(unassignedInstallation.assignedInspectorUserId, null);
+    assert.equal(unassignedInstallation.jobComments, 'Unassigned scope');
+    assert.equal(unassignedEvents.length, 0);
     assert.equal(eco.estimatedDurationMinutes, 90);
     assert.equal(eco.scheduledEndAt, '2026-08-20T10:30:00.000Z');
     const [storedEcoEvent] = await db.select().from(portalScheduleEvents)
@@ -241,6 +283,85 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(fieldRow.timezone, 'Australia/Sydney');
     assert.equal(gridRows.length, 1);
     assert.equal(gridRows[0].isDefault, true);
+
+    const sourceZoneId = randomUUID();
+    const sourceBoardId = randomUUID();
+    const sourceMeterId = randomUUID();
+    await db.insert(ihZones).values({
+      id: sourceZoneId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      zoneCode: 'MAIN',
+      zoneName: 'Main building',
+      zoneDescription: '',
+      photos: [],
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(ihElectricalAssets).values({
+      id: sourceBoardId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      zoneId: sourceZoneId,
+      assetName: 'Main switchboard',
+      displayCode: 'MAIN-01-MSB',
+      assetType: 'MAIN_SWITCHBOARD',
+      typeCode: 'MSB',
+      sourceKind: 'GRID',
+      gridSupplyId: gridRows[0].id,
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(ihMeterDevices).values({
+      id: sourceMeterId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      installedOnBoardId: sourceBoardId,
+      customName: 'Existing main meter',
+      deviceFamily: 'WATTWATCHERS',
+      deviceModel: 'A3RM',
+      serialNumber: 'KNOWN-METER-001',
+      updatedAt: now,
+      createdAt: now,
+    });
+    const [fieldBusinessJob] = await db.select().from(businessJobs)
+      .where(eq(businessJobs.id, field.jobId!));
+    const versionedField = await createSchedulerDispatch(admin, {
+      ...baseDispatch,
+      scheduledStartAt: '2026-08-24T09:00:00.000Z',
+      deadlineAt: '2026-08-26T17:00:00.000Z',
+      sourceApp: 'installhub',
+      job: {
+        siteMode: 'existing',
+        existingSiteId: fieldBusinessJob.siteId,
+        clientName: `Client ${runId}`,
+        siteName: `Field ${runId}`,
+        siteAddress: '3 Field Street, Sydney NSW 2002, Australia',
+        workType: 'meter_replacement_m3',
+        auditDate: '2026-08-24',
+        address: {
+          freeform: '3 Field Street',
+          locality: 'Sydney',
+          state: 'NSW',
+          postcode: '2002',
+          countryCode: 'AU',
+        },
+      },
+    });
+    createdProductIds.push(versionedField.sourceId!);
+    const [versionedJob] = await db.select().from(businessJobs)
+      .where(eq(businessJobs.id, versionedField.jobId!));
+    assert.equal(versionedJob.siteId, fieldBusinessJob.siteId);
+    assert.equal(versionedJob.previousJobId, fieldBusinessJob.id);
+    assert.equal(versionedJob.revisionNumber, fieldBusinessJob.revisionNumber + 1);
+    const copiedMeters = await db.select().from(ihMeterDevices)
+      .where(eq(ihMeterDevices.installationId, versionedField.sourceId!));
+    assert.equal(copiedMeters.length, 1);
+    assert.notEqual(copiedMeters[0].id, sourceMeterId);
+    assert.equal(copiedMeters[0].serialNumber, 'KNOWN-METER-001');
 
     const [solarSite] = await db.select().from(ssSites)
       .where(eq(ssSites.id, solarRow.siteId!));
@@ -447,6 +568,23 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(linkedFieldRow.assignedInspectorUserId, firstAssignee.fieldUserId);
     assert.equal(linkedFieldRow.inspectorName, firstAssignee.name);
     assert.equal(linkedFieldRow.auditDate, '2026-08-21');
+    const defaultFieldPool = await listUnscheduledJobs(admin, {
+      q: `Linkable field ${runId}`,
+      sourceApp: 'installhub',
+    });
+    assert.equal(defaultFieldPool.some((option) => option.id === linkableFieldInstallationId), false);
+    const completeFieldPool = await listUnscheduledJobs(admin, {
+      q: `Linkable field ${runId}`,
+      sourceApp: 'installhub',
+      unscheduledOnly: false,
+    });
+    const scheduledFieldOption = completeFieldPool.find(
+      (option) => option.id === linkableFieldInstallationId,
+    );
+    assert.equal(scheduledFieldOption?.assigneeFieldUserId, firstAssignee.fieldUserId);
+    assert.equal(scheduledFieldOption?.assigneeDisplayName, firstAssignee.name);
+    assert.equal(scheduledFieldOption?.scheduledEventId, linkedField.id);
+    assert.equal(scheduledFieldOption?.scheduledStartAt, '2026-08-20T23:30:00.000Z');
 
     await updateScheduleEvent(admin, linkedField.id, {
       assigneeFieldUserId: secondAssignee.fieldUserId,
@@ -535,6 +673,12 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         .where(inArray(photoCopyReferences.photoId, copiedPhotoIds));
       await db.delete(photoRegistry).where(inArray(photoRegistry.id, copiedPhotoIds));
     }
+    await db.delete(ihMeterDevices)
+      .where(inArray(ihMeterDevices.installationId, createdProductIds));
+    await db.delete(ihElectricalAssets)
+      .where(inArray(ihElectricalAssets.installationId, createdProductIds));
+    await db.delete(ihZones)
+      .where(inArray(ihZones.installationId, createdProductIds));
     await db.delete(ihGridSupplies)
       .where(inArray(ihGridSupplies.installationId, createdProductIds));
     await db.delete(ihInstallations)
@@ -545,6 +689,25 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
       await db.delete(ssSites).where(inArray(ssSites.id, createdSiteIds));
     }
     await db.delete(eaAudits).where(inArray(eaAudits.id, createdProductIds));
+    const createdBusinessJobs = await db.select({
+      id: businessJobs.id,
+      siteId: businessJobs.siteId,
+      revisionNumber: businessJobs.revisionNumber,
+    }).from(businessJobs).where(eq(businessJobs.createdByUserId, actor.appUserIds.ecoaudit));
+    for (const job of createdBusinessJobs.sort((a, b) => b.revisionNumber - a.revisionNumber)) {
+      await db.delete(businessJobs).where(eq(businessJobs.id, job.id));
+    }
+    const businessSiteIds = [...new Set(createdBusinessJobs.map((job) => job.siteId))];
+    if (businessSiteIds.length > 0) {
+      const clientRows = await db.select({ clientId: businessSites.clientId })
+        .from(businessSites)
+        .where(inArray(businessSites.id, businessSiteIds));
+      await db.delete(businessSites).where(inArray(businessSites.id, businessSiteIds));
+      const clientIds = [...new Set(clientRows.map((row) => row.clientId))];
+      if (clientIds.length > 0) {
+        await db.delete(businessClients).where(inArray(businessClients.id, clientIds));
+      }
+    }
     await db.delete(globalUsers).where(inArray(
       globalUsers.id,
       subjects.map((subject) => subject.globalUserId),

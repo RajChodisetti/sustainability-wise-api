@@ -362,7 +362,7 @@ export function InstallHubFormTypePickerPage() {
   const tree = query.data;
   if (!tree || !user) return <ErrorBanner message="Installation not found." />;
   const currentUser = user;
-  const definitions = allowedFormDefinitions(context);
+  const definitions = allowedFormDefinitions(context, tree.installation.serviceType);
   const boardOptions = tree.electricalAssets.map((board) => {
     const zone = tree.zones.find((item) => item.id === board.zoneId);
     return {
