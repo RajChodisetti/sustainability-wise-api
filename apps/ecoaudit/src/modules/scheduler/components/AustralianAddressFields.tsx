@@ -8,6 +8,7 @@ import {
   schedulerAddressPostcodeChange,
   schedulerAddressFromClientSuggestion,
   schedulerManualAddress,
+  schedulerPostcodeLocalityLookupIsCurrent,
   uniquePostcodeLocalities,
 } from '@/modules/scheduler/lib/routing';
 import type {
@@ -79,6 +80,7 @@ export function AustralianAddressFields({
   );
 
   useEffect(() => {
+    if (!schedulerPostcodeLocalityLookupIsCurrent(value.postcode, debouncedPostcode)) return;
     if (localityOptions.length !== 1) return;
     const [only] = localityOptions;
     if (!only || (value.locality?.trim() && value.state)) return;
@@ -87,7 +89,7 @@ export function AustralianAddressFields({
       locality: value.locality?.trim() || only.locality,
       state: value.state ?? only.state,
     }));
-  }, [localityOptions, onChange, onManualEdit, value]);
+  }, [debouncedPostcode, localityOptions, onChange, onManualEdit, value]);
 
   function chooseSuggestion(suggestion: SchedulerClientAddressSuggestion) {
     onChange(schedulerAddressFromClientSuggestion(suggestion));

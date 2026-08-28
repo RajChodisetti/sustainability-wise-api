@@ -11,6 +11,7 @@ import {
   schedulerAddressPayload,
   schedulerDispatchSiteSelectionPayload,
   schedulerFieldJobTitlePreview,
+  schedulerPostcodeLocalityLookupIsCurrent,
   schedulerSiteOptionLabel,
   schedulerManualAddress,
   schedulerRouteDistance,
@@ -174,6 +175,12 @@ test('changing postcode clears stale locality and state before auto-fill', () =>
   assert.equal(changed.state, undefined);
   assert.equal(changed.latitude, undefined);
   assert.equal(changed.longitude, undefined);
+});
+
+test('postcode locality auto-fill ignores stale debounced lookup results', () => {
+  assert.equal(schedulerPostcodeLocalityLookupIsCurrent('', '3053'), false);
+  assert.equal(schedulerPostcodeLocalityLookupIsCurrent('2000', '3053'), false);
+  assert.equal(schedulerPostcodeLocalityLookupIsCurrent(' 3053 ', '3053'), true);
 });
 
 test('wire payload trims optional Australian address fields', () => {

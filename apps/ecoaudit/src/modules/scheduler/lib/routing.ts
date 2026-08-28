@@ -89,6 +89,15 @@ export function schedulerAddressPostcodeChange(
   });
 }
 
+export function schedulerPostcodeLocalityLookupIsCurrent(
+  currentPostcode: string | undefined,
+  queriedPostcode: string,
+): boolean {
+  const normalizedCurrent = currentPostcode?.trim() ?? '';
+  return /^\d{4}$/.test(normalizedCurrent)
+    && normalizedCurrent === queriedPostcode.trim();
+}
+
 export function schedulerAddressIsComplete(value: SchedulerJobAddressInput): boolean {
   return Boolean(
     value.freeform.trim()
