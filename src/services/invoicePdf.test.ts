@@ -18,7 +18,7 @@ function modelFor(
     invoiceNumber: 'INV-2026-0007',
     status: 'issued',
     currency: 'AUD',
-    issueDate: '2026-08-16T01:30:00.000Z',
+    invoiceDate: '2026-08-19T01:30:00.000Z',
     dueDate: '2026-08-30T01:30:00.000Z',
     notes: 'Thank you.\nPayment within 14 days.',
     purchaseOrderReference: 'PO-1007',
@@ -65,24 +65,47 @@ describe('invoice PDF branding and source context', () => {
     assert.equal(await loadBrandLogoDataUri(), logo);
   });
 
-  it('renders each supported job source through the same safe template', () => {
-    const cases: Array<[InvoiceSourceApp, InvoiceSourceType, RegExp]> = [
-      ['ecoaudit', 'audit', /EcoAudit Pro Audit/],
-      ['solarsense', 'assessment', /SolarSense Assessment/],
-      ['installhub', 'installation', /Field App Complete Installation/],
+  it('renders every supported source without exposing job type, job date, or source id', () => {
+    const cases: Array<[InvoiceSourceApp, InvoiceSourceType]> = [
+      ['ecoaudit', 'audit'],
+      ['solarsense', 'assessment'],
+      ['installhub', 'installation'],
     ];
-    for (const [sourceApp, sourceType, label] of cases) {
+    for (const [sourceApp, sourceType] of cases) {
       const html = buildInvoiceHtml(modelFor(sourceApp, sourceType), {
         logoDataUri: 'data:image/png;base64,ZmFrZQ==',
       });
-      assert.match(html, label);
       assert.match(html, /North Roof Upgrade/);
-      assert.match(html, /15 Aug 2026/);
+      assert.match(html, /Invoice date: 19 Aug 2026/);
       assert.match(html, /class="brand-logo"/);
       assert.match(html, /ABN 98 765 432 109/);
       assert.match(html, /data-pdf-page-numbers|data-page-numbers="true"/);
-      assert.match(html, /Job ID: private-internal-source-id/);
+      assert.match(html, /Customer reference: PO-1007/);
+      assert.doesNotMatch(
+        html,
+        /EcoAudit Pro Audit|SolarSense Assessment|Field App Complete Installation/,
+      );
+      assert.doesNotMatch(html, /Job ID:|Job date:|First job date:|15 Aug 2026/);
+      assert.doesNotMatch(html, /private-internal-source-id/);
     }
+  });
+
+  it('shows the pinned invoice date while retaining due and paid lifecycle dates', () => {
+    const model = modelFor('installhub', 'installation');
+    model.paidAt = '2026-08-21T04:00:00.000Z';
+    const html = buildInvoiceHtml(model);
+    assert.match(html, /Invoice date: 19 Aug 2026/);
+    assert.match(html, /Due date: 30 Aug 2026/);
+    assert.match(html, /Paid: 21 Aug 2026/);
+    assert.doesNotMatch(html, /Issue date:/);
+  });
+
+  it('omits a customer reference that is an internal source id', () => {
+    const model = modelFor('installhub', 'installation');
+    model.purchaseOrderReference = model.job.sourceId;
+    const html = buildInvoiceHtml(model);
+    assert.doesNotMatch(html, /Customer reference:/);
+    assert.doesNotMatch(html, /private-internal-source-id/);
   });
 
   it('escapes untrusted invoice content and preserves note line breaks in CSS', () => {
@@ -127,7 +150,7 @@ describe('invoice PDF branding and source context', () => {
     assert.match(html, /Adjusted labour suggestion[\s\S]*?<td class="num"><\/td>[\s\S]*?<td class="num"><\/td>/);
   });
 
-  it('groups a consolidated invoice by job with references and job subtotals', () => {
+  it('groups a consolidated invoice without references and labels each job sub-total', () => {
     const model = modelFor('ecoaudit', 'audit');
     model.subtotalExGst = 1850;
     model.gstAmount = 185;
@@ -168,17 +191,16 @@ describe('invoice PDF branding and source context', () => {
     assert.match(html, /2 jobs included/);
     assert.match(html, /Job 1 of 2/);
     assert.match(html, /North Roof Upgrade/);
-    assert.match(html, /Job ID: EA-2041/);
     assert.match(html, /Job 2 of 2/);
     assert.match(html, /South Plant Solar Assessment/);
-    assert.match(html, /Job ID: SS-8830/);
-    assert.match(html, /Job subtotal \(ex GST\)/);
+    assert.match(html, /Job Sub-Total \(ex GST\)/);
     assert.match(html, /Consolidated subtotal \(ex GST\)/);
     assert.match(html, /display: table-header-group/);
-    assert.doesNotMatch(html, /finance-private|private-assessment-id/);
+    assert.doesNotMatch(html, /Job subtotal|Job Suttotal/);
+    assert.doesNotMatch(html, /finance-private|private-assessment-id|EA-2041|SS-8830/);
   });
 
-  it('escapes grouped job names, references, and lines', () => {
+  it('escapes grouped job names and lines without rendering grouped references', () => {
     const model = modelFor('ecoaudit', 'audit');
     model.jobs = [{
       financeId: 'finance-1',
@@ -189,41 +211,41 @@ describe('invoice PDF branding and source context', () => {
     }];
     const html = buildInvoiceHtml(model);
     assert.doesNotMatch(html, /<script>|<img src=x|<b>untrusted/);
-    assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
+    assert.doesNotMatch(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/);
     assert.match(html, /&lt;b&gt;untrusted&lt;\/b&gt;/);
   });
 });
 
 describe('invoice PDF download naming', () => {
-  it('includes the job name, snapshotted job date, and invoice number', () => {
+  it('includes the job name, pinned invoice date, and invoice number', () => {
     assert.equal(buildInvoiceDownloadFilename({
       jobName: 'North Roof Upgrade',
-      jobDate: '2026-08-15',
+      invoiceDate: '2026-08-19',
       invoiceNumber: 'INV-2026-0007',
-    }), 'invoice-North-Roof-Upgrade-2026-08-15-INV-2026-0007.pdf');
+    }), 'invoice-North-Roof-Upgrade-2026-08-19-INV-2026-0007.pdf');
   });
 
   it('uses the first job, job count, invoice date, and number for a consolidated invoice', () => {
     assert.equal(buildInvoiceDownloadFilename({
       jobName: 'North Roof Upgrade',
-      jobDate: '2026-08-16',
+      invoiceDate: '2026-08-19',
       invoiceNumber: 'INV-2026-0007',
       additionalJobCount: 2,
-    }), 'invoice-North-Roof-Upgrade-and-2-more-2026-08-16-INV-2026-0007.pdf');
+    }), 'invoice-North-Roof-Upgrade-and-2-more-2026-08-19-INV-2026-0007.pdf');
   });
 
   it('emits an ASCII fallback and UTF-8 filename without header injection', () => {
     const filename = buildInvoiceDownloadFilename({
       jobName: 'Café / Solar\r\n"quote"',
-      jobDate: '2026-08-15',
+      invoiceDate: '2026-08-19',
       invoiceNumber: '../INV:7',
     });
-    assert.equal(filename, 'invoice-Café-Solar-quote-2026-08-15-INV-7.pdf');
+    assert.equal(filename, 'invoice-Café-Solar-quote-2026-08-19-INV-7.pdf');
     const disposition = buildInvoiceContentDisposition(filename);
     assert.equal(
       disposition,
-      'attachment; filename="invoice-Cafe-Solar-quote-2026-08-15-INV-7.pdf"; '
-        + "filename*=UTF-8''invoice-Caf%C3%A9-Solar-quote-2026-08-15-INV-7.pdf",
+      'attachment; filename="invoice-Cafe-Solar-quote-2026-08-19-INV-7.pdf"; '
+        + "filename*=UTF-8''invoice-Caf%C3%A9-Solar-quote-2026-08-19-INV-7.pdf",
     );
     assert.doesNotMatch(disposition, /\r|\n/);
   });
@@ -231,40 +253,40 @@ describe('invoice PDF download naming', () => {
   it('bounds long UTF-8 job names while retaining date and invoice identity', () => {
     const filename = buildInvoiceDownloadFilename({
       jobName: '屋根'.repeat(200),
-      jobDate: '2026-08-15',
+      invoiceDate: '2026-08-19',
       invoiceNumber: 'INV-2026-0007',
     });
     assert.ok(Buffer.byteLength(filename, 'utf8') <= 180);
-    assert.match(filename, /-2026-08-15-INV-2026-0007\.pdf$/);
+    assert.match(filename, /-2026-08-19-INV-2026-0007\.pdf$/);
     assert.doesNotThrow(() => buildInvoiceContentDisposition(filename));
   });
 
   it('keeps the ASCII fallback bounded without dropping its date and invoice tail', () => {
     const filename = buildInvoiceDownloadFilename({
       jobName: '½'.repeat(48),
-      jobDate: '2026-08-15',
+      invoiceDate: '2026-08-19',
       invoiceNumber: 'INV-2026-0007',
     });
     const disposition = buildInvoiceContentDisposition(filename);
     const fallback = /filename="([^"]+)"/.exec(disposition)?.[1];
     assert.ok(fallback);
     assert.ok(Buffer.byteLength(fallback, 'ascii') <= 180);
-    assert.match(fallback, /-2026-08-15-INV-2026-0007\.pdf$/);
+    assert.match(fallback, /-2026-08-19-INV-2026-0007\.pdf$/);
   });
 
   it('rejects invalid calendar dates and unsafe direct disposition values', () => {
     assert.throws(() => buildInvoiceDownloadFilename({
       jobName: 'Roof',
-      jobDate: '2026-02-30',
+      invoiceDate: '2026-02-30',
       invoiceNumber: 'INV-1',
-    }), /jobDate must be a valid YYYY-MM-DD calendar date/);
+    }), /invoiceDate must be a valid YYYY-MM-DD calendar date/);
     assert.throws(
       () => buildInvoiceContentDisposition('invoice.pdf\r\nX-Evil: true'),
       /safe PDF filename/,
     );
     assert.throws(() => buildInvoiceDownloadFilename({
       jobName: 'Roof',
-      jobDate: '2026-02-28',
+      invoiceDate: '2026-02-28',
       invoiceNumber: 'INV-1',
       additionalJobCount: -1,
     }), /additionalJobCount/);

@@ -119,7 +119,7 @@ export function SchedulerRouteWorkspace() {
         <EmptyState
           icon="map-pin"
           title="Ready to plan the day"
-          description="Choose a date, then allow location access to order the day's Field App, EcoAudit, and SolarSense jobs from your current position."
+          description="Choose a date, then allow location access to order the day's Field App jobs from your current position."
         />
       ) : null}
 

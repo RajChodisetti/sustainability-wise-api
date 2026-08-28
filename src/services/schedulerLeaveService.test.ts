@@ -10,6 +10,7 @@ import {
   instantDateInTimeZone,
   isValidCalendarDate,
   isValidIanaTimeZone,
+  schedulerLeaveApprovalBlockingSourceApps,
   type SchedulerLeaveStatus,
 } from './schedulerLeaveService.js';
 
@@ -148,6 +149,10 @@ test('later leave approval ignores done history but still checks active schedule
   assert.equal(approvalBlockingStatuses.has('in_progress'), true);
   assert.equal(approvalBlockingStatuses.has('done'), false);
   assert.equal(approvalBlockingStatuses.has('cancelled'), false);
+});
+
+test('leave approval is blocked only by Scheduler-visible source applications', () => {
+  assert.deepEqual(schedulerLeaveApprovalBlockingSourceApps(), ['installhub', 'custom']);
 });
 
 test('leave lifecycle permits only pending review and pending or approved cancellation', () => {

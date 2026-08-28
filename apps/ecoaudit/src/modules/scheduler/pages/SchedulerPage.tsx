@@ -14,9 +14,12 @@ import { SchedulerFinanceWorkspace } from '@/modules/scheduler/components/Schedu
 import { SchedulerInventoryDashboard } from '@/modules/scheduler/components/SchedulerInventoryDashboard';
 import { SchedulerMeterRegister } from '@/modules/scheduler/components/SchedulerMeterRegister';
 import { SchedulerRouteWorkspace } from '@/modules/scheduler/components/SchedulerRouteWorkspace';
+import { SchedulerUsersWorkspace } from '@/modules/scheduler/components/SchedulerUsersWorkspace';
 import { UserFilter } from '@/modules/scheduler/components/UserFilter';
 import { schedulerFinanceHref, schedulerTabTransition } from '@/modules/scheduler/lib/finance';
 import {
+  schedulerTabHref,
+  schedulerTabAllowsJobCreation,
   schedulerTabIsAdminOnly,
   type SchedulerTab,
 } from '@/modules/scheduler/lib/navigation';
@@ -88,23 +91,25 @@ export default function SchedulerPage({
   function activateTab(nextTab: SchedulerTab, targetOverride?: SchedulerFinanceTarget) {
     setTab(nextTab);
     if (typeof window === 'undefined') return;
-    const transition = targetOverride && isFinanceWorkspaceTab(nextTab)
-      ? {
-          href: schedulerFinanceHref({ view: nextTab, ...targetOverride }),
-          financeTarget: targetOverride,
-        }
-      : schedulerTabTransition(window.location.search, nextTab);
+    const transition = nextTab === 'users'
+      ? { href: schedulerTabHref(nextTab), financeTarget: undefined }
+      : targetOverride && isFinanceWorkspaceTab(nextTab)
+        ? {
+            href: schedulerFinanceHref({ view: nextTab, ...targetOverride }),
+            financeTarget: targetOverride,
+          }
+        : schedulerTabTransition(window.location.search, nextTab);
     setFinanceTarget(transition.financeTarget);
     window.history.replaceState(null, '', transition.href);
   }
 
   return (
-    <div className={`mx-auto w-full ${activeTab === 'calendar' || activeTab === 'my-route' || activeTab === 'finance-analytics' || isFinanceWorkspaceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
+    <div className={`mx-auto w-full ${activeTab === 'calendar' || activeTab === 'my-route' || activeTab === 'users' || activeTab === 'finance-analytics' || isFinanceWorkspaceTab(activeTab) ? 'max-w-[96rem]' : 'max-w-6xl'}`}>
       <PageHeader
         title="Scheduler"
         subtitle={schedulerSubtitle(activeTab, fieldOnly)}
         actions={
-          isAdmin ? (
+          isAdmin && schedulerTabAllowsJobCreation(activeTab) ? (
             <Button onClick={() => openCreate()}>
               <Icon name="plus" size={18} />
               Schedule job
@@ -182,6 +187,12 @@ export default function SchedulerPage({
         </div>
       ) : null}
 
+      {activeTab === 'users' && isAdmin ? (
+        <div id="scheduler-panel-users" role="region" aria-label="Scheduler users" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
+          <SchedulerUsersWorkspace />
+        </div>
+      ) : null}
+
       {isFinanceWorkspaceTab(activeTab) && isAdmin ? (
         <div id={`scheduler-panel-${activeTab}`} role="region" aria-label="Finance workspace" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
           <SchedulerFinanceWorkspace
@@ -236,10 +247,13 @@ function schedulerSubtitle(tab: SchedulerTab, fieldOnly: boolean): string {
     return 'See company stock and the meters currently held by each Field user.';
   }
   if (tab === 'meter-register') {
-    return 'Search every installed meter by device, client, site, address, or Field job.';
+    return 'Add and search non-installed company stock, and see which Field user currently holds each meter.';
   }
   if (tab === 'finance-analytics') {
     return 'Analyse completed-work, invoice, payment, void, GST, and refund progress for any reporting window.';
+  }
+  if (tab === 'users') {
+    return 'Manage canonical default billing rates and review each user’s current-week Scheduler workload.';
   }
   if (tab === 'financial-summary') {
     return fieldOnly

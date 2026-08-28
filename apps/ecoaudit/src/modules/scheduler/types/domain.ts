@@ -50,21 +50,31 @@ export type SchedulerInventorySummary = {
 export type SchedulerMeterRegisterItem = {
   inventoryMeterId: string;
   deviceId: string;
-  deviceModel: string;
-  meterName: string;
-  clientName: string;
-  siteName: string;
-  siteAddress: string;
-  customJobNumber: string | null;
-  installationId: string;
-  meterId: string;
-  installedAt: string;
+  deviceModel: 'A3RM' | 'A6M' | 'OTHER';
+  customManufacturerName: string | null;
+  customModelName: string | null;
+  notes: string | null;
+  status: 'company' | 'user';
+  custodianUserId: string | null;
+  custodianName: string | null;
+  custodianEmail: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type SchedulerMeterRegister = {
   items: SchedulerMeterRegisterItem[];
   total: number;
   truncated: boolean;
+};
+
+export type CreateSchedulerInventoryMeterInput = {
+  deviceId: string;
+  deviceModel: 'A3RM' | 'A6M' | 'OTHER';
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+  notes?: string | null;
 };
 
 export type JobOption = {
@@ -168,7 +178,8 @@ export type CreateSchedulerDispatchInput = {
     meteringSolutionType?: string | null;
     /** Planning context only; installed device records remain authoritative. */
     plannedMeterType?: string | null;
-    customJobNumber?: string | null;
+    /** Generated once per Scheduler creation form and validated by the API. */
+    titleSuffix?: string;
     siteContactName?: string | null;
     siteContactPhone?: string | null;
     siteContactEmail?: string | null;
@@ -581,6 +592,11 @@ export type SchedulerFinancialSummary = {
       displayName: string | null;
       activeMilliseconds: number;
       hours: number;
+      defaultBillingRate: number | null;
+      billingRateOverride: number | null;
+      effectiveBillingRate: number | null;
+      billingRateSource: 'job_override' | 'global_default' | 'missing';
+      /** Compatibility alias for effectiveBillingRate. */
       billingRate: number | null;
       labourAmount: number | null;
       billingRateEditable: boolean;

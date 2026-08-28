@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  clearSchedulerFieldJobPlanning,
+  randomSchedulerFieldJobTitleSuffix,
   schedulerAddressDisplay,
   schedulerAddressFromClientSuggestion,
   schedulerAddressFromSuggestion,
@@ -8,6 +10,7 @@ import {
   schedulerAddressPostcodeChange,
   schedulerAddressPayload,
   schedulerDispatchSiteSelectionPayload,
+  schedulerFieldJobTitlePreview,
   schedulerSiteOptionLabel,
   schedulerManualAddress,
   schedulerRouteDistance,
@@ -133,6 +136,34 @@ test('saved-site labels identify the address without exposing job revisions', ()
     'ABC Energy · Sydney warehouse · 10 George Street, Sydney NSW 2000, Australia',
   );
   assert.doesNotMatch(label, /\bv\d+\b/i);
+});
+
+test('Field title preview uses one three-character alphanumeric suffix', () => {
+  const suffix = randomSchedulerFieldJobTitleSuffix(new Uint32Array([0, 25, 35]));
+  assert.equal(suffix, 'AZ9');
+  assert.equal(
+    schedulerFieldJobTitlePreview('M3 - Inspection', 'Client Co', 'North Site', suffix),
+    'M3 - Client Co - North Site - AZ9',
+  );
+  assert.match(suffix, /^[A-Z0-9]{3}$/);
+});
+
+test('selecting a saved site clears Field planning while preserving contact details', () => {
+  assert.deepEqual(clearSchedulerFieldJobPlanning({
+    electricityNmi: '41020000000',
+    maas: true,
+    workType: 'M3 - Inspection',
+    meteringSolutionType: 'NEM meter',
+    jobComments: 'Previous job scope',
+    siteContactName: 'Site manager',
+  }), {
+    electricityNmi: '',
+    maas: null,
+    workType: '',
+    meteringSolutionType: '',
+    jobComments: '',
+    siteContactName: 'Site manager',
+  });
 });
 
 test('changing postcode clears stale locality and state before auto-fill', () => {

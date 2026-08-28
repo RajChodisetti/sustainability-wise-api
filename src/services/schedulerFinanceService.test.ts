@@ -5,7 +5,9 @@ import { AppError } from '../utils/errors.js';
 import { parseSchedulerInvoiceGstRate } from '../config.js';
 import {
   aggregateRecordedSessionTime,
+  applySchedulerActorBillingRateOverrides,
   billableHoursToMilliseconds,
+  canMutateSchedulerJobActorBillingRate,
   computeSchedulerCommercialTotals,
   effectiveUserLabourBilling,
   invoiceLineTotalCents,
@@ -15,9 +17,90 @@ import {
   nextSchedulerInvoiceRevisionAt,
   normalizeSchedulerSellerAbn,
   parseSchedulerInvoiceXeroDate,
+  resolveSchedulerActorBillingRate,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
 } from './schedulerFinanceService.js';
+
+test('job actor rate targets allow stale overrides to be cleared but not created', () => {
+  assert.equal(canMutateSchedulerJobActorBillingRate({
+    clearing: false,
+    hasExistingOverride: false,
+    isCurrentBillingActor: true,
+  }), true);
+  assert.equal(canMutateSchedulerJobActorBillingRate({
+    clearing: true,
+    hasExistingOverride: true,
+    isCurrentBillingActor: false,
+  }), true);
+  assert.equal(canMutateSchedulerJobActorBillingRate({
+    clearing: false,
+    hasExistingOverride: true,
+    isCurrentBillingActor: false,
+  }), false);
+  assert.equal(canMutateSchedulerJobActorBillingRate({
+    clearing: true,
+    hasExistingOverride: false,
+    isCurrentBillingActor: false,
+  }), false);
+});
+
+test('job actor rates override the global default and clear back to inheritance', () => {
+  assert.deepEqual(resolveSchedulerActorBillingRate({
+    defaultBillingRateCents: 15_000,
+    billingRateOverrideCents: 18_500,
+  }), {
+    defaultBillingRateCents: 15_000,
+    billingRateOverrideCents: 18_500,
+    effectiveBillingRateCents: 18_500,
+    billingRateSource: 'job_override',
+  });
+  assert.deepEqual(resolveSchedulerActorBillingRate({
+    defaultBillingRateCents: 15_000,
+    billingRateOverrideCents: null,
+  }), {
+    defaultBillingRateCents: 15_000,
+    billingRateOverrideCents: null,
+    effectiveBillingRateCents: 15_000,
+    billingRateSource: 'global_default',
+  });
+  assert.deepEqual(resolveSchedulerActorBillingRate({
+    defaultBillingRateCents: null,
+    billingRateOverrideCents: 0,
+  }), {
+    defaultBillingRateCents: null,
+    billingRateOverrideCents: 0,
+    effectiveBillingRateCents: 0,
+    billingRateSource: 'job_override',
+  });
+
+  const [actor] = applySchedulerActorBillingRateOverrides([{
+    userId: 'global-user',
+    displayName: 'Inspector One',
+    activeMilliseconds: 3_600_000,
+    hours: 1,
+    billingRate: 150,
+    defaultBillingRate: 150,
+    billingRateOverride: null,
+    effectiveBillingRate: 150,
+    billingRateSource: 'global_default',
+    labourAmount: 150,
+    billingRateEditable: true,
+  }], [{ globalUserId: 'global-user', billingRateCents: 18_500 }]);
+  assert.deepEqual(actor, {
+    userId: 'global-user',
+    displayName: 'Inspector One',
+    activeMilliseconds: 3_600_000,
+    hours: 1,
+    billingRate: 185,
+    defaultBillingRate: 150,
+    billingRateOverride: 185,
+    effectiveBillingRate: 185,
+    billingRateSource: 'job_override',
+    labourAmount: 185,
+    billingRateEditable: true,
+  });
+});
 
 test('seller ABN accepts formatted input and stores one canonical 11-digit value', () => {
   assert.equal(normalizeSchedulerSellerAbn('12 345 678 901'), '12345678901');
@@ -385,6 +468,40 @@ test('invoice revisions no longer lock job settings or require migrated legacy h
   );
   assert.doesNotMatch(service, /requireInvoiceHoursReady/);
   assert.match(service, /Stored PDF versions retain the values/);
+});
+
+test('hidden-source completion capture remains internal while invoice mutations fail closed', () => {
+  const service = readFileSync(
+    new URL('./schedulerFinanceService.ts', import.meta.url),
+    'utf8',
+  );
+  const section = (start: string, end: string) => {
+    const startIndex = service.indexOf(start);
+    const endIndex = service.indexOf(end, startIndex + start.length);
+    assert.ok(startIndex >= 0 && endIndex > startIndex, `missing ${start} source section`);
+    return service.slice(startIndex, endIndex);
+  };
+
+  const summary = section('async function buildFinancialSummary(', 'export async function captureSchedulerCompletedWorkRevenue(');
+  assert.match(summary, /allowHiddenSourceForCompletionCapture/);
+  assert.match(summary, /assertSchedulerFinanceSourceAppVisible/);
+
+  const capture = section('export async function captureSchedulerCompletedWorkRevenue(', 'export async function getSchedulerFinancialSummary(');
+  assert.match(capture, /allowHiddenSourceForCompletionCapture: true/);
+
+  const seller = section('export async function updateSchedulerInvoiceSeller(', 'function invoiceDto(');
+  assert.ok(
+    seller.indexOf('await invoiceJobsForRow(invoice, tx)')
+      < seller.indexOf('tx.insert(schedulerInvoiceSettings)'),
+  );
+
+  const consolidated = section('export async function createConsolidatedSchedulerInvoice(', 'export async function updateConsolidatedSchedulerDraftInvoice(');
+  assert.ok(
+    consolidated.indexOf('assertSchedulerFinanceSourceAppVisible(source.sourceApp)')
+      < consolidated.indexOf('lockCurrentCompletionReadiness(candidateSources, tx)'),
+  );
+  assert.doesNotMatch(service, /billingReference \?\? context\.source\.sourceId/);
+  assert.doesNotMatch(service, /anchor\.billingReference \?\? primary\.source\.sourceId/);
 });
 
 test('0033 is append-only and declares the legacy review/counter migration', () => {

@@ -6,6 +6,7 @@ import {
   schedulerExpenseAttachments,
   schedulerInvoiceJobs,
   schedulerInvoices,
+  schedulerJobActorBillingRateOverrides,
   schedulerJobCompletionFacts,
   schedulerJobExpenses,
   schedulerJobFinance,
@@ -140,7 +141,17 @@ export async function assertNoSchedulerCommercialEvidenceBeforePurge(
     .limit(1);
   if (!finance) return;
 
-  const [[hourOverride], [expense], [attachment], [invoice]] = await Promise.all([
+  const [
+    [billingRateOverride],
+    [hourOverride],
+    [expense],
+    [attachment],
+    [invoice],
+  ] = await Promise.all([
+    executor.select({ financeId: schedulerJobActorBillingRateOverrides.financeId })
+      .from(schedulerJobActorBillingRateOverrides)
+      .where(eq(schedulerJobActorBillingRateOverrides.financeId, finance.id))
+      .limit(1),
     executor.select({ id: schedulerJobHourOverrides.id })
       .from(schedulerJobHourOverrides)
       .where(eq(schedulerJobHourOverrides.financeId, finance.id))
@@ -166,7 +177,9 @@ export async function assertNoSchedulerCommercialEvidenceBeforePurge(
       ))
       .limit(1),
   ]);
-  if (hourOverride || expense || attachment || invoice) throw conflict(PURGE_BLOCKED);
+  if (billingRateOverride || hourOverride || expense || attachment || invoice) {
+    throw conflict(PURGE_BLOCKED);
+  }
 
   const pristineAutoLedger = finance.createdAt.getTime() === finance.updatedAt.getTime()
     && finance.updatedByUserId === null

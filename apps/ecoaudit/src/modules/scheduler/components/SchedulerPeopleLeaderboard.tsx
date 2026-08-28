@@ -77,6 +77,10 @@ export function SchedulerPeopleLeaderboard() {
   const rows = data?.leaderboard ?? [];
   const teamHours = rows.reduce((total, row) => total + row.workingHoursOnSite, 0);
   const completedJobs = rows.reduce((total, row) => total + row.completedJobs, 0);
+  const scheduledJobs = rows.reduce((total, row) => total + row.scheduledJobs, 0);
+  const unscheduledJobs = rows.reduce((total, row) => total + row.unscheduledJobs, 0);
+  const workingDays = rows.reduce((total, row) => total + row.workingDays, 0);
+  const averageDailyJobs = workingDays > 0 ? completedJobs / workingDays : 0;
   const revenueCents = attributedRevenueCents(rows, activeCurrency, basis);
 
   return (
@@ -138,8 +142,11 @@ export function SchedulerPeopleLeaderboard() {
 
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard label="Team members" value={rows.length} icon="users" />
-              <StatCard label="Working hours on site" value={`${decimal(teamHours)} h`} icon="map-pin" />
               <StatCard label="Completed jobs" value={completedJobs} icon="check" tone="success" />
+              <StatCard label="Scheduled jobs" value={scheduledJobs} icon="calendar" />
+              <StatCard label="Unscheduled jobs" value={unscheduledJobs} icon="clipboard" tone="warning" />
+              <StatCard label="Avg completed / working day" value={decimal(averageDailyJobs)} icon="activity" />
+              <StatCard label="Working hours on site" value={`${decimal(teamHours)} h`} icon="map-pin" />
               <StatCard
                 label={`${analyticsRevenueBasisLabel(basis)} · ex GST`}
                 value={activeCurrency ? formatAnalyticsMoney(revenueCents, activeCurrency) : 'Not available'}
@@ -164,13 +171,14 @@ export function SchedulerPeopleLeaderboard() {
               </div>
 
               <div className="hidden overflow-x-auto rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)] lg:block">
-                <table className="w-full min-w-[72rem] border-collapse text-left text-sm">
+                <table className="w-full min-w-[88rem] border-collapse text-left text-sm">
                   <caption className="sr-only">Team performance leaderboard for the selected reporting window</caption>
                   <thead className="bg-[var(--surface2)] text-xs uppercase tracking-[0.06em] text-[var(--text-sub)]">
                     <tr>
                       <th scope="col" className="px-4 py-3 font-extrabold">Rank / technician</th>
                       <th scope="col" className="px-4 py-3 font-extrabold">Working hours on site</th>
                       <th scope="col" className="px-4 py-3 font-extrabold">Completed / avg daily</th>
+                      <th scope="col" className="px-4 py-3 font-extrabold">Scheduled / unscheduled</th>
                       <th scope="col" className="px-4 py-3 font-extrabold">Working days</th>
                       <th scope="col" className="px-4 py-3 font-extrabold">Backlog</th>
                       <th scope="col" className="px-4 py-3 font-extrabold">Pipeline</th>
@@ -196,6 +204,10 @@ export function SchedulerPeopleLeaderboard() {
                         <td className="px-4 py-4 align-top">
                           <strong className="text-[var(--text)]">{row.completedJobs}</strong>
                           <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{decimal(row.averageDailyJobs)} avg daily</span>
+                        </td>
+                        <td className="px-4 py-4 align-top">
+                          <strong className="text-[var(--text)]">{row.scheduledJobs} scheduled</strong>
+                          <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{row.unscheduledJobs} unscheduled</span>
                         </td>
                         <td className="px-4 py-4 align-top">
                           <strong className="text-[var(--text)]">{row.workingDays} of {row.scheduledWorkingDays}</strong>
@@ -227,6 +239,8 @@ export function SchedulerPeopleLeaderboard() {
                     <dl className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
                       <Metric label="Working hours on site" value={`${decimal(row.workingHoursOnSite)} h`} detail={`${decimal(row.averageWorkingHoursOnSitePerWorkingDay)} h / working day`} />
                       <Metric label="Completed jobs" value={String(row.completedJobs)} detail={`${decimal(row.averageDailyJobs)} avg daily`} />
+                      <Metric label="Scheduled jobs" value={String(row.scheduledJobs)} />
+                      <Metric label="Unscheduled jobs" value={String(row.unscheduledJobs)} />
                       <Metric label="Working days" value={`${row.workingDays} of ${row.scheduledWorkingDays}`} detail={`${row.approvedLeaveWorkingDays} approved leave`} />
                       <Metric label="Backlog" value={String(row.backlogJobs)} />
                       <Metric label="Pipeline · 0–7 days" value={String(row.pipelineJobs0To7Days)} detail={`${row.pipelineJobs8To30Days} in days 8–30`} />
@@ -241,9 +255,13 @@ export function SchedulerPeopleLeaderboard() {
             </section>
           )}
 
-          {(data.quality.sessions.unattributed > 0 || data.quality.completedJobs.unattributed > 0 || data.quality.financialAllocation.unattributedDocuments > 0) ? (
+          {(data.quality.sessions.unattributed > 0
+            || data.quality.completedJobs.unattributed > 0
+            || data.quality.unattributed.scheduledJobs > 0
+            || data.quality.unattributed.unscheduledJobs > 0
+            || data.quality.financialAllocation.unattributedDocuments > 0) ? (
             <div className="rounded-[var(--radius-sm)] border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-4 py-3 text-sm leading-6 text-[var(--text)]" role="status">
-              <strong>Attribution review:</strong> {data.quality.sessions.unattributed} session{data.quality.sessions.unattributed === 1 ? '' : 's'}, {data.quality.completedJobs.unattributed} completed job{data.quality.completedJobs.unattributed === 1 ? '' : 's'}, and {data.quality.financialAllocation.unattributedDocuments} financial document{data.quality.financialAllocation.unattributedDocuments === 1 ? '' : 's'} could not be assigned to a technician.
+              <strong>Attribution review:</strong> {data.quality.sessions.unattributed} session{data.quality.sessions.unattributed === 1 ? '' : 's'}, {data.quality.completedJobs.unattributed} completed job{data.quality.completedJobs.unattributed === 1 ? '' : 's'}, {data.quality.unattributed.scheduledJobs} scheduled job{data.quality.unattributed.scheduledJobs === 1 ? '' : 's'}, {data.quality.unattributed.unscheduledJobs} unscheduled job{data.quality.unattributed.unscheduledJobs === 1 ? '' : 's'}, and {data.quality.financialAllocation.unattributedDocuments} financial document{data.quality.financialAllocation.unattributedDocuments === 1 ? '' : 's'} could not be assigned to a technician.
             </div>
           ) : null}
 
@@ -256,6 +274,8 @@ export function SchedulerPeopleLeaderboard() {
             <dl className="mt-3 grid gap-3 leading-6 md:grid-cols-2">
               <Definition label="Working hours on site" value={data.definitions.workingHoursOnSite} />
               <Definition label="Average daily jobs" value={data.definitions.averageDailyJobs} />
+              <Definition label="Scheduled jobs" value={data.definitions.scheduledJobs} />
+              <Definition label="Unscheduled jobs" value={data.definitions.unscheduledJobs} />
               <Definition label="Working days" value={data.definitions.workingDays} />
               <Definition label="Technician attribution" value={data.definitions.technicianAttribution} />
               <Definition label="Backlog" value={data.definitions.backlog} />

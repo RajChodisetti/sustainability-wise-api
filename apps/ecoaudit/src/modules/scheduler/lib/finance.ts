@@ -12,9 +12,17 @@ import type {
   SchedulerFinanceView,
   SchedulerInvoiceEligibilityJob,
 } from '@/modules/scheduler/types/domain';
+import {
+  schedulerVisibleFinanceSourceApps,
+  schedulerVisibleSourceApps,
+} from './visibility';
 
-export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v3';
+export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v4';
 export const MAX_CONSOLIDATED_INVOICE_JOBS = 50;
+export const MAX_INVOICE_EMAIL_RECIPIENTS = 10;
+const VISIBLE_FINANCE_SOURCE_APPS = new Set<FinanceSourceApp>(
+  schedulerVisibleFinanceSourceApps(schedulerVisibleSourceApps()),
+);
 
 /**
  * A 4xx response proves the API rejected the request before accepting it.
@@ -26,6 +34,25 @@ export function invoiceEmailAttemptNeedsSameIdempotencyKey(error: unknown): bool
     ? Number((error as { status?: unknown }).status)
     : Number.NaN;
   return !(Number.isInteger(status) && status >= 400 && status < 500);
+}
+
+export function normalizeInvoiceEmailRecipientList(value: string): string | null {
+  if (value.includes('\r') || value.includes('\n')) return null;
+  const recipients = value.split(/[,;]/u).map((recipient) => recipient.trim());
+  if (
+    recipients.length < 1
+    || recipients.length > MAX_INVOICE_EMAIL_RECIPIENTS
+    || recipients.some((recipient) => (
+      !/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/u.test(recipient)
+    ))
+  ) return null;
+  const seen = new Set<string>();
+  return recipients.filter((recipient) => {
+    const key = recipient.toLocaleLowerCase('en-AU');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(', ');
 }
 
 export async function persistExpenseBeforeAttachment<TExpense>(input: {
@@ -70,10 +97,14 @@ export function schedulerInvoicePdfReportVariantKey(
 
 export function schedulerInvoicePdfFallbackFilename(
   invoice: Pick<SchedulerInvoice, 'invoiceNumber' | 'job'>,
+  generatedAt = new Date(),
 ): string {
+  const invoiceDate = Number.isNaN(generatedAt.getTime())
+    ? new Date().toISOString().slice(0, 10)
+    : generatedAt.toISOString().slice(0, 10);
   return invoiceFilenameFromContentDisposition(
     null,
-    `invoice-${invoice.job.jobName}-${invoice.job.jobDate}-${invoice.invoiceNumber}`,
+    `invoice-${invoice.job.jobName}-${invoiceDate}-${invoice.invoiceNumber}`,
   );
 }
 
@@ -433,10 +464,13 @@ export function schedulerFinanceHref(input: {
   const params = new URLSearchParams({
     tab: input.view ?? (input.invoiceId ? 'invoices' : 'financial-summary'),
   });
+  const sourceApp = input.sourceApp && VISIBLE_FINANCE_SOURCE_APPS.has(input.sourceApp)
+    ? input.sourceApp
+    : undefined;
   if (input.financeId) params.set('financeId', input.financeId);
   if (input.eventId) params.set('eventId', input.eventId);
-  if (input.sourceApp) params.set('sourceApp', input.sourceApp);
-  if (input.sourceId) params.set('sourceId', input.sourceId);
+  if (sourceApp) params.set('sourceApp', sourceApp);
+  if (sourceApp && input.sourceId) params.set('sourceId', input.sourceId);
   if (input.invoiceId) params.set('invoiceId', input.invoiceId);
   return `/scheduler?${params.toString()}`;
 }
@@ -445,16 +479,19 @@ export function schedulerFinanceTargetFromSearchParams(
   params: Pick<URLSearchParams, 'get'>,
 ): SchedulerFinanceTarget | undefined {
   const sourceAppValue = params.get('sourceApp')?.trim();
-  const sourceApp = sourceAppValue === 'ecoaudit'
+  const parsedSourceApp = sourceAppValue === 'ecoaudit'
     || sourceAppValue === 'solarsense'
     || sourceAppValue === 'installhub'
     ? sourceAppValue
+    : undefined;
+  const sourceApp = parsedSourceApp && VISIBLE_FINANCE_SOURCE_APPS.has(parsedSourceApp)
+    ? parsedSourceApp
     : undefined;
   const target: SchedulerFinanceTarget = {
     financeId: params.get('financeId')?.trim() || undefined,
     eventId: params.get('eventId')?.trim() || undefined,
     sourceApp,
-    sourceId: params.get('sourceId')?.trim() || undefined,
+    sourceId: sourceApp ? params.get('sourceId')?.trim() || undefined : undefined,
     invoiceId: params.get('invoiceId')?.trim() || undefined,
   };
   return target.financeId
@@ -492,9 +529,16 @@ export function schedulerTabTransition(
   } else if (nextTab !== 'invoices') {
     params.delete('invoiceId');
   }
+  const financeTarget = financeTab
+    ? schedulerFinanceTargetFromSearchParams(params)
+    : undefined;
+  if (financeTab && !financeTarget?.sourceApp) {
+    params.delete('sourceApp');
+    params.delete('sourceId');
+  }
   return {
     href: `/scheduler?${params.toString()}`,
-    financeTarget: financeTab ? schedulerFinanceTargetFromSearchParams(params) : undefined,
+    financeTarget,
   };
 }
 

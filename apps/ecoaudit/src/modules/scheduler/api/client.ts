@@ -24,6 +24,7 @@ import { schedulerFinanceOverviewQuery } from '@/modules/scheduler/lib/finance';
 import type { ExportJobStatus } from '@/types/domain';
 import type {
   ConsolidatedSchedulerInvoiceInput,
+  CreateSchedulerInventoryMeterInput,
   CreateScheduleEventInput,
   CreateSchedulerDispatchInput,
   FinanceExpense,
@@ -217,6 +218,16 @@ export async function fetchSchedulerMeterRegister(search = ''): Promise<Schedule
   return portalRequest(true)<SchedulerMeterRegister>(
     'GET',
     `/v1/portal/scheduler/meter-register${suffix}`,
+  );
+}
+
+export async function createSchedulerInventoryMeter(
+  input: CreateSchedulerInventoryMeterInput,
+): Promise<SchedulerMeterRegister['items'][number]> {
+  return portalRequest(true)<SchedulerMeterRegister['items'][number]>(
+    'POST',
+    '/v1/portal/scheduler/meter-register',
+    input,
   );
 }
 
@@ -489,6 +500,18 @@ export async function updateSchedulerFinance(
     'PUT',
     financeBase(financeId),
     input,
+  );
+}
+
+export function updateSchedulerActorBillingRateOverride(
+  financeId: string,
+  globalUserId: string,
+  billingRateOverride: number | null,
+): Promise<SchedulerFinancialSummary> {
+  return portalRequest(true)<SchedulerFinancialSummary>(
+    'PATCH',
+    `${financeBase(financeId)}/actors/${encodeURIComponent(globalUserId)}/billing-rate`,
+    { billingRateOverride },
   );
 }
 

@@ -7,6 +7,7 @@ import {
   checkConsolidatedSchedulerInvoiceEligibility,
   completeSchedulerJob,
   createConsolidatedSchedulerInvoice,
+  createSchedulerInventoryMeter,
   createQuickSchedulerInvoice,
   createScheduleEvent,
   createSchedulerLeaveRequest,
@@ -49,6 +50,7 @@ import {
   updateGlobalSchedulerInvoice,
   updatePortalUserBillingRate,
   updatePortalUserWorkforceProfile,
+  updateSchedulerActorBillingRateOverride,
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
@@ -61,6 +63,7 @@ import {
 } from '@/modules/scheduler/api/client';
 import type {
   CreateScheduleEventInput,
+  CreateSchedulerInventoryMeterInput,
   CreateSchedulerDispatchInput,
   FinanceExpenseInput,
   FinanceSourceApp,
@@ -148,6 +151,19 @@ export function useSchedulerMeterRegister(search: string) {
   return useQuery({
     queryKey: schedulerKeys.meterRegister(search),
     queryFn: () => fetchSchedulerMeterRegister(search),
+  });
+}
+
+export function useCreateSchedulerInventoryMeter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateSchedulerInventoryMeterInput) => createSchedulerInventoryMeter(input),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: schedulerKeys.inventory() }),
+        qc.invalidateQueries({ queryKey: [...schedulerKeys.all, 'meter-register'] }),
+      ]);
+    },
   });
 }
 
@@ -457,6 +473,25 @@ export function useSchedulerFinancialSummary(financeId: string | null) {
     queryKey: schedulerKeys.financialSummary(financeId ?? ''),
     queryFn: () => fetchSchedulerFinancialSummary(financeId ?? ''),
     enabled: Boolean(financeId),
+  });
+}
+
+export function useUpdateSchedulerActorBillingRateOverride() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ financeId, globalUserId, billingRateOverride }: {
+      financeId: string;
+      globalUserId: string;
+      billingRateOverride: number | null;
+    }) => updateSchedulerActorBillingRateOverride(
+      financeId,
+      globalUserId,
+      billingRateOverride,
+    ),
+    onSuccess: async (summary, { financeId }) => {
+      qc.setQueryData(schedulerKeys.financialSummary(financeId), summary);
+      await qc.invalidateQueries({ queryKey: schedulerKeys.finance() });
+    },
   });
 }
 

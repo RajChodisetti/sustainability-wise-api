@@ -12,6 +12,7 @@ import {
   MAX_ESTIMATED_DURATION_MINUTES,
   parseDispatchJob,
   parseEstimatedDurationMinutes,
+  randomFieldJobTitleSuffix,
   schedulerSitePrefillOption,
   scheduleUpdateRequiresAvailabilityCheck,
   scheduleUpdateRequiresActiveProduct,
@@ -71,13 +72,23 @@ test('saved-site prefill suppresses prior job and revision metadata for rolling 
   });
 });
 
-test('Field job titles use the hardcoded scope number and a three-character suffix', () => {
+test('Field job titles retain a three-character A-Z/0-9 suffix', () => {
   assert.equal(fieldScopeNumber('M2 - Faults / COMMS fault'), 'M2');
   assert.equal(fieldScopeNumber('legacy custom scope'), 'M5');
+  const randomIndexes = [0, 25, 35];
+  assert.equal(randomFieldJobTitleSuffix(() => randomIndexes.shift() ?? 0), 'AZ9');
   assert.equal(
     generatedFieldJobTitle('M3 - Inspection', 'Client Co', 'North Site', 'A7Z'),
     'M3 - Client Co - North Site - A7Z',
   );
+  const longTitle = generatedFieldJobTitle(
+    'M3 - Inspection',
+    'C'.repeat(250),
+    'S'.repeat(250),
+    'Q9X',
+  );
+  assert.equal(longTitle.length, 300);
+  assert.match(longTitle, / - Q9X$/);
 });
 
 test('sortByDeadlineUrgency puts overdue and soonest first; done last', () => {
@@ -133,9 +144,9 @@ test('calendar end is derived only when an estimate exists', () => {
 test('client-provided end time is rejected before persistence', async () => {
   await assert.rejects(
     () => createScheduleEvent(ecoAdmin, {
-      sourceApp: 'ecoaudit',
-      sourceType: 'audit',
-      sourceId: 'audit-id',
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: 'installation-id',
       assigneeFieldUserId: 'field-user',
       scheduledStartAt: '2026-08-20T09:00:00.000Z',
       scheduledEndAt: '2026-08-20T10:00:00.000Z',
@@ -268,6 +279,7 @@ test('InstallHub Scheduler dispatch rejects invalid metadata without accepting l
     [{ ...baseJob, solarCapacityKw: -1 }, 'job.solarCapacityKw must be a finite number between 0 and 1000000'],
     [{ ...baseJob, quoteNumber: 'q'.repeat(101) }, 'job.quoteNumber must contain at most 100 characters'],
     [{ ...baseJob, electricityNmi: 'n'.repeat(101) }, 'job.electricityNmi must contain at most 100 characters'],
+    [{ ...baseJob, titleSuffix: 'AB-' }, 'job.titleSuffix must contain exactly 3 alphanumeric characters'],
   ] as const) {
     assert.throws(
       () => validateDispatchJob('installhub', job),

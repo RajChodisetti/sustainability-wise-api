@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { JobOption } from '@/modules/scheduler/types/domain';
 import {
+  ALL_JOBS_GROUP,
   groupJobsByAssignee,
+  jobPoolFilterOptions,
   jobsForAssignee,
   scheduledJobWeek,
   sortJobsForPool,
@@ -26,14 +28,32 @@ const jobs: JobOption[] = [
   { id: 'job-4', label: 'Four', sourceApp: 'installhub', sourceType: 'installation' },
 ];
 
-test('Field jobs group by assigned user with stable counts and an unassigned bucket', () => {
-  assert.deepEqual(groupJobsByAssignee(jobs), [
+test('Field jobs expose permanent all and unassigned filters before user groups', () => {
+  const jobsWithStaleUnassignedName = jobs.map((job) => (
+    job.id === 'job-4' ? { ...job, assigneeDisplayName: 'Former inspector' } : job
+  ));
+  assert.deepEqual(groupJobsByAssignee(jobsWithStaleUnassignedName), [
     { id: 'sri', label: 'Sri', count: 1 },
     { id: 'sriraj', label: 'Sriraj', count: 2 },
     { id: UNASSIGNED_JOB_GROUP, label: 'Unassigned', count: 1 },
   ]);
+  assert.deepEqual(jobPoolFilterOptions(jobsWithStaleUnassignedName), [
+    { id: ALL_JOBS_GROUP, label: 'All jobs', count: 4 },
+    { id: UNASSIGNED_JOB_GROUP, label: 'Unassigned jobs', count: 1 },
+    { id: 'sri', label: 'Sri', count: 1 },
+    { id: 'sriraj', label: 'Sriraj', count: 2 },
+  ]);
+  assert.deepEqual(
+    jobsForAssignee(jobsWithStaleUnassignedName, UNASSIGNED_JOB_GROUP).map((job) => job.id),
+    ['job-4'],
+  );
   assert.deepEqual(jobsForAssignee(jobs, 'sriraj').map((job) => job.id), ['job-1', 'job-2']);
-  assert.deepEqual(jobsForAssignee(jobs, '').map((job) => job.id), jobs.map((job) => job.id));
+  assert.deepEqual(jobsForAssignee(jobs, ALL_JOBS_GROUP).map((job) => job.id), jobs.map((job) => job.id));
+  assert.deepEqual(jobPoolFilterOptions(jobs.slice(0, 3))[1], {
+    id: UNASSIGNED_JOB_GROUP,
+    label: 'Unassigned jobs',
+    count: 0,
+  });
 });
 
 test('Field jobs sort by assignment and scheduling state', () => {

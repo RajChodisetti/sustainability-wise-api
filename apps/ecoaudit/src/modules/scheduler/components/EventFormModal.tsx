@@ -44,12 +44,15 @@ import {
   schedulerEventSupportsMobileNotifications,
 } from '@/modules/scheduler/lib/visibility';
 import {
+  clearSchedulerFieldJobPlanning,
   EMPTY_SCHEDULER_JOB_ADDRESS,
+  randomSchedulerFieldJobTitleSuffix,
   schedulerAddressFromClientSuggestion,
   schedulerAddressDisplay,
   schedulerAddressIsComplete,
   schedulerAddressPayload,
   schedulerDispatchSiteSelectionPayload,
+  schedulerFieldJobTitlePreview,
   schedulerSiteOptionLabel,
 } from '@/modules/scheduler/lib/routing';
 import type {
@@ -89,7 +92,6 @@ type InstallHubJobDetails = {
   maas: boolean | null;
   workType: string;
   meteringSolutionType: string;
-  customJobNumber: string;
   siteContactName: string;
   siteContactPhone: string;
   siteContactEmail: string;
@@ -105,7 +107,6 @@ const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
   maas: null,
   workType: '',
   meteringSolutionType: '',
-  customJobNumber: '',
   siteContactName: '',
   siteContactPhone: '',
   siteContactEmail: '',
@@ -178,7 +179,6 @@ function installHubJobPayload(details: InstallHubJobDetails) {
     maas: details.maas,
     workType: optionalJobText(details.workType),
     meteringSolutionType: optionalJobText(details.meteringSolutionType),
-    customJobNumber: optionalJobText(details.customJobNumber),
     siteContactName: optionalJobText(details.siteContactName),
     siteContactPhone: optionalJobText(details.siteContactPhone),
     siteContactEmail: optionalJobText(details.siteContactEmail),
@@ -323,6 +323,7 @@ export function EventFormModal({
   const [jobBuildingName, setJobBuildingName] = useState(initial.jobBuildingName);
   const [jobClientName, setJobClientName] = useState(initial.jobClientName);
   const [installHubJobDetails, setInstallHubJobDetails] = useState<InstallHubJobDetails>(initial.installHubJobDetails);
+  const [fieldJobTitleSuffix] = useState(randomSchedulerFieldJobTitleSuffix);
   const [title, setTitle] = useState(initial.title);
   const [description, setDescription] = useState(initial.description);
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
@@ -482,7 +483,7 @@ export function EventFormModal({
     setJobSiteName(site.siteName);
     setJobAddress(addressFromSite(site));
     setInstallHubJobDetails((current) => ({
-      ...current,
+      ...clearSchedulerFieldJobPlanning(current),
       clientContactName: site.clientContactName ?? '',
       clientContactPhone: site.clientContactPhone ?? '',
       clientContactEmail: site.clientContactEmail ?? '',
@@ -566,7 +567,7 @@ export function EventFormModal({
     setJobSiteName(site?.siteName ?? legacySite?.siteName ?? suggestion.siteName ?? 'Site');
     setJobAddress(schedulerAddressFromClientSuggestion(suggestion));
     setInstallHubJobDetails((current) => ({
-      ...current,
+      ...clearSchedulerFieldJobPlanning(current),
       clientContactName: client?.contactName
         ?? legacySite?.clientContactName
         ?? current.clientContactName,
@@ -700,6 +701,7 @@ export function EventFormModal({
             ...(sourceApp === 'installhub'
               ? {
                   siteAddress: schedulerAddressDisplay(jobAddress),
+                  titleSuffix: fieldJobTitleSuffix,
                   ...installHubJobPayload(installHubJobDetails),
                 }
               : {}),
@@ -910,6 +912,9 @@ export function EventFormModal({
                                     setSiteSelectionMode('existing');
                                     setExistingSiteId('');
                                     setSiteQuery(jobClientName);
+                                    setInstallHubJobDetails((current) => (
+                                      clearSchedulerFieldJobPlanning(current)
+                                    ));
                                   }
                                 }}
                                 className={`cursor-pointer rounded-lg px-3 py-2 text-sm font-extrabold transition-colors ${
@@ -1042,10 +1047,6 @@ export function EventFormModal({
                                     <Input aria-label="Other metering type" placeholder="Enter other metering type" value={installHubJobDetails.meteringSolutionType === OTHER_METERING_TYPE ? '' : installHubJobDetails.meteringSolutionType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value || OTHER_METERING_TYPE }))} />
                                   ) : null}
                                 </div>
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-custom-job-number">Custom job number</FieldLabel>
-                                  <Input id="scheduler-custom-job-number" value={installHubJobDetails.customJobNumber} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, customJobNumber: event.target.value }))} />
-                                </div>
                                 <NullableBooleanSelect id="scheduler-maas" label="MaaS" value={installHubJobDetails.maas} onChange={(maas) => setInstallHubJobDetails((current) => ({ ...current, maas }))} />
                                 <div className="sm:col-span-2">
                                   <FieldLabel htmlFor="scheduler-job-comments">Job comments / scope</FieldLabel>
@@ -1114,7 +1115,12 @@ export function EventFormModal({
             {sourceApp === 'installhub' && creationMode === 'new' && !editing ? (
               <>
                 <FieldLabel>Title</FieldLabel>
-                <Input readOnly value={`${installHubJobDetails.workType.match(/^M[1-5]/)?.[0] ?? 'M#'} - ${jobClientName || 'Client'} - ${jobSiteName || 'Site'} - XXX`} />
+                <Input readOnly value={schedulerFieldJobTitlePreview(
+                  installHubJobDetails.workType,
+                  jobClientName,
+                  jobSiteName,
+                  fieldJobTitleSuffix,
+                )} />
               </>
             ) : (
               <>

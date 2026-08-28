@@ -19,6 +19,7 @@ import {
   unifiedUsers,
 } from '../db/schema/shared.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import { schedulerVisibleSourceApps } from './schedulerVisibility.js';
 
 export type SchedulerLeaveType = 'annual' | 'personal' | 'unpaid' | 'other';
 export type SchedulerLeaveStatus = 'pending' | 'approved' | 'rejected' | 'cancelled';
@@ -101,6 +102,12 @@ export const LEAVE_APPROVAL_BLOCKING_SCHEDULE_STATUSES = [
   'planned',
   'in_progress',
 ] as const;
+
+export function schedulerLeaveApprovalBlockingSourceApps(): ReturnType<
+  typeof schedulerVisibleSourceApps
+> {
+  return schedulerVisibleSourceApps();
+}
 
 function globalUserSelection() {
   return {
@@ -493,6 +500,10 @@ export async function reviewSchedulerLeaveRequest(
       }).from(portalScheduleEvents).where(and(
         eq(portalScheduleEvents.assigneeFieldUserId, targetUser.fieldUserId),
         inArray(portalScheduleEvents.status, [...LEAVE_APPROVAL_BLOCKING_SCHEDULE_STATUSES]),
+        inArray(
+          portalScheduleEvents.sourceApp,
+          schedulerLeaveApprovalBlockingSourceApps(),
+        ),
       ));
       if (events.some((event) => eventOverlapsLeaveDateRange({
         eventStart: event.scheduledStartAt,

@@ -52,20 +52,20 @@ If Expo reports `DeviceNotRegistered`, the API disables that exact token but
 keeps the current lifecycle usable; register a replacement Expo token with the
 same `registrationGeneration`. Only logout or account transfer revokes it.
 
-Scheduler pushes are normal visible notifications. Eco Audit and Solar Sense
-use Android channel `scheduler-updates`; Field App Complete uses `scheduler`.
-The lock-screen title/body is deliberately generic (for example, “New job
-assigned” / “You were assigned a scheduled job”) and never contains an event
-title, site/client data, address, description, email, credential, or token. The
-navigation payload is:
+Scheduler pushes are normal visible notifications. Under the current Scheduler
+visibility policy, only Field App Complete jobs receive them, using Android
+channel `scheduler`. The lock-screen title/body is deliberately generic (for
+example, “New job assigned” / “You were assigned a scheduled job”) and never
+contains an event title, site/client data, address, description, email,
+credential, or token. The navigation payload is:
 
 ```json
 {
   "type": "scheduler",
   "notificationKind": "assigned | changed | assignment_removed | cancelled | manual_reminder | one_day_before | one_hour_before | day_of",
   "eventId": "...",
-  "sourceApp": "ecoaudit | solarsense | installhub",
-  "sourceType": "audit | assessment | installation",
+  "sourceApp": "installhub",
+  "sourceType": "installation",
   "sourceId": "...",
   "scheduledStartAt": "2026-08-20T09:00:00.000Z"
 }
@@ -76,17 +76,19 @@ show the operating-system popup only: they do not keep a notification history
 or deep-link a notification tap into the work record. A normal app launch/list
 and subsequent API/sync response remain authoritative for access.
 
-Linked Eco Audit audits, Solar Sense rooftop assessments, and Field App Complete
-installations are Scheduler notification targets. Legacy Solar site calendar
-rows, custom events, and rows without a linked source ID do not produce mobile
-pushes. Active linked work queues generic reminders 24 hours before, one hour
-before, and at the scheduled start. A trigger already due when work is linked or
-rescheduled is not replayed. Delivery rechecks the live scheduler row, linked
-Draft assignment, and automatic trigger timestamp at the Expo send boundary,
-so a completed, deleted, rescheduled, cancelled, or reassigned job cannot emit a
-stale active-work reminder. Recovered 24-hour and one-hour reminders expire at
-the scheduled start; the start-time reminder expires at the scheduled end or 24
-hours after start, whichever comes first.
+Linked Field App Complete installations are Scheduler notification targets.
+EcoAudit and SolarSense records remain valid product-sync and active-time
+records, but hidden Scheduler rows for those products do not queue new pushes.
+Custom events and rows without a linked source ID also do not produce mobile
+pushes. Active linked Field work queues generic reminders 24 hours before, one
+hour before, and at the scheduled start. A trigger already due when work is
+linked or rescheduled is not replayed. Delivery rechecks the live scheduler row,
+linked Draft assignment, visibility policy, and automatic trigger timestamp at
+the Expo send boundary, so a completed, deleted, rescheduled, cancelled,
+reassigned, or hidden job cannot emit a stale active-work reminder. Recovered
+24-hour and one-hour reminders expire at the scheduled start; the start-time
+reminder expires at the scheduled end or 24 hours after start, whichever comes
+first.
 
 ## Active foreground audit time
 
@@ -273,10 +275,12 @@ between 0 and 1,000,000 inclusive.
 
 `fergusJobNumber`, `quoteNumber`, and `plannedMeterType` are retained legacy
 migration/import fields. Current Scheduler and Field App authoring UIs do not
-request or write them. New authoring uses `customJobNumber`, M1-M5 scope values
-in `serviceType`, and the controlled NEM/revenue/monitoring/water values (or
-free-text Other) in `meteringSolutionType`. `serviceType` remains the compatibility
-projection of the shared Field job detail `workType` for installed clients.
+request or write them. Scheduler also omits `customJobNumber` and relies on the
+server-generated shared Job ID; installed clients may continue to exchange the
+legacy nullable field. New authoring uses M1-M5 scope values in `serviceType`
+and the controlled NEM/revenue/monitoring/water values (or free-text Other) in
+`meteringSolutionType`. `serviceType` remains the compatibility projection of
+the shared Field job detail `workType` for installed clients.
 
 These fields do not replace existing authorities. Installation lifecycle owns
 the `Draft`/`Completed` status, and the completion endpoint owns `completedAt`
@@ -733,6 +737,10 @@ supplies the meters offered during installation entry.
 `GET /v1/installhub/inventory/me` also returns `isMaintainer`. Maintainers can
 switch to the company register, register company stock, assign it to active
 Field users, edit it with `expectedRevision`, and soft-delete uninstalled rows.
+The Scheduler portal presents the same company/user stock as a meter-only
+register and shows the current user custodian on each transferred row. It does
+not create or schedule jobs from either Inventory view. Custody changes remain
+owned by these Field inventory claim and maintainer-assignment flows.
 The app does not remove a selected meter at local form-save time: server-side
 canonical installation completion performs the custody transfer atomically so
 offline drafts and failed syncs cannot lose stock.

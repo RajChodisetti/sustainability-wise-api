@@ -21,6 +21,8 @@ import {
   invoiceDraftIsDirty,
   manualHoursEntryIssue,
   invoiceFilenameFromContentDisposition,
+  MAX_INVOICE_EMAIL_RECIPIENTS,
+  normalizeInvoiceEmailRecipientList,
   invoiceQuantityRateForAmount,
   isFinanceScheduleEvent,
   marginTone,
@@ -52,11 +54,42 @@ test('invoice email retries preserve identity only for ambiguous outcomes', () =
   assert.equal(invoiceEmailAttemptNeedsSameIdempotencyKey({ status: 409 }), false);
 });
 
+test('invoice email recipients accept comma or semicolon lists and deduplicate case-insensitively', () => {
+  assert.equal(
+    normalizeInvoiceEmailRecipientList('Accounts@example.com; ops@example.com, accounts@example.com'),
+    'Accounts@example.com, ops@example.com',
+  );
+  assert.equal(normalizeInvoiceEmailRecipientList('not-an-email'), null);
+  assert.equal(normalizeInvoiceEmailRecipientList('one@example.com\r\nBcc: bad@example.com'), null);
+  assert.equal(
+    normalizeInvoiceEmailRecipientList(
+      Array.from({ length: MAX_INVOICE_EMAIL_RECIPIENTS + 1 }, (_, index) => (
+        `person-${index}@example.com`
+      )).join(', '),
+    ),
+    null,
+  );
+});
+
 test('job and invoice selection boundaries remount stateful commercial editors', () => {
   const workspace = readFileSync(new URL('../components/SchedulerFinanceWorkspace.tsx', import.meta.url), 'utf8');
   const invoices = readFileSync(new URL('../components/SchedulerInvoicesWorkspace.tsx', import.meta.url), 'utf8');
   assert.match(workspace, /<SchedulerFinanceDetail key=\{selected\.financeId\}/);
   assert.match(invoices, /<GlobalInvoiceDetail key=\{selectedInvoiceId\}/);
+});
+
+test('invoice workspace exposes explicit final-PDF and multi-recipient delivery controls', () => {
+  const workspace = readFileSync(
+    new URL('../components/InvoiceWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /Issue & generate final PDF/);
+  assert.match(workspace, /artifactName=\{pdfArtifactName\}/);
+  assert.match(workspace, /Email the final invoice automatically after issue/);
+  assert.match(workspace, /type="email" multiple/);
+  assert.match(workspace, /Enter up to 10 email addresses separated by commas/);
+  assert.doesNotMatch(workspace, /Customer reference \/ Job ID/);
+  assert.doesNotMatch(workspace, /Automatically populated from the original job ID/);
 });
 
 test('issued invoices remain editable and issue no longer uses an immutability confirmation', () => {
@@ -109,7 +142,7 @@ test('scheduler invoice PDF identity follows the exact server revision contract'
   const version = { id: 'invoice-42', updatedAt: '2026-08-16T18:15:00.000Z' };
   assert.equal(
     schedulerInvoicePdfReportVariantKey(version),
-    'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
+    'scheduler-invoice-pdf:v4:invoice-42:2026-08-16T18:15:00.000Z',
   );
   assert.notEqual(
     schedulerInvoicePdfReportVariantKey({ ...version, updatedAt: '2026-08-16T18:16:00.000Z' }),
@@ -129,8 +162,8 @@ test('scheduler invoice PDF identity follows the exact server revision contract'
         siteAddress: null,
         status: 'Scheduled',
       },
-    }),
-    'invoice-Cafe-rooftop-upgrade-2026-08-15-INV-2026-0042.pdf',
+    }, new Date('2026-08-19T04:05:06.000Z')),
+    'invoice-Cafe-rooftop-upgrade-2026-08-19-INV-2026-0042.pdf',
   );
 });
 
@@ -150,10 +183,22 @@ test('finance helpers expose stable margin cues and deep links', () => {
     schedulerFinanceHref({ view: 'bills', financeId: 'finance 1' }),
     '/scheduler?tab=bills&financeId=finance+1',
   );
+  assert.equal(
+    schedulerFinanceHref({ sourceApp: 'solarsense', sourceId: 'assessment-8' }),
+    '/scheduler?tab=financial-summary',
+  );
   assert.equal(schedulerFinanceHref({}), '/scheduler?tab=financial-summary');
   assert.deepEqual(
     schedulerFinanceTargetFromSearchParams(new URLSearchParams('financeId=finance-7&sourceApp=solarsense&sourceId=assessment-8')),
-    { financeId: 'finance-7', eventId: undefined, sourceApp: 'solarsense', sourceId: 'assessment-8', invoiceId: undefined },
+    { financeId: 'finance-7', eventId: undefined, sourceApp: undefined, sourceId: undefined, invoiceId: undefined },
+  );
+  assert.deepEqual(
+    schedulerFinanceTargetFromSearchParams(new URLSearchParams('sourceApp=installhub&sourceId=installation-8')),
+    { financeId: undefined, eventId: undefined, sourceApp: 'installhub', sourceId: 'installation-8', invoiceId: undefined },
+  );
+  assert.equal(
+    schedulerFinanceTargetFromSearchParams(new URLSearchParams('sourceApp=ecoaudit&sourceId=audit-8')),
+    undefined,
   );
   assert.equal(schedulerFinanceTargetFromSearchParams(new URLSearchParams('sourceApp=unknown')), undefined);
 });
@@ -172,6 +217,23 @@ test('scheduler tab transitions keep URL and in-memory finance targets in parity
   assert.deepEqual(
     schedulerTabTransition('?tab=calendar', 'bills'),
     { href: '/scheduler?tab=bills', financeTarget: undefined },
+  );
+  assert.deepEqual(
+    schedulerTabTransition('?tab=calendar&sourceApp=solarsense&sourceId=assessment-8', 'financial-summary'),
+    { href: '/scheduler?tab=financial-summary', financeTarget: undefined },
+  );
+  assert.deepEqual(
+    schedulerTabTransition('?tab=calendar&sourceApp=ecoaudit&sourceId=audit-8&financeId=finance-8', 'invoices'),
+    {
+      href: '/scheduler?tab=invoices&financeId=finance-8',
+      financeTarget: {
+        financeId: 'finance-8',
+        eventId: undefined,
+        sourceApp: undefined,
+        sourceId: undefined,
+        invoiceId: undefined,
+      },
+    },
   );
   assert.deepEqual(
     schedulerTabTransition('?tab=invoices&financeId=finance-7&invoiceId=invoice-7', 'bills'),

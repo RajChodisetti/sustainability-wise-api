@@ -5,21 +5,22 @@ import { signAccessToken } from '../../auth/jwt.js';
 import { portalSchedulerRoutes } from './scheduler.js';
 
 const validDispatch = {
-  sourceApp: 'ecoaudit',
+  sourceApp: 'installhub',
   assigneeFieldUserId: 'field-user',
   scheduledStartAt: '2026-08-20T09:00:00.000Z',
   deadlineAt: '2026-08-22T17:00:00.000Z',
   job: {
+    clientName: 'Dispatch client',
     siteName: 'Dispatch site',
     siteAddress: '1 Test Street',
   },
 };
 
-test('Scheduler product completion route is admin-only and rejects non-product sources', async () => {
+test('Scheduler product completion route is admin-only and hides excluded product sources', async () => {
   const app = Fastify();
   await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
   await app.ready();
-  const url = '/v1/portal/scheduler/jobs/ecoaudit/audit/audit-1/complete';
+  const url = '/v1/portal/scheduler/jobs/installhub/installation/installation-1/complete';
   const payload = { idempotencyKey: 'scheduler-completion-test' };
   try {
     assert.equal(app.hasRoute({
@@ -68,6 +69,19 @@ test('Scheduler product completion route is admin-only and rejects non-product s
       payload: {},
     });
     assert.equal(missingIdempotency.statusCode, 400, missingIdempotency.body);
+
+    for (const hiddenUrl of [
+      '/v1/portal/scheduler/jobs/ecoaudit/audit/audit-1/complete',
+      '/v1/portal/scheduler/jobs/solarsense/assessment/assessment-1/complete',
+    ]) {
+      const hiddenSource = await app.inject({
+        method: 'POST',
+        url: hiddenUrl,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload,
+      });
+      assert.equal(hiddenSource.statusCode, 404, hiddenSource.body);
+    }
 
     const customSource = await app.inject({
       method: 'POST',
@@ -129,6 +143,71 @@ test('Scheduler meter register route is admin-only and bounds search input', asy
       },
     });
     assert.equal(oversizedSearch.statusCode, 400, oversizedSearch.body);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Scheduler inventory registration is admin-only and accepts meter stock fields only', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const url = '/v1/portal/scheduler/meter-register';
+  const validMeter = { deviceId: 'METER-1', deviceModel: 'A3RM' };
+  try {
+    assert.equal(app.hasRoute({ method: 'POST', url }), true);
+
+    const unauthenticated = await app.inject({ method: 'POST', url, payload: validMeter });
+    assert.equal(unauthenticated.statusCode, 401, unauthenticated.body);
+
+    const inspector = await app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'eco-inspector',
+          app: 'ecoaudit',
+          role: 'inspector',
+        })}`,
+      },
+      payload: validMeter,
+    });
+    assert.equal(inspector.statusCode, 403, inspector.body);
+
+    const wrongApp = await app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'fleet-admin',
+          app: 'wattwatchers',
+          role: 'admin',
+        })}`,
+      },
+      payload: validMeter,
+    });
+    assert.equal(wrongApp.statusCode, 403, wrongApp.body);
+
+    const adminToken = signAccessToken({
+      userId: 'eco-admin',
+      app: 'ecoaudit',
+      role: 'admin',
+    });
+    for (const payload of [
+      { ...validMeter, jobId: 'job-1' },
+      { ...validMeter, installationId: 'installation-1' },
+      { ...validMeter, scheduledStartAt: '2026-08-20T09:00:00.000Z' },
+      { ...validMeter, custodianUserId: 'field-user-1' },
+      { deviceId: 'OTHER-1', deviceModel: 'OTHER' },
+    ]) {
+      const response = await app.inject({
+        method: 'POST',
+        url,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload,
+      });
+      assert.equal(response.statusCode, 400, response.body);
+    }
   } finally {
     await app.close();
   }
@@ -256,25 +335,31 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
     });
     assert.equal(invalidAuditDate.statusCode, 400, invalidAuditDate.body);
 
-    const missingProductFields = [
-      { sourceApp: 'ecoaudit', job: { siteName: 'Missing address' } },
-      {
-        sourceApp: 'solarsense',
-        job: { siteName: 'Missing roof', location: 'Test location' },
-      },
-      {
-        sourceApp: 'installhub',
+    const missingProductFields = await app.inject({
+      method: 'POST',
+      url,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        ...validDispatch,
         job: { siteName: 'Missing client', siteAddress: '5 Field Street' },
       },
-    ];
-    for (const invalid of missingProductFields) {
+    });
+    assert.equal(missingProductFields.statusCode, 400, missingProductFields.body);
+
+    for (const hiddenDispatch of [
+      { sourceApp: 'ecoaudit', job: { siteName: 'Hidden audit', siteAddress: '1 Audit Street' } },
+      {
+        sourceApp: 'solarsense',
+        job: { siteName: 'Hidden assessment', location: '2 Solar Street', buildingIdName: 'Roof' },
+      },
+    ]) {
       const response = await app.inject({
         method: 'POST',
         url,
         headers: { authorization: `Bearer ${adminToken}` },
-        payload: { ...validDispatch, ...invalid },
+        payload: { ...validDispatch, ...hiddenDispatch },
       });
-      assert.equal(response.statusCode, 400, response.body);
+      assert.equal(response.statusCode, 404, response.body);
     }
 
     const legacySolarSiteLink = await app.inject({
@@ -290,7 +375,7 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
         deadlineAt: validDispatch.deadlineAt,
       },
     });
-    assert.equal(legacySolarSiteLink.statusCode, 400);
+    assert.equal(legacySolarSiteLink.statusCode, 404);
 
     const legacySolarSiteLinkWithDeprecatedEnd = await app.inject({
       method: 'POST',
@@ -306,7 +391,7 @@ test('scheduler dispatch route is admin-only and rejects client-owned lifecycle 
         deadlineAt: validDispatch.deadlineAt,
       },
     });
-    assert.equal(legacySolarSiteLinkWithDeprecatedEnd.statusCode, 400);
+    assert.equal(legacySolarSiteLinkWithDeprecatedEnd.statusCode, 404);
     assert.deepEqual(legacySolarSiteLinkWithDeprecatedEnd.json(), legacySolarSiteLink.json());
   } finally {
     await app.close();
@@ -700,6 +785,63 @@ test('Scheduler analytics route is admin-only and requires a strict date window'
         headers: { authorization: `Bearer ${adminToken}` },
       });
       assert.equal(response.statusCode, 400, `${invalidUrl}: ${response.body}`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('job actor billing-rate overrides are admin-only and require an exact nullable rate', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const inspectorToken = signAccessToken({
+    userId: 'eco-inspector',
+    app: 'ecoaudit',
+    role: 'inspector',
+  });
+  const adminToken = signAccessToken({
+    userId: 'eco-admin',
+    app: 'ecoaudit',
+    role: 'admin',
+  });
+  const url = '/v1/portal/scheduler/finance/finance-1/actors/user-1/billing-rate';
+  try {
+    assert.equal(app.hasRoute({
+      method: 'PATCH',
+      url: '/v1/portal/scheduler/finance/:financeId/actors/:globalUserId/billing-rate',
+    }), true);
+
+    const unauthenticated = await app.inject({
+      method: 'PATCH',
+      url,
+      payload: { billingRateOverride: 185.5 },
+    });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const inspector = await app.inject({
+      method: 'PATCH',
+      url,
+      headers: { authorization: `Bearer ${inspectorToken}` },
+      payload: { billingRateOverride: null },
+    });
+    assert.equal(inspector.statusCode, 403, inspector.body);
+
+    for (const payload of [
+      {},
+      { billingRateOverride: -1 },
+      { billingRateOverride: '185.5' },
+      { billingRateOverride: true },
+      { billingRateOverride: { amount: 185 } },
+      { billingRateOverride: 185, unexpected: true },
+    ]) {
+      const response = await app.inject({
+        method: 'PATCH',
+        url,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload,
+      });
+      assert.equal(response.statusCode, 400, response.body);
     }
   } finally {
     await app.close();

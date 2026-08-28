@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { AppError } from '../utils/errors.js';
 import {
   allocateCentsDeterministically,
   allocateMoneyMetricDeterministically,
   calculateWorkingDays,
+  classifySchedulerUserJobWorkload,
   localDateRangeForAnalyticsWindow,
   parseSchedulerAnalyticsWindow,
   rankLeaderboardRows,
@@ -15,6 +17,96 @@ import {
   sessionIsIncludedInWindow,
   startOfCalendarDateInTimeZone,
 } from './schedulerAnalyticsService.js';
+
+test('weekly Scheduler workload counts distinct open jobs and preserves future scheduling', () => {
+  const products = [
+    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'install-a' },
+    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'install-b' },
+    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'install-c' },
+    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'install-d' },
+  ] as const;
+  const events = [
+    {
+      ...products[0],
+      id: 'event-a-later',
+      assigneeFieldUserId: 'field-a',
+      scheduledStartAt: new Date('2026-08-19T09:00:00.000Z'),
+    },
+    {
+      ...products[0],
+      id: 'event-a-earlier',
+      assigneeFieldUserId: 'field-a',
+      scheduledStartAt: new Date('2026-08-18T09:00:00.000Z'),
+    },
+    {
+      ...products[1],
+      id: 'event-b-future',
+      assigneeFieldUserId: 'field-b',
+      scheduledStartAt: new Date('2026-10-30T09:00:00.000Z'),
+    },
+    {
+      ...products[3],
+      id: 'event-d-backlog',
+      assigneeFieldUserId: 'field-d',
+      scheduledStartAt: new Date('2026-08-01T09:00:00.000Z'),
+    },
+    {
+      sourceApp: 'installhub' as const,
+      sourceType: 'installation' as const,
+      sourceId: 'not-an-open-product',
+      id: 'ignored-event',
+      assigneeFieldUserId: 'field-x',
+      scheduledStartAt: new Date('2026-08-18T09:00:00.000Z'),
+    },
+  ];
+
+  const result = classifySchedulerUserJobWorkload({
+    products,
+    events,
+    startAt: new Date('2026-08-17T00:00:00.000Z'),
+    endAt: new Date('2026-08-24T00:00:00.000Z'),
+  });
+
+  assert.deepEqual(result.activeEvents.map((event) => event.id), [
+    'event-d-backlog',
+    'event-a-earlier',
+    'event-b-future',
+  ]);
+  assert.deepEqual(result.scheduledInWindow.map((event) => event.id), [
+    'event-a-earlier',
+  ]);
+  assert.deepEqual(result.unscheduledProducts.map((product) => product.sourceId), [
+    'install-c',
+  ]);
+});
+
+test('Scheduler analytics loaders enforce the Field App-only visibility boundary', () => {
+  const source = readFileSync(new URL('./schedulerAnalyticsService.ts', import.meta.url), 'utf8');
+  const section = (start: string, end: string) => {
+    const startIndex = source.indexOf(start);
+    const endIndex = source.indexOf(end, startIndex + start.length);
+    assert.ok(startIndex >= 0 && endIndex > startIndex, `missing ${start} source section`);
+    return source.slice(startIndex, endIndex);
+  };
+
+  for (const loader of [
+    section('async function loadSessions(', 'async function loadCompletions('),
+    section('async function loadCompletions(', 'async function loadUndatedCompletedJobCount('),
+    section('async function loadUndatedCompletedJobCount(', 'function schedulerAnalyticsHiddenInvoiceIds('),
+    section('async function loadOpenScheduleEvents(', 'async function loadOpenProductSources('),
+    section('async function loadOpenProductSources(', 'async function loadOriginIdentityMap('),
+  ]) {
+    assert.match(loader, /installhub|InstallHub|ih_/);
+    assert.doesNotMatch(loader, /ecoaudit|solarsense|ea_|ss_/);
+  }
+
+  const invoiceVisibility = section(
+    'function schedulerAnalyticsHiddenInvoiceIds(',
+    'async function loadInvoiceEvents(',
+  );
+  assert.match(invoiceVisibility, /schedulerInvoiceJobs\.jobSourceApp/);
+  assert.match(invoiceVisibility, /SCHEDULER_ANALYTICS_HIDDEN_SOURCE_APPS/);
+});
 
 test('the complete analytics report uses one read-only repeatable-read snapshot', () => {
   assert.deepEqual(SCHEDULER_ANALYTICS_TRANSACTION_CONFIG, {

@@ -6,7 +6,10 @@ import { Button } from '@/components/ui/Button';
 import { EmptyState, ErrorBanner, Spinner } from '@/components/ui/Card';
 import { Checkbox, FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
 import { useToast } from '@/contexts/ToastContext';
-import { InvoiceDocument } from '@/modules/scheduler/components/InvoiceWorkspace';
+import {
+  InvoiceDocument,
+  InvoiceJobCompletionAction,
+} from '@/modules/scheduler/components/InvoiceWorkspace';
 import { startGlobalSchedulerInvoicePdfExport } from '@/modules/scheduler/api/client';
 import {
   useCheckConsolidatedSchedulerInvoiceEligibility,
@@ -272,10 +275,12 @@ function GlobalInvoiceDetail({
         try {
           const issued = await issue.mutateAsync({ invoiceId, expectedUpdatedAt });
           toast.success(issued.pdfExport?.invoiceVersion
-            ? `${invoice.invoiceNumber} issued; PDF v${issued.pdfExport.invoiceVersion} is being stored.`
+            ? `${invoice.invoiceNumber} issued; final PDF v${issued.pdfExport.invoiceVersion} is being stored.`
             : `${invoice.invoiceNumber} issued.`);
+          return issued;
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
+          throw cause;
         }
       }}
       onMarkPaid={async () => {
@@ -446,19 +451,34 @@ function ConsolidatedInvoiceBuilder({
               const selected = selectedIds.includes(job.financeId);
               const completed = isCompletedJobStatus(job.jobStatus);
               return (
-                <label key={job.financeId} className={`flex min-h-28 min-w-0 items-start gap-3 rounded-xl border p-3 transition-colors ${!completed ? 'cursor-not-allowed border-[var(--border)] bg-[var(--surface2)] opacity-70' : selected ? 'cursor-pointer border-[var(--primary)] bg-[var(--primary-soft)]' : 'cursor-pointer border-[var(--border)] hover:bg-[var(--surface2)]'}`}>
-                  <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
-                    const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
-                    setSelectedIds(result.financeIds);
-                    setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
-                  }} />
-                  <span className="min-w-0">
-                    <strong className="block truncate text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
-                    <span className="block truncate text-xs leading-5 text-[var(--text-sub)]">{job.siteName || 'Site not set'}</span>
-                    <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
-                    {!completed ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span> : job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Internal billing setup needs review</span> : null}
-                  </span>
-                </label>
+                <div key={job.financeId} className={`min-h-28 min-w-0 rounded-xl border p-3 transition-colors ${!completed ? 'border-[var(--amber)]/30 bg-[var(--amber-soft)]' : selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-[var(--border)] hover:bg-[var(--surface2)]'}`}>
+                  <label className={`flex min-w-0 items-start gap-3 ${completed ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                    <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
+                      const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
+                      setSelectedIds(result.financeIds);
+                      setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
+                    }} />
+                    <span className="min-w-0">
+                      <strong className="block truncate text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
+                      <span className="block truncate text-xs leading-5 text-[var(--text-sub)]">{job.siteName || 'Site not set'}</span>
+                      <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
+                      {!completed ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span> : job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Internal billing setup needs review</span> : null}
+                    </span>
+                  </label>
+                  {!completed && job.sourceApp === 'installhub' && job.sourceType === 'installation' ? (
+                    <InvoiceJobCompletionAction
+                      className="mt-3 pl-8"
+                      job={{
+                        financeId: job.financeId,
+                        sourceApp: job.sourceApp,
+                        sourceType: job.sourceType,
+                        sourceId: job.sourceId,
+                        jobName: job.jobName,
+                      }}
+                      onCompleted={() => setError(null)}
+                    />
+                  ) : null}
+                </div>
               );
             })}
           </fieldset>

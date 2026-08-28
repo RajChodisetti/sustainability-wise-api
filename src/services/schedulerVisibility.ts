@@ -3,15 +3,15 @@ import { notFound } from '../utils/errors.js';
 export type SchedulerPolicySourceApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'custom';
 export type SchedulerPolicyFinanceSourceApp = Exclude<SchedulerPolicySourceApp, 'custom'>;
 
-const ALL_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
+const VISIBLE_SOURCE_APPS = ['installhub', 'custom'] as const;
 
 /**
- * Backend visibility is intentionally independent from the portal's source
- * selector. Eco Audit and Solar Sense may be hidden as choices for new work in
- * the UI while their existing Scheduler records and direct APIs remain usable.
+ * Product rows remain stored even when they are outside Scheduler. Public
+ * Scheduler reads and mutations expose Field App jobs and custom planning work
+ * only; EcoAudit and SolarSense continue to use their product-specific flows.
  */
 export function schedulerVisibleSourceApps(): SchedulerPolicySourceApp[] {
-  return [...ALL_SOURCE_APPS];
+  return [...VISIBLE_SOURCE_APPS];
 }
 
 export function schedulerVisibleFinanceSourceApps(): SchedulerPolicyFinanceSourceApp[] {
@@ -36,7 +36,7 @@ export function areSchedulerSourceAppsVisible(
   ));
 }
 
-/** Return 404 for values that are not Scheduler source applications. */
+/** Return 404 for sources that are outside the public Scheduler policy. */
 export function assertSchedulerSourceAppVisible(
   sourceApp: string,
 ): void {

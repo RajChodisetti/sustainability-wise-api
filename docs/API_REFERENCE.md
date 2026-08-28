@@ -71,9 +71,13 @@ drifted projections are marked for attention.
 The billing-rate PATCH accepts exactly `{ "billingRate": number | null }` and
 returns `{ globalUserId, billingRate }`. The rate belongs to `global_users`, so
 all product memberships for that person use one administrative value. It is
-not inferred from a job, recorded time, or Scheduler defaults. A missing rate
-remains `null`; commercial labour calculation reports the affected user and
-requires an administrator to set the rate instead of guessing one.
+not inferred from a job or recorded time. Scheduler Finance uses it as the
+default unless that same canonical user has an explicit override for the
+selected finance job. Rates are currencyless numeric defaults: Scheduler
+interprets the value in the selected job finance currency and performs no
+automatic foreign-exchange conversion. A missing rate remains `null`; commercial labour
+calculation reports the affected user and requires an administrator to set a
+default or job override instead of guessing one.
 
 The workforce-profile PATCH accepts exactly
 `{ timezone, workingDaysMask, expectedUpdatedAt }`. At least one working-day bit
@@ -101,7 +105,7 @@ global projections never grant it.
 | POST | `/v1/portal/scheduler/leave-requests/:id/decision` | admin | Approve or reject pending leave with `expectedUpdatedAt`; approval rejects overlapping planned/in-progress work |
 | POST | `/v1/portal/scheduler/leave-requests/:id/cancel` | owner or admin | Cancel pending or approved leave with `expectedUpdatedAt` |
 | GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
-| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Eco Audit, Solar Sense, or Field App Complete job, or create a custom event |
+| POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Field App Complete job, or create a custom event |
 | POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
 | GET | `/v1/portal/scheduler/clients?q=...&clientId=...` | portal user | Search normalized, company-scoped clients and return every saved Australian site/address for each match |
 | POST | `/v1/portal/scheduler/client-address-suggestions` | portal user | Return a selected client's saved addresses first and Geoapify/Photon Australian suggestions second in one response |
@@ -109,12 +113,15 @@ global projections never grant it.
 | POST | `/v1/portal/scheduler/clients/:id/merge` | admin | Merge a duplicate client into a target client, preserving all sites and recording an audit event |
 | POST | `/v1/portal/scheduler/route-suggestions` | portal user | Suggest an open driving route from a fresh Australian current location through that user's active jobs for one local calendar date; admin overrides require an explicitly authorized origin |
 | PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event; setting a linked product event to `done` completes the canonical product job in the same transaction |
-| POST | `/v1/portal/scheduler/jobs/:sourceApp/:sourceType/:sourceId/complete` | admin | Idempotently complete an Eco Audit, Solar Sense, or Field App Complete job from Scheduler and close its linked events |
+| POST | `/v1/portal/scheduler/jobs/:sourceApp/:sourceType/:sourceId/complete` | admin | Idempotently complete a Field App Complete job from Scheduler and close its linked events; hidden product sources return 404 |
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
 | GET | `/v1/portal/scheduler/sites?sourceApp=installhub&q=...` | admin | Search canonical client sites and the latest same-product job revision used to seed new work |
 | GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List Draft jobs; defaults to jobs without an active event |
+| GET | `/v1/portal/scheduler/inventory` | admin | Count active non-installed meters in company stock and user custody, including per-user totals |
+| GET | `/v1/portal/scheduler/meter-register?search=...` | admin | Search active non-installed company/user meter stock and return each meter's current custodian |
+| POST | `/v1/portal/scheduler/meter-register` | admin | Add a meter-only record to company stock; this does not create or schedule a job |
 
 The three product namespaces expose the same mobile client-memory reads:
 `GET /v1/{installhub|ecoaudit|solarsense}/client-directory` and
@@ -137,6 +144,26 @@ preserves the legacy unscheduled-only response.
 The analytics endpoint reads one repeatable-read database snapshot. Its report
 timezone defines the selected UTC interval and daily financial buckets; each
 leaderboard user's saved timezone defines that user's working-day/leave labels.
+Each `leaderboard[]` row also returns `scheduledJobs` and `unscheduledJobs`.
+Both are distinct current-work counts over non-deleted, incomplete Field App
+Complete installations; EcoAudit Pro, SolarSense, custom, and legacy Solar site
+rows are excluded. Counts are deduplicated by `sourceApp`, `sourceType`, and
+`sourceId`. `scheduledJobs` counts a source job
+when at least one active `planned` or `in_progress` Scheduler event starts at or
+after the selected window start and before its exclusive end. When several
+events for the same job start inside the window, the earliest start, then
+lexical event ID, supplies the single count and assignee attribution. An active
+event at any date prevents that job from being `unscheduled`; consequently, a
+job whose only active event falls outside the selected window is in neither
+count. `unscheduledJobs` counts a source job only when it has no active
+`planned` or `in_progress` Scheduler event at any date, and attributes it from
+the current product assignment rather than from completion or Scheduler-event
+history. Jobs whose event assignee or product assignment does not resolve to an
+active leaderboard user remain visible in
+`quality.unattributed.scheduledJobs` or
+`quality.unattributed.unscheduledJobs`. The response repeats these rules in
+`definitions.scheduledJobs` and `definitions.unscheduledJobs` so consumers do
+not need to infer the count semantics.
 Completion facts supply immutable first-completion time and attribution plus a
 currency-preserving ex-GST/GST/inc-GST revenue snapshot. Accepted late session
 evidence at or before completion affects working-hours analytics only and does
@@ -192,11 +219,15 @@ at most 100 characters on the installation's default grid supply rather than
 duplicating it on the installation. New Field jobs use controlled M1-M5 scope
 values in `serviceType`; M5 carries the free-text Other scope.
 `meteringSolutionType` uses NEM meter, revenue metering, monitoring/sub-meter,
-water meter, or free-text Other. `customJobNumber` is the current optional job
-reference. Legacy `serviceType` values remain accepted for installed-client
-compatibility. Planned meter type, Fergus, and quote references are legacy
-migration/import fields only and are not requested by Scheduler or Field App
-UIs. Omitting an additive field keeps an
+water meter, or free-text Other. Scheduler does not request a custom job
+number: the server-generated `business_jobs.id` is the canonical database job
+identity. The nullable `customJobNumber` field remains accepted only for
+historical and installed-client compatibility. Scheduler supplies an optional
+three-character `A-Z0-9` title suffix; the API validates and reuses it, or
+generates one when an older portal omits it. Legacy `serviceType` values remain
+accepted for installed-client compatibility. Planned meter type, Fergus, and
+quote references are legacy migration/import fields only and are not requested
+by Scheduler or Field App UIs. Omitting an additive field keeps an
 existing value during legacy synchronization; sending `null` explicitly clears
 it. Nullable booleans preserve unknown as `null`.
 
@@ -237,14 +268,16 @@ lifecycle or completion evidence.
 The server derives ownership and inspector display fields from authenticated
 canonical identities. Client-supplied IDs, assignment, sync state, deletion,
 completion, and lifecycle status fields are rejected. New work is always Draft
-and its event is always planned. SolarSense dispatches and new links target a
-rooftop assessment; historical site-linked events remain readable, but cannot
-be newly linked or reassigned. Completed or deleted jobs are not linkable.
+and its event is always planned. Public Scheduler dispatch, linking, reads, and
+mutations expose Field App Complete jobs only. Retained EcoAudit Pro and
+SolarSense rows remain available to their product-specific sync flows but are
+not returned by Scheduler and cannot be newly linked or reassigned there.
+Completed or deleted jobs are not linkable.
 Product completion marks every non-cancelled linked calendar event done and
 cancels its pending automated reminders; manual reminder history is preserved.
 The projection is idempotently reconciled by explicit completion, and by Eco
 Audit/Solar Sense mobile sync ingestion. Field App Complete uses its canonical
-completion transaction. Scheduler administrators may use the explicit product-job
+completion transaction. Scheduler administrators may use the explicit Field product-job
 completion endpoint or set a linked event to `done`; both paths complete the
 canonical product first and then close every linked event atomically. Field App
 Complete retains its schema-version, TBC-readiness, immutable-version, revision,
@@ -279,8 +312,7 @@ Field user through the API only when the submitted current location is an
 explicitly authorized starting point. The shared portal keeps browser-location
 planning self-only so an administrator's device location is never presented as
 an employee's. The user's saved IANA timezone defines the requested local day. The
-API reads planned/in-progress Eco Audit audits, SolarSense assessments, and
-Field App Complete installations, then returns optimized `jobs`, explicit
+API reads planned/in-progress Field App Complete installations, then returns optimized `jobs`, explicit
 `unroutableJobs`, leg and total estimates, schedule warnings, and one
 `googleMapsUrl` in the optimized order. A configured OSRM table supplies exact
 road-duration ordering; an unavailable router produces a deterministic
@@ -517,17 +549,17 @@ Each type has identical CRUD. Replace `{type}` with one of:
 ## Scheduler commercial control
 
 All commercial routes require an active canonical global administrator. Finance
-belongs to the immutable source identity, not a calendar event. Exact supported
-active identities are EcoAudit `audit`, SolarSense `assessment`, and Field App
-Complete `installation`; custom events and legacy Solar site rows are excluded.
-This backend support is independent of which sources the portal offers when an
-administrator creates new work.
+belongs to the immutable source identity, not a calendar event. Public Scheduler
+commercial access is limited to Field App Complete `installation` identities;
+EcoAudit Pro, SolarSense, custom events, and legacy Solar site rows are excluded.
+Retained hidden ledgers and product records are not deleted by this visibility
+policy, and internal completion capture may preserve their historical values.
 
 `GET /v1/portal/scheduler/finance?limit=25&cursor=...` returns
-`{items,nextCursor}`. It includes every non-deleted Eco Audit, Solar Sense, and
-Field App Complete job (scheduled or not) plus retained ledgers for deleted
-historical work. Optional `sourceApp` and exact `sourceId` filters resolve a
-supported job directly. Each row exposes stable
+`{items,nextCursor}`. It includes every non-deleted Field App Complete job
+(scheduled or not) plus visible retained ledgers for deleted historical work.
+Optional `sourceApp` and exact `sourceId` filters resolve a visible supported
+job directly; EcoAudit Pro and SolarSense filters fail closed. Each row exposes stable
 `financeId`, nullable `eventId`, explicit `jobStatus` and `eventStatus`, recorded
 and effective hours, currency, revenue/cost/profit/margin, invoice/overdue state,
 and `needsHoursReview`.
@@ -545,7 +577,7 @@ and `needsHoursReview`.
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/void` | Void an unpaid invoice and release every job reservation using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/mark-paid` | Mark an issued invoice paid using required `{expectedUpdatedAt}` and optional `{paidAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs` | Queue the exact consolidated PDF revision using required `{expectedUpdatedAt}` |
-| POST | `/v1/portal/scheduler/invoices/:invoiceId/email` | Queue Gmail delivery of an issued/paid invoice's exact branded PDF; requires `{expectedUpdatedAt,idempotencyKey}` and accepts optional `{to,subject,message}`; returns `202 {delivery,reused}` |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/email` | Queue Gmail delivery of an issued/paid invoice's exact final branded PDF; requires `{expectedUpdatedAt,idempotencyKey}` and accepts optional `{to,subject,message}`; `to` supports 1–10 comma/semicolon-separated addresses; returns `202 {delivery,reused}` |
 | GET | `/v1/portal/scheduler/invoices/:invoiceId/email-deliveries` | List the newest 100 durable email delivery audit rows, including queued/sent/failed/unknown status and provider message identity |
 | GET | `/v1/portal/scheduler/invoices/:invoiceId/refunds` | List posted and reversed refund audit rows for the invoice |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/refunds` | Post an idempotent partial/full refund against an issued or paid invoice using `{expectedUpdatedAt,idempotencyKey,amountExGst,gstAmount,reason}` and optional refund time/reference; GST must match the invoice rate/final remainder |
@@ -553,7 +585,8 @@ and `needsHoursReview`.
 | POST | `/v1/portal/scheduler/expenses/:expenseId/attachments` | Upload one private PDF/JPEG/PNG/WebP bill attachment; see evidence rules below |
 | GET | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId/download` | Authenticated private download with safe Content-Disposition and `private, no-store` caching |
 | DELETE | `/v1/portal/scheduler/expenses/:expenseId/attachments/:attachmentId` | Delete unreserved/uninvoiced evidence through the durable storage-deletion outbox |
-| GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, internal cost rate, billing contact, and audited hour override; customer billing rates belong to canonical users |
+| GET/PUT | `/v1/portal/scheduler/finance/:financeId` | Full summary / update pricing, internal cost rate, billing contact, and audited hour override |
+| PATCH | `/v1/portal/scheduler/finance/:financeId/actors/:globalUserId/billing-rate` | Set this actor's rate override for only this job, or clear it to inherit the current canonical default |
 | POST | `/v1/portal/scheduler/finance/:financeId/expenses` | Create structured ex-GST expense or supplier bill |
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
 | GET | `/v1/portal/scheduler/finance/:financeId/invoices` | List draft/issued/paid/void invoices |
@@ -566,6 +599,18 @@ and `needsHoursReview`.
 | GET | `/v1/export/jobs/latest?entityId=:invoiceId&artifactType=pdf&reportVariantKey=...` | Recover the current administrator's latest matching invoice export after navigation/reload |
 | GET | `/v1/export/jobs/:jobId` | Poll queued/running/complete/failed status and the canonical branded filename |
 | GET | `/v1/export/jobs/:jobId/download` | Stream the completed PDF with safe ASCII `filename` and UTF-8 `filename*` Content-Disposition values |
+
+Each finance summary actor keeps `billingRate` as a compatibility alias for
+the effective rate and also returns `defaultBillingRate`,
+`billingRateOverride`, `effectiveBillingRate`, and `billingRateSource`
+(`global_default`, `job_override`, or `missing`). The actor-rate PATCH accepts
+exactly `{ "billingRateOverride": number | null }`. A number is persisted under
+the `(financeId, globalUserId)` commercial identity; `null` removes that row so
+the latest canonical user default applies. The target must be a canonically
+linked actor on that job. The finance ledger is row-locked before mutation so
+invoice creation and completion-revenue capture cannot observe a partial rate
+change. Existing issued invoice lines and immutable completion snapshots are
+not rewritten.
 
 Invoices expose nullable `xeroInvoiceNumber` and `xeroDate` as reconciliation
 metadata distinct from the internal invoice number/date and
@@ -584,8 +629,9 @@ whose acknowledgement was lost. Never automatically resubmit
 `delivery_unknown`; verify the sender mailbox before an administrator chooses a
 new idempotency key. Replaying the same invoice/idempotency key and identical
 request returns the original row with `reused: true`; changing that request is a
-409 conflict. `to` defaults to the invoice's snapshotted `billToEmail`. Draft or
-void invoices return 409, an absent/invalid recipient returns 400, and an API
+409 conflict. `to` defaults to the invoice's snapshotted `billToEmail`; supplied
+lists are case-insensitively deduplicated and stored in canonical comma-space
+form. Draft or void invoices return 409, an absent/invalid recipient returns 400, and an API
 runtime without explicitly enabled Gmail credentials returns 503.
 Voiding an invoice while its Gmail provider submission is in progress returns
 409; retry only after the delivery reaches a terminal audit status. This fence
@@ -609,13 +655,14 @@ heartbeat lease and ownership token. Queued work survives a crash before local
 dispatch; expired running work is safely resumed, while fresh rolling-old jobs
 receive a one-hour compatibility grace. Completion is token-fenced before a
 linked invoice email becomes eligible.
-One-job exports keep the established job-name/job-date filename. Consolidated
-exports use the first snapshotted job name, `and-N-more`, invoice date, and
-invoice number in a bounded filename; no client identity is stored in the
-durable job parameters. The branded PDF groups lines under each immutable job
-name, date, and billing reference, repeats job/table context across page breaks,
-shows each job subtotal, and finishes with consolidated ex-GST, GST, and
-inc-GST totals.
+Every export pins `generatedAt` when it is queued and uses that date as the PDF
+Invoice date and in the bounded filename. Consolidated filenames also use the
+first snapshotted job name and `and-N-more`; no client identity is stored in the
+durable job parameters. The branded PDF omits job type, job date, Job ID, and
+internal source IDs. It keeps an explicitly supplied customer reference only
+when it is not a source ID, groups lines under each immutable job name, repeats
+table context across page breaks, labels each group `Job Sub-Total (ex GST)`,
+and finishes with consolidated ex-GST, GST, and inc-GST totals.
 The renderer loads the header, job snapshots, and lines in one repeatable-read
 transaction. Before a durable job becomes complete, the API locks the invoice,
 rechecks the pinned `updatedAt`, and atomically attaches the stored object. A
@@ -862,6 +909,19 @@ change is written to the append-only movement ledger.
 Field administrators grant or revoke that independent permission through
 `PATCH /v1/installhub/users/:id/maintainer`. Scheduler administrators can read
 company, user, and per-user counts from `GET /v1/portal/scheduler/inventory`.
+They can search the corresponding non-installed rows with
+`GET /v1/portal/scheduler/meter-register?search=...`; each row includes its
+`company` or `user` status and the current custodian's ID, name, and email when
+assigned. Search covers Device ID, model, custom manufacturer/model, notes, and
+custodian identity.
+
+`POST /v1/portal/scheduler/meter-register` accepts only meter stock fields:
+`deviceId`, `deviceModel`, optional custom manufacturer/model, and optional
+notes. It creates company stock and never accepts client, site, job, schedule,
+or installation fields. `OTHER` meters require both custom manufacturer and
+model. A duplicate active Device ID returns 409. Scheduler does not reassign
+custody: existing Field inventory claim/maintainer assignment paths remain the
+authority for moving a meter to or from a user.
 
 Completing a canonical Field installation atomically marks its meter serials
 installed, clears user custody, and projects the client/device memberships into

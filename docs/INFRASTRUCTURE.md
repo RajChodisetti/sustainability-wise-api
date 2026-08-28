@@ -103,6 +103,9 @@ calendar links, terminalized pending Eco Audit Scheduler notifications, and
 installed a temporary database write fence without modifying any `ea_audits`
 business row. Migration 0040 removes that fence and restores Eco Audit as a
 backend Scheduler link/notification source without rewriting cancelled history.
+The current application visibility policy now exposes only Field App Complete
+jobs (plus custom planning events) through Scheduler; it preserves those
+historical rows without returning or mutating them through public Scheduler APIs.
 Migration 0038 also supersedes every existing explicit or legacy
 hour override with a zero billable/cost-hours revision; pristine ledgers keep no
 override and now evaluate to zero in the application. Raw work sessions and
@@ -162,6 +165,14 @@ a site version and does not trigger copying prior product data. Apply 0045 and
 0046 before releasing Scheduler code that creates multiple jobs for one saved
 site; older code tolerates both additive migrations.
 
+0051 additively creates `scheduler_job_actor_billing_rate_overrides`. It stores
+at most one explicit rate per finance job and canonical user; no existing rows
+are rewritten or backfilled. Apply 0051 before releasing API code that reads
+job-specific actor rates, then release the portal that exposes the override
+editor. Older API and portal processes ignore the new table, while the new API
+continues returning `billingRate` as the effective compatibility value and adds
+explicit default/override/source fields.
+
 Deploy the saved-site prefill API behavior before its portal UI. The new API
 returns deprecated latest-job fields as null, which an older portal tolerates;
 an older API would still copy prior product data even when a newer portal hides
@@ -175,8 +186,9 @@ This compatibility input is never persisted or converted into an estimate.
 Scheduler invoice PDFs use the shared durable `pdf_jobs` queue rather than a
 browser-held render request. Jobs and stored artifacts are owned by the exact
 portal app/user credential that queued them, pin invoice `id` + `updatedAt` in
-their `reportVariantKey`, and are marked complete only after object storage has
-accepted the branded PDF. Rendering reads invoice headers, grouped jobs, and
+their `reportVariantKey`, pin a canonical `generatedAt`, and are marked complete
+only after object storage has accepted the branded PDF. That timestamp supplies
+the rendered Invoice date and filename date. Rendering reads invoice headers, grouped jobs, and
 lines from one repeatable-read snapshot. Publication then locks and rechecks the
 pinned invoice revision in the same transaction that completes `pdf_jobs`.
 Before any PDF bytes are written, a `storage_deletion_tasks` outbox row protects
@@ -196,7 +208,10 @@ running Scheduler PDFs; only the current claim worker can deliberately mark one
 failed inside its transaction. Latest/status/download
 access revalidates the creator as a
 current active global administrator. Keep `pdf_jobs`, `storage_deletion_tasks`,
-and referenced PDF objects in the same backup and restore plan. The released
+and referenced PDF objects in the same backup and restore plan. PDFs omit job
+type, job date, Job ID, and internal source IDs; an explicit non-source customer
+reference remains optional, and grouped totals use `Job Sub-Total (ex GST)`.
+The released
 Field invoice PDF endpoint remains synchronous only as a mobile compatibility
 adapter.
 
@@ -252,13 +267,17 @@ Invoice snapshots no longer lock later pricing mode, quote, hourly rate, or
 commercial-hours changes. Draft lines are editable suggestions and render as
 description plus amount unless `show_quantity_and_rate` is explicitly enabled;
 issued/paid lines remain immutable. Draft creation, issue, and draft PDF queueing
-require every exact live source job to be `Completed`; a Completed SolarSense
-site does not substitute for a Draft assessment. Historical issued/paid PDF
+require every exact visible Field App source job to be `Completed`; hidden
+EcoAudit Pro and SolarSense jobs cannot enter Scheduler invoice creation.
+Historical issued/paid PDF
 snapshots remain exportable. Internal hours, missing rates, and legacy estimates
 do not gate customer invoice creation, issue, or export; they only control
 internal review and automatic labour suggestions.
 
-Issued and paid Scheduler invoices can be emailed from the portal. Delivery
+Draft invoices may collect a default-off “email final invoice after issue”
+intent in the portal; issuance completes first, then the portal queues the
+durable email request against the issued revision. Issued and paid Scheduler
+invoices can also be emailed manually from the portal. Delivery
 reuses the Wattwatchers Fleet monitor's Gmail OAuth identity: provision the
 same `EMAIL_DELIVERY_METHOD=gmail_api`, `GMAIL_USER_ID`, `GMAIL_CLIENT_ID`,
 `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, and `SMTP_USER`/`FROM_EMAIL`
@@ -282,7 +301,10 @@ Each request first queues an exact invoice-revision PDF through `pdf_jobs`, then
 records a unique invoice/idempotency-key row in
 `scheduler_invoice_email_deliveries`. The email worker sends only that completed
 branded artifact and revalidates invoice status and the requesting global admin
-at the provider boundary. Known pre-submit failures use bounded backoff. Once a
+at the provider boundary. One request accepts 1–10 comma/semicolon-separated
+mailboxes, deduplicates them case-insensitively, stores a canonical comma-space
+recipient list, and folds the outbound `To` header at recipient boundaries.
+Known pre-submit failures use bounded backoff. Once a
 Gmail submission may have started, a timeout, 5xx, malformed success, or process
 interruption becomes `delivery_unknown` and is never retried automatically;
 this favors one auditable uncertain outcome over a duplicate customer invoice.
@@ -297,8 +319,8 @@ claims are recovered, and timers are stopped during graceful shutdown. Expo send
 batches are capped at 100 and receipt requests at 1,000. Configure
 `EXPO_ACCESS_TOKEN` only when enhanced Expo push security is enabled; the Expo
 account/service-account token must have access to all three registered EAS
-projects. Never log or expose it. Scheduler delivery targets linked Eco Audit
-audits, Solar Sense assessments, and Field App Complete installations. Each
+projects. Never log or expose it. Scheduler delivery targets linked Field App
+Complete installations only. Each
 external send batch revalidates the current scheduler event,
 linked Draft product, canonical assignment, and automatic trigger timestamp;
 stale jobs are terminally cancelled. One-day and one-hour jobs expire at event

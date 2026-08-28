@@ -9,28 +9,34 @@ import {
   schedulerVisibleSourceApps,
 } from './schedulerVisibility.js';
 
-test('backend Scheduler visibility preserves every supported source', () => {
+test('backend Scheduler visibility exposes only Field App and custom work', () => {
   assert.deepEqual(
     schedulerVisibleSourceApps(),
-    ['ecoaudit', 'solarsense', 'installhub', 'custom'],
+    ['installhub', 'custom'],
   );
   assert.deepEqual(
     schedulerVisibleFinanceSourceApps(),
-    ['ecoaudit', 'solarsense', 'installhub'],
+    ['installhub'],
   );
-  assert.equal(isSchedulerSourceAppVisible('ecoaudit'), true);
-  assert.equal(isSchedulerSourceAppVisible('solarsense'), true);
+  assert.equal(isSchedulerSourceAppVisible('ecoaudit'), false);
+  assert.equal(isSchedulerSourceAppVisible('solarsense'), false);
   assert.equal(isSchedulerSourceAppVisible('installhub'), true);
   assert.equal(isSchedulerSourceAppVisible('custom'), true);
   assert.equal(areSchedulerSourceAppsVisible(['installhub']), true);
-  assert.equal(areSchedulerSourceAppsVisible(['installhub', 'ecoaudit']), true);
+  assert.equal(areSchedulerSourceAppsVisible(['installhub', 'custom']), true);
+  assert.equal(areSchedulerSourceAppsVisible(['installhub', 'ecoaudit']), false);
 });
 
-test('the runtime guard accepts supported sources and rejects unknown applications', () => {
+test('the runtime guard hides non-Scheduler sources with the same 404 boundary', () => {
   assert.doesNotThrow(() => assertSchedulerSourceAppVisible('installhub'));
-  assert.doesNotThrow(() => assertSchedulerSourceAppVisible('ecoaudit'));
-  assert.throws(
-    () => assertSchedulerSourceAppVisible('unknown'),
-    (error: unknown) => error instanceof AppError && error.statusCode === 404,
-  );
+  assert.doesNotThrow(() => assertSchedulerSourceAppVisible('custom'));
+  for (const sourceApp of ['ecoaudit', 'solarsense', 'unknown']) {
+    assert.throws(
+      () => assertSchedulerSourceAppVisible(sourceApp),
+      (error: unknown) => error instanceof AppError
+        && error.statusCode === 404
+        && error.message === 'Scheduler job not found',
+      sourceApp,
+    );
+  }
 });

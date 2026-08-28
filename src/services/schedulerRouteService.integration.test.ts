@@ -9,7 +9,7 @@ if (integrationDatabase) {
   process.env.SCHEDULER_OSRM_URL = '';
 }
 
-test('Scheduler routing reads structured destinations across all product apps', {
+test('Scheduler routing excludes hidden product rows and reads Field destinations', {
   skip: !integrationDatabase,
 }, async () => {
   const [
@@ -214,7 +214,7 @@ test('Scheduler routing reads structured destinations across all product apps', 
     assert.equal(adminRoute.optimization, 'straight_line_distance');
     assert.deepEqual(
       new Set(adminRoute.jobs.map((job) => job.sourceApp)),
-      new Set(['ecoaudit', 'solarsense', 'installhub']),
+      new Set(['installhub']),
     );
     assert.equal(adminRoute.unroutableJobs.length, 0);
     assert.match(adminRoute.googleMapsUrl ?? '', /^https:\/\/www\.google\.com\/maps\/dir\//);
@@ -239,23 +239,23 @@ test('Scheduler routing reads structured destinations across all product apps', 
       (error: unknown) => error instanceof AppError && error.statusCode === 403,
     );
 
-    await db.update(eaAudits).set({
+    await db.update(ihInstallations).set({
       siteAddress: '99 Changed Street, Sydney NSW 2000, Australia',
-    }).where(eq(eaAudits.id, ecoId));
+    }).where(eq(ihInstallations.id, installationId));
     const staleRoute = await getSchedulerRouteSuggestion(inspector, {
       date: '2026-08-20',
       currentLocation,
     });
-    assert.equal(staleRoute.jobs.length, 2);
-    assert.equal(staleRoute.unroutableJobs[0]?.title, 'George Street audit');
+    assert.equal(staleRoute.jobs.length, 0);
+    assert.equal(staleRoute.unroutableJobs[0]?.title, 'Castlereagh Street install');
     assert.equal(
       staleRoute.unroutableJobs[0]?.reason,
       'Address geocoding is not configured',
     );
     assert.ok(staleRoute.warnings.some((warning) => (
-      warning.includes('George Street audit') && warning.includes('address changed')
+      warning.includes('Castlereagh Street install') && warning.includes('address changed')
     )));
-    assert.equal(staleRoute.warnings.some((warning) => warning.includes(eventIds[0])), false);
+    assert.equal(staleRoute.warnings.some((warning) => warning.includes(eventIds[2])), false);
 
     await assert.rejects(db.update(ihInstallations).set({
       siteLatitude: 51.5072,

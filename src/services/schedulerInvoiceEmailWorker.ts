@@ -101,6 +101,16 @@ function foldedEncodedHeader(name: string, value: string, suffix?: string): stri
   return lines;
 }
 
+function foldedRecipientHeader(value: string): string[] {
+  // The queue service persists a validated comma-space list. One mailbox per
+  // physical line keeps even ten maximum-length addresses below RFC 5322's
+  // hard line limit while unfolding back to the exact canonical To value.
+  const recipients = value.split(', ');
+  return recipients.map((recipient, index) => (
+    `${index === 0 ? 'To: ' : ' '}${recipient}${index < recipients.length - 1 ? ',' : ''}`
+  ));
+}
+
 function safeAsciiFilename(value: string): string {
   return value
     .normalize('NFKD')
@@ -132,7 +142,7 @@ export function buildSchedulerInvoiceEmailRaw(
   const asciiFilename = safeAsciiFilename(submission.attachmentFilename);
   const mime = [
     ...foldedEncodedHeader('From', options.fromName, `<${options.fromEmail}>`),
-    `To: ${submission.recipient}`,
+    ...foldedRecipientHeader(submission.recipient),
     ...foldedEncodedHeader('Subject', submission.subject),
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <scheduler-invoice-${submission.deliveryId}@${senderDomain(options.fromEmail)}>`,

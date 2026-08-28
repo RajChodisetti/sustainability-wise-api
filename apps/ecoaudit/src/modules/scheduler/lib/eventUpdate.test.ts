@@ -113,7 +113,10 @@ test('new Field App jobs collect planning inputs without installation outcomes',
   assert.match(modalSource, /M4 - BD\/Upselling/);
   assert.match(modalSource, /M5 — Other/);
   assert.match(modalSource, /Metering type selection/);
-  assert.match(modalSource, /scheduler-custom-job-number/);
+  assert.doesNotMatch(modalSource, /scheduler-custom-job-number|customJobNumber/);
+  assert.match(modalSource, /titleSuffix: fieldJobTitleSuffix/);
+  assert.match(modalSource, /schedulerFieldJobTitlePreview\(/);
+  assert.doesNotMatch(modalSource, / - XXX/);
   assert.doesNotMatch(modalSource, /scheduler-planned-meter-type/);
   assert.match(modalSource, /scheduler-job-comments/);
   assert.doesNotMatch(modalSource, /scheduler-(?:fergus-job|quote-number|customer-name)/);
@@ -147,6 +150,10 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
   assert.match(modalSource, /clientId: selectedClientId/);
   assert.match(modalSource, /schedulerSiteOptionLabel\(site\)/);
   assert.match(modalSource, /previous job data is not copied/);
+  assert.ok(
+    (modalSource.match(/clearSchedulerFieldJobPlanning\(current\)/g) ?? []).length >= 3,
+    'every existing-site entry path clears Field planning values',
+  );
   assert.doesNotMatch(modalSource, /latestRevisionNumber/);
   assert.doesNotMatch(modalSource, /latest(?:WorkType|MeteringSolutionType|CustomJobNumber|JobComments|Maas|ElectricityNmi)/);
   assert.doesNotMatch(modalSource, /new independent job version/);

@@ -38,7 +38,10 @@ export type InvoicePdfModel = {
   invoiceNumber: string;
   status: string;
   currency: string;
-  issueDate: string | null;
+  /** Timestamp pinned when this PDF generation was requested. */
+  invoiceDate?: string | null;
+  /** Compatibility input for callers being migrated to invoiceDate. */
+  issueDate?: string | null;
   dueDate: string | null;
   paidAt?: string | null;
   notes: string | null;
@@ -113,16 +116,6 @@ function formatDate(iso: string | null): string {
   });
 }
 
-function sourceProductLabel(sourceApp: InvoiceSourceApp): string {
-  if (sourceApp === 'ecoaudit') return 'EcoAudit Pro';
-  if (sourceApp === 'solarsense') return 'SolarSense';
-  return 'Field App Complete';
-}
-
-function sourceTypeLabel(sourceType: InvoiceSourceType): string {
-  return sourceType.charAt(0).toUpperCase() + sourceType.slice(1);
-}
-
 function safeFilenameSegment(value: string, fallback: string): string {
   const safe = value
     .normalize('NFC')
@@ -143,18 +136,23 @@ function truncateUtf8Segment(value: string, maxBytes: number): string {
   return result.replace(/^[-_.]+|[-_.]+$/g, '');
 }
 
-function assertJobDate(value: string): string {
+function assertInvoiceDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) throw new TypeError('jobDate must be a valid YYYY-MM-DD calendar date');
+  if (!match) throw new TypeError('invoiceDate must be a valid YYYY-MM-DD calendar date');
   const [, year, month, day] = match;
   const parsed = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
   if (
     Number.isNaN(parsed.getTime())
     || parsed.toISOString().slice(0, 10) !== value
   ) {
-    throw new TypeError('jobDate must be a valid YYYY-MM-DD calendar date');
+    throw new TypeError('invoiceDate must be a valid YYYY-MM-DD calendar date');
   }
   return value;
+}
+
+function invoiceCalendarDate(value: string | null | undefined): string | null {
+  const candidate = /^(\d{4}-\d{2}-\d{2})(?:$|T)/.exec(value?.trim() ?? '')?.[1];
+  return candidate ? assertInvoiceDate(candidate) : null;
 }
 
 /**
@@ -163,11 +161,11 @@ function assertJobDate(value: string): string {
  */
 export function buildInvoiceDownloadFilename(input: {
   jobName: string;
-  jobDate: string;
+  invoiceDate: string;
   invoiceNumber: string;
   additionalJobCount?: number;
 }): string {
-  const jobDate = assertJobDate(input.jobDate.trim());
+  const invoiceDate = assertInvoiceDate(input.invoiceDate.trim());
   const initialJobName = truncateUtf8Segment(
     safeFilenameSegment(input.jobName.trim(), 'job'),
     MAX_JOB_FILENAME_BYTES,
@@ -183,7 +181,7 @@ export function buildInvoiceDownloadFilename(input: {
   const jobCountMarker = additionalJobCount > 0
     ? `-and-${additionalJobCount}-more`
     : '';
-  const fixedTail = `${jobCountMarker}-${jobDate}-${invoiceNumber}.pdf`;
+  const fixedTail = `${jobCountMarker}-${invoiceDate}-${invoiceNumber}.pdf`;
   const jobNameBudget = MAX_DOWNLOAD_FILENAME_BYTES
     - Buffer.byteLength('invoice-', 'utf8')
     - Buffer.byteLength(fixedTail, 'utf8');
@@ -260,7 +258,6 @@ export function buildInvoiceHtml(
         lines: model.lines,
       }];
   const primaryJob = jobGroups[0]?.job ?? model.job;
-  const primaryJobDate = assertJobDate(primaryJob.jobDate.trim());
   const isMultiJob = jobGroups.length > 1;
   const clientName = model.billTo?.name?.trim()
     || primaryJob.clientName?.trim()
@@ -268,13 +265,16 @@ export function buildInvoiceHtml(
   const billToAddress = model.billTo?.address?.trim();
   const billToEmail = model.billTo?.email?.trim();
   const billToAbn = model.billTo?.abn?.trim();
+  const requestedCustomerReference = model.purchaseOrderReference?.trim();
+  const sourceIds = new Set(jobGroups.map((group) => group.job.sourceId.trim()));
+  const customerReference = requestedCustomerReference
+    && !sourceIds.has(requestedCustomerReference)
+    ? requestedCustomerReference
+    : null;
+  const renderedInvoiceDate = model.invoiceDate ?? model.issueDate ?? primaryJob.jobDate;
   const groupedJobTables = jobGroups.map((group, index) => {
-    const jobDate = assertJobDate(group.job.jobDate.trim());
-    const productLabel = sourceProductLabel(group.job.sourceApp);
-    const jobTypeLabel = sourceTypeLabel(group.job.sourceType);
     const siteName = group.job.siteName?.trim();
     const siteAddress = group.job.siteAddress?.trim();
-    const reference = group.reference?.trim();
     const showQuantityAndRate = group.lines.some((line) => line.showQuantityAndRate === true);
     const columnCount = showQuantityAndRate ? 4 : 2;
     const lineRows = group.lines.map((line) => `
@@ -300,11 +300,6 @@ export function buildInvoiceHtml(
                   <span class="job-index">Job ${index + 1} of ${jobGroups.length}</span>
                   <span class="job-name">${esc(group.job.jobName || siteName || 'Job')}</span>
                 </div>
-                <div class="job-context">
-                  <span>${esc(productLabel)} ${esc(jobTypeLabel)}</span>
-                  <span>Job date: ${esc(formatDate(jobDate))}</span>
-                  <span>Job ID: ${reference ? esc(reference) : esc(group.job.sourceId)}</span>
-                </div>
                 ${siteName && siteName !== group.job.jobName ? `<div class="job-site">Site: ${esc(siteName)}</div>` : ''}
                 ${siteAddress ? `<div class="job-site seller-address">${esc(siteAddress)}</div>` : ''}
               </div>
@@ -321,7 +316,7 @@ export function buildInvoiceHtml(
         <tbody>
           ${lineRows || `<tr><td colspan="${columnCount}" class="muted">No lines</td></tr>`}
           <tr class="job-subtotal">
-            <td colspan="${columnCount - 1}">Job subtotal (ex GST)</td>
+            <td colspan="${columnCount - 1}">Job Sub-Total (ex GST)</td>
             <td class="num">${esc(money(group.subtotalExGst, model.currency))}</td>
           </tr>
         </tbody>
@@ -438,15 +433,6 @@ export function buildInvoiceHtml(
       letter-spacing: 0.06em;
     }
     .job-name { color: #142f70; font-size: 16px; font-weight: 700; }
-    .job-context {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 3px 14px;
-      margin-top: 3px;
-      color: #5b6475;
-      font-size: 9px;
-      font-weight: 400;
-    }
     .job-site { margin-top: 2px; color: #5b6475; font-size: 10px; font-weight: 400; }
     .column-headings th { background: #f8fafc; }
     .job-subtotal td {
@@ -509,7 +495,7 @@ export function buildInvoiceHtml(
       </div>
       <h1>${esc(title)}</h1>
       <div class="number">${esc(model.invoiceNumber)}</div>
-      <div class="muted">Issue date: ${esc(formatDate(model.issueDate))}</div>
+      <div class="muted">Invoice date: ${esc(formatDate(renderedInvoiceDate))}</div>
       <div class="muted">Due date: ${esc(formatDate(model.dueDate))}</div>
       ${model.paidAt ? `<div class="muted">Paid: ${esc(formatDate(model.paidAt))}</div>` : ''}
       <div class="badge">${esc(model.status)}</div>
@@ -523,18 +509,14 @@ export function buildInvoiceHtml(
       ${billToAbn ? `<div class="muted">ABN ${esc(billToAbn)}</div>` : ''}
       ${billToAddress ? `<div class="muted seller-address">${esc(billToAddress)}</div>` : ''}
       ${billToEmail ? `<div class="muted">${esc(billToEmail)}</div>` : ''}
-      <div class="muted">Customer reference: ${esc(model.purchaseOrderReference?.trim() || primaryJob.sourceId)}</div>
+      ${customerReference ? `<div class="muted">Customer reference: ${esc(customerReference)}</div>` : ''}
     </section>
     <section class="detail-card">
       <h2>${isMultiJob ? 'Invoice scope' : 'Job summary'}</h2>
       <div class="job-title">${isMultiJob
         ? `${jobGroups.length} jobs included`
         : esc(primaryJob.jobName || primaryJob.siteName || 'Job')}</div>
-      <div class="muted">${isMultiJob
-        ? `Detailed by job below · First job date: ${esc(formatDate(primaryJobDate))}`
-        : `${esc(sourceProductLabel(primaryJob.sourceApp))} ${esc(sourceTypeLabel(primaryJob.sourceType))}`}</div>
-      ${!isMultiJob ? `<div class="muted">Job date: ${esc(formatDate(primaryJobDate))}</div>` : ''}
-      <div class="muted">Job ID: ${esc(primaryJob.sourceId)}</div>
+      ${isMultiJob ? '<div class="muted">Detailed by job below</div>' : ''}
       <div class="muted">Currency: ${esc(model.currency || 'AUD')}</div>
     </section>
   </div>
@@ -565,12 +547,15 @@ export function buildInvoiceHtml(
 export async function renderInvoicePdf(model: InvoicePdfModel): Promise<InvoicePdfOutput> {
   const logoDataUri = await loadBrandLogoDataUri();
   const buffer = await renderPdf(buildInvoiceHtml(model, { logoDataUri }));
+  const invoiceDate = invoiceCalendarDate(
+    model.invoiceDate ?? model.issueDate ?? model.job.jobDate,
+  );
+  if (!invoiceDate) {
+    throw new TypeError('invoiceDate must contain a valid YYYY-MM-DD calendar date');
+  }
   const filename = buildInvoiceDownloadFilename({
     jobName: model.jobs?.[0]?.job.jobName ?? model.job.jobName,
-    jobDate: model.jobs && model.jobs.length > 1
-      ? (/^(\d{4}-\d{2}-\d{2})/.exec(model.issueDate ?? '')?.[1]
-        ?? model.jobs[0].job.jobDate)
-      : (model.jobs?.[0]?.job.jobDate ?? model.job.jobDate),
+    invoiceDate,
     invoiceNumber: model.invoiceNumber,
     additionalJobCount: Math.max(0, (model.jobs?.length ?? 1) - 1),
   });

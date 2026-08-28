@@ -55,7 +55,7 @@ describe('buildInvoiceHtml', () => {
       invoiceNumber: 'INV-2026-0001',
       status: 'issued',
       currency: 'AUD',
-      issueDate: '2026-08-11T00:00:00.000Z',
+      invoiceDate: '2026-08-19T00:00:00.000Z',
       dueDate: '2026-08-25T00:00:00.000Z',
       notes: 'Thanks',
       gstRate: 0.1,
@@ -94,7 +94,8 @@ describe('buildInvoiceHtml', () => {
     assert.match(html, /INV-2026-0001/);
     assert.match(html, /ABN 12 345 678 901/);
     assert.match(html, /Warehouse upgrade/);
-    assert.match(html, /12 Aug 2026/);
+    assert.match(html, /Invoice date: 19 Aug 2026/);
+    assert.doesNotMatch(html, /12 Aug 2026|Job ID:|Job date:/);
     assert.match(html, /Labour/);
   });
 });

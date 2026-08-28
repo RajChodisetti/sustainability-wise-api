@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   schedulerDefaultSourceApp,
   schedulerCreatableSourceApps,
+  schedulerEventSupportsMobileNotifications,
   schedulerIsFieldOnly,
   schedulerSelectableSourceApps,
   schedulerSourceAppIsSelectable,
@@ -11,16 +12,18 @@ import {
   schedulerVisibleSourceApps,
 } from './visibility';
 
-test('existing Scheduler work remains visible across every source', () => {
+test('Scheduler visibility is limited to Field App and custom work', () => {
   const visibleSourceApps = schedulerVisibleSourceApps();
-  assert.deepEqual(visibleSourceApps, ['ecoaudit', 'solarsense', 'installhub', 'custom']);
+  assert.deepEqual(visibleSourceApps, ['installhub', 'custom']);
   assert.deepEqual(
     schedulerVisibleFinanceSourceApps(visibleSourceApps),
-    ['ecoaudit', 'solarsense', 'installhub'],
+    ['installhub'],
   );
-  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'ecoaudit'), true);
-  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'solarsense'), true);
-  assert.equal(schedulerIsFieldOnly(visibleSourceApps), false);
+  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'ecoaudit'), false);
+  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'solarsense'), false);
+  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'installhub'), true);
+  assert.equal(schedulerSourceAppIsVisible(visibleSourceApps, 'custom'), true);
+  assert.equal(schedulerIsFieldOnly(visibleSourceApps), true);
 });
 
 test('new Scheduler work is limited to Field App and custom jobs', () => {
@@ -52,4 +55,27 @@ test('Scheduler creation controls hide EcoAudit and SolarSense', () => {
 test('new Scheduler work defaults to Field App, never a display-only source', () => {
   assert.equal(schedulerDefaultSourceApp(schedulerSelectableSourceApps()), 'installhub');
   assert.equal(schedulerDefaultSourceApp(schedulerVisibleSourceApps()), 'installhub');
+});
+
+test('only linked Field App jobs support Scheduler mobile notifications', () => {
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: 'installation-1',
+  }), true);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'ecoaudit',
+    sourceType: 'audit',
+    sourceId: 'audit-1',
+  }), false);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'solarsense',
+    sourceType: 'assessment',
+    sourceId: 'assessment-1',
+  }), false);
+  assert.equal(schedulerEventSupportsMobileNotifications({
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: '   ',
+  }), false);
 });

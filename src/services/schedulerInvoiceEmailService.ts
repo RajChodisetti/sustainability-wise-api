@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
-import { config } from '../config.js';
+import { config, isValidInvoiceEmailMailbox } from '../config.js';
 import { db } from '../db/client.js';
 import {
   globalUsers,
@@ -18,7 +18,6 @@ import {
 } from './schedulerFinanceService.js';
 import {
   queueSchedulerInvoicePdfByInvoiceId,
-  schedulerInvoicePdfJobParams,
   type QueuedSchedulerInvoicePdfExport,
 } from './schedulerInvoicePdfExport.js';
 
@@ -95,16 +94,36 @@ function requireText(value: unknown, field: string, maxLength: number): string {
   return normalized;
 }
 
+export const MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS = 10;
+export const MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENT_LIST_LENGTH = 3_200;
+
 export function normalizeInvoiceRecipient(value: unknown): string {
-  const recipient = requireText(value, 'to', 320);
-  if (
-    recipient.includes('\r')
-    || recipient.includes('\n')
-    || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(recipient)
-  ) {
-    throw badRequest('to must be a valid email address');
+  const recipientList = requireText(
+    value,
+    'to',
+    MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENT_LIST_LENGTH,
+  );
+  if (recipientList.includes('\r') || recipientList.includes('\n')) {
+    throw badRequest('to must contain only valid email addresses');
   }
-  return recipient;
+
+  const recipients = recipientList.split(/[,;]/u).map((recipient) => recipient.trim());
+  if (
+    recipients.length > MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS
+    || recipients.some((recipient) => !isValidInvoiceEmailMailbox(recipient))
+  ) {
+    throw badRequest(
+      `to must contain between 1 and ${MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS} valid email addresses`,
+    );
+  }
+
+  const seen = new Set<string>();
+  return recipients.filter((recipient) => {
+    const key = recipient.toLocaleLowerCase('en-AU');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).join(', ');
 }
 
 function normalizeSubject(value: unknown): string {
@@ -259,6 +278,38 @@ function assertEmailRuntimeReady(): void {
   }
 }
 
+export function schedulerInvoiceEmailAttachmentFromQueuedPdf(
+  pdfJob: {
+    entityId: string;
+    entityType: string;
+    params: unknown;
+  } | null | undefined,
+  expected: {
+    invoiceId: string;
+    sourceUpdatedAt: string;
+    reportVariantKey: string;
+  },
+): { filename: string; contentType: 'application/pdf' } {
+  const params = pdfJob?.params as Record<string, unknown> | null | undefined;
+  if (
+    !pdfJob
+    || pdfJob.entityType !== 'scheduler_invoice'
+    || pdfJob.entityId !== expected.invoiceId
+    || params?.artifactType !== 'pdf'
+    || params.sourceUpdatedAt !== expected.sourceUpdatedAt
+    || params.reportVariantKey !== expected.reportVariantKey
+    || typeof params.filename !== 'string'
+    || !params.filename.trim()
+    || params.contentType !== 'application/pdf'
+  ) {
+    throw conflict('Invoice PDF provenance could not be verified');
+  }
+  return {
+    filename: params.filename,
+    contentType: 'application/pdf',
+  };
+}
+
 async function existingDelivery(
   invoiceId: string,
   idempotencyKey: string,
@@ -297,7 +348,6 @@ export async function queueSchedulerInvoiceEmail(
     throw conflict('Invoice changed; refresh before sending email');
   }
   const requestFingerprint = schedulerInvoiceEmailRequestFingerprint(normalized);
-  const pdfParams = schedulerInvoicePdfJobParams(invoice);
   const queuedPdf = await dependencies.queuePdf(
     user,
     invoice.id,
@@ -340,16 +390,14 @@ export async function queueSchedulerInvoiceEmail(
       entityType: pdfJobs.entityType,
       params: pdfJobs.params,
     }).from(pdfJobs).where(eq(pdfJobs.id, queuedPdf.jobId)).limit(1);
-    const params = pdfJob?.params as Record<string, unknown> | undefined;
-    if (
-      !pdfJob
-      || pdfJob.entityType !== 'scheduler_invoice'
-      || pdfJob.entityId !== invoice.id
-      || params?.sourceUpdatedAt !== normalized.expectedUpdatedAt
-      || params?.reportVariantKey !== queuedPdf.reportVariantKey
-    ) {
-      throw conflict('Invoice PDF provenance could not be verified');
-    }
+    const attachment = schedulerInvoiceEmailAttachmentFromQueuedPdf(pdfJob, {
+      invoiceId: invoice.id,
+      sourceUpdatedAt: normalized.expectedUpdatedAt,
+      reportVariantKey: queuedPdf.reportVariantKey,
+    });
+    // The delivery row retains the exact filename and PDF job identity. Its
+    // content type stays pinned in pdf_jobs.params and is revalidated by the
+    // worker immediately before attachment bytes are loaded.
 
     const now = new Date();
     const [row] = await tx.insert(schedulerInvoiceEmailDeliveries).values({
@@ -357,7 +405,7 @@ export async function queueSchedulerInvoiceEmail(
       invoiceId: invoice.id,
       pdfJobId: queuedPdf.jobId,
       sourceUpdatedAt: new Date(normalized.expectedUpdatedAt),
-      attachmentFilename: pdfParams.filename,
+      attachmentFilename: attachment.filename,
       idempotencyKey: normalized.idempotencyKey,
       requestFingerprint,
       recipient: normalized.recipient,

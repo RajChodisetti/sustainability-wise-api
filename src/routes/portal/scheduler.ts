@@ -1,13 +1,8 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { authenticate, requireRole } from '../../auth/middleware.js';
-import { and, count, desc, eq, ilike, isNull, or } from 'drizzle-orm';
+import { and, count, eq, isNull } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import {
-  ihInstallations,
-  ihInventoryMeters,
-  ihMeterDevices,
-  ihUsers,
-} from '../../db/schema/installhub.js';
+import { ihInventoryMeters, ihUsers } from '../../db/schema/installhub.js';
 import { config } from '../../config.js';
 import {
   assertPortalSchedulerApp,
@@ -65,6 +60,7 @@ import {
   updateSchedulerExpenseByFinanceId,
   updateSchedulerFinance,
   updateSchedulerFinanceById,
+  updateSchedulerJobActorBillingRateByFinanceId,
   voidSchedulerInvoice,
   voidSchedulerInvoiceByFinanceId,
   voidConsolidatedSchedulerInvoice,
@@ -74,6 +70,7 @@ import {
   type ExpenseInput,
   type FinanceUpdateInput,
   type QuickInvoiceInput,
+  type SchedulerJobActorBillingRateUpdateInput,
   type UpdateDraftInvoiceInput,
   type UpdateSchedulerInvoiceSellerInput,
 } from '../../services/schedulerFinanceService.js';
@@ -85,6 +82,7 @@ import {
 } from '../../services/schedulerInvoicePdfExport.js';
 import {
   listSchedulerInvoiceEmailDeliveries,
+  MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENT_LIST_LENGTH,
   queueSchedulerInvoiceEmail,
   type QueueSchedulerInvoiceEmailInput,
 } from '../../services/schedulerInvoiceEmailService.js';
@@ -109,6 +107,13 @@ import {
   mergeBusinessClients,
   suggestClientAndProviderAddresses,
 } from '../../services/clientSiteMemoryService.js';
+import {
+  listNonInstalledInventoryMeters,
+  parseInventoryMeterRegistration,
+  registerInventoryMeter,
+  toNonInstalledInventoryMeterItem,
+  type InventoryMeterRegistration,
+} from '../../services/inventoryMeterService.js';
 
 function parseOptionalDate(value: unknown, name: string): Date | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -141,6 +146,41 @@ const financeUpdateBodySchema = {
     costRate: { type: 'number', minimum: 0 },
   },
 } as const;
+
+const jobActorBillingRateBodySchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['billingRateOverride'],
+  properties: {
+    billingRateOverride: { type: ['number', 'null'], minimum: 0 },
+  },
+} as const;
+
+function parseJobActorBillingRateBody(
+  body: unknown,
+): SchedulerJobActorBillingRateUpdateInput {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw badRequest('billingRateOverride body is required');
+  }
+  const record = body as Record<string, unknown>;
+  if (
+    !Object.hasOwn(record, 'billingRateOverride')
+    || Object.keys(record).some((key) => key !== 'billingRateOverride')
+  ) {
+    throw badRequest('billingRateOverride must be the only request field');
+  }
+  const value = record.billingRateOverride;
+  if (
+    value !== null
+    && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)
+  ) {
+    throw badRequest('billingRateOverride must be a nonnegative number or null');
+  }
+  if (value !== null && !Number.isSafeInteger(Math.round(value * 100))) {
+    throw badRequest('billingRateOverride is too large');
+  }
+  return { billingRateOverride: value };
+}
 
 const expenseProperties = {
   kind: { type: 'string', enum: ['expense', 'supplier_bill'] },
@@ -213,13 +253,23 @@ const invoiceEmailBodySchema = {
   properties: {
     expectedUpdatedAt: { type: 'string', format: 'date-time' },
     idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
-    to: { type: 'string', minLength: 1, maxLength: 320 },
+    to: {
+      type: 'string',
+      minLength: 1,
+      maxLength: MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENT_LIST_LENGTH,
+    },
     subject: { type: 'string', minLength: 1, maxLength: 500 },
     message: { type: 'string', maxLength: 10000 },
   },
 } as const;
 
 export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void> {
+  const jobActorBillingRateByRequest = new WeakMap<
+    FastifyRequest,
+    SchedulerJobActorBillingRateUpdateInput
+  >();
+  const inventoryMeterByRequest = new WeakMap<FastifyRequest, InventoryMeterRegistration>();
+
   app.get('/scheduler/summary', {
     schema: {
       tags: ['Portal Scheduler'],
@@ -280,7 +330,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
   app.get('/scheduler/meter-register', {
     schema: {
       tags: ['Portal Scheduler Inventory'],
-      summary: 'Search the current installed Field meter register',
+      summary: 'Search non-installed company and user-held Field meter stock',
       security: [{ bearerAuth: [] }],
       querystring: {
         type: 'object',
@@ -293,79 +343,42 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
   }, async (request, reply) => {
     const query = request.query as { search?: string };
-    const search = query.search?.trim() ?? '';
-    const searchFilter = search
-      ? or(
-          ilike(ihInventoryMeters.deviceId, `%${search}%`),
-          ilike(ihInventoryMeters.deviceModel, `%${search}%`),
-          ilike(ihMeterDevices.customName, `%${search}%`),
-          ilike(ihInstallations.customerName, `%${search}%`),
-          ilike(ihInstallations.clientName, `%${search}%`),
-          ilike(ihInstallations.siteName, `%${search}%`),
-          ilike(ihInstallations.siteAddress, `%${search}%`),
-          ilike(ihInstallations.customJobNumber, `%${search}%`),
-        )
-      : undefined;
-    const where = and(
-      isNull(ihInventoryMeters.deletedAt),
-      eq(ihInventoryMeters.status, 'installed'),
-      isNull(ihInstallations.deletedAt),
-      isNull(ihMeterDevices.deletedAt),
-      searchFilter,
-    );
-    const [items, totalRows] = await Promise.all([
-      db.select({
-        inventoryMeterId: ihInventoryMeters.id,
-        deviceId: ihInventoryMeters.deviceId,
-        deviceModel: ihInventoryMeters.deviceModel,
-        meterName: ihMeterDevices.customName,
-        customerName: ihInstallations.customerName,
-        clientName: ihInstallations.clientName,
-        siteName: ihInstallations.siteName,
-        siteAddress: ihInstallations.siteAddress,
-        customJobNumber: ihInstallations.customJobNumber,
-        installationId: ihInstallations.id,
-        meterId: ihMeterDevices.id,
-        installedAt: ihInventoryMeters.updatedAt,
-      }).from(ihInventoryMeters)
-        .innerJoin(
-          ihInstallations,
-          eq(ihInstallations.id, ihInventoryMeters.installedInstallationId),
-        )
-        .innerJoin(
-          ihMeterDevices,
-          and(
-            eq(ihMeterDevices.id, ihInventoryMeters.installedMeterId),
-            eq(ihMeterDevices.installationId, ihInstallations.id),
-          ),
-        )
-        .where(where)
-        .orderBy(desc(ihInventoryMeters.updatedAt), ihInventoryMeters.deviceId)
-        .limit(500),
-      db.select({ total: count() }).from(ihInventoryMeters)
-        .innerJoin(
-          ihInstallations,
-          eq(ihInstallations.id, ihInventoryMeters.installedInstallationId),
-        )
-        .innerJoin(
-          ihMeterDevices,
-          and(
-            eq(ihMeterDevices.id, ihInventoryMeters.installedMeterId),
-            eq(ihMeterDevices.installationId, ihInstallations.id),
-          ),
-        )
-        .where(where),
-    ]);
-    const total = Number(totalRows[0]?.total ?? 0);
-    return reply.send({
-      items: items.map(({ customerName, ...item }) => ({
-        ...item,
-        clientName: customerName?.trim() || item.clientName,
-        installedAt: item.installedAt.toISOString(),
-      })),
-      total,
-      truncated: total > items.length,
+    return reply.send(await listNonInstalledInventoryMeters({ search: query.search }));
+  });
+
+  app.post('/scheduler/meter-register', {
+    schema: {
+      tags: ['Portal Scheduler Inventory'],
+      summary: 'Register a non-installed meter in company stock',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['deviceId', 'deviceModel'],
+        additionalProperties: false,
+        properties: {
+          deviceId: { type: 'string', minLength: 1, maxLength: 200 },
+          deviceModel: { type: 'string', enum: ['A3RM', 'A6M', 'OTHER'] },
+          customManufacturerName: { type: ['string', 'null'], maxLength: 200 },
+          customModelName: { type: ['string', 'null'], maxLength: 200 },
+          notes: { type: ['string', 'null'], maxLength: 2000 },
+        },
+      },
+    },
+    preValidation: async (request) => {
+      // Retain the exact meter-only contract before Ajv can coerce or remove
+      // unexpected fields such as job, site, scheduling, or custody data.
+      inventoryMeterByRequest.set(request, parseInventoryMeterRegistration(request.body));
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const meter = inventoryMeterByRequest.get(request);
+    if (!meter) throw new Error('Inventory meter request was not validated');
+    const created = await registerInventoryMeter({
+      meter,
+      custodianUserId: null,
+      actorUserId: request.user.userId,
     });
+    return reply.status(201).send(toNonInstalledInventoryMeterItem({ meter: created }));
   });
 
   app.get('/scheduler/analytics', {
@@ -1413,6 +1426,36 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     request.params.financeId,
     (request.body ?? {}) as FinanceUpdateInput,
   )));
+
+  app.patch<{
+    Params: { financeId: string; globalUserId: string };
+  }>('/scheduler/finance/:financeId/actors/:globalUserId/billing-rate', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Set or clear one actor billing-rate override for one job',
+      security: [{ bearerAuth: [] }],
+      body: jobActorBillingRateBodySchema,
+    },
+    preValidation: async (request) => {
+      // Fastify's Ajv configuration coerces scalar values. Validate and retain
+      // the original JSON body before schema validation so strings and
+      // booleans can never become accounting values.
+      jobActorBillingRateByRequest.set(
+        request,
+        parseJobActorBillingRateBody(request.body),
+      );
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const input = jobActorBillingRateByRequest.get(request);
+    if (!input) throw new Error('Job actor billing rate request was not validated');
+    return reply.send(await updateSchedulerJobActorBillingRateByFinanceId(
+      request.user,
+      request.params.financeId,
+      request.params.globalUserId,
+      input,
+    ));
+  });
 
   app.post<{ Params: { financeId: string } }>('/scheduler/finance/:financeId/expenses', {
     schema: {

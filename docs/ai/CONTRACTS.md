@@ -182,7 +182,38 @@ internal evidence and must not feed billing or cost hours, labour calculations,
 invoice DTOs, invoice authoring UI, or PDFs. Billing hours remain a separately
 audited, editable non-negative integer.
 
-## Scheduler workforce and analytics
+## Scheduler meter inventory
+
+Scheduler Inventory is a stock register, not a job-planning surface. Its public
+rows are only active, non-installed Field meter records whose custody status is
+`company` or `user`. Installed meters are excluded from stock views and remain
+installation history; neither Inventory tab may expose a Schedule job action.
+
+Adding company stock collects meter information only: Device ID, the controlled
+device model, the custom manufacturer/model required for `OTHER`, and optional
+notes. It must not request or persist a client, site, job, schedule, assignment,
+or installation reference. A portal-created row always begins in company
+custody.
+
+Every listed stock row exposes its current custody, including the canonical
+Field user's ID, display name, and email when transferred to a user. The portal
+may create and inspect stock, but custody mutation remains with the existing
+Field inventory scan and maintainer-assignment flows. Clearing custody returns
+the row to company stock. Canonical installation completion atomically changes
+the row to `installed`, clears user custody, and removes it from both active
+stock counts and the stock register without deleting its movement history.
+
+## Scheduler visibility, workforce, and analytics
+
+Public Scheduler planning exposes Field App Complete (`installhub`) jobs and
+custom calendar work only. EcoAudit and SolarSense product and historical
+Scheduler rows remain stored for product sync, completion, active-time, and
+retention compatibility, but Scheduler lists, direct event access, job search,
+route planning, finance/invoice surfaces, and source deep links must not expose
+them. Hiding is a read/mutation policy, not a data migration or deletion. Public
+Scheduler finance has one product source, Field App Complete; custom events are
+planning-only and do not enter finance. New Scheduler mobile notifications are
+also limited to linked Field App installations.
 
 The canonical `global_users` identity owns each user's IANA timezone and weekly
 working-day mask. Sunday is bit `1`, Monday bit `2`, through Saturday bit `64`;
@@ -190,11 +221,12 @@ the default `62` is Monday–Friday. Leave uses inclusive local calendar dates i
 the user's timezone snapshot. Employees may create and cancel their own leave;
 only an active canonical administrator may approve or reject it. Pending and
 approved requests cannot overlap, and an administrator cannot review their own
-request. Approval fails while planned or in-progress
-Scheduler work overlaps the requested dates, and the same check is enforced
-under row locks whenever active work is created, dispatched, reassigned,
-rescheduled, or reactivated. Product assignment backdoors must not bypass this
-Scheduler authority.
+request. Approval fails while planned or in-progress Scheduler-visible Field or
+custom work overlaps the requested dates; hidden EcoAudit and SolarSense rows
+must not become invisible leave blockers. The same availability check is
+enforced under row locks whenever visible active work is created, dispatched,
+reassigned, rescheduled, or reactivated. Product assignment backdoors must not
+bypass this Scheduler authority.
 When an explicit event end is supplied it must be strictly later than the
 start; an omitted end retains the existing one-hour availability interval.
 
@@ -217,12 +249,11 @@ fact fall back to a non-cancelled Scheduler assignee, choosing planned/in-progre
 first, then newest update, then lexical event ID, and then product assignment.
 Known historical identity IDs remain on immutable facts, while unresolved or
 inactive identities are reported as unattributed in the active-user leaderboard.
-Backlog and
-pipeline are current-state views of supported EcoAudit audits, SolarSense
-assessments, and InstallHub installations still planned/in-progress when the
-report runs. Backlog is scheduled through the selected end date; pipeline is
-after that end, split into the next seven calendar days and days 8–30. Historical
-Scheduler status is not reconstructed, and custom/legacy Solar site rows are
+Backlog and pipeline are current-state views of visible InstallHub
+installations still planned/in-progress when the report runs. Backlog is
+scheduled through the selected end date; pipeline is after that end, split into
+the next seven calendar days and days 8–30. Historical Scheduler status is not
+reconstructed, and custom, EcoAudit, SolarSense, and legacy Solar site rows are
 excluded. These definitions and attribution-quality totals are returned with
 every analytics response.
 

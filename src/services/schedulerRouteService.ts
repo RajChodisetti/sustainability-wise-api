@@ -28,6 +28,7 @@ import {
   geocodeSchedulerAddress,
   getSchedulerTravelMatrix,
 } from './schedulerMapProvider.js';
+import { schedulerVisibleFinanceSourceApps } from './schedulerVisibility.js';
 import {
   assertPortalSchedulerApp,
   isSchedulerAdmin,
@@ -36,7 +37,6 @@ import {
   type ScheduleSourceType,
 } from './scheduleService.js';
 
-const ROUTABLE_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub'] as const;
 const DEFAULT_STRAIGHT_LINE_SPEED_METRES_PER_SECOND = 50_000 / 3_600;
 const DEFAULT_UNSCHEDULED_JOB_DURATION_MS = 60 * 60 * 1_000;
 
@@ -257,7 +257,7 @@ async function loadRouteEvents(
     gte(portalScheduleEvents.scheduledStartAt, startAt),
     lt(portalScheduleEvents.scheduledStartAt, endAt),
     inArray(portalScheduleEvents.status, ['planned', 'in_progress']),
-    inArray(portalScheduleEvents.sourceApp, [...ROUTABLE_SOURCE_APPS]),
+    inArray(portalScheduleEvents.sourceApp, schedulerVisibleFinanceSourceApps()),
   )).orderBy(
     asc(portalScheduleEvents.scheduledStartAt),
     asc(portalScheduleEvents.id),

@@ -5,11 +5,13 @@ import {
   completeSchedulerJob,
   createConsolidatedSchedulerInvoice,
   createSchedulerDispatch,
+  createSchedulerInventoryMeter,
   downloadSchedulerInvoicePdfExport,
   fetchSchedulerAddressSuggestions,
   fetchSchedulerClientAddressSuggestions,
   fetchSchedulerClients,
   fetchSchedulerInvoiceEmailDeliveries,
+  fetchSchedulerMeterRegister,
   fetchSchedulerAnalytics,
   fetchSchedulerRouteSuggestion,
   fetchPortalAssignees,
@@ -20,6 +22,7 @@ import {
   issueSchedulerInvoice,
   markGlobalSchedulerInvoicePaid,
   updateSchedulerInvoiceSeller,
+  updateSchedulerActorBillingRateOverride,
   sendSchedulerInvoiceEmail,
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
@@ -101,6 +104,80 @@ test('client memory and mixed address lookup stay on authenticated portal routes
     assert.equal(requests[0]?.authorization, `Bearer ${admin}`);
     assert.equal(requests[1]?.authorization, `Bearer ${admin}`);
     assert.equal(requests.some((request) => request.url.includes('apiKey=')), false);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('Scheduler meter inventory lists non-installed stock and registers meter-only company stock', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'inventory-admin');
+  const values = new Map<string, string>([['ih_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; method?: string; body: string }> = [];
+  const meter = {
+    inventoryMeterId: 'meter-1',
+    deviceId: 'WW-001',
+    deviceModel: 'OTHER' as const,
+    customManufacturerName: 'Acme',
+    customModelName: 'M100',
+    notes: 'New stock',
+    status: 'company' as const,
+    custodianUserId: null,
+    custodianName: null,
+    custodianEmail: null,
+    revision: 1,
+    createdAt: '2026-08-28T00:00:00.000Z',
+    updatedAt: '2026-08-28T00:00:00.000Z',
+  };
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      method: init?.method,
+      body: String(init?.body ?? ''),
+    });
+    return init?.method === 'POST'
+      ? Response.json(meter, { status: 201 })
+      : Response.json({ items: [meter], total: 1, truncated: false });
+  };
+
+  try {
+    assert.equal((await fetchSchedulerMeterRegister('Acme & user')).total, 1);
+    assert.equal((await createSchedulerInventoryMeter({
+      deviceId: 'WW-001',
+      deviceModel: 'OTHER',
+      customManufacturerName: 'Acme',
+      customModelName: 'M100',
+      notes: 'New stock',
+    })).status, 'company');
+
+    const listUrl = new URL(requests[0]?.url ?? '', 'http://portal.test');
+    assert.equal(listUrl.pathname, '/v1/portal/scheduler/meter-register');
+    assert.equal(listUrl.searchParams.get('search'), 'Acme & user');
+    assert.equal(requests[0]?.method, 'GET');
+    assert.equal(requests[1]?.method, 'POST');
+    assert.equal(new URL(requests[1]?.url ?? '', 'http://portal.test').pathname, '/v1/portal/scheduler/meter-register');
+    assert.deepEqual(JSON.parse(requests[1]?.body ?? ''), {
+      deviceId: 'WW-001',
+      deviceModel: 'OTHER',
+      customManufacturerName: 'Acme',
+      customModelName: 'M100',
+      notes: 'New stock',
+    });
   } finally {
     globalThis.fetch = priorFetch;
     if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
@@ -468,7 +545,7 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     recordVersionPayloadHash: null,
     reportSource: null,
     detailMode: null,
-    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
+    reportVariantKey: 'scheduler-invoice-pdf:v4:invoice-42:2026-08-16T18:15:00.000Z',
     createdAt: '2026-08-16T18:15:01.000Z',
     updatedAt: '2026-08-16T18:15:02.000Z',
   };
@@ -572,7 +649,7 @@ test('scheduler invoice export start/latest/status/download stay on one selected
     assert.match(start?.url ?? '', /\/scheduler\/finance\/finance%2F9\/invoices\/invoice%2F42\/pdf\/jobs$/);
     const latest = requests.find((request) => request.url.includes('/latest?'));
     assert.match(latest?.url ?? '', /\/v1\/export\/jobs\/latest\?.*entityId=invoice%2F42/);
-    assert.match(latest?.url ?? '', /reportVariantKey=scheduler-invoice-pdf%3Av3%3Ainvoice-42/);
+    assert.match(latest?.url ?? '', /reportVariantKey=scheduler-invoice-pdf%3Av4%3Ainvoice-42/);
     assert.equal(requests.some((request) => /\/v1\/export\/jobs\/job-1$/.test(request.url)), true);
     assert.equal(requests.some((request) => request.url.endsWith('/job-1/download')), true);
   } finally {
@@ -815,6 +892,54 @@ test('portal assignees retain canonical user ids and billing-rate updates use th
       workingDaysMask: 30,
       expectedUpdatedAt: '2026-08-21T01:00:00.000Z',
     });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('job actor billing-rate overrides encode both identities and send only the override field', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'finance-admin');
+  const values = new Map<string, string>([['ea_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; method: string; body: string | null }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      method: init?.method ?? 'GET',
+      body: typeof init?.body === 'string' ? init.body : null,
+    });
+    return Response.json({ financeId: 'finance/id 1' });
+  };
+
+  try {
+    await updateSchedulerActorBillingRateOverride('finance/id 1', 'global/user 1', 212.75);
+    await updateSchedulerActorBillingRateOverride('finance/id 1', 'global/user 1', null);
+
+    assert.equal(requests.length, 2);
+    for (const request of requests) {
+      assert.equal(request.method, 'PATCH');
+      assert.match(
+        request.url,
+        /\/v1\/portal\/scheduler\/finance\/finance%2Fid%201\/actors\/global%2Fuser%201\/billing-rate$/,
+      );
+    }
+    assert.deepEqual(JSON.parse(requests[0]?.body ?? ''), { billingRateOverride: 212.75 });
+    assert.deepEqual(JSON.parse(requests[1]?.body ?? ''), { billingRateOverride: null });
   } finally {
     globalThis.fetch = priorFetch;
     if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);

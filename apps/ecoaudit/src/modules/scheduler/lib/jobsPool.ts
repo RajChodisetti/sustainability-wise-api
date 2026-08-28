@@ -2,6 +2,7 @@ import { startOfWeekMonday } from '@/modules/scheduler/lib/weekGrid';
 import type { JobOption } from '@/modules/scheduler/types/domain';
 
 export const UNASSIGNED_JOB_GROUP = '__unassigned';
+export const ALL_JOBS_GROUP = '__all_jobs';
 
 export type JobAssigneeGroup = {
   id: string;
@@ -21,7 +22,9 @@ export function groupJobsByAssignee(jobs: readonly JobOption[]): JobAssigneeGrou
     if (current) current.count += 1;
     else groups.set(id, {
       id,
-      label: job.assigneeDisplayName?.trim() || 'Unassigned',
+      label: id === UNASSIGNED_JOB_GROUP
+        ? 'Unassigned'
+        : job.assigneeDisplayName?.trim() || 'Assigned user',
       count: 1,
     });
   }
@@ -32,8 +35,18 @@ export function jobsForAssignee(
   jobs: readonly JobOption[],
   assigneeGroupId: string,
 ): JobOption[] {
-  if (!assigneeGroupId) return [...jobs];
+  if (!assigneeGroupId || assigneeGroupId === ALL_JOBS_GROUP) return [...jobs];
   return jobs.filter((job) => jobAssigneeGroupId(job) === assigneeGroupId);
+}
+
+export function jobPoolFilterOptions(jobs: readonly JobOption[]): JobAssigneeGroup[] {
+  const groups = groupJobsByAssignee(jobs);
+  const unassignedCount = groups.find((group) => group.id === UNASSIGNED_JOB_GROUP)?.count ?? 0;
+  return [
+    { id: ALL_JOBS_GROUP, label: 'All jobs', count: jobs.length },
+    { id: UNASSIGNED_JOB_GROUP, label: 'Unassigned jobs', count: unassignedCount },
+    ...groups.filter((group) => group.id !== UNASSIGNED_JOB_GROUP),
+  ];
 }
 
 function jobPoolRank(job: JobOption): number {

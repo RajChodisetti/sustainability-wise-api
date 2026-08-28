@@ -52,6 +52,8 @@ export type SchedulerAnalyticsLeaderboardRow = {
   averageWorkingHoursOnSitePerWorkingDay: number;
   completedJobs: number;
   averageDailyJobs: number;
+  scheduledJobs: number;
+  unscheduledJobs: number;
   backlogJobs: number;
   pipelineJobs0To7Days: number;
   pipelineJobs8To30Days: number;
@@ -109,6 +111,8 @@ export type SchedulerAnalyticsDto = {
     unattributed: {
       workingHoursOnSiteMilliseconds: number;
       completedJobs: number;
+      scheduledJobs: number;
+      unscheduledJobs: number;
       backlogJobs: number;
       pipelineJobs0To7Days: number;
       pipelineJobs8To30Days: number;
@@ -119,6 +123,8 @@ export type SchedulerAnalyticsDto = {
     workingHoursOnSite: string;
     sessionWindowRule: string;
     averageDailyJobs: string;
+    scheduledJobs: string;
+    unscheduledJobs: string;
     completedWorkRevenue: string;
     invoiceCreated: string;
     issued: string;

@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
   persistSchedulerInvoicePdfArtifact,
+  schedulerInvoicePdfExecutionArgs,
   schedulerInvoicePdfJobParams,
   schedulerInvoicePdfReportVariantKey,
   startSchedulerInvoicePdfWorker,
@@ -31,6 +32,7 @@ const invoice = {
     sourceId: 'assessment-7',
   },
 };
+const generatedAt = '2026-08-19T04:05:06.000Z';
 
 const artifactInput = {
   user: {
@@ -54,7 +56,7 @@ const claimedJob: ClaimedSchedulerInvoicePdfJob = {
   app: artifactInput.user.app,
   entityId: artifactInput.invoiceId,
   userId: artifactInput.user.userId,
-  params: schedulerInvoicePdfJobParams(invoice),
+  params: schedulerInvoicePdfJobParams(invoice, 1, generatedAt),
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -95,16 +97,17 @@ function artifactTestDependencies(input: {
   };
 }
 
-test('scheduler invoice PDF params pin identity, revision, variant, and branded filename', () => {
-  const params = schedulerInvoicePdfJobParams(invoice);
+test('scheduler invoice PDF params pin identity, revision, generation time, and filename', () => {
+  const params = schedulerInvoicePdfJobParams(invoice, 1, generatedAt);
   assert.deepEqual(params, {
     artifactType: 'pdf',
-    filename: 'invoice-Café-rooftop-upgrade-and-1-more-2026-08-16-INV-2026-0042-v1.pdf',
+    filename: 'invoice-Café-rooftop-upgrade-and-1-more-2026-08-19-INV-2026-0042-v1.pdf',
     contentType: 'application/pdf',
     invoiceId: 'invoice-42',
     financeId: 'finance-9',
     sourceUpdatedAt: '2026-08-16T18:15:00.000Z',
-    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
+    generatedAt,
+    reportVariantKey: 'scheduler-invoice-pdf:v4:invoice-42:2026-08-16T18:15:00.000Z',
     rendererVersion: SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
     invoiceVersion: 1,
   });
@@ -113,18 +116,36 @@ test('scheduler invoice PDF params pin identity, revision, variant, and branded 
   assert.equal('jobNames' in params, false);
 });
 
-test('one-job durable params retain the legacy job-name and job-date filename', () => {
-  const params = schedulerInvoicePdfJobParams({ ...invoice, jobCount: 1 });
+test('one-job durable params use the pinned invoice-generation date', () => {
+  const params = schedulerInvoicePdfJobParams({ ...invoice, jobCount: 1 }, 1, generatedAt);
   assert.equal(
     params.filename,
-    'invoice-Café-rooftop-upgrade-2026-08-15-INV-2026-0042-v1.pdf',
+    'invoice-Café-rooftop-upgrade-2026-08-19-INV-2026-0042-v1.pdf',
   );
 });
 
 test('invoice PDF params assign the requested retained version', () => {
-  const params = schedulerInvoicePdfJobParams(invoice, 3);
+  const params = schedulerInvoicePdfJobParams(invoice, 3, generatedAt);
   assert.equal(params.invoiceVersion, 3);
   assert.match(params.filename, /-v3\.pdf$/);
+});
+
+test('invoice PDF params reject an invalid generation timestamp', () => {
+  assert.throws(
+    () => schedulerInvoicePdfJobParams(invoice, 1, 'not-a-timestamp'),
+    /generatedAt must be a valid timestamp/,
+  );
+});
+
+test('claimed retries retain the exact queue-pinned generation timestamp', () => {
+  assert.equal(schedulerInvoicePdfExecutionArgs(claimedJob).generatedAt, generatedAt);
+  assert.throws(
+    () => schedulerInvoicePdfExecutionArgs({
+      ...claimedJob,
+      params: { ...claimedJob.params, generatedAt: '2026-08-19T04:05:06Z' },
+    }),
+    /scheduler_invoice_pdf_claim_invalid_provenance/,
+  );
 });
 
 test('invoice lifecycle mutations produce a new latest/dedupe variant', () => {

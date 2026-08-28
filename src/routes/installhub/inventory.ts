@@ -10,6 +10,10 @@ import {
 } from '../../db/schema/installhub.js';
 import { globalUsers } from '../../db/schema/shared.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
+import {
+  parseInventoryMeterRegistration,
+  registerInventoryMeter,
+} from '../../services/inventoryMeterService.js';
 
 type InventoryModel = 'A3RM' | 'A6M' | 'OTHER';
 
@@ -143,42 +147,18 @@ export async function installhubInventoryRoutes(app: FastifyInstance): Promise<v
       )).limit(1);
       if (!user) throw notFound('Inventory custodian');
     }
-    const deviceModel = model(body.deviceModel);
-    const customManufacturerName = optionalText(body.customManufacturerName, 'customManufacturerName', 200);
-    const customModelName = optionalText(body.customModelName, 'customModelName', 200);
-    if (deviceModel === 'OTHER' && (!customManufacturerName || !customModelName)) {
-      throw badRequest('OTHER meters require customManufacturerName and customModelName');
-    }
-    const now = new Date();
-    try {
-      const created = await db.transaction(async (tx) => {
-        const [meter] = await tx.insert(ihInventoryMeters).values({
-          id: randomUUID(),
-          deviceId: deviceId(body.deviceId),
-          deviceModel,
-          customManufacturerName,
-          customModelName,
-          status: custodianUserId ? 'user' : 'company',
-          custodianUserId,
-          notes: optionalText(body.notes, 'notes', 2000),
-          createdByUserId: request.user.userId,
-          updatedByUserId: request.user.userId,
-          createdAt: now,
-          updatedAt: now,
-        }).returning();
-        await tx.insert(ihInventoryMeterMovements).values({
-          id: randomUUID(), inventoryMeterId: meter.id, action: 'registered',
-          fromStatus: null, toStatus: meter.status,
-          fromCustodianUserId: null, toCustodianUserId: meter.custodianUserId,
-          actorUserId: request.user.userId, occurredAt: now,
-        });
-        return meter;
-      });
-      return reply.status(201).send(created);
-    } catch (error) {
-      if (uniqueViolation(error)) throw conflict('This Device ID is already registered');
-      throw error;
-    }
+    const created = await registerInventoryMeter({
+      meter: parseInventoryMeterRegistration({
+        deviceId: body.deviceId,
+        deviceModel: body.deviceModel,
+        customManufacturerName: body.customManufacturerName,
+        customModelName: body.customModelName,
+        notes: body.notes,
+      }),
+      custodianUserId,
+      actorUserId: request.user.userId,
+    });
+    return reply.status(201).send(created);
   });
 
   app.post('/meters/scan', {

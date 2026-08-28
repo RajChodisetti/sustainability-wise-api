@@ -39,12 +39,13 @@ import {
   SCHEDULER_INVOICE_PDF_UNATTACHED_REASON,
 } from './storageDeletionService.js';
 
-export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v3';
+export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v4';
 
 export type SchedulerInvoicePdfJobParams = ExportJobParams & {
   invoiceId: string;
   financeId: string;
   sourceUpdatedAt: string;
+  generatedAt: string;
   reportVariantKey: string;
   rendererVersion: typeof SCHEDULER_INVOICE_PDF_RENDERER_VERSION;
   invoiceVersion: number;
@@ -103,9 +104,10 @@ export function schedulerInvoicePdfReportVariantKey(
 export function schedulerInvoicePdfJobParams(
   invoice: Pick<
     SchedulerInvoiceDto,
-    'id' | 'financeId' | 'invoiceNumber' | 'updatedAt' | 'issueDate' | 'job' | 'jobCount'
+    'id' | 'financeId' | 'invoiceNumber' | 'updatedAt' | 'job' | 'jobCount'
   >,
   invoiceVersion = 1,
+  generatedAtInput = new Date().toISOString(),
 ): SchedulerInvoicePdfJobParams {
   if (!Number.isSafeInteger(invoice.jobCount) || invoice.jobCount < 1) {
     throw new TypeError('invoice jobCount must be a positive safe integer');
@@ -113,15 +115,17 @@ export function schedulerInvoicePdfJobParams(
   if (!Number.isSafeInteger(invoiceVersion) || invoiceVersion < 1) {
     throw new TypeError('invoiceVersion must be a positive safe integer');
   }
+  const generatedAtDate = new Date(generatedAtInput);
+  if (Number.isNaN(generatedAtDate.getTime())) {
+    throw new TypeError('generatedAt must be a valid timestamp');
+  }
+  const generatedAt = generatedAtDate.toISOString();
   const additionalJobCount = Math.max(0, invoice.jobCount - 1);
-  const invoiceCalendarDate = additionalJobCount > 0
-    ? /^(\d{4}-\d{2}-\d{2})/.exec(invoice.issueDate ?? '')?.[1]
-    : undefined;
   return {
     artifactType: 'pdf',
     filename: versionedInvoiceFilename(buildInvoiceDownloadFilename({
       jobName: invoice.job.jobName,
-      jobDate: invoiceCalendarDate ?? invoice.job.jobDate,
+      invoiceDate: generatedAt.slice(0, 10),
       invoiceNumber: invoice.invoiceNumber,
       additionalJobCount,
     }), invoiceVersion),
@@ -129,6 +133,7 @@ export function schedulerInvoicePdfJobParams(
     invoiceId: invoice.id,
     financeId: invoice.financeId,
     sourceUpdatedAt: invoice.updatedAt,
+    generatedAt,
     reportVariantKey: schedulerInvoicePdfReportVariantKey(invoice),
     rendererVersion: SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
     invoiceVersion,
@@ -468,22 +473,25 @@ function requiredClaimParam(
   return value;
 }
 
-function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
+export function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
   jobId: string;
   claimToken: string;
   user: AuthUser;
   financeId: string;
   invoiceId: string;
   sourceUpdatedAt: string;
+  generatedAt: string;
   invoiceVersion: number;
 } {
   const app = requireStorageApp(job.app as AuthUser['app']);
   const invoiceId = requiredClaimParam(job.params, 'invoiceId');
   const financeId = requiredClaimParam(job.params, 'financeId');
   const sourceUpdatedAt = requiredClaimParam(job.params, 'sourceUpdatedAt');
+  const generatedAt = requiredClaimParam(job.params, 'generatedAt');
   const filename = requiredClaimParam(job.params, 'filename');
   const reportVariantKey = requiredClaimParam(job.params, 'reportVariantKey');
   const invoiceVersion = job.params.invoiceVersion ?? 1;
+  const generatedAtDate = new Date(generatedAt);
   if (
     job.params.artifactType !== 'pdf'
     || job.params.contentType !== 'application/pdf'
@@ -494,6 +502,8 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
       updatedAt: sourceUpdatedAt,
     })
     || !filename.toLowerCase().endsWith('.pdf')
+    || Number.isNaN(generatedAtDate.getTime())
+    || generatedAtDate.toISOString() !== generatedAt
     || !Number.isSafeInteger(invoiceVersion)
     || Number(invoiceVersion) < 1
   ) {
@@ -511,6 +521,7 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
     financeId,
     invoiceId,
     sourceUpdatedAt,
+    generatedAt,
     invoiceVersion: Number(invoiceVersion),
   };
 }
@@ -528,6 +539,7 @@ async function runSchedulerInvoicePdfExport(args: {
   financeId: string;
   invoiceId: string;
   sourceUpdatedAt: string;
+  generatedAt: string;
   invoiceVersion: number;
 }): Promise<void> {
   const claim = { id: args.jobId, claimToken: args.claimToken };
@@ -542,7 +554,7 @@ async function runSchedulerInvoicePdfExport(args: {
     if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
 
     await updateSchedulerInvoicePdfClaimPhase(claim, 'Rendering PDF');
-    const pdf = await renderSchedulerInvoicePdf(invoice);
+    const pdf = await renderSchedulerInvoicePdf(invoice, args.generatedAt);
     await updateSchedulerInvoicePdfClaimPhase(claim, 'Saving PDF');
     const clientName = invoice.billToName || invoice.job.clientName || 'Unassigned client';
     const filename = versionedInvoiceFilename(pdf.filename, args.invoiceVersion);
@@ -750,7 +762,12 @@ async function queueSchedulerInvoicePdfForSnapshot(
       inArray(pdfJobs.status, ['queued', 'running', 'complete']),
     ));
     const invoiceVersion = Number(prior?.count ?? 0) + 1;
-    const params = schedulerInvoicePdfJobParams(invoice, invoiceVersion);
+    const generatedAt = new Date();
+    const params = schedulerInvoicePdfJobParams(
+      invoice,
+      invoiceVersion,
+      generatedAt.toISOString(),
+    );
     await tx.insert(pdfJobs).values({
       id: jobId,
       // Scheduler is cross-product, but generic export access is deliberately
@@ -766,6 +783,8 @@ async function queueSchedulerInvoicePdfForSnapshot(
       // Distinguishes durable-worker rows from fresh tokenless rows created by
       // a rolling old process that may already be dispatching in memory.
       claimToken: SCHEDULER_INVOICE_PDF_DURABLE_QUEUE_MARKER,
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
     });
     return {
       jobId,

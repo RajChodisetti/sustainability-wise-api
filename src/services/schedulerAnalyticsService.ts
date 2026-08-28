@@ -3,18 +3,17 @@ import {
   eq,
   gte,
   inArray,
+  isNull,
   lt,
   ne,
+  notInArray,
   or,
   sql,
 } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
 import { compareSchedulerCompletionAttributionEvents } from './schedulerCompletionAttribution.js';
 import { db } from '../db/client.js';
-import {
-  eaAudits,
-  eaAuditWorkSessions,
-} from '../db/schema/ecoaudit.js';
+import { eaAudits } from '../db/schema/ecoaudit.js';
 import {
   ihInstallations,
   ihInstallationWorkSessions,
@@ -22,6 +21,7 @@ import {
 import {
   globalUsers,
   portalScheduleEvents,
+  schedulerInvoiceJobs,
   schedulerInvoiceLines,
   schedulerInvoiceRefunds,
   schedulerInvoices,
@@ -30,10 +30,7 @@ import {
   schedulerLeaveRequests,
   unifiedUsers,
 } from '../db/schema/shared.js';
-import {
-  ssAssessmentWorkSessions,
-  ssRooftopAssessments,
-} from '../db/schema/solarsense.js';
+import { ssRooftopAssessments } from '../db/schema/solarsense.js';
 import { badRequest, conflict, forbidden } from '../utils/errors.js';
 import {
   assertGlobalFinanceAdmin,
@@ -52,11 +49,13 @@ const MAX_COMPLETIONS = 2_000;
 const MAX_FINANCIAL_EVENTS = 5_000;
 const MAX_INVOICE_LINES = 20_000;
 const MAX_OPEN_SCHEDULE_EVENTS = 10_000;
+const MAX_OPEN_PRODUCT_JOBS_PER_APP = 10_000;
 const MAX_ATTRIBUTION_EVENTS = 20_000;
 const QUERY_CHUNK_SIZE = 500;
 const COMPLETION_FINANCE_CONCURRENCY = 0;
 const MILLISECONDS_PER_HOUR = 3_600_000;
 const MILLISECONDS_PER_DAY = 86_400_000;
+const SCHEDULER_ANALYTICS_HIDDEN_SOURCE_APPS = ['ecoaudit', 'solarsense'] as const;
 
 type SchedulerAnalyticsExecutor = Pick<typeof db, 'execute' | 'select'>;
 
@@ -117,6 +116,8 @@ export type SchedulerAnalyticsLeaderboardRow = {
   averageWorkingHoursOnSitePerWorkingDay: number;
   completedJobs: number;
   averageDailyJobs: number;
+  scheduledJobs: number;
+  unscheduledJobs: number;
   backlogJobs: number;
   pipelineJobs0To7Days: number;
   pipelineJobs8To30Days: number;
@@ -174,6 +175,8 @@ export type SchedulerAnalyticsDto = {
     unattributed: {
       workingHoursOnSiteMilliseconds: number;
       completedJobs: number;
+      scheduledJobs: number;
+      unscheduledJobs: number;
       backlogJobs: number;
       pipelineJobs0To7Days: number;
       pipelineJobs8To30Days: number;
@@ -184,6 +187,8 @@ export type SchedulerAnalyticsDto = {
     workingHoursOnSite: string;
     sessionWindowRule: string;
     averageDailyJobs: string;
+    scheduledJobs: string;
+    unscheduledJobs: string;
     completedWorkRevenue: string;
     invoiceCreated: string;
     issued: string;
@@ -239,6 +244,68 @@ type SourceAttribution = {
   userId: string | null;
   source: AttributionSource;
 };
+
+export type ActiveScheduleObservation = FinanceSource & {
+  id: string;
+  assigneeFieldUserId: string;
+  scheduledStartAt: Date;
+};
+
+export type SchedulerUserJobWorkload = {
+  activeEvents: ActiveScheduleObservation[];
+  scheduledInWindow: ActiveScheduleObservation[];
+  unscheduledProducts: FinanceSource[];
+};
+
+export function classifySchedulerUserJobWorkload(input: {
+  products: readonly FinanceSource[];
+  events: readonly ActiveScheduleObservation[];
+  startAt: Date;
+  endAt: Date;
+}): SchedulerUserJobWorkload {
+  const productsBySource = new Map(
+    input.products.map((product) => [schedulerAnalyticsSourceKey(product), product]),
+  );
+  const eventsForOpenProducts = input.events.filter((event) => (
+    productsBySource.has(schedulerAnalyticsSourceKey(event))
+  ));
+  const selectEarliestEventBySource = (
+    events: readonly ActiveScheduleObservation[],
+  ): ActiveScheduleObservation[] => {
+    const selected = new Map<string, ActiveScheduleObservation>();
+    for (const event of events) {
+      const key = schedulerAnalyticsSourceKey(event);
+      const current = selected.get(key);
+      if (!current
+        || event.scheduledStartAt.getTime() < current.scheduledStartAt.getTime()
+        || (event.scheduledStartAt.getTime() === current.scheduledStartAt.getTime()
+          && event.id.localeCompare(current.id) < 0)) {
+        selected.set(key, event);
+      }
+    }
+    return [...selected.values()].sort((left, right) => (
+      left.scheduledStartAt.getTime() - right.scheduledStartAt.getTime()
+      || left.id.localeCompare(right.id)
+    ));
+  };
+
+  const activeEvents = selectEarliestEventBySource(eventsForOpenProducts);
+  const scheduledInWindow = selectEarliestEventBySource(eventsForOpenProducts.filter((event) => (
+    event.scheduledStartAt.getTime() >= input.startAt.getTime()
+    && event.scheduledStartAt.getTime() < input.endAt.getTime()
+  )));
+  const activeSourceKeys = new Set(
+    eventsForOpenProducts.map(schedulerAnalyticsSourceKey),
+  );
+  const unscheduledProducts = [...productsBySource.entries()]
+    .filter(([key]) => !activeSourceKeys.has(key))
+    .map(([, product]) => product)
+    .sort((left, right) => (
+      schedulerAnalyticsSourceKey(left).localeCompare(schedulerAnalyticsSourceKey(right))
+    ));
+
+  return { activeEvents, scheduledInWindow, unscheduledProducts };
+}
 
 type InvoiceObservation = {
   id: string;
@@ -691,46 +758,18 @@ async function loadSessions(
   executor: SchedulerAnalyticsExecutor,
   window: SchedulerAnalyticsWindow,
 ): Promise<SessionObservation[]> {
-  const auditBoundary = sql<Date>`COALESCE(${eaAuditWorkSessions.endedAt}, ${eaAuditWorkSessions.lastActiveAt})`;
-  const assessmentBoundary = sql<Date>`COALESCE(${ssAssessmentWorkSessions.endedAt}, ${ssAssessmentWorkSessions.lastActiveAt})`;
   const installationBoundary = sql<Date>`COALESCE(${ihInstallationWorkSessions.endedAt}, ${ihInstallationWorkSessions.lastActiveAt})`;
-  const [audits, assessments, installations] = await Promise.all([
-    executor.select({
-      actorUserId: eaAuditWorkSessions.actorUserId,
-      lastActiveAt: eaAuditWorkSessions.lastActiveAt,
-      endedAt: eaAuditWorkSessions.endedAt,
-      activeMilliseconds: eaAuditWorkSessions.activeMilliseconds,
-    }).from(eaAuditWorkSessions).where(and(
-      gte(auditBoundary, sql.param(window.startAt, eaAuditWorkSessions.lastActiveAt)),
-      lt(auditBoundary, sql.param(window.endAt, eaAuditWorkSessions.lastActiveAt)),
-    )).limit(MAX_SESSIONS_PER_APP + 1),
-    executor.select({
-      actorUserId: ssAssessmentWorkSessions.actorUserId,
-      lastActiveAt: ssAssessmentWorkSessions.lastActiveAt,
-      endedAt: ssAssessmentWorkSessions.endedAt,
-      activeMilliseconds: ssAssessmentWorkSessions.activeMilliseconds,
-    }).from(ssAssessmentWorkSessions).where(and(
-      gte(assessmentBoundary, sql.param(window.startAt, ssAssessmentWorkSessions.lastActiveAt)),
-      lt(assessmentBoundary, sql.param(window.endAt, ssAssessmentWorkSessions.lastActiveAt)),
-    )).limit(MAX_SESSIONS_PER_APP + 1),
-    executor.select({
-      actorUserId: ihInstallationWorkSessions.actorUserId,
-      lastActiveAt: ihInstallationWorkSessions.lastActiveAt,
-      endedAt: ihInstallationWorkSessions.endedAt,
-      activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
-    }).from(ihInstallationWorkSessions).where(and(
-      gte(installationBoundary, sql.param(window.startAt, ihInstallationWorkSessions.lastActiveAt)),
-      lt(installationBoundary, sql.param(window.endAt, ihInstallationWorkSessions.lastActiveAt)),
-    )).limit(MAX_SESSIONS_PER_APP + 1),
-  ]);
-  assertBounded(audits, MAX_SESSIONS_PER_APP, 'EcoAudit work sessions');
-  assertBounded(assessments, MAX_SESSIONS_PER_APP, 'SolarSense work sessions');
+  const installations = await executor.select({
+    actorUserId: ihInstallationWorkSessions.actorUserId,
+    lastActiveAt: ihInstallationWorkSessions.lastActiveAt,
+    endedAt: ihInstallationWorkSessions.endedAt,
+    activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
+  }).from(ihInstallationWorkSessions).where(and(
+    gte(installationBoundary, sql.param(window.startAt, ihInstallationWorkSessions.lastActiveAt)),
+    lt(installationBoundary, sql.param(window.endAt, ihInstallationWorkSessions.lastActiveAt)),
+  )).limit(MAX_SESSIONS_PER_APP + 1);
   assertBounded(installations, MAX_SESSIONS_PER_APP, 'InstallHub work sessions');
-  return [
-    ...audits.map((row) => ({ ...row, sourceApp: 'ecoaudit' as const })),
-    ...assessments.map((row) => ({ ...row, sourceApp: 'solarsense' as const })),
-    ...installations.map((row) => ({ ...row, sourceApp: 'installhub' as const })),
-  ];
+  return installations.map((row) => ({ ...row, sourceApp: 'installhub' as const }));
 }
 
 async function loadCompletions(
@@ -754,38 +793,8 @@ async function loadCompletions(
     FROM scheduler_job_completion_facts fact
     WHERE fact.completed_at >= ${sql.param(window.startAt, schedulerJobCompletionFacts.completedAt)}
       AND fact.completed_at < ${sql.param(window.endAt, schedulerJobCompletionFacts.completedAt)}
-    UNION ALL
-    SELECT
-      'ecoaudit', 'audit', product.id, product.completed_at,
-      product.assigned_inspector_user_id,
-      'historical_product_fallback', 'unavailable',
-      NULL::text, NULL::bigint, NULL::bigint, NULL::bigint, NULL::integer
-    FROM ea_audits product
-    WHERE product.completed_at >= ${sql.param(window.startAt, eaAudits.completedAt)}
-      AND product.completed_at < ${sql.param(window.endAt, eaAudits.completedAt)}
-      AND product.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM scheduler_job_completion_facts fact
-        WHERE fact.source_app = 'ecoaudit'
-          AND fact.source_type = 'audit'
-          AND fact.source_id = product.id
-      )
-    UNION ALL
-    SELECT
-      'solarsense', 'assessment', product.id, product.completed_at,
-      product.assigned_inspector_user_id,
-      'historical_product_fallback', 'unavailable',
-      NULL::text, NULL::bigint, NULL::bigint, NULL::bigint, NULL::integer
-    FROM ss_rooftop_assessments product
-    WHERE product.completed_at >= ${sql.param(window.startAt, ssRooftopAssessments.completedAt)}
-      AND product.completed_at < ${sql.param(window.endAt, ssRooftopAssessments.completedAt)}
-      AND product.deleted_at IS NULL
-      AND NOT EXISTS (
-        SELECT 1 FROM scheduler_job_completion_facts fact
-        WHERE fact.source_app = 'solarsense'
-          AND fact.source_type = 'assessment'
-          AND fact.source_id = product.id
-      )
+      AND fact.source_app = 'installhub'
+      AND fact.source_type = 'installation'
     UNION ALL
     SELECT
       'installhub', 'installation', product.id, product.completed_at,
@@ -810,9 +819,7 @@ async function loadCompletions(
   return rawRows.map((fact): CompletionObservation => {
     const sourceApp = fact.sourceApp;
     const sourceType = fact.sourceType;
-    const supported = (sourceApp === 'ecoaudit' && sourceType === 'audit')
-      || (sourceApp === 'solarsense' && sourceType === 'assessment')
-      || (sourceApp === 'installhub' && sourceType === 'installation');
+    const supported = sourceApp === 'installhub' && sourceType === 'installation';
     if (!supported) throw conflict('Completion fact has an unsupported source identity');
     if (fact.revenueSnapshotStatus !== 'captured'
       && fact.revenueSnapshotStatus !== 'incomplete'
@@ -858,28 +865,6 @@ async function loadUndatedCompletedJobCount(
     SELECT count(*)::integer AS "count"
     FROM (
       SELECT product.id
-      FROM ea_audits product
-      WHERE product.status = 'Completed'
-        AND product.completed_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM scheduler_job_completion_facts fact
-          WHERE fact.source_app = 'ecoaudit'
-            AND fact.source_type = 'audit'
-            AND fact.source_id = product.id
-        )
-      UNION ALL
-      SELECT product.id
-      FROM ss_rooftop_assessments product
-      WHERE product.status = 'Completed'
-        AND product.completed_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM scheduler_job_completion_facts fact
-          WHERE fact.source_app = 'solarsense'
-            AND fact.source_type = 'assessment'
-            AND fact.source_id = product.id
-        )
-      UNION ALL
-      SELECT product.id
       FROM ih_installations product
       WHERE product.status = 'Completed'
         AND product.completed_at IS NULL
@@ -894,6 +879,23 @@ async function loadUndatedCompletedJobCount(
   const [row] = result as unknown as Array<{ count: number | string }>;
   const count = Number(row?.count ?? 0);
   return requireSafeNonnegativeInteger(count, 'Undated completed jobs');
+}
+
+function schedulerAnalyticsHiddenInvoiceIds() {
+  return db.select({ invoiceId: schedulerInvoices.id })
+    .from(schedulerInvoices)
+    .where(or(
+      inArray(schedulerInvoices.jobSourceApp, SCHEDULER_ANALYTICS_HIDDEN_SOURCE_APPS),
+      inArray(
+        schedulerInvoices.id,
+        db.select({ invoiceId: schedulerInvoiceJobs.invoiceId })
+          .from(schedulerInvoiceJobs)
+          .where(inArray(
+            schedulerInvoiceJobs.jobSourceApp,
+            SCHEDULER_ANALYTICS_HIDDEN_SOURCE_APPS,
+          )),
+      ),
+    ));
 }
 
 async function loadInvoiceEvents(
@@ -911,11 +913,14 @@ async function loadInvoiceEvents(
     issuedAt: schedulerInvoices.issuedAt,
     paidAt: schedulerInvoices.paidAt,
     voidedAt: schedulerInvoices.voidedAt,
-  }).from(schedulerInvoices).where(or(
-    and(gte(schedulerInvoices.createdAt, window.startAt), lt(schedulerInvoices.createdAt, window.endAt)),
-    and(gte(schedulerInvoices.issuedAt, window.startAt), lt(schedulerInvoices.issuedAt, window.endAt)),
-    and(gte(schedulerInvoices.paidAt, window.startAt), lt(schedulerInvoices.paidAt, window.endAt)),
-    and(gte(schedulerInvoices.voidedAt, window.startAt), lt(schedulerInvoices.voidedAt, window.endAt)),
+  }).from(schedulerInvoices).where(and(
+    or(
+      and(gte(schedulerInvoices.createdAt, window.startAt), lt(schedulerInvoices.createdAt, window.endAt)),
+      and(gte(schedulerInvoices.issuedAt, window.startAt), lt(schedulerInvoices.issuedAt, window.endAt)),
+      and(gte(schedulerInvoices.paidAt, window.startAt), lt(schedulerInvoices.paidAt, window.endAt)),
+      and(gte(schedulerInvoices.voidedAt, window.startAt), lt(schedulerInvoices.voidedAt, window.endAt)),
+    ),
+    notInArray(schedulerInvoices.id, schedulerAnalyticsHiddenInvoiceIds()),
   )).limit(MAX_FINANCIAL_EVENTS + 1);
   assertBounded(rows, MAX_FINANCIAL_EVENTS, 'Invoice events');
   return rows;
@@ -934,15 +939,18 @@ async function loadRefundEvents(
     totalIncGstCents: schedulerInvoiceRefunds.totalIncGstCents,
     refundedAt: schedulerInvoiceRefunds.refundedAt,
     voidedAt: schedulerInvoiceRefunds.voidedAt,
-  }).from(schedulerInvoiceRefunds).where(or(
-    and(
-      gte(schedulerInvoiceRefunds.refundedAt, window.startAt),
-      lt(schedulerInvoiceRefunds.refundedAt, window.endAt),
+  }).from(schedulerInvoiceRefunds).where(and(
+    or(
+      and(
+        gte(schedulerInvoiceRefunds.refundedAt, window.startAt),
+        lt(schedulerInvoiceRefunds.refundedAt, window.endAt),
+      ),
+      and(
+        gte(schedulerInvoiceRefunds.voidedAt, window.startAt),
+        lt(schedulerInvoiceRefunds.voidedAt, window.endAt),
+      ),
     ),
-    and(
-      gte(schedulerInvoiceRefunds.voidedAt, window.startAt),
-      lt(schedulerInvoiceRefunds.voidedAt, window.endAt),
-    ),
+    notInArray(schedulerInvoiceRefunds.invoiceId, schedulerAnalyticsHiddenInvoiceIds()),
   )).limit(MAX_FINANCIAL_EVENTS + 1);
   assertBounded(rows, MAX_FINANCIAL_EVENTS, 'Refund events');
   return rows;
@@ -966,7 +974,10 @@ async function loadReferencedInvoices(
       issuedAt: schedulerInvoices.issuedAt,
       paidAt: schedulerInvoices.paidAt,
       voidedAt: schedulerInvoices.voidedAt,
-    }).from(schedulerInvoices).where(inArray(schedulerInvoices.id, ids)));
+    }).from(schedulerInvoices).where(and(
+      inArray(schedulerInvoices.id, ids),
+      notInArray(schedulerInvoices.id, schedulerAnalyticsHiddenInvoiceIds()),
+    )));
   }
   return result;
 }
@@ -1008,11 +1019,13 @@ async function loadFinanceSources(
       sourceApp: schedulerJobFinance.sourceApp,
       sourceType: schedulerJobFinance.sourceType,
       sourceId: schedulerJobFinance.sourceId,
-    }).from(schedulerJobFinance).where(inArray(schedulerJobFinance.id, ids));
+    }).from(schedulerJobFinance).where(and(
+      inArray(schedulerJobFinance.id, ids),
+      eq(schedulerJobFinance.sourceApp, 'installhub'),
+      eq(schedulerJobFinance.sourceType, 'installation'),
+    ));
     for (const row of rows) {
-      if ((row.sourceApp === 'ecoaudit' && row.sourceType === 'audit')
-        || (row.sourceApp === 'solarsense' && row.sourceType === 'assessment')
-        || (row.sourceApp === 'installhub' && row.sourceType === 'installation')) {
+      if (row.sourceApp === 'installhub' && row.sourceType === 'installation') {
         result.set(row.id, row as FinanceSource & { id: string });
       }
     }
@@ -1027,7 +1040,7 @@ async function loadOpenScheduleEvents(
   anchorStart: Date;
   pipeline8Start: Date;
   pipeline31End: Date;
-  events: Array<{ assigneeFieldUserId: string; scheduledStartAt: Date }>;
+  events: ActiveScheduleObservation[];
 }> {
   const anchorDate = addCalendarDays(window.to, 1);
   const anchorStart = startOfCalendarDateInTimeZone(anchorDate, window.timezone);
@@ -1040,28 +1053,45 @@ async function loadOpenScheduleEvents(
     window.timezone,
   );
   const events = await executor.select({
+    id: portalScheduleEvents.id,
+    sourceApp: portalScheduleEvents.sourceApp,
+    sourceType: portalScheduleEvents.sourceType,
+    sourceId: portalScheduleEvents.sourceId,
     assigneeFieldUserId: portalScheduleEvents.assigneeFieldUserId,
     scheduledStartAt: portalScheduleEvents.scheduledStartAt,
   }).from(portalScheduleEvents).where(and(
     inArray(portalScheduleEvents.status, ['planned', 'in_progress']),
-    lt(portalScheduleEvents.scheduledStartAt, pipeline31End),
-    or(
-      and(
-        eq(portalScheduleEvents.sourceApp, 'ecoaudit'),
-        eq(portalScheduleEvents.sourceType, 'audit'),
-      ),
-      and(
-        eq(portalScheduleEvents.sourceApp, 'solarsense'),
-        eq(portalScheduleEvents.sourceType, 'assessment'),
-      ),
-      and(
-        eq(portalScheduleEvents.sourceApp, 'installhub'),
-        eq(portalScheduleEvents.sourceType, 'installation'),
-      ),
-    ),
+    eq(portalScheduleEvents.sourceApp, 'installhub'),
+    eq(portalScheduleEvents.sourceType, 'installation'),
   )).limit(MAX_OPEN_SCHEDULE_EVENTS + 1);
   assertBounded(events, MAX_OPEN_SCHEDULE_EVENTS, 'Open Scheduler jobs');
-  return { anchorStart, pipeline8Start, pipeline31End, events };
+  return {
+    anchorStart,
+    pipeline8Start,
+    pipeline31End,
+    events: events.filter((event): event is ActiveScheduleObservation => (
+      event.sourceId !== null
+      && event.sourceApp === 'installhub'
+      && event.sourceType === 'installation'
+    )),
+  };
+}
+
+async function loadOpenProductSources(
+  executor: SchedulerAnalyticsExecutor,
+): Promise<FinanceSource[]> {
+  const installations = await executor.select({ id: ihInstallations.id })
+    .from(ihInstallations)
+    .where(and(
+      eq(ihInstallations.status, 'Draft'),
+      isNull(ihInstallations.deletedAt),
+    )).limit(MAX_OPEN_PRODUCT_JOBS_PER_APP + 1);
+  assertBounded(installations, MAX_OPEN_PRODUCT_JOBS_PER_APP, 'Open InstallHub jobs');
+  return installations.map((row): FinanceSource => ({
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: row.id,
+  }));
 }
 
 async function loadOriginIdentityMap(
@@ -1088,6 +1118,10 @@ async function loadOriginIdentityMap(
 async function loadSourceAttributions(
   executor: SchedulerAnalyticsExecutor,
   sources: readonly FinanceSource[],
+  options: {
+    completionFacts?: boolean;
+    schedulerEvents?: boolean;
+  } = {},
 ): Promise<Map<string, SourceAttribution>> {
   const uniqueSources = new Map(sources.map((source) => [sourceKey(source), source]));
   const byApp = new Map<SourceApp, FinanceSource[]>();
@@ -1114,30 +1148,34 @@ async function loadSourceAttributions(
     const ids = [...new Set(appSources.map((source) => source.sourceId))];
     for (const idChunk of chunks(ids)) {
       const [facts, events] = await Promise.all([
-        executor.select({
-          sourceApp: schedulerJobCompletionFacts.sourceApp,
-          sourceType: schedulerJobCompletionFacts.sourceType,
-          sourceId: schedulerJobCompletionFacts.sourceId,
-          primaryGlobalUserId: schedulerJobCompletionFacts.primaryGlobalUserId,
-        }).from(schedulerJobCompletionFacts).where(and(
-          eq(schedulerJobCompletionFacts.sourceApp, app),
-          eq(schedulerJobCompletionFacts.sourceType, expectedSourceType),
-          inArray(schedulerJobCompletionFacts.sourceId, idChunk),
-        )),
-        executor.select({
-          id: portalScheduleEvents.id,
-          sourceApp: portalScheduleEvents.sourceApp,
-          sourceType: portalScheduleEvents.sourceType,
-          sourceId: portalScheduleEvents.sourceId,
-          fieldUserId: portalScheduleEvents.assigneeFieldUserId,
-          status: portalScheduleEvents.status,
-          updatedAt: portalScheduleEvents.updatedAt,
-        }).from(portalScheduleEvents).where(and(
-          eq(portalScheduleEvents.sourceApp, app),
-          eq(portalScheduleEvents.sourceType, expectedSourceType),
-          inArray(portalScheduleEvents.sourceId, idChunk),
-          ne(portalScheduleEvents.status, 'cancelled'),
-        )).limit(MAX_ATTRIBUTION_EVENTS + 1),
+        options.completionFacts === false
+          ? Promise.resolve([])
+          : executor.select({
+            sourceApp: schedulerJobCompletionFacts.sourceApp,
+            sourceType: schedulerJobCompletionFacts.sourceType,
+            sourceId: schedulerJobCompletionFacts.sourceId,
+            primaryGlobalUserId: schedulerJobCompletionFacts.primaryGlobalUserId,
+          }).from(schedulerJobCompletionFacts).where(and(
+            eq(schedulerJobCompletionFacts.sourceApp, app),
+            eq(schedulerJobCompletionFacts.sourceType, expectedSourceType),
+            inArray(schedulerJobCompletionFacts.sourceId, idChunk),
+          )),
+        options.schedulerEvents === false
+          ? Promise.resolve([])
+          : executor.select({
+            id: portalScheduleEvents.id,
+            sourceApp: portalScheduleEvents.sourceApp,
+            sourceType: portalScheduleEvents.sourceType,
+            sourceId: portalScheduleEvents.sourceId,
+            fieldUserId: portalScheduleEvents.assigneeFieldUserId,
+            status: portalScheduleEvents.status,
+            updatedAt: portalScheduleEvents.updatedAt,
+          }).from(portalScheduleEvents).where(and(
+            eq(portalScheduleEvents.sourceApp, app),
+            eq(portalScheduleEvents.sourceType, expectedSourceType),
+            inArray(portalScheduleEvents.sourceId, idChunk),
+            ne(portalScheduleEvents.status, 'cancelled'),
+          )).limit(MAX_ATTRIBUTION_EVENTS + 1),
       ]);
       assertBounded(events, MAX_ATTRIBUTION_EVENTS, 'Scheduler attribution events');
       attributionEventCount += events.length;
@@ -1379,6 +1417,7 @@ export async function getSchedulerAnalytics(
       invoiceEvents,
       refundEvents,
       openWork,
+      openProducts,
       undatedCompletedJobs,
     ] = await Promise.all([
       executor.select({
@@ -1394,6 +1433,7 @@ export async function getSchedulerAnalytics(
       loadInvoiceEvents(executor, window),
       loadRefundEvents(executor, window),
       loadOpenScheduleEvents(executor, window),
+      loadOpenProductSources(executor),
       loadUndatedCompletedJobCount(executor),
     ]);
 
@@ -1423,6 +1463,17 @@ export async function getSchedulerAnalytics(
     ...financeSources.values(),
   ];
   const sourceAttributions = await loadSourceAttributions(executor, attributionSources);
+  const workload = classifySchedulerUserJobWorkload({
+    products: openProducts,
+    events: openWork.events,
+    startAt: window.startAt,
+    endAt: window.endAt,
+  });
+  const unscheduledAttributions = await loadSourceAttributions(
+    executor,
+    workload.unscheduledProducts,
+    { completionFacts: false, schedulerEvents: false },
+  );
 
   const approvedLeaves = await executor.select({
     globalUserId: schedulerLeaveRequests.globalUserId,
@@ -1467,6 +1518,8 @@ export async function getSchedulerAnalytics(
       averageWorkingHoursOnSitePerWorkingDay: 0,
       completedJobs: 0,
       averageDailyJobs: 0,
+      scheduledJobs: 0,
+      unscheduledJobs: 0,
       backlogJobs: 0,
       pipelineJobs0To7Days: 0,
       pipelineJobs8To30Days: 0,
@@ -1498,6 +1551,8 @@ export async function getSchedulerAnalytics(
     zeroWeightDocuments: new Set<string>(),
     unattributedDocuments: new Set<string>(),
     unattributedCompletedJobs: 0,
+    unattributedScheduledJobs: 0,
+    unattributedUnscheduledJobs: 0,
     unattributedBacklog: 0,
     unattributedPipeline0To7: 0,
     unattributedPipeline8To30: 0,
@@ -1532,10 +1587,25 @@ export async function getSchedulerAnalytics(
     row.attribution.workingSessionCount += 1;
   }
 
-  for (const event of openWork.events) {
+  for (const event of workload.scheduledInWindow) {
+    const user = activeUserByFieldId.get(event.assigneeFieldUserId);
+    const row = user ? leaderboardByUser.get(user.id) : undefined;
+    if (row) row.scheduledJobs += 1;
+    else quality.unattributedScheduledJobs += 1;
+  }
+
+  for (const product of workload.unscheduledProducts) {
+    const attribution = unscheduledAttributions.get(sourceKey(product));
+    const row = attribution?.userId ? leaderboardByUser.get(attribution.userId) : undefined;
+    if (row) row.unscheduledJobs += 1;
+    else quality.unattributedUnscheduledJobs += 1;
+  }
+
+  for (const event of workload.activeEvents) {
     const user = activeUserByFieldId.get(event.assigneeFieldUserId);
     const row = user ? leaderboardByUser.get(user.id) : undefined;
     const eventTime = event.scheduledStartAt.getTime();
+    if (eventTime >= openWork.pipeline31End.getTime()) continue;
     const bucket = eventTime < openWork.anchorStart.getTime()
       ? 'backlog'
       : eventTime < openWork.pipeline8Start.getTime()
@@ -1814,6 +1884,8 @@ export async function getSchedulerAnalytics(
       unattributed: {
         workingHoursOnSiteMilliseconds: quality.unattributedActiveMilliseconds,
         completedJobs: quality.unattributedCompletedJobs,
+        scheduledJobs: quality.unattributedScheduledJobs,
+        unscheduledJobs: quality.unattributedUnscheduledJobs,
         backlogJobs: quality.unattributedBacklog,
         pipelineJobs0To7Days: quality.unattributedPipeline0To7,
         pipelineJobs8To30Days: quality.unattributedPipeline8To30,
@@ -1821,9 +1893,11 @@ export async function getSchedulerAnalytics(
       },
     },
     definitions: {
-      workingHoursOnSite: 'Persisted app-active milliseconds from all product work sessions; this is the approved Working hours on site label.',
+      workingHoursOnSite: 'Persisted app-active milliseconds from Field App work sessions; this is the approved Working hours on site label.',
       sessionWindowRule: 'A session is counted in full when endedAt, or lastActiveAt while open, is at or after the window start and before its exclusive end. Sessions are not prorated because persisted activeMilliseconds has no per-interval breakdown.',
       averageDailyJobs: 'Completed jobs divided by the user working days remaining after approved leave; zero when no working days are available.',
+      scheduledJobs: 'Distinct current incomplete Field App jobs with at least one planned or in-progress Scheduler event starting inside the selected window. Duplicate Scheduler events for the same source job count once.',
+      unscheduledJobs: 'Distinct current incomplete Field App jobs with no planned or in-progress Scheduler event at any date. Attribution uses the current product assignment only; jobs without a resolvable active user remain in quality.unattributed.',
       completedWorkRevenue: 'First authoritative completion persists immutable snapshot status, currency, ex-GST/GST/inc-GST at the configured GST rate, and capture time. Legally accepted late sessions affect working-hours analytics only and do not rewrite completed-work revenue. Incomplete snapshots remain explicit; any revenue restatement requires a future explicit audited workflow. Unavailable facts and legacy products with no fact contribute jobs but omit revenue; analytics never creates or borrows a current ledger for historical work. quality.completedWorkRevenue.undatedCompletedJobs counts retained Completed product rows with no fact or completion timestamp; they cannot be placed in any selected window and no timestamp is invented.',
       invoiceCreated: 'Invoice snapshot value for invoices created in the selected window, including drafts.',
       issued: 'Invoice snapshot value when issuedAt falls in the selected window.',
@@ -1835,9 +1909,9 @@ export async function getSchedulerAnalytics(
       technicianAttribution: 'Hours use the work-session actor. A completion fact is final even when its user is null; only jobs with no fact use a non-cancelled Scheduler assignee (planned/in-progress first, then newest updatedAt, then lexical event ID) and then product assignment. Unresolved and inactive-user values remain in quality.unattributed.',
       leaderboardRanking: 'Active canonical users rank by completed jobs, then Working hours on site, then display name and user ID. Revenue is not a rank input because currencies are never converted or combined.',
       workingDays: 'For each user, the report UTC interval is converted to that user saved timezone and its inclusive local date range. The weekly mask (Sunday bit 1 through Saturday bit 64) is applied to those local dates, minus distinct approved leave labels that would otherwise be working days.',
-      backlog: `Current-state count of supported commercial EcoAudit audits, SolarSense assessments, and InstallHub installations that are still planned or in progress when this report runs and are scheduled on or before ${window.to} in ${window.timezone}. Historical backlog status is not reconstructable from current Scheduler rows. Custom and legacy Solar site rows are excluded.`,
-      pipeline0To7Days: `Current-state count of supported commercial jobs still planned or in progress when this report runs and scheduled from ${addCalendarDays(window.to, 1)} through ${addCalendarDays(window.to, 7)} inclusive in ${window.timezone}; it is not a historical status snapshot.`,
-      pipeline8To30Days: `Current-state count of supported commercial jobs still planned or in progress when this report runs and scheduled from ${addCalendarDays(window.to, 8)} through ${addCalendarDays(window.to, 30)} inclusive in ${window.timezone}; it is not a historical status snapshot.`,
+      backlog: `Current-state count of Field App jobs that are still planned or in progress when this report runs and are scheduled on or before ${window.to} in ${window.timezone}. Historical backlog status is not reconstructable from current Scheduler rows. EcoAudit Pro, SolarSense, custom, and legacy Solar site rows are excluded.`,
+      pipeline0To7Days: `Current-state count of Field App jobs still planned or in progress when this report runs and scheduled from ${addCalendarDays(window.to, 1)} through ${addCalendarDays(window.to, 7)} inclusive in ${window.timezone}; it is not a historical status snapshot.`,
+      pipeline8To30Days: `Current-state count of Field App jobs still planned or in progress when this report runs and scheduled from ${addCalendarDays(window.to, 8)} through ${addCalendarDays(window.to, 30)} inclusive in ${window.timezone}; it is not a historical status snapshot.`,
       currency: 'Currencies are never converted or combined. Invoice and refund amounts are allocated to finance jobs by line ex-GST weights with deterministic whole-cent remainders.',
     },
     limits: {

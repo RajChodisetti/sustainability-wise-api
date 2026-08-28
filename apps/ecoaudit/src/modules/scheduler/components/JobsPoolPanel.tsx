@@ -7,7 +7,12 @@ import { ErrorBanner, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { useUnscheduledJobs } from '@/modules/scheduler/hooks/useScheduler';
-import { groupJobsByAssignee, jobsForAssignee, sortJobsForPool } from '@/modules/scheduler/lib/jobsPool';
+import {
+  ALL_JOBS_GROUP,
+  jobPoolFilterOptions,
+  jobsForAssignee,
+  sortJobsForPool,
+} from '@/modules/scheduler/lib/jobsPool';
 import type { JobOption } from '@/modules/scheduler/types/domain';
 
 export type JobDragData = {
@@ -25,13 +30,13 @@ export function JobsPoolPanel({
   className?: string;
 }) {
   const [q, setQ] = useState('');
-  const [selectedAssignee, setSelectedAssignee] = useState('');
+  const [selectedAssignee, setSelectedAssignee] = useState(ALL_JOBS_GROUP);
   const query = useUnscheduledJobs(
     { q, sourceApp: 'installhub', unscheduledOnly: false },
     enabled,
   );
   const jobs = useMemo(() => sortJobsForPool(query.data ?? []), [query.data]);
-  const assigneeGroups = useMemo(() => groupJobsByAssignee(jobs), [jobs]);
+  const filterOptions = useMemo(() => jobPoolFilterOptions(jobs), [jobs]);
   const visibleJobs = useMemo(
     () => jobsForAssignee(jobs, selectedAssignee),
     [jobs, selectedAssignee],
@@ -77,8 +82,7 @@ export function JobsPoolPanel({
               onChange={(e) => setSelectedAssignee(e.target.value)}
               aria-label="Filter jobs by assigned user"
             >
-              <option value="">All users ({jobs.length} jobs)</option>
-              {assigneeGroups.map((group) => (
+              {filterOptions.map((group) => (
                 <option key={group.id} value={group.id}>
                   {group.label} ({group.count} {group.count === 1 ? 'job' : 'jobs'})
                 </option>
@@ -160,7 +164,9 @@ function JobCard({
         </p>
       ) : null}
       <p className="mt-1 truncate text-[10px] font-semibold text-[var(--text-sub)]">
-        {job.assigneeDisplayName?.trim() || 'Unassigned'}
+        {job.assigneeFieldUserId
+          ? job.assigneeDisplayName?.trim() || 'Assigned user'
+          : 'Unassigned'}
       </p>
       {job.scheduledStartAt ? (
         <p className="mt-1 text-[10px] font-semibold text-[var(--primary)]">

@@ -904,6 +904,39 @@ export const schedulerJobFinance = pgTable('scheduler_job_finance', {
   `),
 ]);
 
+/** Current per-job override of one canonical user's customer billing rate. */
+export const schedulerJobActorBillingRateOverrides = pgTable(
+  'scheduler_job_actor_billing_rate_overrides',
+  {
+    financeId: text('finance_id').notNull().references(
+      () => schedulerJobFinance.id,
+      { onDelete: 'restrict' },
+    ),
+    globalUserId: text('global_user_id').notNull().references(
+      () => globalUsers.id,
+      { onDelete: 'restrict' },
+    ),
+    billingRateCents: bigint('billing_rate_cents', { mode: 'number' }).notNull(),
+    updatedByGlobalUserId: text('updated_by_global_user_id').notNull().references(
+      () => globalUsers.id,
+      { onDelete: 'restrict' },
+    ),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.financeId, table.globalUserId],
+      name: 'scheduler_job_actor_billing_rate_overrides_pk',
+    }),
+    index('scheduler_job_actor_billing_rate_overrides_user_idx').on(table.globalUserId),
+    check('scheduler_job_actor_billing_rate_overrides_rate_check', sql`
+      ${table.billingRateCents} >= 0
+      AND ${table.billingRateCents} <= 9007199254740991
+    `),
+  ],
+);
+
 /**
  * Immutable first-completion date, attribution, and commercial snapshot.
  * Historical rows remain unavailable rather than silently borrowing mutable

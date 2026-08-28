@@ -14,11 +14,11 @@ function scheduleEvent(start: Date) {
   const now = new Date('2026-08-15T08:00:00.000Z');
   return {
     id: 'event-1',
-    title: 'Rooftop assessment',
+    title: 'Field installation',
     description: 'Private site directions must not be sent',
-    sourceApp: 'solarsense',
-    sourceType: 'assessment',
-    sourceId: 'assessment-1',
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: 'installation-1',
     assigneeFieldUserId: 'field-user-1',
     assigneeDisplayName: 'Inspector',
     assigneeEmail: 'private@example.test',
@@ -45,9 +45,9 @@ function capturingExecutor() {
         ? [{
             globalUserId: 'global-user-1',
             fieldUserId: 'field-user-1',
-            originUserId: 'solar-user-1',
+            originUserId: 'field-app-user-1',
           }]
-        : [{ id: 'assessment-1' }];
+        : [{ id: 'installation-1' }];
       const chain = {
         from() { return chain; },
         innerJoin() { return chain; },
@@ -148,16 +148,31 @@ test('automatic reminders enqueue only future one-day, one-hour, and start-time 
   assert.equal(terminal.inserted.length, 0);
 });
 
-test('one-hour reminders cover every linked mobile product target', async () => {
+test('automated reminders include Field App and exclude hidden product targets', async () => {
   const now = new Date('2026-08-15T08:00:00.000Z');
   const start = new Date('2026-08-17T08:00:00.000Z');
-  const linkedTargets = [
-    { sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: 'audit-1' },
-    { sourceApp: 'solarsense', sourceType: 'assessment', sourceId: 'assessment-1' },
-    { sourceApp: 'installhub', sourceType: 'installation', sourceId: 'installation-1' },
+  const targets = [
+    {
+      sourceApp: 'ecoaudit',
+      sourceType: 'audit',
+      sourceId: 'audit-1',
+      expectedKinds: [],
+    },
+    {
+      sourceApp: 'solarsense',
+      sourceType: 'assessment',
+      sourceId: 'assessment-1',
+      expectedKinds: [],
+    },
+    {
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: 'installation-1',
+      expectedKinds: ['one_day_before', 'one_hour_before', 'day_of'],
+    },
   ] as const;
 
-  for (const target of linkedTargets) {
+  for (const { expectedKinds, ...target } of targets) {
     const captured = capturingExecutor();
     await enqueueAutomatedSchedulerNotifications(
       captured.executor as never,
@@ -167,20 +182,25 @@ test('one-hour reminders cover every linked mobile product target', async () => 
     );
     assert.deepEqual(
       captured.inserted.map((row) => row.notificationKind),
-      ['one_day_before', 'one_hour_before', 'day_of'],
-      `${target.sourceApp} must receive the complete automated reminder set`,
+      expectedKinds,
+      `${target.sourceApp} must follow the Scheduler visibility policy`,
     );
   }
 });
 
-test('only concrete mobile work pairs with a source ID are notification targets', () => {
+test('only concrete visible Field work with a source ID is a notification target', () => {
   const event = scheduleEvent(new Date('2026-08-17T08:00:00.000Z'));
   assert.equal(isMobileScheduleNotificationTarget(event as never), true);
   assert.equal(isMobileScheduleNotificationTarget({
     ...event,
     sourceApp: 'ecoaudit',
     sourceType: 'audit',
-  } as never), true);
+  } as never), false);
+  assert.equal(isMobileScheduleNotificationTarget({
+    ...event,
+    sourceApp: 'solarsense',
+    sourceType: 'assessment',
+  } as never), false);
   assert.equal(isMobileScheduleNotificationTarget({
     ...event,
     sourceApp: 'installhub',
@@ -224,7 +244,7 @@ test('scheduler payload contains routing IDs but no private description or crede
     'type',
   ]);
   const serialized = JSON.stringify(row);
-  assert.equal(serialized.includes('Rooftop assessment'), false);
+  assert.equal(serialized.includes('Field installation'), false);
   assert.equal(serialized.includes('Private site directions'), false);
   assert.equal(serialized.includes('private@example.test'), false);
 });

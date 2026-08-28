@@ -4,22 +4,19 @@ import type {
   ScheduleSourceApp,
 } from '@/modules/scheduler/types/domain';
 
-const ALL_SOURCE_APPS = ['ecoaudit', 'solarsense', 'installhub', 'custom'] as const;
+const VISIBLE_SOURCE_APPS = ['installhub', 'custom'] as const;
 const SELECTABLE_SOURCE_APPS = ['installhub', 'custom'] as const;
 
 /**
- * Sources whose already-linked work can be rendered in Scheduler.
- *
- * All commercial products and custom work remain visible in shared planning.
+ * Sources that can be rendered in Scheduler. EcoAudit and SolarSense records
+ * remain in their product flows and are intentionally absent from Scheduler.
  */
 export function schedulerVisibleSourceApps(): ScheduleSourceApp[] {
-  return [...ALL_SOURCE_APPS];
+  return [...VISIBLE_SOURCE_APPS];
 }
 
 /**
  * Sources that can appear as explicit choices in Scheduler controls.
- * EcoAudit and SolarSense history remains visible, but new work is authored
- * only through Field App or as a custom calendar entry.
  */
 export function schedulerSelectableSourceApps(): ScheduleSourceApp[] {
   return [...SELECTABLE_SOURCE_APPS];
@@ -67,9 +64,7 @@ export function schedulerEventSupportsMobileNotifications(
   event: Pick<ScheduleEvent, 'sourceApp' | 'sourceType' | 'sourceId'>,
 ): boolean {
   if (typeof event.sourceId !== 'string' || !event.sourceId.trim()) return false;
-  return (event.sourceApp === 'ecoaudit' && event.sourceType === 'audit')
-    || (event.sourceApp === 'solarsense' && event.sourceType === 'assessment')
-    || (event.sourceApp === 'installhub' && event.sourceType === 'installation');
+  return event.sourceApp === 'installhub' && event.sourceType === 'installation';
 }
 
 export function schedulerDefaultSourceApp(

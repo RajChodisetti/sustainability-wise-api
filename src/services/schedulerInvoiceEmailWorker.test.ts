@@ -14,7 +14,9 @@ import {
   createGmailInvoiceEmailTransport,
 } from './schedulerInvoiceEmailWorker.js';
 import {
+  MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS,
   normalizeInvoiceRecipient,
+  schedulerInvoiceEmailAttachmentFromQueuedPdf,
   schedulerInvoiceEmailRequestFingerprint,
 } from './schedulerInvoiceEmailService.js';
 
@@ -71,11 +73,38 @@ test('empty Wattwatchers FROM_EMAIL falls back to the existing SMTP_USER sender'
 
 test('invoice recipient and idempotency fingerprint reject header injection and stay stable', () => {
   assert.equal(normalizeInvoiceRecipient(' accounts+solar@example.test '), 'accounts+solar@example.test');
+  assert.equal(
+    normalizeInvoiceRecipient(
+      'accounts@example.test; manager@example.test, ACCOUNTS@example.test',
+    ),
+    'accounts@example.test, manager@example.test',
+  );
   assert.throws(
     () => normalizeInvoiceRecipient('victim@example.test\r\nBcc: attacker@example.test'),
     /Bad request/,
   );
   assert.throws(() => normalizeInvoiceRecipient('not-an-address'), /Bad request/);
+  assert.throws(
+    () => normalizeInvoiceRecipient('valid@example.test, Bcc:attacker@example.test'),
+    /Bad request/,
+  );
+  assert.throws(
+    () => normalizeInvoiceRecipient('valid@example.test; '),
+    /Bad request/,
+  );
+  assert.throws(
+    () => normalizeInvoiceRecipient(`${'a'.repeat(245)}@example.test`),
+    /Bad request/,
+  );
+  assert.throws(
+    () => normalizeInvoiceRecipient(
+      Array.from(
+        { length: MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS + 1 },
+        (_, index) => `recipient${index}@example.test`,
+      ).join(','),
+    ),
+    /Bad request/,
+  );
   const input = {
     expectedUpdatedAt: '2026-08-16T12:00:00.000Z',
     recipient: 'accounts@example.test',
@@ -92,19 +121,89 @@ test('invoice recipient and idempotency fingerprint reject header injection and 
   );
 });
 
+test('invoice email pins the exact queued PDF filename instead of recomputing version one', () => {
+  const attachment = schedulerInvoiceEmailAttachmentFromQueuedPdf({
+    entityId: 'invoice-1',
+    entityType: 'scheduler_invoice',
+    params: {
+      artifactType: 'pdf',
+      filename: 'invoice-job-INV-1-v2.pdf',
+      contentType: 'application/pdf',
+      sourceUpdatedAt: '2026-08-16T12:00:00.000Z',
+      reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-1:revision-2',
+      invoiceVersion: 2,
+    },
+  }, {
+    invoiceId: 'invoice-1',
+    sourceUpdatedAt: '2026-08-16T12:00:00.000Z',
+    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-1:revision-2',
+  });
+  assert.deepEqual(attachment, {
+    filename: 'invoice-job-INV-1-v2.pdf',
+    contentType: 'application/pdf',
+  });
+  assert.notEqual(attachment.filename, 'invoice-job-INV-1-v1.pdf');
+  assert.throws(() => schedulerInvoiceEmailAttachmentFromQueuedPdf({
+    entityId: 'invoice-1',
+    entityType: 'scheduler_invoice',
+    params: {
+      artifactType: 'pdf',
+      filename: 'invoice-job-INV-1-v2.pdf',
+      contentType: 'text/plain',
+      sourceUpdatedAt: '2026-08-16T12:00:00.000Z',
+      reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-1:revision-2',
+    },
+  }, {
+    invoiceId: 'invoice-1',
+    sourceUpdatedAt: '2026-08-16T12:00:00.000Z',
+    reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-1:revision-2',
+  }), /Conflict/);
+});
+
 test('invoice Gmail raw message has a stable identity and exact PDF attachment', () => {
-  const raw = buildSchedulerInvoiceEmailRaw(submission, {
+  const raw = buildSchedulerInvoiceEmailRaw({
+    ...submission,
+    recipient: 'accounts@example.test, manager@example.test',
+  }, {
     fromEmail: 'reports@sustainabilitywise.example',
     fromName: 'Sustainability Wise',
   });
   const mime = Buffer.from(raw, 'base64url').toString('utf8');
   assert.match(mime, /Message-ID: <scheduler-invoice-delivery-123@sustainabilitywise\.example>/);
   assert.match(mime, /X-Sustainability-Wise-Delivery-ID: delivery-123/);
-  assert.match(mime, /To: accounts@example\.test/);
+  assert.match(mime, /To: accounts@example\.test,\r\n manager@example\.test/);
   assert.match(mime, /Content-Type: application\/pdf/);
   assert.match(mime, /filename\*=UTF-8''Solar%20job%20%E2%80%93%202026-08-16\.pdf/);
   assert.match(mime, new RegExp(submission.attachment.toString('base64')));
   assert.doesNotMatch(mime, /invoice bytes/);
+});
+
+test('multi-recipient To headers fold safely and preserve every canonical recipient', () => {
+  const recipient = normalizeInvoiceRecipient(Array.from(
+    { length: MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS },
+    (_, index) => `${'account'.repeat(8)}-${index}@example.test`,
+  ).join(';'));
+  const raw = buildSchedulerInvoiceEmailRaw({ ...submission, recipient }, {
+    fromEmail: 'reports@sustainabilitywise.example',
+    fromName: 'Sustainability Wise',
+  });
+  const mime = Buffer.from(raw, 'base64url').toString('utf8');
+  const headerLines = mime
+    .slice(0, mime.indexOf('\r\n\r\n'))
+    .split('\r\n');
+  const toStart = headerLines.findIndex((line) => line.startsWith('To: '));
+  assert.ok(toStart >= 0);
+  let toEnd = toStart + 1;
+  while (toEnd < headerLines.length && headerLines[toEnd]!.startsWith(' ')) {
+    toEnd += 1;
+  }
+  const toLines = headerLines.slice(toStart, toEnd);
+  assert.equal(toLines.length, MAX_SCHEDULER_INVOICE_EMAIL_RECIPIENTS);
+  assert.equal(
+    toLines.map((line, index) => index === 0 ? line : line.slice(1)).join(' '),
+    `To: ${recipient}`,
+  );
+  assert.ok(toLines.every((line) => Buffer.byteLength(line, 'utf8') <= 998));
 });
 
 test('maximum Unicode invoice subjects use folded RFC 2047 encoded-words', () => {

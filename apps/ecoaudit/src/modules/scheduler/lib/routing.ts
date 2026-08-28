@@ -154,6 +154,52 @@ export function schedulerSiteOptionLabel(
   return `${site.clientName} · ${site.siteName} · ${site.address}`;
 }
 
+const FIELD_JOB_TITLE_SUFFIX_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const FIELD_JOB_TITLE_MAX_LENGTH = 300;
+
+export function randomSchedulerFieldJobTitleSuffix(
+  randomValues = globalThis.crypto.getRandomValues(new Uint32Array(3)),
+): string {
+  return Array.from(
+    randomValues.slice(0, 3),
+    (value) => FIELD_JOB_TITLE_SUFFIX_CHARACTERS[value % FIELD_JOB_TITLE_SUFFIX_CHARACTERS.length],
+  ).join('');
+}
+
+export function schedulerFieldJobTitlePreview(
+  workType: string,
+  clientName: string,
+  siteName: string,
+  suffix: string,
+): string {
+  const scopeNumber = workType.match(/^\s*(M[1-5])\b/i)?.[1]?.toUpperCase() ?? 'M#';
+  const normalizedSuffix = suffix.toUpperCase();
+  const suffixSegment = ` - ${normalizedSuffix}`;
+  const prefix = `${scopeNumber} - ${clientName.trim() || 'Client'} - ${siteName.trim() || 'Site'}`;
+  return `${prefix.slice(0, FIELD_JOB_TITLE_MAX_LENGTH - suffixSegment.length)}${suffixSegment}`;
+}
+
+type SchedulerFieldJobPlanning = {
+  electricityNmi: string;
+  maas: boolean | null;
+  workType: string;
+  meteringSolutionType: string;
+  jobComments: string;
+};
+
+export function clearSchedulerFieldJobPlanning<T extends SchedulerFieldJobPlanning>(
+  details: T,
+): T {
+  return {
+    ...details,
+    electricityNmi: '',
+    maas: null,
+    workType: '',
+    meteringSolutionType: '',
+    jobComments: '',
+  };
+}
+
 export function uniquePostcodeLocalities(
   suggestions: ReadonlyArray<{
     locality: string | null;

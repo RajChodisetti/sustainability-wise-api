@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import {
   and,
   asc,
@@ -1202,19 +1202,41 @@ export type CreateSchedulerDispatchInput = {
 type DispatchJobInput = Record<string, unknown>;
 
 const FIELD_SCOPE_CODE_PATTERN = /^\s*(M[1-5])\b/i;
+const FIELD_JOB_TITLE_SUFFIX_PATTERN = /^[A-Z0-9]{3}$/;
+const FIELD_JOB_TITLE_SUFFIX_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const FIELD_JOB_TITLE_MAX_LENGTH = 300;
 
 export function fieldScopeNumber(workType: string | null | undefined): string {
   return workType?.match(FIELD_SCOPE_CODE_PATTERN)?.[1]?.toUpperCase() ?? 'M5';
+}
+
+export function randomFieldJobTitleSuffix(
+  randomIndex: (maximum: number) => number = (maximum) => randomInt(maximum),
+): string {
+  return Array.from(
+    { length: 3 },
+    () => FIELD_JOB_TITLE_SUFFIX_CHARACTERS[randomIndex(FIELD_JOB_TITLE_SUFFIX_CHARACTERS.length)],
+  ).join('');
+}
+
+function normalizeFieldJobTitleSuffix(suffix: string): string {
+  const normalized = suffix.trim().toUpperCase();
+  if (!FIELD_JOB_TITLE_SUFFIX_PATTERN.test(normalized)) {
+    throw badRequest('job.titleSuffix must contain exactly 3 alphanumeric characters');
+  }
+  return normalized;
 }
 
 export function generatedFieldJobTitle(
   workType: string | null | undefined,
   clientName: string,
   siteName: string,
-  suffix = randomUUID().replaceAll('-', '').slice(0, 3).toUpperCase(),
+  suffix = randomFieldJobTitleSuffix(),
 ): string {
-  return `${fieldScopeNumber(workType)} - ${clientName.trim()} - ${siteName.trim()} - ${suffix}`
-    .slice(0, 300);
+  const normalizedSuffix = normalizeFieldJobTitleSuffix(suffix);
+  const suffixSegment = ` - ${normalizedSuffix}`;
+  const prefix = `${fieldScopeNumber(workType)} - ${clientName.trim()} - ${siteName.trim()}`;
+  return `${prefix.slice(0, FIELD_JOB_TITLE_MAX_LENGTH - suffixSegment.length)}${suffixSegment}`;
 }
 
 const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, ReadonlySet<string>> = {
@@ -1267,6 +1289,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
     'serviceType',
     'meteringSolutionType',
     'plannedMeterType',
+    'titleSuffix',
     'customJobNumber',
     'siteName',
     'siteAddress',
@@ -1337,6 +1360,11 @@ function optionalDispatchString(
     throw badRequest(`job.${field} must contain at most ${maxLength} characters`);
   }
   return normalized;
+}
+
+function optionalDispatchFieldJobTitleSuffix(job: DispatchJobInput): string | undefined {
+  const suffix = optionalDispatchString(job, 'titleSuffix', 3);
+  return suffix === null ? undefined : normalizeFieldJobTitleSuffix(suffix);
 }
 
 function optionalDispatchBoolean(job: DispatchJobInput, field: string): boolean | null {
@@ -1430,6 +1458,7 @@ export function validateDispatchJob(
   optionalDispatchBoolean(job, 'additionalMonitoringRequired');
   optionalDispatchSolarCapacity(job);
   optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH);
+  optionalDispatchFieldJobTitleSuffix(job);
 }
 
 type ResolvedDispatchSite = {
@@ -2031,6 +2060,7 @@ export async function createSchedulerDispatch(
           optionalDispatchString(job, job.workType ? 'workType' : 'serviceType', 120),
           site.clientName,
           site.siteName,
+          optionalDispatchFieldJobTitleSuffix(job),
         )
       : (input.title?.trim() || product.label).slice(0, 300);
     const description = sourceApp === 'installhub'

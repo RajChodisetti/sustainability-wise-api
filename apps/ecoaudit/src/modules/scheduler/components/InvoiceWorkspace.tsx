@@ -16,6 +16,7 @@ import {
   startSchedulerInvoicePdfExport,
 } from '@/modules/scheduler/api/client';
 import {
+  useCompleteSchedulerJob,
   useCreateQuickSchedulerInvoice,
   useIssueSchedulerInvoice,
   useMarkSchedulerInvoicePaid,
@@ -35,10 +36,13 @@ import {
   invoiceEmailAttemptNeedsSameIdempotencyKey,
   invoiceQuantityRateForAmount,
   invoiceStatusLabel,
+  normalizeInvoiceEmailRecipientList,
   schedulerInvoicePdfFallbackFilename,
   schedulerInvoicePdfReportVariantKey,
 } from '@/modules/scheduler/lib/finance';
 import type {
+  FinanceSourceApp,
+  FinanceSourceType,
   SchedulerFinancialSummary,
   SchedulerInvoice,
   SchedulerInvoiceLine,
@@ -152,6 +156,71 @@ let editableLineSequence = 0;
 
 function isCompletedJobStatus(status: string): boolean {
   return status.trim().toLocaleLowerCase('en-AU') === 'completed';
+}
+
+export type InvoiceCompletableJob = {
+  financeId: string;
+  sourceApp: FinanceSourceApp;
+  sourceType: FinanceSourceType;
+  sourceId: string;
+  jobName: string;
+};
+
+export function InvoiceJobCompletionAction({
+  job,
+  onCompleted,
+  className = '',
+}: {
+  job: InvoiceCompletableJob;
+  onCompleted?: () => void | Promise<void>;
+  className?: string;
+}) {
+  const complete = useCompleteSchedulerJob();
+  const toast = useToast();
+  const completionIdempotencyKeyRef = useRef<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function markComplete() {
+    if (!window.confirm(
+      `Mark ${job.jobName} complete? This closes the Field App job and linked Scheduler work.`,
+    )) return;
+    setError(null);
+    const idempotencyKey = completionIdempotencyKeyRef.current ?? crypto.randomUUID();
+    completionIdempotencyKeyRef.current = idempotencyKey;
+    try {
+      await complete.mutateAsync({
+        sourceApp: job.sourceApp,
+        sourceType: job.sourceType,
+        sourceId: job.sourceId,
+        idempotencyKey,
+      });
+      completionIdempotencyKeyRef.current = null;
+      toast.success(`${job.jobName} and its linked Scheduler work are complete.`);
+      try {
+        await onCompleted?.();
+      } catch {
+        // The completion mutation invalidates every Scheduler query. A local
+        // refresh is best-effort and must not misreport a completed job as failed.
+      }
+    } catch (cause) {
+      setError(cloudConnectionErrorMessage(cause));
+    }
+  }
+
+  return (
+    <div className={className}>
+      <Button
+        type="button"
+        variant="secondary"
+        disabled={complete.isPending}
+        aria-busy={complete.isPending}
+        onClick={() => void markComplete()}
+      >
+        {complete.isPending ? 'Completing…' : 'Mark job complete'}
+      </Button>
+      {error ? <div className="mt-2"><ErrorBanner message={error} /></div> : null}
+    </div>
+  );
 }
 
 function numericInputValue(value: number): string {
@@ -290,9 +359,21 @@ export function InvoiceWorkspace({
       </div>
 
       {!jobCompleted ? (
-        <p className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
-          Complete this job before creating an invoice or preparing its PDF.
-        </p>
+        <div className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]">
+          <p role="status">Complete this job before creating an invoice or preparing its PDF.</p>
+          {summary.source.sourceApp === 'installhub' && summary.source.sourceType === 'installation' ? (
+            <InvoiceJobCompletionAction
+              className="mt-2"
+              job={{
+                financeId,
+                sourceApp: summary.source.sourceApp,
+                sourceType: summary.source.sourceType,
+                sourceId: summary.source.sourceId,
+                jobName: summary.job.jobName,
+              }}
+            />
+          ) : null}
+        </div>
       ) : null}
       {summary.pricing.mode === 'charge_up' && missingBillingRateUsers.length > 0 ? (
         <p className="mt-4 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
@@ -446,10 +527,12 @@ function InvoiceDetail({
             expectedUpdatedAt,
           });
           toast.success(issued.pdfExport?.invoiceVersion
-            ? `${query.data.invoiceNumber} issued; PDF v${issued.pdfExport.invoiceVersion} is being stored.`
+            ? `${query.data.invoiceNumber} issued; final PDF v${issued.pdfExport.invoiceVersion} is being stored.`
             : `${query.data.invoiceNumber} issued.`);
+          return issued;
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
+          throw cause;
         }
       }}
       onMarkPaid={async () => {
@@ -496,7 +579,7 @@ export function InvoiceDocument({
   onClose: () => void;
   onRefresh: () => Promise<void>;
   onSave: (input: InvoiceDraftSaveInput, expectedUpdatedAt: string) => Promise<void>;
-  onIssue: (expectedUpdatedAt: string) => Promise<void>;
+  onIssue: (expectedUpdatedAt: string) => Promise<SchedulerInvoice>;
   onMarkPaid: () => Promise<void>;
   onVoid: () => Promise<void>;
   onStartPdf?: (expectedUpdatedAt: string) => ReturnType<typeof startSchedulerInvoicePdfExport>;
@@ -512,11 +595,8 @@ export function InvoiceDocument({
   const [billToAddress, setBillToAddress] = useState(invoice.billToAddress ?? '');
   const [billToEmail, setBillToEmail] = useState(invoice.billToEmail ?? '');
   const [billToAbn, setBillToAbn] = useState(invoice.billToAbn ?? '');
-  const automaticCustomerReference = invoice.jobs?.length === 1
-    ? invoice.jobs[0]!.source.sourceId
-    : invoice.job.sourceId;
   const [purchaseOrderReference, setPurchaseOrderReference] = useState(
-    invoice.purchaseOrderReference ?? automaticCustomerReference,
+    invoice.purchaseOrderReference ?? '',
   );
   const [draftLines, setDraftLines] = useState<EditableInvoiceLine[]>(() => (
     invoice.lines.map(editableInvoiceLine)
@@ -544,6 +624,7 @@ export function InvoiceDocument({
   const [emailIdempotencyKey, setEmailIdempotencyKey] = useState(initialEmailRequest.idempotencyKey);
   const [emailSourceUpdatedAt, setEmailSourceUpdatedAt] = useState(initialEmailRequest.sourceUpdatedAt);
   const [emailRetryLocked, setEmailRetryLocked] = useState(initialEmailRequest.locked);
+  const [emailFinalWhenReady, setEmailFinalWhenReady] = useState(false);
   const toast = useToast();
   const sendEmail = useSendSchedulerInvoiceEmail(invoice.id);
   const emailDeliveries = useSchedulerInvoiceEmailDeliveries(invoice.id, true);
@@ -551,6 +632,9 @@ export function InvoiceDocument({
     if (invoice.jobs?.length) {
       return invoice.jobs.map((job) => ({
         financeId: job.financeId,
+        sourceApp: job.source.sourceApp,
+        sourceType: job.source.sourceType,
+        sourceId: job.source.sourceId,
         jobName: job.job.jobName,
         siteName: job.job.siteName,
         status: currentJobStatuses?.[job.financeId] ?? job.currentStatus,
@@ -558,6 +642,9 @@ export function InvoiceDocument({
     }
     return [{
       financeId,
+      sourceApp: invoice.job.sourceApp,
+      sourceType: invoice.job.sourceType,
+      sourceId: invoice.job.sourceId,
       jobName: invoice.job.jobName,
       siteName: invoice.job.siteName,
       status: currentJobStatuses?.[financeId] ?? invoice.job.status,
@@ -572,6 +659,9 @@ export function InvoiceDocument({
       const lineTotal = editableLineTotal(line);
       return Number.isFinite(lineTotal) ? total + lineTotal : total;
     }, 0) > 0);
+  const pdfArtifactName = invoice.status === 'draft'
+    ? 'draft invoice PDF'
+    : 'final invoice PDF';
   const reportVariantKey = schedulerInvoicePdfReportVariantKey(invoice);
   const pdfExport = useExportJob({
     scopeKey: ['scheduler', 'invoice-pdf', invoice.id, invoice.updatedAt],
@@ -597,7 +687,7 @@ export function InvoiceDocument({
     billToAddress: invoice.billToAddress ?? '',
     billToEmail: invoice.billToEmail ?? '',
     billToAbn: invoice.billToAbn ?? '',
-    purchaseOrderReference: invoice.purchaseOrderReference ?? automaticCustomerReference,
+    purchaseOrderReference: invoice.purchaseOrderReference ?? '',
   }, { notes, dueDate, billToName, billToAddress, billToEmail, billToAbn, purchaseOrderReference });
   const linesDirty = editable && invoiceLinesAreDirty(invoice.lines, draftLines);
   const dirty = headerDirty || linesDirty;
@@ -685,7 +775,7 @@ export function InvoiceDocument({
       await pdfExport.start(() => onStartPdf
         ? onStartPdf(expectedUpdatedAt)
         : startSchedulerInvoicePdfExport(financeId, invoice.id, expectedUpdatedAt));
-      toast.success('Invoice PDF preparation started. You can leave this page while it finishes.');
+      toast.success(`${pdfArtifactName[0]!.toUpperCase()}${pdfArtifactName.slice(1)} preparation started. You can leave this page while it finishes.`);
     } catch (cause) {
       await onRefresh().catch(() => {});
       toast.error(cloudConnectionErrorMessage(cause));
@@ -695,7 +785,7 @@ export function InvoiceDocument({
   async function downloadPdf() {
     try {
       await pdfExport.download();
-      toast.success('Invoice PDF download started.');
+      toast.success(`${pdfArtifactName[0]!.toUpperCase()}${pdfArtifactName.slice(1)} download started.`);
     } catch (cause) {
       toast.error(cloudConnectionErrorMessage(cause));
     }
@@ -721,35 +811,64 @@ export function InvoiceDocument({
       setValidation('Enter the seller ABN before issuing an invoice with GST.');
       return;
     }
+    const emailContent = emailFinalWhenReady ? validatedEmailContent() : null;
+    if (emailFinalWhenReady && !emailContent) return;
     setValidation(null);
-    const expectedUpdatedAt = await saveSellerAbnIfNeeded();
-    await onIssue(expectedUpdatedAt);
+    try {
+      const expectedUpdatedAt = await saveSellerAbnIfNeeded();
+      const issued = await onIssue(expectedUpdatedAt);
+      if (emailContent) {
+        setEmailSourceUpdatedAt(issued.updatedAt);
+        setEmailOpen(true);
+        const queued = await queueInvoiceEmail(issued.updatedAt, emailContent);
+        if (queued) {
+          toast.success('Final invoice PDF and client email queued. Delivery status will update here.');
+        } else {
+          toast.error('The invoice was issued, but its email was not queued. Review the email section and retry.');
+        }
+      }
+    } catch (cause) {
+      setValidation(cloudConnectionErrorMessage(cause));
+    }
   }
 
-  async function emailInvoice() {
-    const recipient = emailTo.trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
-      setValidation('Enter a valid recipient email address.');
-      return;
+  function validatedEmailContent(): {
+    recipient: string;
+    subject: string;
+    message: string;
+  } | null {
+    const recipient = normalizeInvoiceEmailRecipientList(emailTo);
+    if (!recipient) {
+      setValidation('Enter between 1 and 10 valid recipient email addresses, separated by commas.');
+      return null;
     }
     if (!emailSubject.trim()) {
       setValidation('Add an email subject.');
-      return;
+      return null;
     }
     if (!emailMessage.trim()) {
       setValidation('Add a short email message.');
-      return;
+      return null;
     }
-    const request = {
-      idempotencyKey: emailIdempotencyKey,
-      sourceUpdatedAt: emailSourceUpdatedAt,
+    return {
       recipient,
       subject: emailSubject.trim(),
       message: emailMessage.trim(),
     };
+  }
+
+  async function queueInvoiceEmail(
+    sourceUpdatedAt: string,
+    content: NonNullable<ReturnType<typeof validatedEmailContent>>,
+  ): Promise<boolean> {
+    const request = {
+      idempotencyKey: emailIdempotencyKey,
+      sourceUpdatedAt,
+      ...content,
+    };
     if (!writePendingInvoiceEmail(emailSessionKey, request)) {
       setValidation('This browser could not safely retain the email request for retry. Enable session storage and try again.');
-      return;
+      return false;
     }
     setEmailRetryLocked(true);
     setValidation(null);
@@ -767,17 +886,25 @@ export function InvoiceDocument({
       clearPendingInvoiceEmail(emailSessionKey);
       setEmailRetryLocked(false);
       setEmailIdempotencyKey(newInvoiceEmailIdempotencyKey(invoice.id));
-      setEmailSourceUpdatedAt(invoice.updatedAt);
+      setEmailSourceUpdatedAt(sourceUpdatedAt);
       setEmailOpen(false);
+      return true;
     } catch (cause) {
       if (!invoiceEmailAttemptNeedsSameIdempotencyKey(cause)) {
         clearPendingInvoiceEmail(emailSessionKey);
         setEmailRetryLocked(false);
         setEmailIdempotencyKey(newInvoiceEmailIdempotencyKey(invoice.id));
-        setEmailSourceUpdatedAt(invoice.updatedAt);
+        setEmailSourceUpdatedAt(sourceUpdatedAt);
       }
       setValidation(cloudConnectionErrorMessage(cause));
+      return false;
     }
+  }
+
+  async function emailInvoice() {
+    const content = validatedEmailContent();
+    if (!content) return;
+    await queueInvoiceEmail(emailSourceUpdatedAt, content);
   }
 
   function updateDraftLine(clientKey: string, change: Partial<EditableInvoiceLine>) {
@@ -825,13 +952,28 @@ export function InvoiceDocument({
 
       {invoice.status === 'issued' ? (
         <div className="mt-3 rounded-xl border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-3 py-2.5 text-sm text-[var(--text)]">
-          This issued invoice can be revised and reissued. Every generated PDF is retained as the next version.
+          This issued invoice can be revised and reissued. Every generated final PDF is retained as the next version.
         </div>
       ) : null}
 
-      {editable && !allJobsCompleted ? (
-        <div className="mt-3 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]" role="status">
-          Complete {incompleteJobs.map((job) => job.jobName).join(', ')} before issuing this invoice or preparing its PDF.
+      {!allJobsCompleted ? (
+        <div className="mt-3 rounded-xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2.5 text-sm font-semibold leading-6 text-[var(--amber)]">
+          <p role="status">
+            {editable
+              ? `Complete ${incompleteJobs.map((job) => job.jobName).join(', ')} before issuing this invoice or preparing its PDF.`
+              : `This invoice includes incomplete work: ${incompleteJobs.map((job) => job.jobName).join(', ')}.`}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {incompleteJobs.map((job) => (
+              job.sourceApp === 'installhub' && job.sourceType === 'installation' ? (
+                <InvoiceJobCompletionAction
+                  key={job.financeId}
+                  job={job}
+                  onCompleted={onRefresh}
+                />
+              ) : null
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -863,7 +1005,9 @@ export function InvoiceDocument({
           <span>{(editable ? billToEmail : invoice.billToEmail) || 'No email'}</span>
           {(editable ? billToAbn : invoice.billToAbn) ? <span>ABN: {editable ? billToAbn : invoice.billToAbn}</span> : null}
           <span className="whitespace-pre-line">{(editable ? billToAddress : invoice.billToAddress) || invoice.job.siteAddress || 'No billing address'}</span>
-          <span>Customer reference: {(editable ? purchaseOrderReference : invoice.purchaseOrderReference) || automaticCustomerReference}</span>
+          {(editable ? purchaseOrderReference : invoice.purchaseOrderReference)
+            ? <span>Customer reference: {editable ? purchaseOrderReference : invoice.purchaseOrderReference}</span>
+            : null}
         </InfoBlock>
         <InfoBlock label="Internal dates">
           <span>Internal issue date: {displayDate(invoice.issueDate)}</span>
@@ -927,9 +1071,9 @@ export function InvoiceDocument({
               <Textarea id={`invoice-bill-address-${invoice.id}`} rows={3} value={billToAddress} onChange={(event) => setBillToAddress(event.target.value)} />
             </div>
             <div>
-              <FieldLabel htmlFor={`invoice-reference-${invoice.id}`}>Customer reference / Job ID</FieldLabel>
+              <FieldLabel htmlFor={`invoice-reference-${invoice.id}`}>Customer reference</FieldLabel>
               <Input id={`invoice-reference-${invoice.id}`} value={purchaseOrderReference} onChange={(event) => setPurchaseOrderReference(event.target.value)} />
-              <FieldHint>Automatically populated from the original job ID. You can replace it when the customer supplies another reference.</FieldHint>
+              <FieldHint>Optional. Enter a purchase order or another reference supplied by the customer.</FieldHint>
             </div>
             <div>
             <FieldLabel htmlFor={`invoice-due-${invoice.id}`}>Due date</FieldLabel>
@@ -1087,26 +1231,30 @@ export function InvoiceDocument({
       {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
       {pdfExport.error ? <div className="mt-4"><ErrorBanner message={cloudConnectionErrorMessage(pdfExport.error)} /></div> : null}
       {editable && dirty ? (
-        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save invoice changes before issuing or preparing a PDF so the generated version uses the values shown here.</p>
+        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save invoice changes before issuing or preparing a PDF so the generated draft or final version uses the values shown here.</p>
       ) : null}
       {editable && !everyJobHasPositiveDraftCharge ? (
         <p className="mt-3 text-xs font-semibold leading-5 text-[var(--amber)]">This draft can be saved, but every included job needs a positive charge before the invoice can be issued.</p>
       ) : null}
       <ExportJobStatus
         job={pdfExport.job}
-        artifactName="invoice PDF"
+        artifactName={pdfArtifactName}
         starting={pdfExport.starting}
         downloading={pdfExport.downloading}
         onDownload={() => void downloadPdf()}
         className="mt-5"
       />
 
-      {(invoice.status === 'issued' || invoice.status === 'paid' || (emailDeliveries.data?.length ?? 0) > 0) ? (
+      {(invoice.status !== 'void' || (emailDeliveries.data?.length ?? 0) > 0) ? (
         <section className="mt-5 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4" aria-labelledby={`invoice-email-${invoice.id}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <h4 id={`invoice-email-${invoice.id}`} className="font-extrabold text-[var(--text)]">Email invoice</h4>
-              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">The immutable branded PDF is attached and sent through the existing Sustainability Wise Gmail account.</p>
+              <h4 id={`invoice-email-${invoice.id}`} className="font-extrabold text-[var(--text)]">Email final invoice</h4>
+              <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+                {invoice.status === 'draft'
+                  ? 'Choose recipients now and the final branded PDF can be generated and emailed automatically after issue.'
+                  : 'The immutable final branded PDF is attached and sent through the existing Sustainability Wise Gmail account.'}
+              </p>
             </div>
             {invoice.status === 'issued' || invoice.status === 'paid' ? (
               <Button
@@ -1121,15 +1269,29 @@ export function InvoiceDocument({
               </Button>
             ) : null}
           </div>
+          {editable ? (
+            <div className="mt-4 rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-3">
+              <Checkbox
+                label={invoice.status === 'draft'
+                  ? 'Email the final invoice automatically after issue'
+                  : 'Email the new final invoice automatically after reissue'}
+                checked={emailFinalWhenReady}
+                disabled={emailRetryLocked}
+                onChange={setEmailFinalWhenReady}
+              />
+              <FieldHint>This option is off by default. The invoice is issued first; the durable email request is then queued with its final PDF.</FieldHint>
+            </div>
+          ) : null}
           {emailRetryLocked && !emailOpen ? (
             <p className="mt-3 rounded-lg border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-3 py-2 text-xs font-semibold leading-5 text-[var(--text)]">
               An email request needs an exact retry. Reopen it before marking this invoice paid or void.
             </p>
           ) : null}
-          {emailOpen ? (
+          {emailOpen || (editable && emailFinalWhenReady) ? (
             <div id={`invoice-email-panel-${invoice.id}`} className="mt-4 rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-4">
-              <FieldLabel htmlFor={`invoice-email-to-${invoice.id}`}>Recipient</FieldLabel>
-              <Input id={`invoice-email-to-${invoice.id}`} type="email" autoComplete="email" value={emailTo} disabled={emailRetryLocked} onChange={(event) => setEmailTo(event.target.value)} />
+              <FieldLabel htmlFor={`invoice-email-to-${invoice.id}`}>Recipients</FieldLabel>
+              <Input id={`invoice-email-to-${invoice.id}`} type="email" multiple autoComplete="email" value={emailTo} disabled={emailRetryLocked} onChange={(event) => setEmailTo(event.target.value)} />
+              <FieldHint>Enter up to 10 email addresses separated by commas.</FieldHint>
               <FieldLabel htmlFor={`invoice-email-subject-${invoice.id}`}>Subject</FieldLabel>
               <Input id={`invoice-email-subject-${invoice.id}`} maxLength={300} value={emailSubject} disabled={emailRetryLocked} onChange={(event) => setEmailSubject(event.target.value)} />
               <FieldLabel htmlFor={`invoice-email-message-${invoice.id}`}>Message</FieldLabel>
@@ -1137,10 +1299,14 @@ export function InvoiceDocument({
               <FieldHint>{emailRetryLocked
                 ? 'The exact request is retained for this browser tab. Retry it unchanged so a lost response cannot create a duplicate email.'
                 : 'Ambiguous provider outcomes are never sent again automatically; they are flagged for review to avoid duplicate customer emails.'}</FieldHint>
-              <div className="mt-4 flex justify-end gap-2">
-                <Button type="button" variant="secondary" disabled={sendEmail.isPending} onClick={() => setEmailOpen(false)}>Cancel</Button>
-                <Button type="button" disabled={sendEmail.isPending} aria-busy={sendEmail.isPending} onClick={() => void emailInvoice()}>{sendEmail.isPending ? 'Queueing…' : emailRetryLocked ? 'Retry same request' : 'Send invoice'}</Button>
-              </div>
+              {invoice.status === 'issued' || invoice.status === 'paid' ? (
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button type="button" variant="secondary" disabled={sendEmail.isPending} onClick={() => setEmailOpen(false)}>Cancel</Button>
+                  <Button type="button" disabled={sendEmail.isPending} aria-busy={sendEmail.isPending} onClick={() => void emailInvoice()}>{sendEmail.isPending ? 'Queueing…' : emailRetryLocked ? 'Retry same request' : 'Send final invoice'}</Button>
+                </div>
+              ) : (
+                <p className="mt-4 text-xs font-semibold text-[var(--text-sub)]">Recipients and message will be used when you choose “Issue &amp; generate final PDF”.</p>
+              )}
             </div>
           ) : null}
           {emailDeliveries.isLoading ? <Spinner label="Loading email delivery history…" /> : null}
@@ -1181,13 +1347,13 @@ export function InvoiceDocument({
             : pdfExport.starting || pdfExport.active
             ? 'Preparing PDF…'
             : pdfExport.job?.status === 'failed'
-              ? 'Try PDF again'
+              ? `Try ${invoice.status === 'draft' ? 'draft' : 'final'} PDF again`
               : pdfExport.job?.status === 'complete'
-                ? 'Prepare new PDF'
-                : 'Prepare PDF'}
+                ? `Prepare new ${invoice.status === 'draft' ? 'draft' : 'final'} PDF`
+                : `Prepare ${invoice.status === 'draft' ? 'draft' : 'final'} PDF`}
         </Button>
         {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save invoice'}</Button> : null}
-        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save invoice first' : busy ? 'Issuing…' : invoice.status === 'issued' ? 'Reissue invoice' : 'Issue invoice'}</Button> : null}
+        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save invoice first' : busy ? 'Issuing…' : invoice.status === 'issued' ? 'Reissue & generate new final PDF' : 'Issue & generate final PDF'}</Button> : null}
         {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
         {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>

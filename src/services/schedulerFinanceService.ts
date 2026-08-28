@@ -29,6 +29,7 @@ import {
   schedulerInvoiceRefunds,
   schedulerInvoiceSettings,
   schedulerInvoices,
+  schedulerJobActorBillingRateOverrides,
   schedulerJobExpenses,
   schedulerJobFinance,
   schedulerJobHourOverrides,
@@ -155,10 +156,56 @@ export type RecordedActorHoursDto = {
   displayName: string | null;
   activeMilliseconds: number;
   hours: number;
+  /** Effective rate retained for backwards-compatible consumers. */
   billingRate: number | null;
+  defaultBillingRate: number | null;
+  billingRateOverride: number | null;
+  effectiveBillingRate: number | null;
+  billingRateSource: 'job_override' | 'global_default' | 'missing';
   labourAmount: number | null;
   billingRateEditable: boolean;
 };
+
+export type SchedulerActorBillingRateResolution = {
+  defaultBillingRateCents: number | null;
+  billingRateOverrideCents: number | null;
+  effectiveBillingRateCents: number | null;
+  billingRateSource: RecordedActorHoursDto['billingRateSource'];
+};
+
+export function resolveSchedulerActorBillingRate(input: {
+  defaultBillingRateCents: number | null;
+  billingRateOverrideCents: number | null;
+}): SchedulerActorBillingRateResolution {
+  if (input.billingRateOverrideCents !== null) {
+    return {
+      ...input,
+      effectiveBillingRateCents: input.billingRateOverrideCents,
+      billingRateSource: 'job_override',
+    };
+  }
+  if (input.defaultBillingRateCents !== null) {
+    return {
+      ...input,
+      effectiveBillingRateCents: input.defaultBillingRateCents,
+      billingRateSource: 'global_default',
+    };
+  }
+  return {
+    ...input,
+    effectiveBillingRateCents: null,
+    billingRateSource: 'missing',
+  };
+}
+
+export function canMutateSchedulerJobActorBillingRate(input: {
+  clearing: boolean;
+  hasExistingOverride: boolean;
+  isCurrentBillingActor: boolean;
+}): boolean {
+  return input.isCurrentBillingActor
+    || (input.clearing && input.hasExistingOverride);
+}
 
 export type SchedulerExpenseDto = {
   id: string;
@@ -396,6 +443,11 @@ export type FinanceUpdateInput = {
   costHoursOverride?: number | null;
   overrideReason?: string | null;
   costRate?: number;
+};
+
+export type SchedulerJobActorBillingRateUpdateInput = {
+  /** Null clears the job override so the latest global user default applies. */
+  billingRateOverride: number | null;
 };
 
 export type ExpenseInput = {
@@ -1383,7 +1435,8 @@ async function recordedHoursForSource(
       billingRateEditable: Boolean(membership),
     };
   });
-  const actors = mergeResolvedRecordedActorTime(resolvedActors).map((actorTime) => {
+  const actors = mergeResolvedRecordedActorTime(resolvedActors).map(
+    (actorTime): RecordedActorHoursDto => {
     const {
       userId,
       displayName,
@@ -1397,6 +1450,10 @@ async function recordedHoursForSource(
       activeMilliseconds,
       hours: millisecondsToHours(activeMilliseconds),
       billingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
+      defaultBillingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
+      billingRateOverride: null,
+      effectiveBillingRate: billingRateCents === null ? null : centsToMoney(billingRateCents),
+      billingRateSource: billingRateCents === null ? 'missing' : 'global_default',
       labourAmount: billingRateCents === null
         ? null
         : centsToMoney(hoursAtRateCents(
@@ -1405,8 +1462,9 @@ async function recordedHoursForSource(
             'Recorded labour',
           )),
       billingRateEditable,
-    };
-  }).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
+      };
+    },
+  ).sort((left, right) => right.activeMilliseconds - left.activeMilliseconds);
   return {
     activeMilliseconds: recorded.activeMilliseconds,
     actors,
@@ -1469,13 +1527,83 @@ async function billingActorsForSource(
     billingRate: assignee.billingRateCents === null
       ? null
       : centsToMoney(assignee.billingRateCents),
+    defaultBillingRate: assignee.billingRateCents === null
+      ? null
+      : centsToMoney(assignee.billingRateCents),
+    billingRateOverride: null,
+    effectiveBillingRate: assignee.billingRateCents === null
+      ? null
+      : centsToMoney(assignee.billingRateCents),
+    billingRateSource: assignee.billingRateCents === null ? 'missing' : 'global_default',
     labourAmount: assignee.billingRateCents === null ? null : 0,
     billingRateEditable: true,
   }];
 }
 
+export function applySchedulerActorBillingRateOverrides(
+  actors: readonly RecordedActorHoursDto[],
+  overrides: ReadonlyArray<{ globalUserId: string; billingRateCents: number }>,
+): RecordedActorHoursDto[] {
+  const overrideByUser = new Map(
+    overrides.map((override) => [override.globalUserId, override.billingRateCents]),
+  );
+  return actors.map((actor) => {
+    const defaultBillingRateCents = actor.defaultBillingRate === null
+      ? null
+      : moneyToCents(actor.defaultBillingRate, 'defaultBillingRate');
+    const resolution = resolveSchedulerActorBillingRate({
+      defaultBillingRateCents,
+      billingRateOverrideCents: actor.billingRateEditable
+        ? overrideByUser.get(actor.userId) ?? null
+        : null,
+    });
+    const billingRateOverride = resolution.billingRateOverrideCents === null
+      ? null
+      : centsToMoney(resolution.billingRateOverrideCents);
+    const effectiveBillingRate = resolution.effectiveBillingRateCents === null
+      ? null
+      : centsToMoney(resolution.effectiveBillingRateCents);
+    return {
+      ...actor,
+      billingRate: effectiveBillingRate,
+      billingRateOverride,
+      effectiveBillingRate,
+      billingRateSource: resolution.billingRateSource,
+      labourAmount: resolution.effectiveBillingRateCents === null
+        ? null
+        : centsToMoney(hoursAtRateCents(
+            actor.hours,
+            resolution.effectiveBillingRateCents,
+            'Recorded labour',
+          )),
+    };
+  });
+}
+
+async function applyStoredSchedulerActorBillingRateOverrides(
+  financeId: string,
+  actors: readonly RecordedActorHoursDto[],
+  executor: FinanceExecutor,
+): Promise<RecordedActorHoursDto[]> {
+  const globalUserIds = [...new Set(
+    actors.filter((actor) => actor.billingRateEditable).map((actor) => actor.userId),
+  )];
+  if (globalUserIds.length === 0) return [...actors];
+  const overrides = await executor.select({
+    globalUserId: schedulerJobActorBillingRateOverrides.globalUserId,
+    billingRateCents: schedulerJobActorBillingRateOverrides.billingRateCents,
+  }).from(schedulerJobActorBillingRateOverrides).where(and(
+    eq(schedulerJobActorBillingRateOverrides.financeId, financeId),
+    inArray(schedulerJobActorBillingRateOverrides.globalUserId, globalUserIds),
+  ));
+  return applySchedulerActorBillingRateOverrides(actors, overrides);
+}
+
 export function effectiveUserLabourBilling(
-  actors: RecordedActorHoursDto[],
+  actors: ReadonlyArray<Pick<
+    RecordedActorHoursDto,
+    'userId' | 'displayName' | 'hours' | 'billingRate'
+  >>,
   effectiveHours: number,
 ): {
   labourRevenueCents: number;
@@ -1944,8 +2072,11 @@ async function buildFinancialSummary(
   source: FinanceSource,
   event: ScheduleEventRow | null,
   executor: FinanceExecutor = db,
+  options: { allowHiddenSourceForCompletionCapture?: boolean } = {},
 ): Promise<SchedulerFinancialSummaryDto> {
-  assertSchedulerFinanceSourceAppVisible(source.sourceApp);
+  if (!options.allowHiddenSourceForCompletionCapture) {
+    assertSchedulerFinanceSourceAppVisible(source.sourceApp);
+  }
   const metadata = await loadJobMetadata(source, event, executor);
   const finance = await ensureFinance(source, metadata, executor);
   const [
@@ -2015,7 +2146,17 @@ async function buildFinancialSummary(
   const billableHours = billableHoursOverride ?? 0;
   const costHours = costHoursOverride ?? 0;
   const effectiveEvent = event ?? await latestEventForSource(source, executor);
-  const billingActors = await billingActorsForSource(source, recorded, effectiveEvent, executor);
+  const baseBillingActors = await billingActorsForSource(
+    source,
+    recorded,
+    effectiveEvent,
+    executor,
+  );
+  const billingActors = await applyStoredSchedulerActorBillingRateOverrides(
+    finance.id,
+    baseBillingActors,
+    executor,
+  );
   const userLabourBilling = effectiveUserLabourBilling(billingActors, billableHours);
   const expenseCostCents = expenseRows.reduce((total, expense) => (
     addAccountingCents(total, expense.costAmountCents, 'Expense cost')
@@ -2172,6 +2313,7 @@ export async function captureSchedulerCompletedWorkRevenue(
     source,
     event,
     executor,
+    { allowHiddenSourceForCompletionCapture: true },
   );
   return buildSchedulerCompletedWorkRevenueSnapshot({
     currency: summary.currency,
@@ -2335,6 +2477,86 @@ export async function updateSchedulerFinanceById(
 ): Promise<SchedulerFinancialSummaryDto> {
   const actor = await requireGlobalFinanceAdmin(user);
   return updateSchedulerFinanceForContext(actor, await financeById(financeId), input);
+}
+
+export async function updateSchedulerJobActorBillingRateByFinanceId(
+  user: AuthUser,
+  financeId: string,
+  globalUserId: string,
+  input: SchedulerJobActorBillingRateUpdateInput,
+): Promise<SchedulerFinancialSummaryDto> {
+  const actor = await requireGlobalFinanceAdmin(user);
+  const context = await financeById(financeId);
+  const billingRateOverrideCents = input.billingRateOverride === null
+    ? null
+    : moneyToCents(input.billingRateOverride, 'billingRateOverride');
+
+  await db.transaction(async (tx) => {
+    const [finance] = await tx.select().from(schedulerJobFinance)
+      .where(eq(schedulerJobFinance.id, context.finance.id))
+      .for('update')
+      .limit(1);
+    if (!finance) throw notFound('Job finance');
+
+    const recorded = await recordedHoursForSource(context.source, tx);
+    const event = await latestEventForSource(context.source, tx);
+    const billingActors = await billingActorsForSource(
+      context.source,
+      recorded,
+      event,
+      tx,
+    );
+    const targetActor = billingActors.find((candidate) => (
+      candidate.userId === globalUserId && candidate.billingRateEditable
+    ));
+    const [existingOverride] = await tx.select({
+      globalUserId: schedulerJobActorBillingRateOverrides.globalUserId,
+    }).from(schedulerJobActorBillingRateOverrides).where(and(
+      eq(schedulerJobActorBillingRateOverrides.financeId, finance.id),
+      eq(schedulerJobActorBillingRateOverrides.globalUserId, globalUserId),
+    )).limit(1);
+    if (!canMutateSchedulerJobActorBillingRate({
+      clearing: billingRateOverrideCents === null,
+      hasExistingOverride: Boolean(existingOverride),
+      isCurrentBillingActor: Boolean(targetActor),
+    })) {
+      throw notFound('Job billing actor');
+    }
+
+    const now = new Date();
+    if (billingRateOverrideCents === null) {
+      await tx.delete(schedulerJobActorBillingRateOverrides).where(and(
+        eq(schedulerJobActorBillingRateOverrides.financeId, finance.id),
+        eq(schedulerJobActorBillingRateOverrides.globalUserId, globalUserId),
+      ));
+    } else {
+      await tx.insert(schedulerJobActorBillingRateOverrides).values({
+        financeId: finance.id,
+        globalUserId,
+        billingRateCents: billingRateOverrideCents,
+        updatedByGlobalUserId: actor.globalUserId,
+        createdAt: now,
+        updatedAt: now,
+      }).onConflictDoUpdate({
+        target: [
+          schedulerJobActorBillingRateOverrides.financeId,
+          schedulerJobActorBillingRateOverrides.globalUserId,
+        ],
+        set: {
+          billingRateCents: billingRateOverrideCents,
+          updatedByGlobalUserId: actor.globalUserId,
+          updatedAt: now,
+        },
+      });
+    }
+    await tx.update(schedulerJobFinance).set({
+      updatedByUserId: actor.globalUserId,
+      updatedByDisplayName: actor.displayName,
+      updatedAt: now,
+    }).where(eq(schedulerJobFinance.id, finance.id));
+  });
+
+  return buildFinancialSummary(context.source, context.event);
 }
 
 /**
@@ -2639,6 +2861,7 @@ export async function updateSchedulerInvoiceSeller(
       .for('update')
       .limit(1);
     if (!invoice) throw notFound('Invoice');
+    await invoiceJobsForRow(invoice, tx);
     if (invoice.status === 'void') throw conflict('Void invoices cannot be edited');
     assertInvoiceVersion(invoice, input.expectedUpdatedAt);
     const now = new Date();
@@ -3297,7 +3520,7 @@ async function createQuickSchedulerInvoiceForContext(
       billToAbn: finance.billToAbn,
       billToAddress: finance.billToAddress,
       billToEmail: finance.billToEmail,
-      purchaseOrderReference: finance.billingReference ?? context.source.sourceId,
+      purchaseOrderReference: finance.billingReference,
       jobSiteName: metadata.siteName,
       jobSiteAddress: metadata.siteAddress,
       jobName: metadata.jobName,
@@ -3316,7 +3539,7 @@ async function createQuickSchedulerInvoiceForContext(
       invoiceId,
       financeId: finance.id,
       sortOrder: 0,
-      billingReference: finance.billingReference ?? context.source.sourceId,
+      billingReference: finance.billingReference,
       jobSiteName: metadata.siteName,
       jobSiteAddress: metadata.siteAddress,
       jobName: metadata.jobName,
@@ -3570,6 +3793,9 @@ export async function createConsolidatedSchedulerInvoice(
     if (candidateSources.some((source) => !isSupportedSource(source))) {
       throw badRequest('Unsupported commercial source job');
     }
+    for (const source of candidateSources) {
+      assertSchedulerFinanceSourceAppVisible(source.sourceApp);
+    }
     const candidateSourceByFinanceId = new Map(candidateFinances.map((finance, index) => (
       [finance.id, financeSourceKey(candidateSources[index]!)]
     )));
@@ -3656,8 +3882,8 @@ export async function createConsolidatedSchedulerInvoice(
         ? optionalText(explicitBillTo.email, 320)
         : anchor.billToEmail,
       purchaseOrderReference: explicitBillTo
-        ? optionalText(explicitBillTo.purchaseOrderReference, 200) ?? primary.source.sourceId
-        : anchor.billingReference ?? primary.source.sourceId,
+        ? optionalText(explicitBillTo.purchaseOrderReference, 200)
+        : anchor.billingReference,
       jobSiteName: primary.metadata.siteName,
       jobSiteAddress: primary.metadata.siteAddress,
       jobName: primary.metadata.jobName,
@@ -3676,7 +3902,7 @@ export async function createConsolidatedSchedulerInvoice(
       invoiceId,
       financeId: context.finance.id,
       sortOrder: index,
-      billingReference: context.finance.billingReference ?? context.source.sourceId,
+      billingReference: context.finance.billingReference,
       jobSiteName: context.metadata.siteName,
       jobSiteAddress: context.metadata.siteAddress,
       jobName: context.metadata.jobName,
@@ -4923,12 +5149,15 @@ export async function assertSchedulerInvoiceJobsCompleted(
   }
 }
 
-export function renderSchedulerInvoicePdf(invoice: SchedulerInvoiceDto): Promise<InvoicePdfOutput> {
+export function renderSchedulerInvoicePdf(
+  invoice: SchedulerInvoiceDto,
+  generatedAt = new Date().toISOString(),
+): Promise<InvoicePdfOutput> {
   return renderInvoicePdf({
     invoiceNumber: invoice.invoiceNumber,
     status: invoice.status,
     currency: invoice.currency,
-    issueDate: invoice.issueDate,
+    invoiceDate: generatedAt,
     dueDate: invoice.dueDate,
     paidAt: invoice.paidAt,
     notes: invoice.notes,
