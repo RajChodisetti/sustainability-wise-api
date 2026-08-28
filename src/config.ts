@@ -438,6 +438,8 @@ export const config = {
   },
   /** Optional server-side, open-source address and route providers. */
   schedulerMaps: {
+    /** Secret server-side Geoapify credential; never returned to browser/mobile clients. */
+    geoapifyApiKey: optional('GEOAPIFY_API_KEY').trim(),
     photonUrl: normalizeSchedulerMapProviderUrl(
       'SCHEDULER_PHOTON_URL',
       process.env.SCHEDULER_PHOTON_URL,
@@ -450,6 +452,10 @@ export const config = {
       process.env.SCHEDULER_MAP_REQUEST_TIMEOUT_MS,
     ),
     maxStops: parseSchedulerRouteMaxStops(process.env.SCHEDULER_ROUTE_MAX_STOPS),
+  },
+  /** Existing finance settings scope; client/address memory uses its fixed migration scope. */
+  businessDirectory: {
+    companyKey: optional('BUSINESS_COMPANY_KEY', 'sustainability-wise').trim(),
   },
   schedulerInvoice: {
     sellerName: optional(
@@ -563,6 +569,9 @@ export const config = {
     enabled: optionalBool('ONEDRIVE_PHOTO_BACKUP_ENABLED', false),
     photosFolder: normalizeOneDriveFolder(
       optional('ONEDRIVE_PHOTOS_FOLDER', 'SustainabilityWise/photos'),
+    ),
+    invoicesFolder: normalizeOneDriveFolder(
+      optional('ONEDRIVE_INVOICES_FOLDER', 'SustainabilityWise/invoices'),
     ),
     backupRequired: optionalBool('ONEDRIVE_BACKUP_REQUIRED', false),
   },

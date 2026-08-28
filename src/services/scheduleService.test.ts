@@ -12,6 +12,7 @@ import {
   MAX_ESTIMATED_DURATION_MINUTES,
   parseDispatchJob,
   parseEstimatedDurationMinutes,
+  schedulerSitePrefillOption,
   scheduleUpdateRequiresAvailabilityCheck,
   scheduleUpdateRequiresActiveProduct,
   sortByDeadlineUrgency,
@@ -29,7 +30,7 @@ test('Eco Audit administrators retain Scheduler access', () => {
   assert.doesNotThrow(() => assertPortalSchedulerApp(ecoAdmin));
 });
 
-test('job creation distinguishes new sites from existing-site versions', () => {
+test('job creation distinguishes new addresses from saved-site prefill', () => {
   assert.deepEqual(dispatchSiteSelection({}), { mode: 'new', existingSiteId: null });
   assert.deepEqual(
     dispatchSiteSelection({ siteMode: 'existing', existingSiteId: 'site-1' }),
@@ -45,6 +46,29 @@ test('job creation distinguishes new sites from existing-site versions', () => {
     (error: unknown) => error instanceof AppError
       && error.detail === 'job.existingSiteId is allowed only for an existing site',
   );
+});
+
+test('saved-site prefill suppresses prior job and revision metadata for rolling portals', () => {
+  const option = schedulerSitePrefillOption({
+    id: 'site-1',
+    name: 'Sydney warehouse',
+    latestWorkType: 'old work',
+    latestSourceId: 'old-installation',
+    latestRevisionNumber: 2,
+  });
+  assert.deepEqual(option, {
+    id: 'site-1',
+    name: 'Sydney warehouse',
+    latestWorkType: null,
+    latestMeteringSolutionType: null,
+    latestCustomJobNumber: null,
+    latestJobComments: null,
+    latestMaas: null,
+    latestElectricityNmi: null,
+    latestJobId: null,
+    latestSourceId: null,
+    latestRevisionNumber: null,
+  });
 });
 
 test('Field job titles use the hardcoded scope number and a three-character suffix', () => {

@@ -94,20 +94,35 @@ export type SchedulerSiteOption = {
   countryCode: string | null;
   latitude: number | null;
   longitude: number | null;
+  geocodeStatus: string;
+  geocodeProvider: string | null;
+  geocodePlaceId: string | null;
+  addressSource: string;
+  addressFingerprint: string;
+  geocodedAt: string | null;
   timezone: string;
   siteContactName: string | null;
   siteContactPhone: string | null;
   siteContactEmail: string | null;
   accessInformation: string | null;
-  latestWorkType: string | null;
-  latestMeteringSolutionType: string | null;
-  latestCustomJobNumber: string | null;
-  latestJobComments: string | null;
-  latestMaas: boolean | null;
-  latestElectricityNmi: string | null;
-  latestJobId: string | null;
-  latestSourceId: string | null;
-  latestRevisionNumber: number | null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestWorkType: null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestMeteringSolutionType: null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestCustomJobNumber: null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestJobComments: null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestMaas: null;
+  /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
+  latestElectricityNmi: null;
+  /** @deprecated Always null; retained for rolling compatibility. */
+  latestJobId: null;
+  /** @deprecated Always null; retained for rolling compatibility. */
+  latestSourceId: null;
+  /** @deprecated Always null so no site version is displayed. */
+  latestRevisionNumber: null;
 };
 
 export type CreateScheduleEventInput = {
@@ -134,6 +149,7 @@ export type CreateSchedulerDispatchInput = {
   job: {
     siteMode?: 'new' | 'existing';
     existingSiteId?: string | null;
+    clientId?: string | null;
     siteName: string;
     siteAddress?: string;
     location?: string;
@@ -181,6 +197,7 @@ export type CreateSchedulerDispatchInput = {
       longitude?: number;
       provider?: string;
       placeId?: string;
+      source?: 'suggested' | 'manual' | 'client_saved';
     };
   };
 };
@@ -456,6 +473,7 @@ export type SchedulerInvoice = SchedulerInvoiceListItem & {
   sellerAbn: string | null;
   sellerAddress: string | null;
   sellerEmail: string | null;
+  pdfExport?: SchedulerInvoicePdfExport;
   createdByUserId: string | null;
   createdByDisplayName: string | null;
   issuedAt: string | null;
@@ -482,6 +500,14 @@ export type SchedulerInvoice = SchedulerInvoiceListItem & {
     status: string;
   };
   lines: SchedulerInvoiceLine[];
+};
+
+export type SchedulerInvoicePdfExport = {
+  jobId: string;
+  reused: boolean;
+  sourceUpdatedAt: string;
+  reportVariantKey: string;
+  invoiceVersion?: number;
 };
 
 export type SchedulerFinancialSummary = {

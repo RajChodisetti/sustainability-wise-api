@@ -344,6 +344,20 @@
       "when": 1787790691953,
       "tag": "0048_jittery_wallow",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1787891608436,
+      "tag": "0049_dry_red_wolf",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1787894729102,
+      "tag": "0050_ambiguous_speedball",
+      "breakpoints": true
     }
   ]
 }

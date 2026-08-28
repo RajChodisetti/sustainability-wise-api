@@ -2,19 +2,21 @@
 
 import { useEffect, useId, useMemo, useState } from 'react';
 import { FieldHint, FieldLabel, Input, Select } from '@/components/ui/FormFields';
-import { useSchedulerAddressSuggestions } from '@/modules/scheduler/hooks/useScheduler';
+import { useSchedulerClientAddressSuggestions } from '@/modules/scheduler/hooks/useScheduler';
 import {
   AUSTRALIAN_STATES,
   schedulerAddressPostcodeChange,
-  schedulerAddressFromSuggestion,
+  schedulerAddressFromClientSuggestion,
   schedulerManualAddress,
   uniquePostcodeLocalities,
 } from '@/modules/scheduler/lib/routing';
 import type {
   AustralianState,
-  SchedulerAddressSuggestion,
+  SchedulerClientAddressSuggestion,
   SchedulerJobAddressInput,
 } from '@/modules/scheduler/types/routing';
+
+const EMPTY_ADDRESS_SUGGESTIONS: SchedulerClientAddressSuggestion[] = [];
 
 function useDebouncedValue(value: string, delayMs = 300): string {
   const [debounced, setDebounced] = useState(value);
@@ -28,10 +30,18 @@ function useDebouncedValue(value: string, delayMs = 300): string {
 export function AustralianAddressFields({
   value,
   onChange,
+  clientId,
+  onSuggestionSelected,
+  onManualEdit,
+  onAddNewAddress,
   disabled = false,
 }: {
   value: SchedulerJobAddressInput;
   onChange: (value: SchedulerJobAddressInput) => void;
+  clientId?: string | null;
+  onSuggestionSelected?: (suggestion: SchedulerClientAddressSuggestion) => void;
+  onManualEdit?: () => void;
+  onAddNewAddress?: () => void;
   disabled?: boolean;
 }) {
   const generatedId = useId().replaceAll(':', '');
@@ -44,34 +54,51 @@ export function AustralianAddressFields({
   const [activeIndex, setActiveIndex] = useState(-1);
   const debouncedAddress = useDebouncedValue(value.freeform.trim());
   const debouncedPostcode = useDebouncedValue(value.postcode?.trim() ?? '');
-  const addressQuery = useSchedulerAddressSuggestions(
-    { query: debouncedAddress },
-    !disabled && debouncedAddress.length >= 3,
+  const addressQuery = useSchedulerClientAddressSuggestions(
+    { clientId: clientId ?? undefined, query: debouncedAddress },
+    !disabled && (Boolean(clientId) || debouncedAddress.length >= 3),
   );
-  const postcodeQuery = useSchedulerAddressSuggestions(
+  const postcodeQuery = useSchedulerClientAddressSuggestions(
     { postcode: debouncedPostcode },
     !disabled && /^\d{4}$/.test(debouncedPostcode),
   );
-  const suggestions = addressQuery.data?.suggestions ?? [];
+  const storedSuggestions = addressQuery.data?.storedSuggestions ?? EMPTY_ADDRESS_SUGGESTIONS;
+  const providerSuggestions = addressQuery.data?.providerSuggestions ?? EMPTY_ADDRESS_SUGGESTIONS;
+  const suggestions = useMemo(
+    () => [...storedSuggestions, ...providerSuggestions],
+    [providerSuggestions, storedSuggestions],
+  );
+  const safeActiveIndex = activeIndex >= 0 && activeIndex < suggestions.length
+    ? activeIndex
+    : -1;
   const localityOptions = useMemo(
-    () => uniquePostcodeLocalities(postcodeQuery.data?.suggestions ?? []),
-    [postcodeQuery.data?.suggestions],
+    () => uniquePostcodeLocalities((postcodeQuery.data?.providerSuggestions ?? []).map(
+      (suggestion) => suggestion.address,
+    )),
+    [postcodeQuery.data?.providerSuggestions],
   );
 
   useEffect(() => {
     if (localityOptions.length !== 1) return;
     const [only] = localityOptions;
     if (!only || (value.locality?.trim() && value.state)) return;
+    onManualEdit?.();
     onChange(schedulerManualAddress(value, {
       locality: value.locality?.trim() || only.locality,
       state: value.state ?? only.state,
     }));
-  }, [localityOptions, onChange, value]);
+  }, [localityOptions, onChange, onManualEdit, value]);
 
-  function chooseSuggestion(suggestion: SchedulerAddressSuggestion) {
-    onChange(schedulerAddressFromSuggestion(suggestion));
+  function chooseSuggestion(suggestion: SchedulerClientAddressSuggestion) {
+    onChange(schedulerAddressFromClientSuggestion(suggestion));
+    onSuggestionSelected?.(suggestion);
     setOpen(false);
     setActiveIndex(-1);
+  }
+
+  function changeManually(next: SchedulerJobAddressInput) {
+    onManualEdit?.();
+    onChange(next);
   }
 
   function onAddressKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
@@ -83,24 +110,64 @@ export function AustralianAddressFields({
     if (event.key === 'ArrowDown') {
       event.preventDefault();
       setOpen(true);
-      setActiveIndex((current) => Math.min(suggestions.length - 1, current + 1));
+      setActiveIndex(Math.min(suggestions.length - 1, safeActiveIndex + 1));
       return;
     }
     if (event.key === 'ArrowUp') {
       event.preventDefault();
       setOpen(true);
-      setActiveIndex((current) => Math.max(0, current - 1));
+      setActiveIndex(Math.max(0, safeActiveIndex - 1));
       return;
     }
-    if (event.key === 'Enter' && open && activeIndex >= 0) {
+    if (event.key === 'Enter' && open && safeActiveIndex >= 0) {
       event.preventDefault();
-      const selected = suggestions[activeIndex];
+      const selected = suggestions[safeActiveIndex];
       if (selected) chooseSuggestion(selected);
     }
   }
 
   return (
     <div>
+      {clientId && onAddNewAddress ? (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3 py-2">
+          <p className="text-xs font-semibold text-[var(--text-sub)]">
+            Saved addresses are shown first. You can also create another address for this client.
+          </p>
+          <button
+            type="button"
+            className="min-h-9 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-1.5 text-xs font-extrabold text-[var(--primary)] hover:border-[var(--primary)]"
+            onClick={() => {
+              onAddNewAddress();
+              setOpen(true);
+              setActiveIndex(-1);
+            }}
+          >
+            Add a new address
+          </button>
+        </div>
+      ) : null}
+      {clientId && storedSuggestions.length > 0 ? (
+        <div className="mt-2 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-2">
+          <p className="px-1 text-xs font-extrabold text-[var(--text-sub)]">
+            Saved addresses for this client
+          </p>
+          <div className="mt-1 grid gap-1">
+            {storedSuggestions.map((suggestion) => (
+              <button
+                key={`saved-shortcut-${suggestion.id}`}
+                type="button"
+                className="rounded-lg px-2.5 py-2 text-left text-sm hover:bg-[var(--surface2)]"
+                onClick={() => chooseSuggestion(suggestion)}
+              >
+                <span className="block font-bold text-[var(--text)]">
+                  {suggestion.siteName ?? 'Saved site'}
+                </span>
+                <span className="block text-xs text-[var(--text-sub)]">{suggestion.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       <FieldLabel htmlFor={addressId}>Street address</FieldLabel>
       <div className="relative">
         <Input
@@ -112,7 +179,7 @@ export function AustralianAddressFields({
           aria-autocomplete="list"
           aria-expanded={open && suggestions.length > 0}
           aria-controls={listboxId}
-          aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
+          aria-activedescendant={safeActiveIndex >= 0 ? `${listboxId}-${safeActiveIndex}` : undefined}
           aria-busy={addressQuery.isFetching}
           placeholder="Start typing an Australian address"
           maxLength={1000}
@@ -120,33 +187,66 @@ export function AustralianAddressFields({
           onBlur={() => window.setTimeout(() => setOpen(false), 120)}
           onKeyDown={onAddressKeyDown}
           onChange={(event) => {
-            onChange(schedulerManualAddress(value, { freeform: event.target.value }));
+            changeManually(schedulerManualAddress(value, { freeform: event.target.value }));
             setActiveIndex(-1);
             setOpen(true);
           }}
         />
         {open && suggestions.length > 0 ? (
           <div className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]">
-            <div id={listboxId} role="listbox" aria-label="Australian address suggestions">
-              {suggestions.map((suggestion, index) => (
+            <div id={listboxId} role="listbox" aria-label="Saved and Australian address suggestions">
+              {storedSuggestions.length > 0 ? (
+                <p role="presentation" className="px-3 pb-1 pt-1 text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">
+                  Saved for this client
+                </p>
+              ) : null}
+              {storedSuggestions.map((suggestion, index) => (
                 <button
                   key={suggestion.id}
                   id={`${listboxId}-${index}`}
                   type="button"
                   role="option"
                   tabIndex={-1}
-                  aria-selected={index === activeIndex}
+                  aria-selected={index === safeActiveIndex}
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => chooseSuggestion(suggestion)}
                   className={`block w-full rounded-lg px-3 py-2.5 text-left text-sm leading-5 ${
-                    index === activeIndex
+                    index === safeActiveIndex
                       ? 'bg-[var(--primary-soft)] text-[var(--primary)]'
                       : 'text-[var(--text)] hover:bg-[var(--surface2)]'
                   }`}
                 >
-                  {suggestion.label}
+                  <span className="block font-bold">{suggestion.siteName ?? 'Saved site'}</span>
+                  <span className="block text-xs text-[var(--text-sub)]">{suggestion.label}</span>
                 </button>
               ))}
+              {providerSuggestions.length > 0 ? (
+                <p role="presentation" className="mt-1 border-t border-[var(--border)] px-3 pb-1 pt-2 text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">
+                  Australian address suggestions
+                </p>
+              ) : null}
+              {providerSuggestions.map((suggestion, providerIndex) => {
+                const index = storedSuggestions.length + providerIndex;
+                return (
+                  <button
+                    key={suggestion.id}
+                    id={`${listboxId}-${index}`}
+                    type="button"
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={index === safeActiveIndex}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => chooseSuggestion(suggestion)}
+                    className={`block w-full rounded-lg px-3 py-2.5 text-left text-sm leading-5 ${
+                      index === safeActiveIndex
+                        ? 'bg-[var(--primary-soft)] text-[var(--primary)]'
+                        : 'text-[var(--text)] hover:bg-[var(--surface2)]'
+                    }`}
+                  >
+                    {suggestion.label}
+                  </button>
+                );
+              })}
             </div>
             {addressQuery.data?.attribution ? (
               <p className="px-3 py-1 text-[10px] text-[var(--muted)]">
@@ -173,7 +273,7 @@ export function AustralianAddressFields({
             maxLength={4}
             pattern="[0-9]{4}"
             placeholder="2000"
-            onChange={(event) => onChange(
+            onChange={(event) => changeManually(
               schedulerAddressPostcodeChange(value, event.target.value),
             )}
           />
@@ -185,7 +285,7 @@ export function AustralianAddressFields({
             value={value.state ?? ''}
             disabled={disabled}
             autoComplete="address-level1"
-            onChange={(event) => onChange(schedulerManualAddress(value, {
+            onChange={(event) => changeManually(schedulerManualAddress(value, {
               state: (event.target.value || undefined) as AustralianState | undefined,
             }))}
           >
@@ -205,7 +305,7 @@ export function AustralianAddressFields({
         autoComplete="address-level2"
         maxLength={200}
         placeholder="Sydney"
-        onChange={(event) => onChange(schedulerManualAddress(value, {
+        onChange={(event) => changeManually(schedulerManualAddress(value, {
           locality: event.target.value,
         }))}
       />
@@ -220,7 +320,7 @@ export function AustralianAddressFields({
                 key={`${option.locality}-${option.state}`}
                 type="button"
                 className="min-h-9 rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-2.5 py-1 text-xs font-bold text-[var(--text)] hover:border-[var(--primary)] hover:text-[var(--primary)]"
-                onClick={() => onChange(schedulerManualAddress(value, option))}
+                onClick={() => changeManually(schedulerManualAddress(value, option))}
               >
                 {option.locality}, {option.state}
               </button>

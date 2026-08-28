@@ -3,9 +3,13 @@ import {
   validStoredElectricalMapLayout,
   type ElectricalMapLayoutDocument,
 } from './electricalMapLayout.js';
+import {
+  ADDRESS_PROVIDERS,
+  type AddressProvider,
+} from '../../services/schedulerAddressService.js';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.8';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.9';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.3-tbc-only';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
 export const DISPLAY_CODE_RULE_VERSION = 4;
@@ -44,6 +48,15 @@ export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
   'siteState',
   'sitePostcode',
   'siteCountryCode',
+  'clientId',
+  'clientSiteId',
+  'siteLatitude',
+  'siteLongitude',
+  'siteGeocodeProvider',
+  'siteGeocodePlaceId',
+  'siteAddressSource',
+  'siteGeocodeStatus',
+  'siteAddressFingerprint',
   'siteContactName',
   'siteContactPhone',
   'siteContactEmail',
@@ -68,6 +81,9 @@ export type InstallationSiteState =
   | 'TAS'
   | 'VIC'
   | 'WA';
+
+export type InstallationAddressSource = 'suggested' | 'manual' | 'client_saved';
+export type InstallationGeocodeStatus = 'unresolved' | 'resolved' | 'manual' | 'failed';
 
 export const BOARD_TYPE_CODES = [
   'MSB',
@@ -169,6 +185,16 @@ export type CanonicalInstallation = {
   siteState?: InstallationSiteState | null;
   sitePostcode?: string | null;
   siteCountryCode?: 'AU' | null;
+  /** Server-issued directory identity. Old clients may omit both fields. */
+  clientId?: string | null;
+  clientSiteId?: string | null;
+  siteLatitude?: number | null;
+  siteLongitude?: number | null;
+  siteGeocodeProvider?: AddressProvider | null;
+  siteGeocodePlaceId?: string | null;
+  siteAddressSource?: InstallationAddressSource | null;
+  siteGeocodeStatus?: InstallationGeocodeStatus | null;
+  siteAddressFingerprint?: string | null;
   siteContactName?: string | null;
   siteContactPhone?: string | null;
   siteContactEmail?: string | null;
@@ -625,6 +651,88 @@ function nullableSiteCountryProperty(value: JsonRecord): { siteCountryCode?: 'AU
   return { siteCountryCode: 'AU' };
 }
 
+function nullableCoordinateProperty(
+  value: JsonRecord,
+  key: 'siteLatitude' | 'siteLongitude',
+): Record<string, number | null> {
+  if (!hasOwn(value, key) || value[key] === undefined) return {};
+  if (value[key] === null || value[key] === '') return { [key]: null };
+  const coordinate = value[key];
+  const [minimum, maximum] = key === 'siteLatitude' ? [-44, -9] : [112, 154];
+  if (
+    typeof coordinate !== 'number'
+    || !Number.isFinite(coordinate)
+    || coordinate < minimum
+    || coordinate > maximum
+  ) {
+    throw new CanonicalInputError(
+      `installation.${key} must be a finite Australian coordinate or null`,
+    );
+  }
+  return { [key]: coordinate };
+}
+
+function nullableAddressSourceProperty(
+  value: JsonRecord,
+): { siteAddressSource?: InstallationAddressSource | null } {
+  if (!hasOwn(value, 'siteAddressSource') || value.siteAddressSource === undefined) return {};
+  if (value.siteAddressSource === null || value.siteAddressSource === '') {
+    return { siteAddressSource: null };
+  }
+  if (!['suggested', 'manual', 'client_saved'].includes(String(value.siteAddressSource))) {
+    throw new CanonicalInputError('installation.siteAddressSource is invalid');
+  }
+  return { siteAddressSource: value.siteAddressSource as InstallationAddressSource };
+}
+
+function nullableGeocodeProviderProperty(
+  value: JsonRecord,
+): { siteGeocodeProvider?: AddressProvider | null } {
+  if (!hasOwn(value, 'siteGeocodeProvider') || value.siteGeocodeProvider === undefined) return {};
+  if (value.siteGeocodeProvider === null || value.siteGeocodeProvider === '') {
+    return { siteGeocodeProvider: null };
+  }
+  if (typeof value.siteGeocodeProvider !== 'string') {
+    throw new CanonicalInputError('installation.siteGeocodeProvider must be a string or null');
+  }
+  const provider = value.siteGeocodeProvider.trim();
+  if (!ADDRESS_PROVIDERS.includes(provider as AddressProvider)) {
+    throw new CanonicalInputError(
+      'installation.siteGeocodeProvider must be geoapify or photon',
+    );
+  }
+  return { siteGeocodeProvider: provider as AddressProvider };
+}
+
+function nullableGeocodeStatusProperty(
+  value: JsonRecord,
+): { siteGeocodeStatus?: InstallationGeocodeStatus | null } {
+  if (!hasOwn(value, 'siteGeocodeStatus') || value.siteGeocodeStatus === undefined) return {};
+  if (value.siteGeocodeStatus === null || value.siteGeocodeStatus === '') {
+    return { siteGeocodeStatus: null };
+  }
+  if (!['unresolved', 'resolved', 'manual', 'failed'].includes(String(value.siteGeocodeStatus))) {
+    throw new CanonicalInputError('installation.siteGeocodeStatus is invalid');
+  }
+  return { siteGeocodeStatus: value.siteGeocodeStatus as InstallationGeocodeStatus };
+}
+
+function nullableFingerprintProperty(
+  value: JsonRecord,
+): { siteAddressFingerprint?: string | null } {
+  if (!hasOwn(value, 'siteAddressFingerprint') || value.siteAddressFingerprint === undefined) {
+    return {};
+  }
+  if (value.siteAddressFingerprint === null || value.siteAddressFingerprint === '') {
+    return { siteAddressFingerprint: null };
+  }
+  if (
+    typeof value.siteAddressFingerprint !== 'string'
+    || !/^[0-9a-f]{64}$/u.test(value.siteAddressFingerprint)
+  ) throw new CanonicalInputError('installation.siteAddressFingerprint must be 64 lowercase hex');
+  return { siteAddressFingerprint: value.siteAddressFingerprint };
+}
+
 /**
  * Full-snapshot clients predating additive installation fields omit them.
  * Preserve the locked server values; a present JSON null remains an explicit clear.
@@ -635,6 +743,49 @@ export function retainOmittedCanonicalInstallationFields(
 ): void {
   const currentRecord = current as unknown as Record<string, unknown>;
   const incomingRecord = incoming as unknown as Record<string, unknown>;
+  const comparable = (value: unknown) => String(value ?? '')
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/gu, ' ')
+    .toLocaleLowerCase('en-AU');
+  const addressIdentityChanged = comparable(current.siteAddress) !== comparable(incoming.siteAddress)
+    || (['siteLocality', 'siteState', 'sitePostcode', 'siteCountryCode'] as const).some(
+      (field) => Object.prototype.hasOwnProperty.call(incomingRecord, field)
+        && comparable(currentRecord[field]) !== comparable(incomingRecord[field]),
+    );
+
+  if (addressIdentityChanged) {
+    for (const field of ['siteLocality', 'siteState', 'sitePostcode'] as const) {
+      if (!Object.prototype.hasOwnProperty.call(incomingRecord, field)) incomingRecord[field] = null;
+    }
+    if (!Object.prototype.hasOwnProperty.call(incomingRecord, 'siteCountryCode')) {
+      incomingRecord.siteCountryCode = 'AU';
+    }
+    if (!Object.prototype.hasOwnProperty.call(incomingRecord, 'clientSiteId')) {
+      incomingRecord.clientSiteId = null;
+    }
+    for (const field of [
+      'siteLatitude',
+      'siteLongitude',
+      'siteGeocodeProvider',
+      'siteGeocodePlaceId',
+      'siteAddressFingerprint',
+    ] as const) {
+      if (!Object.prototype.hasOwnProperty.call(incomingRecord, field)) incomingRecord[field] = null;
+    }
+    const hasCoordinates = incoming.siteLatitude != null && incoming.siteLongitude != null;
+    const hasProviderEvidence = hasCoordinates
+      && Boolean(incoming.siteGeocodeProvider)
+      && Boolean(incoming.siteGeocodePlaceId);
+    if (!Object.prototype.hasOwnProperty.call(incomingRecord, 'siteAddressSource')) {
+      incomingRecord.siteAddressSource = hasProviderEvidence ? 'suggested' : 'manual';
+    }
+    if (!Object.prototype.hasOwnProperty.call(incomingRecord, 'siteGeocodeStatus')) {
+      incomingRecord.siteGeocodeStatus = hasProviderEvidence
+        ? 'resolved'
+        : hasCoordinates ? 'manual' : 'unresolved';
+    }
+  }
   for (const field of INSTALLATION_OPTIONAL_WRITE_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(incomingRecord, field)) {
       incomingRecord[field] = currentRecord[field] ?? null;
@@ -1113,7 +1264,7 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
   // exactly replay a non-empty historical value without renaming display-code
   // identity underneath it.
   const electricalMapLayout = validStoredElectricalMapLayout(item.electricalMapLayout);
-  return {
+  const normalized: CanonicalInstallation = {
     id: requiredText(item.id, 'installation.id'),
     externalKey: requiredText(item.externalKey, 'installation.externalKey'),
     siteCode,
@@ -1151,6 +1302,15 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     ...nullableSiteStateProperty(item),
     ...nullableSitePostcodeProperty(item),
     ...nullableSiteCountryProperty(item),
+    ...nullableBoundedTextProperty(item, 'clientId', 200),
+    ...nullableBoundedTextProperty(item, 'clientSiteId', 200),
+    ...nullableCoordinateProperty(item, 'siteLatitude'),
+    ...nullableCoordinateProperty(item, 'siteLongitude'),
+    ...nullableGeocodeProviderProperty(item),
+    ...nullableBoundedTextProperty(item, 'siteGeocodePlaceId', 500),
+    ...nullableAddressSourceProperty(item),
+    ...nullableGeocodeStatusProperty(item),
+    ...nullableFingerprintProperty(item),
     ...nullableBoundedTextProperty(
       item,
       'siteContactName',
@@ -1233,6 +1393,25 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     updatedAt: iso(item.updatedAt),
     deletedAt: iso(item.deletedAt),
   };
+  if ((normalized.siteLatitude == null) !== (normalized.siteLongitude == null)) {
+    throw new CanonicalInputError(
+      'installation.siteLatitude and siteLongitude must be supplied together',
+    );
+  }
+  if (
+    normalized.siteAddressSource === 'suggested'
+    && (
+      normalized.siteLatitude == null
+      || normalized.siteLongitude == null
+      || !normalized.siteGeocodeProvider
+      || !normalized.siteGeocodePlaceId
+    )
+  ) {
+    throw new CanonicalInputError(
+      'installation suggested address requires coordinates, provider and place ID',
+    );
+  }
+  return normalized;
 }
 
 /** Normalize accepted v2 aliases into one deterministic server-owned tree. */
@@ -2656,6 +2835,15 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       siteState: ordered.installation.siteState ?? null,
       sitePostcode: ordered.installation.sitePostcode ?? null,
       siteCountryCode: ordered.installation.siteCountryCode ?? null,
+      clientId: ordered.installation.clientId ?? null,
+      clientSiteId: ordered.installation.clientSiteId ?? null,
+      siteLatitude: ordered.installation.siteLatitude ?? null,
+      siteLongitude: ordered.installation.siteLongitude ?? null,
+      siteGeocodeProvider: ordered.installation.siteGeocodeProvider ?? null,
+      siteGeocodePlaceId: ordered.installation.siteGeocodePlaceId ?? null,
+      siteAddressSource: ordered.installation.siteAddressSource ?? null,
+      siteGeocodeStatus: ordered.installation.siteGeocodeStatus ?? null,
+      siteAddressFingerprint: ordered.installation.siteAddressFingerprint ?? null,
       siteContactName: ordered.installation.siteContactName ?? null,
       siteContactPhone: ordered.installation.siteContactPhone ?? null,
       siteContactEmail: ordered.installation.siteContactEmail ?? null,

@@ -82,6 +82,14 @@ export function oneDrivePathForStorageKey(rootFolder: string, storageKey: string
   return joinOneDrivePath(rootFolder, storageKey);
 }
 
+export function invoicePdfOneDrivePath(
+  invoicesFolder: string,
+  clientName: string,
+  filename: string,
+): string {
+  return joinOneDrivePathSegments(invoicesFolder, clientName, filename);
+}
+
 export function encodeOneDrivePath(value: string): string {
   return normalizeOneDrivePath(value)
     .split('/')

@@ -15,6 +15,7 @@ AZURE_CLIENT_SECRET=...
 ONEDRIVE_USER_EMAIL=backups@example.com
 ONEDRIVE_PHOTO_BACKUP_ENABLED=false
 ONEDRIVE_PHOTOS_FOLDER=SustainabilityWise/photos
+ONEDRIVE_INVOICES_FOLDER=SustainabilityWise/invoices
 ONEDRIVE_BACKUP_REQUIRED=false
 ```
 
@@ -30,6 +31,16 @@ Generated PDFs are written under the same app parent folder:
 SustainabilityWise/photos/solarsense/site-id/pdfs/site-pack-pdf-uuid.pdf
 SustainabilityWise/photos/ecoaudit/audit-id/pdfs/audit-pdf-uuid.pdf
 ```
+
+Scheduler invoice PDFs use a separate lazy hierarchy:
+
+```text
+SustainabilityWise/invoices/<client>/<invoice-and-job-name>-v1.pdf
+SustainabilityWise/invoices/<client>/<invoice-and-job-name>-v2.pdf
+```
+
+The `invoices` and client folders are created only while uploading a generated
+invoice PDF. Merely creating a client or invoice draft does not create folders.
 
 ## Smoke Test
 

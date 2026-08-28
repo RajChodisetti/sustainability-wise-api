@@ -31,9 +31,7 @@ import {
 import { assertInstallationAccess } from './helpers.js';
 import {
   type CanonicalRecordVersionSnapshot,
-  canonicalCompletionReadiness,
   ensureCanonicalRecordVersion,
-  insertCanonicalRecordVersion,
   loadCanonicalInstallationTree,
   loadCanonicalRecordVersion,
   projectLegacyInstallationTree,
@@ -52,14 +50,9 @@ import {
   type ElectricalMapLayoutDocument,
   type SavedElectricalMapLayout,
 } from './electricalMapLayout.js';
-import {
-  installHubCompletionNotesFromReplayResult,
-  installHubCompletionReplayMatchesCurrentState,
-  installHubCompletionNotesSchema,
-  normalizeInstallHubCompletionNotes,
-} from './completionNotes.js';
+import { installHubCompletionNotesSchema } from './completionNotes.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
-import { projectCompletedFieldInstallation } from '../../services/fieldCompletionProjectionService.js';
+import { completeInstallHubInstallation } from '../../services/installHubCompletionService.js';
 
 function positiveVersion(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -677,14 +670,6 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       throw badRequest('idempotencyKey is required');
     }
     const idempotencyKey = body.idempotencyKey.trim();
-    const completionNotes = normalizeInstallHubCompletionNotes(body.completionNotes);
-    const legacyFingerprint = canonicalPayloadHash({ baseTreeRevision, operation: 'complete' });
-    const fingerprint = canonicalPayloadHash({
-      baseTreeRevision,
-      completionNotes,
-      operation: 'complete',
-    });
-
     const outcome = await db.transaction(async (tx) => {
       const [installation] = await tx.select().from(ihInstallations).where(and(
         eq(ihInstallations.id, installationId),
@@ -692,123 +677,13 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
       )).for('update');
       if (!installation) throw notFound('Installation');
       assertInstallationAccess(installation, request.user);
-
-      const [prior] = await tx.select().from(ihCompletionIdempotency).where(and(
-        eq(ihCompletionIdempotency.installationId, installationId),
-        eq(ihCompletionIdempotency.operation, 'complete'),
-        eq(ihCompletionIdempotency.actorUserId, request.user.userId),
-        eq(ihCompletionIdempotency.idempotencyKey, idempotencyKey),
-      ));
-      if (prior) {
-        const matchesPreNotesClient = completionNotes === null
-          && prior.requestFingerprint === legacyFingerprint;
-        if (prior.requestFingerprint !== fingerprint && !matchesPreNotesClient) {
-          throw conflict('idempotency_key_reused');
-        }
-        if (!installHubCompletionReplayMatchesCurrentState(installation, prior)) {
-          throw conflict('completion_state_changed');
-        }
-        await completeLinkedSchedulerEvents(tx, {
-          sourceApp: 'installhub',
-          sourceType: 'installation',
-          sourceId: installationId,
-        }, { completionProvenance: 'historical_replay' });
-        await projectCompletedFieldInstallation(tx, {
-          installationId,
-          actorUserId: request.user.userId,
-          observedAt: installation.completedAt ?? new Date(),
-        });
-        return {
-          kind: 'success' as const,
-          result: {
-            ...prior.result,
-            completionNotes: installHubCompletionNotesFromReplayResult(prior.result),
-          },
-        };
-      }
-      if (installation.treeSchemaVersion < 2) throw conflict('upgrade_required');
-      if (installation.status === 'Completed') throw conflict('installation_already_completed');
-      if (installation.treeRevision !== baseTreeRevision) throw conflict('snapshot_conflict');
-
-      const tree = await loadCanonicalInstallationTree(installationId, tx);
-      if (!tree) throw notFound('Installation');
-      const readiness = await canonicalCompletionReadiness({ tree, executor: tx });
-      if (!readiness.readyToComplete) {
-        return { kind: 'not_ready' as const, readiness };
-      }
-
-      const completedAt = new Date();
-      const nextRevision = installation.treeRevision + 1;
-      const nextVersion = installation.recordVersionNumber + 1;
-      const [updated] = await tx.update(ihInstallations).set({
-        status: 'Completed',
-        treeRevision: nextRevision,
-        recordVersionNumber: nextVersion,
-        completedAt,
-        completedByUserId: request.user.userId,
-        completedFromRevision: baseTreeRevision,
-        completionNotes,
-        updatedAt: completedAt,
-        syncStatus: 'synced',
-      }).where(and(
-        eq(ihInstallations.id, installationId),
-        eq(ihInstallations.status, 'Draft'),
-        eq(ihInstallations.treeRevision, baseTreeRevision),
-      )).returning();
-      if (!updated) throw conflict('snapshot_conflict');
-
-      tree.installation.status = 'Completed';
-      tree.installation.treeRevision = nextRevision;
-      tree.installation.recordVersionNumber = nextVersion;
-      tree.installation.completedAt = completedAt.toISOString();
-      tree.installation.completedByUserId = request.user.userId;
-      tree.installation.completedFromRevision = baseTreeRevision;
-      tree.installation.completionNotes = completionNotes;
-      tree.installation.updatedAt = completedAt.toISOString();
-      const snapshot = await insertCanonicalRecordVersion({
-        executor: tx,
-        tree,
-        versionNumber: nextVersion,
-        userId: request.user.userId,
-      });
-      const result = {
+      return completeInstallHubInstallation(tx, {
         installationId,
-        status: 'Completed',
-        completedAt: completedAt.toISOString(),
-        completedByUserId: request.user.userId,
-        completedFromRevision: baseTreeRevision,
-        completionNotes,
-        treeRevision: nextRevision,
-        recordVersionNumber: nextVersion,
-        payloadHash: snapshot.payloadHash,
-        readiness: paginateReadiness(snapshot.readiness),
-      };
-      await tx.insert(ihCompletionIdempotency).values({
-        id: randomUUID(),
-        installationId,
-        operation: 'complete',
         actorUserId: request.user.userId,
         idempotencyKey,
-        requestFingerprint: fingerprint,
-        completedFromRevision: baseTreeRevision,
-        resultingTreeRevision: nextRevision,
-        recordVersionNumber: nextVersion,
-        result,
+        baseTreeRevision,
+        completionNotes: body.completionNotes,
       });
-      await completeLinkedSchedulerEvents(tx, {
-        sourceApp: 'installhub',
-        sourceType: 'installation',
-        sourceId: installationId,
-      }, {
-        observedAt: completedAt,
-        completionProvenance: 'direct_transition',
-      });
-      await projectCompletedFieldInstallation(tx, {
-        installationId,
-        actorUserId: request.user.userId,
-        observedAt: completedAt,
-      });
-      return { kind: 'success' as const, result };
     });
     if (outcome.kind === 'not_ready') {
       return reply.status(422).send({
@@ -818,6 +693,7 @@ export async function installhubCanonicalRoutes(app: FastifyInstance): Promise<v
         readiness: paginateReadiness(outcome.readiness),
       });
     }
+    if (outcome.kind === 'already_completed') throw conflict('installation_already_completed');
     return reply.send(outcome.result);
   });
 

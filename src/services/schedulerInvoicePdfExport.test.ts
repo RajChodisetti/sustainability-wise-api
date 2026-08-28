@@ -99,13 +99,14 @@ test('scheduler invoice PDF params pin identity, revision, variant, and branded 
   const params = schedulerInvoicePdfJobParams(invoice);
   assert.deepEqual(params, {
     artifactType: 'pdf',
-    filename: 'invoice-Café-rooftop-upgrade-and-1-more-2026-08-16-INV-2026-0042.pdf',
+    filename: 'invoice-Café-rooftop-upgrade-and-1-more-2026-08-16-INV-2026-0042-v1.pdf',
     contentType: 'application/pdf',
     invoiceId: 'invoice-42',
     financeId: 'finance-9',
     sourceUpdatedAt: '2026-08-16T18:15:00.000Z',
     reportVariantKey: 'scheduler-invoice-pdf:v3:invoice-42:2026-08-16T18:15:00.000Z',
     rendererVersion: SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
+    invoiceVersion: 1,
   });
   assert.equal('clientName' in params, false);
   assert.equal('siteAddress' in params, false);
@@ -116,8 +117,14 @@ test('one-job durable params retain the legacy job-name and job-date filename', 
   const params = schedulerInvoicePdfJobParams({ ...invoice, jobCount: 1 });
   assert.equal(
     params.filename,
-    'invoice-Café-rooftop-upgrade-2026-08-15-INV-2026-0042.pdf',
+    'invoice-Café-rooftop-upgrade-2026-08-15-INV-2026-0042-v1.pdf',
   );
+});
+
+test('invoice PDF params assign the requested retained version', () => {
+  const params = schedulerInvoicePdfJobParams(invoice, 3);
+  assert.equal(params.invoiceVersion, 3);
+  assert.match(params.filename, /-v3\.pdf$/);
 });
 
 test('invoice lifecycle mutations produce a new latest/dedupe variant', () => {

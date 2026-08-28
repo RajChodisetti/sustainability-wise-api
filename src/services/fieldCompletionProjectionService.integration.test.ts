@@ -114,12 +114,34 @@ test('Field completion transfers custody, projects Fleet devices, and skips mete
       updatedByUserId: userId,
     });
     await db.insert(businessClients).values([
-      { id: clientId, name: clientName },
-      { id: emptyClientId, name: emptyClientName },
+      {
+        id: clientId,
+        companyKey: 'sustainability-wise',
+        name: clientName,
+        normalizedKey: clientName.toLocaleLowerCase('en-AU'),
+      },
+      {
+        id: emptyClientId,
+        companyKey: 'sustainability-wise',
+        name: emptyClientName,
+        normalizedKey: emptyClientName.toLocaleLowerCase('en-AU'),
+      },
     ]);
     await db.insert(businessSites).values([
-      { id: siteId, clientId, name: 'Projection Site', address: '1 Projection Street' },
-      { id: emptySiteId, clientId: emptyClientId, name: 'Meterless Site', address: '2 Projection Street' },
+      {
+        id: siteId,
+        clientId,
+        name: 'Projection Site',
+        address: '1 Projection Street',
+        addressFingerprint: 'a'.repeat(64),
+      },
+      {
+        id: emptySiteId,
+        clientId: emptyClientId,
+        name: 'Meterless Site',
+        address: '2 Projection Street',
+        addressFingerprint: 'b'.repeat(64),
+      },
     ]);
     await db.insert(businessJobs).values([
       {

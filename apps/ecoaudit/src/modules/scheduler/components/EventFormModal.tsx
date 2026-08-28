@@ -14,8 +14,10 @@ import {
 import { ApiError, cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { AustralianAddressFields } from '@/modules/scheduler/components/AustralianAddressFields';
+import { SchedulerClientCombobox } from '@/modules/scheduler/components/SchedulerClientCombobox';
 import {
   useCancelScheduleEvent,
+  useCompleteSchedulerJob,
   useCreateScheduleEvent,
   useCreateSchedulerDispatch,
   useJobOptions,
@@ -33,16 +35,22 @@ import {
   estimatedDurationUpdate,
   parseEstimatedDurationMinutes,
 } from '@/modules/scheduler/lib/estimatedDuration';
-import { scheduledStartUpdate } from '@/modules/scheduler/lib/eventUpdate';
+import {
+  scheduledStartUpdate,
+  shouldCompleteLinkedProductJob,
+} from '@/modules/scheduler/lib/eventUpdate';
 import {
   schedulerDefaultSourceApp,
   schedulerEventSupportsMobileNotifications,
 } from '@/modules/scheduler/lib/visibility';
 import {
   EMPTY_SCHEDULER_JOB_ADDRESS,
+  schedulerAddressFromClientSuggestion,
   schedulerAddressDisplay,
   schedulerAddressIsComplete,
   schedulerAddressPayload,
+  schedulerDispatchSiteSelectionPayload,
+  schedulerSiteOptionLabel,
 } from '@/modules/scheduler/lib/routing';
 import type {
   ScheduleEvent,
@@ -51,7 +59,12 @@ import type {
   ScheduleStatus,
   SchedulerSiteOption,
 } from '@/modules/scheduler/types/domain';
-import type { AustralianState, SchedulerJobAddressInput } from '@/modules/scheduler/types/routing';
+import type {
+  AustralianState,
+  SchedulerClient,
+  SchedulerClientAddressSuggestion,
+  SchedulerJobAddressInput,
+} from '@/modules/scheduler/types/routing';
 
 type Props = {
   open: boolean;
@@ -80,6 +93,7 @@ type InstallHubJobDetails = {
   siteContactName: string;
   siteContactPhone: string;
   siteContactEmail: string;
+  accessInformation: string;
   jobComments: string;
 };
 
@@ -95,6 +109,7 @@ const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
   siteContactName: '',
   siteContactPhone: '',
   siteContactEmail: '',
+  accessInformation: '',
   jobComments: '',
 };
 
@@ -103,19 +118,17 @@ function optionalJobText(value: string): string | null {
 }
 
 function addressFromSite(site: SchedulerSiteOption): SchedulerJobAddressInput {
-  const localityLine = [site.locality, site.state, site.postcode].filter(Boolean).join(' ');
-  const suffix = [localityLine, site.countryCode === 'AU' ? 'Australia' : ''].filter(Boolean).join(', ');
-  const freeform = suffix && site.address.endsWith(`, ${suffix}`)
-    ? site.address.slice(0, -(suffix.length + 2))
-    : site.address;
   return {
-    freeform,
+    freeform: site.address,
     locality: site.locality ?? '',
     state: (site.state as AustralianState | null) ?? undefined,
     postcode: site.postcode ?? '',
     countryCode: 'AU',
     latitude: site.latitude ?? undefined,
     longitude: site.longitude ?? undefined,
+    provider: site.geocodeProvider ?? undefined,
+    placeId: site.geocodePlaceId ?? undefined,
+    source: 'client_saved',
   };
 }
 
@@ -212,6 +225,7 @@ function initialFormValues(
       siteSelectionMode: 'new' as SiteSelectionMode,
       siteQuery: '',
       existingSiteId: '',
+      selectedClientId: '',
       jobSiteName: '',
       jobAddress: { ...EMPTY_SCHEDULER_JOB_ADDRESS },
       jobBuildingName: '',
@@ -249,6 +263,7 @@ function initialFormValues(
     siteSelectionMode: 'new' as SiteSelectionMode,
     siteQuery: '',
     existingSiteId: '',
+    selectedClientId: '',
     jobSiteName: '',
     jobAddress: { ...EMPTY_SCHEDULER_JOB_ADDRESS },
     jobBuildingName: '',
@@ -279,6 +294,7 @@ export function EventFormModal({
   const create = useCreateScheduleEvent();
   const dispatch = useCreateSchedulerDispatch();
   const update = useUpdateScheduleEvent();
+  const complete = useCompleteSchedulerJob();
   const cancel = useCancelScheduleEvent();
   const remind = useSendScheduleEventReminder();
   const assignees = usePortalAssignees(open && isAdmin);
@@ -300,6 +316,8 @@ export function EventFormModal({
   const [siteSelectionMode, setSiteSelectionMode] = useState<SiteSelectionMode>(initial.siteSelectionMode);
   const [siteQuery, setSiteQuery] = useState(initial.siteQuery);
   const [existingSiteId, setExistingSiteId] = useState(initial.existingSiteId);
+  const [selectedClientId, setSelectedClientId] = useState(initial.selectedClientId);
+  const [selectedClient, setSelectedClient] = useState<SchedulerClient | null>(null);
   const [jobSiteName, setJobSiteName] = useState(initial.jobSiteName);
   const [jobAddress, setJobAddress] = useState<SchedulerJobAddressInput>(initial.jobAddress);
   const [jobBuildingName, setJobBuildingName] = useState(initial.jobBuildingName);
@@ -320,6 +338,7 @@ export function EventFormModal({
   const onCloseRef = useRef(onClose);
   const busyRef = useRef(false);
   const reminderIdempotencyKeyRef = useRef<string | null>(null);
+  const completionIdempotencyKeyRef = useRef<string | null>(null);
   const sourceCanCreateNew = sourceApp !== 'custom'
     && creatableSourceApps.includes(sourceApp);
 
@@ -334,14 +353,9 @@ export function EventFormModal({
     open && isAdmin && sourceApp !== 'custom' && creationMode === 'new'
       && siteSelectionMode === 'existing',
   );
-
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
     sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
   )), [assignees.data, sourceApp]);
-  const selectedSite = useMemo(
-    () => (sites.data ?? []).find((site) => site.id === existingSiteId),
-    [existingSiteId, sites.data],
-  );
   const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
   const durationError = estimatedDurationError(estimatedDurationMinutes);
 
@@ -378,6 +392,7 @@ export function EventFormModal({
     );
   }, [
     isAdmin,
+    editing,
     assigneeFieldUserId,
     startLocal,
     deadlineLocal,
@@ -397,7 +412,11 @@ export function EventFormModal({
     installHubJobDetails.meteringSolutionType,
   ]);
 
-  const saving = create.isPending || dispatch.isPending || update.isPending || cancel.isPending;
+  const saving = create.isPending
+    || dispatch.isPending
+    || update.isPending
+    || cancel.isPending
+    || complete.isPending;
   const busy = saving || remind.isPending;
   const supportsMobileNotifications = event
     ? schedulerEventSupportsMobileNotifications(event)
@@ -457,6 +476,8 @@ export function EventFormModal({
     setExistingSiteId(siteId);
     const site = sites.data?.find((option) => option.id === siteId);
     if (!site) return;
+    setSelectedClientId(site.clientId);
+    setSelectedClient(null);
     setJobClientName(site.clientName);
     setJobSiteName(site.siteName);
     setJobAddress(addressFromSite(site));
@@ -468,13 +489,117 @@ export function EventFormModal({
       siteContactName: site.siteContactName ?? '',
       siteContactPhone: site.siteContactPhone ?? '',
       siteContactEmail: site.siteContactEmail ?? '',
-      workType: site.latestWorkType ?? '',
-      meteringSolutionType: site.latestMeteringSolutionType ?? '',
-      customJobNumber: site.latestCustomJobNumber ?? '',
-      jobComments: site.latestJobComments ?? '',
-      maas: site.latestMaas,
-      electricityNmi: site.latestElectricityNmi ?? '',
+      accessInformation: site.accessInformation ?? '',
     }));
+  }
+
+  function selectClient(client: SchedulerClient) {
+    const changedClient = client.id !== selectedClientId;
+    setSelectedClientId(client.id);
+    setSelectedClient(client);
+    setJobClientName(client.name);
+    setSiteQuery(client.name);
+    if (changedClient) {
+      setSiteSelectionMode('new');
+      setExistingSiteId('');
+      setJobSiteName('');
+      setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
+    }
+    setInstallHubJobDetails((current) => ({
+      ...current,
+      clientContactName: client.contactName ?? '',
+      clientContactPhone: client.contactPhone ?? '',
+      clientContactEmail: client.contactEmail ?? '',
+      ...(changedClient
+        ? {
+            siteContactName: '',
+            siteContactPhone: '',
+            siteContactEmail: '',
+            accessInformation: '',
+          }
+        : {}),
+    }));
+  }
+
+  function changeClientName(value: string) {
+    setJobClientName(value);
+    if (!selectedClientId) return;
+    setSelectedClientId('');
+    setSelectedClient(null);
+    if (siteSelectionMode === 'existing') {
+      setSiteSelectionMode('new');
+      setExistingSiteId('');
+      setJobSiteName('');
+      setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
+    }
+    setInstallHubJobDetails((current) => ({
+      ...current,
+      clientContactName: '',
+      clientContactPhone: '',
+      clientContactEmail: '',
+      ...(siteSelectionMode === 'existing'
+        ? {
+            siteContactName: '',
+            siteContactPhone: '',
+            siteContactEmail: '',
+            accessInformation: '',
+          }
+        : {}),
+    }));
+  }
+
+  function selectClientAddress(suggestion: SchedulerClientAddressSuggestion) {
+    if (suggestion.kind === 'provider') {
+      setSiteSelectionMode('new');
+      setExistingSiteId('');
+      return;
+    }
+    if (!suggestion.clientId || !suggestion.clientSiteId) return;
+    const client = selectedClient?.id === suggestion.clientId ? selectedClient : undefined;
+    const site = client?.sites.find((candidate) => candidate.id === suggestion.clientSiteId);
+    const legacySite = sites.data?.find((candidate) => candidate.id === suggestion.clientSiteId);
+    setSelectedClientId(suggestion.clientId);
+    setSiteSelectionMode('existing');
+    setExistingSiteId(suggestion.clientSiteId);
+    setSiteQuery(client?.name ?? legacySite?.clientName ?? jobClientName);
+    setJobClientName(client?.name ?? legacySite?.clientName ?? jobClientName);
+    setJobSiteName(site?.siteName ?? legacySite?.siteName ?? suggestion.siteName ?? 'Site');
+    setJobAddress(schedulerAddressFromClientSuggestion(suggestion));
+    setInstallHubJobDetails((current) => ({
+      ...current,
+      clientContactName: client?.contactName
+        ?? legacySite?.clientContactName
+        ?? current.clientContactName,
+      clientContactPhone: client?.contactPhone
+        ?? legacySite?.clientContactPhone
+        ?? current.clientContactPhone,
+      clientContactEmail: client?.contactEmail
+        ?? legacySite?.clientContactEmail
+        ?? current.clientContactEmail,
+      siteContactName: site?.contactName ?? legacySite?.siteContactName ?? '',
+      siteContactPhone: site?.contactPhone ?? legacySite?.siteContactPhone ?? '',
+      siteContactEmail: site?.contactEmail ?? legacySite?.siteContactEmail ?? '',
+      accessInformation: site?.accessInformation ?? legacySite?.accessInformation ?? '',
+    }));
+  }
+
+  function startNewAddress() {
+    setSiteSelectionMode('new');
+    setExistingSiteId('');
+    setJobSiteName('');
+    setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
+    setInstallHubJobDetails((current) => ({
+      ...current,
+      siteContactName: '',
+      siteContactPhone: '',
+      siteContactEmail: '',
+      accessInformation: '',
+    }));
+  }
+
+  function markAddressAsNew() {
+    setSiteSelectionMode('new');
+    setExistingSiteId('');
   }
 
   async function handleSubmit() {
@@ -482,6 +607,16 @@ export function EventFormModal({
       estimatedDurationMinutes,
     );
     if (!canSubmit || submittedEstimatedDurationMinutes === undefined) return;
+    const completeLinkedJob = Boolean(event && shouldCompleteLinkedProductJob({
+      currentStatus: event.status,
+      nextStatus: status,
+      sourceApp: event.sourceApp,
+      sourceType: event.sourceType,
+      sourceId: event.sourceId,
+    }));
+    if (completeLinkedJob && event && !window.confirm(
+      `Mark ${event.title} complete? This also completes the linked product job.`,
+    )) return;
     setError(null);
     try {
       if (editing && event) {
@@ -501,9 +636,28 @@ export function EventFormModal({
               submittedEstimatedDurationMinutes,
             ),
             deadlineAt: fromDatetimeLocalValue(deadlineLocal),
-            status,
+            // The product-completion endpoint closes every linked Scheduler
+            // event transactionally. Do not claim calendar completion first.
+            status: completeLinkedJob ? event.status : status,
           },
         });
+        if (
+          completeLinkedJob
+          && event.sourceId
+          && event.sourceApp !== 'custom'
+          && event.sourceType !== 'custom'
+        ) {
+          const idempotencyKey = completionIdempotencyKeyRef.current ?? crypto.randomUUID();
+          completionIdempotencyKeyRef.current = idempotencyKey;
+          await complete.mutateAsync({
+            sourceApp: event.sourceApp,
+            sourceType: event.sourceType,
+            sourceId: event.sourceId,
+            idempotencyKey,
+          });
+          completionIdempotencyKeyRef.current = null;
+          toast.success('The product job and linked Scheduler work are complete.');
+        }
       } else if (sourceApp !== 'custom' && creationMode === 'new') {
         await dispatch.mutateAsync({
           sourceApp,
@@ -516,8 +670,11 @@ export function EventFormModal({
             : { estimatedDurationMinutes: submittedEstimatedDurationMinutes }),
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           job: {
-            siteMode: siteSelectionMode,
-            existingSiteId: siteSelectionMode === 'existing' ? existingSiteId : null,
+            ...schedulerDispatchSiteSelectionPayload({
+              address: jobAddress,
+              existingSiteId,
+              clientId: selectedClientId,
+            }),
             clientName: jobClientName.trim(),
             clientContactName: optionalJobText(installHubJobDetails.clientContactName),
             clientContactPhone: optionalJobText(installHubJobDetails.clientContactPhone),
@@ -525,6 +682,7 @@ export function EventFormModal({
             siteContactName: optionalJobText(installHubJobDetails.siteContactName),
             siteContactPhone: optionalJobText(installHubJobDetails.siteContactPhone),
             siteContactEmail: optionalJobText(installHubJobDetails.siteContactEmail),
+            accessInformation: optionalJobText(installHubJobDetails.accessInformation),
             siteName: jobSiteName.trim(),
             address: schedulerAddressPayload(jobAddress),
             // Preserve the date selected in the site's scheduling UI instead
@@ -586,6 +744,31 @@ export function EventFormModal({
     }
   }
 
+  async function handleComplete() {
+    if (!event || event.sourceApp === 'custom' || event.sourceType === 'custom' || !event.sourceId) {
+      return;
+    }
+    if (!window.confirm(
+      `Mark ${event.title} complete? This also completes the linked product job.`,
+    )) return;
+    setError(null);
+    const idempotencyKey = completionIdempotencyKeyRef.current ?? crypto.randomUUID();
+    completionIdempotencyKeyRef.current = idempotencyKey;
+    try {
+      await complete.mutateAsync({
+        sourceApp: event.sourceApp,
+        sourceType: event.sourceType,
+        sourceId: event.sourceId,
+        idempotencyKey,
+      });
+      completionIdempotencyKeyRef.current = null;
+      toast.success('The product job and linked Scheduler work are complete.');
+      onClose();
+    } catch (err) {
+      setError(cloudConnectionErrorMessage(err));
+    }
+  }
+
   async function handleReminder() {
     if (!event || event.sourceApp === 'custom') return;
     setError(null);
@@ -639,6 +822,8 @@ export function EventFormModal({
                     setSiteSelectionMode('new');
                     setSiteQuery('');
                     setExistingSiteId('');
+                    setSelectedClientId('');
+                    setSelectedClient(null);
                     setCreationMode(
                       app !== 'custom' && creatableSourceApps.includes(app)
                         ? 'new'
@@ -678,6 +863,11 @@ export function EventFormModal({
                             setSiteSelectionMode('new');
                             setSiteQuery('');
                             setExistingSiteId('');
+                            setSelectedClientId('');
+                            setSelectedClient(null);
+                            setJobClientName('');
+                            setJobSiteName('');
+                            setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
                             setTitle('');
                           }}
                           aria-pressed={creationMode === value}
@@ -714,17 +904,12 @@ export function EventFormModal({
                                 type="button"
                                 aria-pressed={siteSelectionMode === value}
                                 onClick={() => {
-                                  setSiteSelectionMode(value);
-                                  setExistingSiteId('');
-                                  setSiteQuery('');
                                   if (value === 'new') {
-                                    setJobClientName('');
-                                    setJobSiteName('');
-                                    setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
-                                    setInstallHubJobDetails((current) => ({
-                                      ...EMPTY_INSTALLHUB_JOB_DETAILS,
-                                      workType: current.workType,
-                                    }));
+                                    startNewAddress();
+                                  } else {
+                                    setSiteSelectionMode('existing');
+                                    setExistingSiteId('');
+                                    setSiteQuery(jobClientName);
                                   }
                                 }}
                                 className={`cursor-pointer rounded-lg px-3 py-2 text-sm font-extrabold transition-colors ${
@@ -757,8 +942,7 @@ export function EventFormModal({
                               <option value="">Select an existing site</option>
                               {(sites.data ?? []).map((site) => (
                                 <option key={site.id} value={site.id}>
-                                  {site.clientName} · {site.siteName}
-                                  {site.latestRevisionNumber ? ` · v${site.latestRevisionNumber}` : ''}
+                                  {schedulerSiteOptionLabel(site)}
                                 </option>
                               ))}
                             </Select>
@@ -770,16 +954,18 @@ export function EventFormModal({
                             ) : null}
                             {existingSiteId ? (
                               <FieldHint>
-                                {selectedSite?.latestSourceId
-                                  ? `The known site and latest ${sourceApp === 'installhub' ? 'installation' : sourceApp === 'ecoaudit' ? 'audit' : 'assessment'} data will be copied into a new independent job version.`
-                                  : 'The known site details will be copied into a new independent job. No earlier job of this type exists at this site, so its product-specific data will start blank.'}{' '}
-                                Review and edit the copied site details below.
+                                The saved client and site details are filled in below. You can edit them
+                                before creating this job; previous job data is not copied.
                               </FieldHint>
                             ) : null}
                           </div>
                         ) : null}
-                        <FieldLabel>Client name</FieldLabel>
-                        <Input value={jobClientName} onChange={(e) => setJobClientName(e.target.value)} />
+                        <SchedulerClientCombobox
+                          value={jobClientName}
+                          selectedClientId={selectedClientId}
+                          onInput={changeClientName}
+                          onSelect={selectClient}
+                        />
                         <div className="grid gap-x-3 sm:grid-cols-3">
                           <div>
                             <FieldLabel htmlFor="scheduler-client-contact-name">Client contact name</FieldLabel>
@@ -796,7 +982,14 @@ export function EventFormModal({
                         </div>
                         <FieldLabel>Site name</FieldLabel>
                         <Input value={jobSiteName} onChange={(e) => setJobSiteName(e.target.value)} />
-                        <AustralianAddressFields value={jobAddress} onChange={setJobAddress} />
+                        <AustralianAddressFields
+                          value={jobAddress}
+                          onChange={setJobAddress}
+                          clientId={selectedClientId || null}
+                          onSuggestionSelected={selectClientAddress}
+                          onManualEdit={markAddressAsNew}
+                          onAddNewAddress={startNewAddress}
+                        />
                         <section className="mt-4 border-t border-[var(--border)] pt-4" aria-labelledby="scheduler-job-site-contact">
                           <h3 id="scheduler-job-site-contact" className="text-sm font-extrabold text-[var(--text)]">Site contact</h3>
                           <div className="grid gap-x-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -811,6 +1004,10 @@ export function EventFormModal({
                             <div>
                               <FieldLabel htmlFor="scheduler-site-contact-email">Contact email</FieldLabel>
                               <Input id="scheduler-site-contact-email" type="email" value={installHubJobDetails.siteContactEmail} maxLength={320} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, siteContactEmail: event.target.value }))} />
+                            </div>
+                            <div className="sm:col-span-2 lg:col-span-3">
+                              <FieldLabel htmlFor="scheduler-site-access-information">Access information</FieldLabel>
+                              <Textarea id="scheduler-site-access-information" rows={2} value={installHubJobDetails.accessInformation} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, accessInformation: event.target.value }))} />
                             </div>
                           </div>
                         </section>
@@ -1020,9 +1217,14 @@ export function EventFormModal({
                 <Select value={status} onChange={(e) => setStatus(e.target.value as ScheduleStatus)}>
                   <option value="planned">Planned</option>
                   <option value="in_progress">In progress</option>
-                  <option value="done">Done</option>
+                  <option value="done">{sourceApp === 'custom' ? 'Done' : 'Completed'}</option>
                   <option value="cancelled">Cancelled</option>
                 </Select>
+                {sourceApp !== 'custom' && status === 'done' && event?.status !== 'done' ? (
+                  <FieldHint>
+                    Saving this status completes the linked product job and closes its Scheduler work.
+                  </FieldHint>
+                ) : null}
               </>
             ) : null}
 
@@ -1052,6 +1254,16 @@ export function EventFormModal({
         ) : null}
 
         <div className="mt-6 flex flex-wrap justify-end gap-2">
+          {editing && event && isAdmin && event.sourceApp !== 'custom'
+          && event.sourceType !== 'custom' && event.sourceId && event.status !== 'done' ? (
+            <Button
+              variant="secondary"
+              disabled={busy}
+              onClick={() => void handleComplete()}
+            >
+              {complete.isPending ? 'Completing…' : 'Mark job complete'}
+            </Button>
+          ) : null}
           {editing && event && isAdmin && supportsMobileNotifications && onOpenFinance ? (
             <Button
               variant="secondary"

@@ -257,22 +257,23 @@ function GlobalInvoiceDetail({
       error={error}
       onClose={onClose}
       onRefresh={async () => { await query.refetch(); }}
-      onStartPdf={() => startGlobalSchedulerInvoicePdfExport(invoice.id, invoice.updatedAt)}
-      onSave={async (input) => {
+      onStartPdf={(expectedUpdatedAt) => startGlobalSchedulerInvoicePdfExport(invoice.id, expectedUpdatedAt)}
+      onSave={async (input, expectedUpdatedAt) => {
         setError(null);
         try {
-          await update.mutateAsync({ invoiceId, input: { ...input, expectedUpdatedAt: invoice.updatedAt } });
-          toast.success('Draft invoice saved.');
+          await update.mutateAsync({ invoiceId, input: { ...input, expectedUpdatedAt } });
+          toast.success('Invoice saved.');
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }
       }}
-      onIssue={async () => {
-        if (!window.confirm(`Issue ${invoice.invoiceNumber}? The customer, jobs, and lines become an immutable billing snapshot.`)) return;
+      onIssue={async (expectedUpdatedAt) => {
         setError(null);
         try {
-          await issue.mutateAsync({ invoiceId, expectedUpdatedAt: invoice.updatedAt });
-          toast.success(`${invoice.invoiceNumber} issued.`);
+          const issued = await issue.mutateAsync({ invoiceId, expectedUpdatedAt });
+          toast.success(issued.pdfExport?.invoiceVersion
+            ? `${invoice.invoiceNumber} issued; PDF v${issued.pdfExport.invoiceVersion} is being stored.`
+            : `${invoice.invoiceNumber} issued.`);
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }

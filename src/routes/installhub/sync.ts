@@ -54,7 +54,9 @@ import {
   isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
   retainOmittedCanonicalInstallationFields,
+  type CanonicalInstallation,
   type CanonicalFormSubmission,
+  type InstallationAddressSource,
 } from './canonical.js';
 import {
   assertCompletedFormsImmutable,
@@ -78,8 +80,14 @@ import {
 import {
   AUSTRALIAN_STATES,
   normalizeSchedulerAddressText,
+  parseSchedulerDispatchAddress,
   schedulerAddressFingerprint,
 } from '../../services/schedulerAddressService.js';
+import {
+  upsertClientSiteFromProductRecord,
+  type ClientDirectoryClientDto,
+  type ClientDirectorySiteDto,
+} from '../../services/clientSiteMemoryService.js';
 
 type PushBody = {
   syncStage?: 'metadata' | 'complete';
@@ -479,9 +487,162 @@ function installHubGeocodeInvalidation(
     siteGeocodeStatus: 'unresolved' as const,
     siteGeocodeProvider: null,
     siteGeocodePlaceId: null,
-    siteAddressFingerprint: schedulerAddressFingerprint(next.siteAddress),
+    siteAddressSource: 'manual' as const,
+    siteAddressFingerprint: schedulerAddressFingerprint({
+      displayAddress: next.siteAddress,
+      locality: next.siteLocality,
+      state: next.siteState,
+      postcode: next.sitePostcode,
+      countryCode: next.siteCountryCode ?? 'AU',
+    }),
     siteGeocodedAt: null,
   };
+}
+
+const LEGACY_ADDRESS_EVIDENCE_FIELDS = [
+  'siteLatitude',
+  'siteLongitude',
+  'siteGeocodeProvider',
+  'siteGeocodePlaceId',
+  'siteAddressSource',
+  'siteGeocodeStatus',
+  'siteAddressFingerprint',
+] as const;
+
+function installHubLegacyAddressColumns(
+  payload: JsonRecord,
+  current: typeof ihInstallations.$inferSelect | undefined,
+  address: InstallHubAddressComparable,
+) {
+  const supplied = LEGACY_ADDRESS_EVIDENCE_FIELDS.some((field) => payloadOwns(payload, field));
+  if (!supplied) return installHubGeocodeInvalidation(current, address);
+
+  const parsed = parseSchedulerDispatchAddress({
+    freeform: address.siteAddress,
+    locality: address.siteLocality ?? undefined,
+    state: address.siteState ?? undefined,
+    postcode: address.sitePostcode ?? undefined,
+    countryCode: 'AU',
+    latitude: payload.siteLatitude,
+    longitude: payload.siteLongitude,
+    provider: payload.siteGeocodeProvider,
+    placeId: payload.siteGeocodePlaceId,
+    source: payload.siteAddressSource,
+  }, address.siteAddress);
+  return parsed;
+}
+
+type InstallHubClientMemoryResult = {
+  client: ClientDirectoryClientDto;
+  site: ClientDirectorySiteDto;
+};
+
+export function installHubSubmittedAddressSource(
+  installation: Pick<
+    CanonicalInstallation,
+    'siteAddressSource' | 'siteGeocodeProvider' | 'siteGeocodePlaceId'
+  >,
+): InstallationAddressSource {
+  return installation.siteAddressSource ?? (
+    installation.siteGeocodeProvider && installation.siteGeocodePlaceId
+      ? 'suggested'
+      : 'manual'
+  );
+}
+
+async function rememberInstallHubClientSite(
+  executor: InstallHubExecutor,
+  installation: CanonicalInstallation,
+  actorUserId: string,
+): Promise<InstallHubClientMemoryResult> {
+  const submittedSource = installHubSubmittedAddressSource(installation);
+  const memory = await upsertClientSiteFromProductRecord(executor, {
+    clientName: installation.clientName,
+    selectedClientId: installation.clientId,
+    selectedSiteId: submittedSource === 'client_saved'
+      ? installation.clientSiteId
+      : null,
+    siteName: installation.siteName,
+    address: {
+      displayAddress: installation.siteAddress,
+      locality: installation.siteLocality,
+      state: installation.siteState,
+      postcode: installation.sitePostcode,
+      countryCode: installation.siteCountryCode ?? 'AU',
+      latitude: installation.siteLatitude,
+      longitude: installation.siteLongitude,
+      provider: installation.siteGeocodeProvider,
+      placeId: installation.siteGeocodePlaceId,
+      source: submittedSource,
+      geocodingStatus: installation.siteGeocodeStatus,
+    },
+    timezone: installation.timezone,
+    siteContactName: installation.siteContactName,
+    siteContactPhone: installation.siteContactPhone,
+    siteContactEmail: installation.siteContactEmail,
+    accessInformation: installation.accessInformation,
+    job: {
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: installation.id,
+      jobType: 'field',
+      title: `${installation.clientName} · ${installation.siteName}`,
+      status: installation.status === 'Completed' ? 'done' : 'planned',
+      createdByUserId: installation.createdByUserId ?? actorUserId,
+      detail: {
+        kind: 'field',
+        workType: installation.serviceType ?? 'legacy_unclassified',
+        maas: installation.maas,
+        meteringSolutionType: installation.meteringSolutionType,
+        plannedMeterType: installation.plannedMeterType,
+        customJobNumber: installation.customJobNumber,
+        jobComments: installation.jobComments,
+      },
+    },
+  });
+
+  // Product provenance records what this submission chose. The reusable site
+  // may retain richer evidence from an earlier submission independently.
+  const productSource = submittedSource;
+  Object.assign(installation, {
+    clientId: memory.client.id,
+    clientSiteId: memory.site.id,
+    clientName: memory.client.name,
+    siteName: submittedSource === 'client_saved' ? memory.site.siteName : installation.siteName,
+    siteAddress: memory.site.displayAddress,
+    siteLocality: memory.site.locality,
+    siteState: memory.site.state,
+    sitePostcode: memory.site.postcode,
+    siteCountryCode: 'AU',
+    siteLatitude: memory.site.latitude,
+    siteLongitude: memory.site.longitude,
+    siteGeocodeProvider: memory.site.provider,
+    siteGeocodePlaceId: memory.site.placeId,
+    siteAddressSource: productSource,
+    siteGeocodeStatus: memory.site.geocodingStatus,
+    siteAddressFingerprint: memory.site.fingerprint,
+  });
+  await executor.update(ihInstallations).set({
+    businessSiteId: memory.site.id,
+    clientName: installation.clientName,
+    siteName: installation.siteName,
+    siteAddress: installation.siteAddress,
+    siteLocality: installation.siteLocality ?? null,
+    siteState: installation.siteState ?? null,
+    sitePostcode: installation.sitePostcode ?? null,
+    siteCountryCode: 'AU',
+    siteLatitude: installation.siteLatitude ?? null,
+    siteLongitude: installation.siteLongitude ?? null,
+    siteGeocodeProvider: installation.siteGeocodeProvider ?? null,
+    siteGeocodePlaceId: installation.siteGeocodePlaceId ?? null,
+    siteAddressSource: productSource,
+    siteGeocodeStatus: installation.siteGeocodeStatus ?? 'unresolved',
+    siteAddressFingerprint: installation.siteAddressFingerprint ?? memory.site.fingerprint,
+    siteGeocodedAt: memory.site.geocodingStatus === 'resolved' || memory.site.geocodingStatus === 'manual'
+      ? new Date(memory.site.updatedAt)
+      : null,
+  }).where(eq(ihInstallations.id, installation.id));
+  return { client: memory.client, site: memory.site };
 }
 
 export function installationValuesFromPayload(
@@ -616,7 +777,7 @@ export function installationValuesFromPayload(
       INSTALLATION_METADATA_TEXT_LIMITS.additionalMonitoringHardware,
       existing?.additionalMonitoringHardware,
     ),
-    ...installHubGeocodeInvalidation(existing, {
+    ...installHubLegacyAddressColumns(payload, existing, {
       siteAddress,
       siteLocality,
       siteState,
@@ -1475,12 +1636,14 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         treeRevision: number;
         recordVersionNumber: number;
         readiness: ReturnType<typeof installationReadiness>;
+        clientMemory: InstallHubClientMemoryResult;
       };
       try {
         transactionResult = await db.transaction(async (tx) => {
           let replacementTransitions: CommsReplacementTransition[] = [];
           let replacementFromVersionNumber: number | null = null;
           let commissionedMeterIdentityChangeIds: ReadonlySet<string> = new Set();
+          let clientMemory: InstallHubClientMemoryResult | null = null;
           const [current] = await tx.select().from(ihInstallations)
             .where(and(
               eq(ihInstallations.id, installationId),
@@ -1569,6 +1732,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               existing: currentTree.formSubmissions,
               syncStage,
             });
+            clientMemory = await rememberInstallHubClientSite(
+              tx,
+              incomingTree.installation,
+              request.user.userId,
+            );
             if (
               canonicalTreeMutationFingerprint(currentTree)
               === canonicalTreeMutationFingerprint(incomingTree)
@@ -1584,6 +1752,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
                 treeRevision: current.treeRevision,
                 recordVersionNumber,
                 readiness: installationReadiness(currentTree),
+                clientMemory,
               };
             }
             if (current.status === 'Completed') {
@@ -1632,7 +1801,6 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
                 incomingTree.installation.additionalMonitoringRequired ?? null,
               additionalMonitoringHardware:
                 incomingTree.installation.additionalMonitoringHardware ?? null,
-              ...installHubGeocodeInvalidation(current, incomingTree.installation),
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
               siteCode: incomingTree.installation.siteCode,
@@ -1714,6 +1882,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               createdAt: now,
             }).onConflictDoNothing().returning();
             if (!created) throw conflict('snapshot_conflict');
+            clientMemory = await rememberInstallHubClientSite(
+              tx,
+              incomingTree.installation,
+              request.user.userId,
+            );
           }
 
           await replaceCanonicalInstallationChildren({
@@ -1724,6 +1897,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
           });
           const persisted = await loadCanonicalInstallationTree(installationId, tx);
           if (!persisted) throw new Error('Canonical installation disappeared during transaction');
+          if (!clientMemory) {
+            throw new Error('InstallHub client/site memory was not persisted');
+          }
           let recordVersionNumber = persisted.installation.recordVersionNumber;
           if (installHubSyncCreatesRecordVersion(syncStage)) {
             recordVersionNumber = await ensureCanonicalRecordVersion({
@@ -1759,6 +1935,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             treeRevision: persisted.installation.treeRevision,
             recordVersionNumber,
             readiness: installationReadiness(persisted),
+            clientMemory,
           };
         });
       } catch (error) {
@@ -1803,6 +1980,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         treeRevision: transactionResult.treeRevision,
         recordVersionNumber: transactionResult.recordVersionNumber || null,
         versionNumber: transactionResult.recordVersionNumber || null,
+        clientId: transactionResult.clientMemory.client.id,
+        clientSiteId: transactionResult.clientMemory.site.id,
+        clientMemory: transactionResult.clientMemory,
         readiness: paginateReadiness(transactionResult.readiness),
         displayCodeReconciliations: [
           ...incomingTree.electricalAssets.map((item) => ({
@@ -1948,7 +2128,11 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       formSubmissionIds: {} as Record<string, string>,
     };
 
-    let transactionState: { treeRevision: number; recordVersionNumber: number };
+    let transactionState: {
+      treeRevision: number;
+      recordVersionNumber: number;
+      clientMemory: InstallHubClientMemoryResult;
+    };
     try {
       transactionState = await db.transaction(async (tx) => {
       const [lockedInstallation] = await tx.select().from(ihInstallations).where(and(
@@ -1990,6 +2174,20 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         if (!created) throw conflict('snapshot_conflict');
       }
       serverIds.installationId = persistedInstallationValues.serverId;
+
+      const memoryTree = await loadCanonicalInstallationTree(installationId, tx);
+      if (!memoryTree) throw new Error('Legacy installation disappeared during transaction');
+      if (payloadOwns(body.installation!, 'clientId')) {
+        memoryTree.installation.clientId = optionalString(body.installation!, 'clientId') ?? null;
+      }
+      if (payloadOwns(body.installation!, 'clientSiteId')) {
+        memoryTree.installation.clientSiteId = optionalString(body.installation!, 'clientSiteId') ?? null;
+      }
+      const clientMemory = await rememberInstallHubClientSite(
+        tx,
+        memoryTree.installation,
+        request.user.userId,
+      );
 
       const retainedZoneCodes = new Set((await tx.select({ zoneCode: ihZones.zoneCode })
         .from(ihZones)
@@ -2090,6 +2288,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         return {
           treeRevision: persistedInstallationValues.treeRevision,
           recordVersionNumber: lockedInstallation?.recordVersionNumber ?? 0,
+          clientMemory,
         };
       });
     } catch (error) {
@@ -2111,6 +2310,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       treeRevision: transactionState.treeRevision,
       recordVersionNumber: transactionState.recordVersionNumber,
       versionNumber: null,
+      clientId: transactionState.clientMemory.client.id,
+      clientSiteId: transactionState.clientMemory.site.id,
+      clientMemory: transactionState.clientMemory,
     });
   });
 

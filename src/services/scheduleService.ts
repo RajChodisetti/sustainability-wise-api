@@ -12,6 +12,7 @@ import {
   ne,
   notInArray,
   or,
+  sql,
   type SQL,
 } from 'drizzle-orm';
 import { db } from '../db/client.js';
@@ -30,7 +31,7 @@ import {
 } from '../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
 import type { AuthUser } from '../auth/middleware.js';
-import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import { AppError, badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import {
   GRID_SUPPLY_NMI_MAX_LENGTH,
   INSTALLATION_METADATA_TEXT_LIMITS,
@@ -55,11 +56,14 @@ import {
   lockAndAssertAssigneeAvailable,
 } from './schedulerLeaveService.js';
 import { parseSchedulerDispatchAddress } from './schedulerAddressService.js';
+import { resolveCompletionTiming } from '../routes/ecoaudit/auditTiming.js';
+import { completeLinkedSchedulerEvents } from './schedulerCompletionService.js';
+import { completeInstallHubInstallation } from './installHubCompletionService.js';
+import type { SchedulerFinanceExecutor } from './schedulerFinanceService.js';
 import {
-  copyEcoAuditForJob,
-  copyFieldInstallationForJob,
-  copySolarAssessmentForJob,
-} from './productJobCopyService.js';
+  BUSINESS_COMPANY_KEY,
+  upsertClientSiteFromProductRecord,
+} from './clientSiteMemoryService.js';
 
 export type ScheduleSourceApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'custom';
 export type ScheduleSourceType = 'audit' | 'site' | 'assessment' | 'installation' | 'custom';
@@ -124,23 +128,68 @@ export type SchedulerSiteOption = {
   countryCode: string | null;
   latitude: number | null;
   longitude: number | null;
+  geocodeStatus: string;
+  geocodeProvider: string | null;
+  geocodePlaceId: string | null;
+  addressSource: string;
+  addressFingerprint: string;
+  geocodedAt: Date | null;
   timezone: string;
   siteContactName: string | null;
   siteContactPhone: string | null;
   siteContactEmail: string | null;
   accessInformation: string | null;
-  latestWorkType: string | null;
-  latestMeteringSolutionType: string | null;
-  latestCustomJobNumber: string | null;
-  latestJobComments: string | null;
-  latestMaas: boolean | null;
-  latestElectricityNmi: string | null;
-  latestJobId: string | null;
-  latestSourceId: string | null;
-  latestRevisionNumber: number | null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestWorkType: null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestMeteringSolutionType: null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestCustomJobNumber: null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestJobComments: null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestMaas: null;
+  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  latestElectricityNmi: null;
+  /** @deprecated Retained as null for rolling portal compatibility. */
+  latestJobId: null;
+  /** @deprecated Retained as null for rolling portal compatibility. */
+  latestSourceId: null;
+  /** @deprecated Retained as null so older portals do not render v1/v2. */
+  latestRevisionNumber: null;
 };
 
-type ScheduleExecutor = Pick<typeof db, 'select' | 'insert' | 'update'>;
+type SchedulerSiteLegacyJobFields = Pick<
+  SchedulerSiteOption,
+  | 'latestWorkType'
+  | 'latestMeteringSolutionType'
+  | 'latestCustomJobNumber'
+  | 'latestJobComments'
+  | 'latestMaas'
+  | 'latestElectricityNmi'
+  | 'latestJobId'
+  | 'latestSourceId'
+  | 'latestRevisionNumber'
+>;
+
+export function schedulerSitePrefillOption<T extends object>(
+  site: T,
+): T & SchedulerSiteLegacyJobFields {
+  return {
+    ...site,
+    latestWorkType: null,
+    latestMeteringSolutionType: null,
+    latestCustomJobNumber: null,
+    latestJobComments: null,
+    latestMaas: null,
+    latestElectricityNmi: null,
+    latestJobId: null,
+    latestSourceId: null,
+    latestRevisionNumber: null,
+  };
+}
+
+type ScheduleExecutor = Pick<typeof db, 'execute' | 'select' | 'insert' | 'update'>;
 
 type UnifiedSchedulerSubject = {
   globalUserId: string;
@@ -737,6 +786,172 @@ async function lockLinkedSourceRow(
   }
 }
 
+export type SchedulerJobCompletionInput = {
+  sourceApp: Exclude<ScheduleSourceApp, 'custom'>;
+  sourceType: Exclude<ScheduleSourceType, 'custom'>;
+  sourceId: string;
+  idempotencyKey: string;
+};
+
+function assertSchedulerCompletionSource(
+  sourceApp: ScheduleSourceApp,
+  sourceType: ScheduleSourceType,
+  sourceId: string | null,
+): asserts sourceApp is Exclude<ScheduleSourceApp, 'custom'> {
+  if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') {
+    throw badRequest('Only linked product jobs can be marked complete');
+  }
+  const valid = (
+    (sourceApp === 'ecoaudit' && sourceType === 'audit')
+    || (sourceApp === 'solarsense' && (sourceType === 'assessment' || sourceType === 'site'))
+    || (sourceApp === 'installhub' && sourceType === 'installation')
+  );
+  if (!valid) throw badRequest('Invalid linked scheduler source');
+}
+
+async function completeSchedulerLinkedSource(
+  executor: SchedulerFinanceExecutor,
+  input: SchedulerJobCompletionInput,
+  actor: UnifiedSchedulerSubject,
+): Promise<void> {
+  const observedAt = new Date();
+  if (input.sourceApp === 'ecoaudit' && input.sourceType === 'audit') {
+    const [audit] = await executor.select().from(eaAudits).where(and(
+      eq(eaAudits.id, input.sourceId),
+      isNull(eaAudits.deletedAt),
+    )).limit(1);
+    if (!audit) throw notFound('Audit');
+    if (audit.status !== 'Completed') {
+      const timing = resolveCompletionTiming(audit, observedAt);
+      await executor.update(eaAudits).set({
+        status: 'Completed',
+        startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
+        completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
+        updatedAt: observedAt,
+        syncStatus: 'local',
+      }).where(and(
+        eq(eaAudits.id, input.sourceId),
+        isNull(eaAudits.deletedAt),
+      ));
+    }
+    await completeLinkedSchedulerEvents(executor, {
+      sourceApp: 'ecoaudit',
+      sourceType: 'audit',
+      sourceId: input.sourceId,
+    }, {
+      observedAt,
+      completionProvenance: audit.status === 'Completed'
+        ? 'historical_replay'
+        : 'direct_transition',
+    });
+    return;
+  }
+
+  if (input.sourceApp === 'solarsense' && input.sourceType === 'site') {
+    const [site] = await executor.select().from(ssSites).where(and(
+      eq(ssSites.id, input.sourceId),
+      isNull(ssSites.deletedAt),
+    )).limit(1);
+    if (!site) throw notFound('Site');
+    if (site.status !== 'Completed') {
+      await executor.update(ssSites).set({
+        status: 'Completed',
+        completedAt: sql<Date>`coalesce(
+          ${ssSites.completedAt},
+          ${sql.param(observedAt, ssSites.completedAt)}
+        )`,
+        updatedAt: observedAt,
+        syncStatus: 'local',
+      }).where(and(eq(ssSites.id, input.sourceId), isNull(ssSites.deletedAt)));
+    }
+    await completeLinkedSchedulerEvents(executor, {
+      sourceApp: 'solarsense',
+      sourceType: 'site',
+      sourceId: input.sourceId,
+    }, { observedAt });
+    return;
+  }
+
+  if (input.sourceApp === 'solarsense' && input.sourceType === 'assessment') {
+    const [assessment] = await executor.select().from(ssRooftopAssessments).where(and(
+      eq(ssRooftopAssessments.id, input.sourceId),
+      isNull(ssRooftopAssessments.deletedAt),
+    )).limit(1);
+    if (!assessment) throw notFound('Assessment');
+    if (!assessment.siteId) throw conflict('Assessment has no parent site');
+    const [site] = await executor.select().from(ssSites).where(and(
+      eq(ssSites.id, assessment.siteId),
+      isNull(ssSites.deletedAt),
+    )).limit(1);
+    if (!site) throw notFound('Site');
+    if (assessment.status !== 'Completed') {
+      if (site.status !== 'Draft') throw conflict('Site is not Draft');
+      const [completed] = await executor.update(ssRooftopAssessments).set({
+        status: 'Completed',
+        completedAt: sql<Date>`coalesce(
+          ${ssRooftopAssessments.completedAt},
+          ${sql.param(observedAt, ssRooftopAssessments.completedAt)}
+        )`,
+        updatedAt: observedAt,
+        syncStatus: 'local',
+      }).where(and(
+        eq(ssRooftopAssessments.id, input.sourceId),
+        eq(ssRooftopAssessments.status, 'Draft'),
+        isNull(ssRooftopAssessments.deletedAt),
+      )).returning({ id: ssRooftopAssessments.id });
+      if (!completed) throw conflict('Assessment is not Draft');
+    }
+    await completeLinkedSchedulerEvents(executor, {
+      sourceApp: 'solarsense',
+      sourceType: 'assessment',
+      sourceId: input.sourceId,
+    }, {
+      observedAt,
+      completionProvenance: assessment.status === 'Completed'
+        ? 'historical_replay'
+        : 'direct_transition',
+    });
+    return;
+  }
+
+  if (input.sourceApp === 'installhub' && input.sourceType === 'installation') {
+    const outcome = await completeInstallHubInstallation(executor, {
+      installationId: input.sourceId,
+      actorUserId: actor.appUserIds.installhub ?? actor.fieldUserId,
+      idempotencyKey: input.idempotencyKey,
+      completionNotes: null,
+      allowAlreadyCompleted: true,
+    });
+    if (outcome.kind === 'not_ready') {
+      throw new AppError(
+        422,
+        'Installation is not ready to complete',
+        'Resolve the remaining TBC items in Field App Complete, then retry.',
+      );
+    }
+    return;
+  }
+
+  throw badRequest('Invalid linked scheduler source');
+}
+
+export async function completeSchedulerJob(
+  user: AuthUser,
+  input: SchedulerJobCompletionInput,
+): Promise<{ completed: true }> {
+  assertPortalSchedulerApp(user);
+  if (!isSchedulerAdmin(user)) throw forbidden('Only admins can complete Scheduler jobs');
+  assertSchedulerSourceAppVisible(input.sourceApp);
+  assertSchedulerCompletionSource(input.sourceApp, input.sourceType, input.sourceId);
+  if (!input.idempotencyKey.trim()) throw badRequest('idempotencyKey is required');
+  await db.transaction(async (tx) => {
+    await lockLinkedSourceRow(tx, input.sourceApp, input.sourceType, input.sourceId);
+    const actor = await loadActorSubject(tx, user);
+    await completeSchedulerLinkedSource(tx, input, actor);
+  });
+  return { completed: true };
+}
+
 async function assertNoActiveLinkedEvent(
   executor: ScheduleExecutor,
   sourceApp: ScheduleSourceApp,
@@ -1006,6 +1221,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
   ecoaudit: new Set([
     'siteMode',
     'existingSiteId',
+    'clientId',
     'clientName',
     'clientContactName',
     'clientContactPhone',
@@ -1022,6 +1238,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
   solarsense: new Set([
     'siteMode',
     'existingSiteId',
+    'clientId',
     'clientName',
     'clientContactName',
     'clientContactPhone',
@@ -1039,6 +1256,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
   installhub: new Set([
     'siteMode',
     'existingSiteId',
+    'clientId',
     'customerName',
     'clientName',
     'clientContactName',
@@ -1181,6 +1399,7 @@ export function validateDispatchJob(
   optionalDispatchDate(job, 'auditDate');
   dispatchString(job, 'siteName');
   optionalDispatchString(job, 'clientName', 300);
+  optionalDispatchString(job, 'clientId', 200);
   optionalDispatchString(job, 'clientContactName', 300);
   optionalDispatchString(job, 'clientContactPhone', 50);
   optionalDispatchString(job, 'clientContactEmail', 320);
@@ -1228,13 +1447,18 @@ type ResolvedDispatchSite = {
   countryCode: string | null;
   latitude: number | null;
   longitude: number | null;
+  geocodeStatus: string;
+  geocodeProvider: string | null;
+  geocodePlaceId: string | null;
+  addressSource: string;
+  addressFingerprint: string;
+  geocodedAt: Date | null;
   timezone: string;
   contactName: string | null;
   contactPhone: string | null;
   contactEmail: string | null;
   accessInformation: string | null;
   previousJobId: string | null;
-  previousSourceId: string | null;
   revisionNumber: number;
 };
 
@@ -1271,32 +1495,56 @@ async function resolveDispatchBusinessSite(
     const [existing] = await executor.select({
       id: businessSites.id,
       clientId: businessSites.clientId,
+      siteName: businessSites.name,
+      address: businessSites.address,
+      locality: businessSites.locality,
+      state: businessSites.state,
+      postcode: businessSites.postcode,
+      countryCode: businessSites.countryCode,
+      latitude: businessSites.latitude,
+      longitude: businessSites.longitude,
+      geocodeStatus: businessSites.geocodeStatus,
+      geocodeProvider: businessSites.geocodeProvider,
+      geocodePlaceId: businessSites.geocodePlaceId,
+      addressSource: businessSites.addressSource,
+      geocodedAt: businessSites.geocodedAt,
+      timezone: businessSites.timezone,
+      contactName: businessSites.contactName,
+      contactPhone: businessSites.contactPhone,
+      contactEmail: businessSites.contactEmail,
+      addressFingerprint: businessSites.addressFingerprint,
       accessInformation: businessSites.accessInformation,
+      clientName: businessClients.name,
+      clientContactName: businessClients.contactName,
+      clientContactPhone: businessClients.contactPhone,
+      clientContactEmail: businessClients.contactEmail,
     }).from(businessSites)
+      .innerJoin(businessClients, and(
+        eq(businessClients.id, businessSites.clientId),
+        eq(businessClients.companyKey, BUSINESS_COMPANY_KEY),
+        isNull(businessClients.mergedIntoClientId),
+      ))
       .where(eq(businessSites.id, selection.existingSiteId!))
       .for('update')
       .limit(1);
     if (!existing) throw notFound('Business site');
+    if (structuredAddress.siteAddressFingerprint !== existing.addressFingerprint) {
+      throw badRequest(
+        'A saved site address cannot be replaced; choose Add a new address instead',
+      );
+    }
     await executor.update(businessClients).set({
-      name: clientName,
-      contactName: clientContactName,
-      contactPhone: clientContactPhone,
-      contactEmail: clientContactEmail,
+      contactName: clientContactName ?? existing.clientContactName,
+      contactPhone: clientContactPhone ?? existing.clientContactPhone,
+      contactEmail: clientContactEmail ?? existing.clientContactEmail,
       updatedAt: now,
     }).where(eq(businessClients.id, existing.clientId));
     await executor.update(businessSites).set({
-      name: siteName,
-      address,
-      locality: structuredAddress.siteLocality,
-      state: structuredAddress.siteState,
-      postcode: structuredAddress.sitePostcode,
-      countryCode: structuredAddress.siteCountryCode,
-      latitude: structuredAddress.siteLatitude,
-      longitude: structuredAddress.siteLongitude,
-      timezone,
-      contactName,
-      contactPhone,
-      contactEmail,
+      name: siteName || existing.siteName,
+      timezone: timezone || existing.timezone,
+      contactName: contactName ?? existing.contactName,
+      contactPhone: contactPhone ?? existing.contactPhone,
+      contactEmail: contactEmail ?? existing.contactEmail,
       accessInformation: job.accessInformation === undefined
         ? existing.accessInformation
         : accessInformation,
@@ -1304,7 +1552,6 @@ async function resolveDispatchBusinessSite(
     }).where(eq(businessSites.id, existing.id));
     const [previous] = await executor.select({
       id: businessJobs.id,
-      sourceId: businessJobs.sourceId,
       revisionNumber: businessJobs.revisionNumber,
     }).from(businessJobs).where(and(
       eq(businessJobs.siteId, existing.id),
@@ -1313,90 +1560,101 @@ async function resolveDispatchBusinessSite(
     return {
       id: existing.id,
       clientId: existing.clientId,
-      clientName,
-      clientContactName,
-      clientContactPhone,
-      clientContactEmail,
-      siteName,
-      address,
-      locality: structuredAddress.siteLocality,
-      state: structuredAddress.siteState,
-      postcode: structuredAddress.sitePostcode,
-      countryCode: structuredAddress.siteCountryCode,
-      latitude: structuredAddress.siteLatitude,
-      longitude: structuredAddress.siteLongitude,
-      timezone,
-      contactName,
-      contactPhone,
-      contactEmail,
+      clientName: existing.clientName,
+      clientContactName: clientContactName ?? existing.clientContactName,
+      clientContactPhone: clientContactPhone ?? existing.clientContactPhone,
+      clientContactEmail: clientContactEmail ?? existing.clientContactEmail,
+      siteName: siteName || existing.siteName,
+      address: existing.address,
+      locality: existing.locality,
+      state: existing.state,
+      postcode: existing.postcode,
+      countryCode: existing.countryCode,
+      latitude: existing.latitude,
+      longitude: existing.longitude,
+      geocodeStatus: existing.geocodeStatus,
+      geocodeProvider: existing.geocodeProvider,
+      geocodePlaceId: existing.geocodePlaceId,
+      // The business site retains how its address was originally captured;
+      // this new product record records that the user chose saved client data.
+      addressSource: 'client_saved',
+      addressFingerprint: existing.addressFingerprint,
+      geocodedAt: existing.geocodedAt,
+      timezone: timezone || existing.timezone,
+      contactName: contactName ?? existing.contactName,
+      contactPhone: contactPhone ?? existing.contactPhone,
+      contactEmail: contactEmail ?? existing.contactEmail,
       accessInformation: job.accessInformation === undefined
         ? existing.accessInformation
         : accessInformation,
       previousJobId: previous?.id ?? null,
-      previousSourceId: previous?.sourceId ?? null,
       revisionNumber: (previous?.revisionNumber ?? 0) + 1,
     };
   }
 
-  const [existingClient] = await executor.select({ id: businessClients.id })
-    .from(businessClients)
-    .where(eq(businessClients.name, clientName))
-    .limit(1);
-  const clientId = existingClient?.id ?? randomUUID();
-  if (!existingClient) {
-    await executor.insert(businessClients).values({
-      id: clientId,
-      name: clientName,
-      contactName: clientContactName,
-      contactPhone: clientContactPhone,
-      contactEmail: clientContactEmail,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-  const siteId = randomUUID();
-  await executor.insert(businessSites).values({
-    id: siteId,
-    clientId,
-    name: siteName,
-    address,
-    locality: structuredAddress.siteLocality,
-    state: structuredAddress.siteState,
-    postcode: structuredAddress.sitePostcode,
-    countryCode: structuredAddress.siteCountryCode,
-    latitude: structuredAddress.siteLatitude,
-    longitude: structuredAddress.siteLongitude,
-    timezone,
-    contactName,
-    contactPhone,
-    contactEmail,
-    accessInformation,
-    createdAt: now,
-    updatedAt: now,
-  });
-  return {
-    id: siteId,
-    clientId,
+  const memory = await upsertClientSiteFromProductRecord(executor, {
     clientName,
+    selectedClientId: optionalDispatchString(job, 'clientId', 200),
+    siteName,
+    address: {
+      displayAddress: address,
+      locality: structuredAddress.siteLocality,
+      state: structuredAddress.siteState,
+      postcode: structuredAddress.sitePostcode,
+      countryCode: 'AU',
+      latitude: structuredAddress.siteLatitude,
+      longitude: structuredAddress.siteLongitude,
+      provider: structuredAddress.siteGeocodeProvider,
+      placeId: structuredAddress.siteGeocodePlaceId,
+      source: structuredAddress.siteAddressSource,
+      geocodingStatus: structuredAddress.siteGeocodeStatus,
+    },
+    timezone,
     clientContactName,
     clientContactPhone,
     clientContactEmail,
-    siteName,
-    address,
-    locality: structuredAddress.siteLocality,
-    state: structuredAddress.siteState,
-    postcode: structuredAddress.sitePostcode,
-    countryCode: structuredAddress.siteCountryCode,
-    latitude: structuredAddress.siteLatitude,
-    longitude: structuredAddress.siteLongitude,
-    timezone,
-    contactName,
-    contactPhone,
-    contactEmail,
+    siteContactName: contactName,
+    siteContactPhone: contactPhone,
+    siteContactEmail: contactEmail,
     accessInformation,
-    previousJobId: null,
-    previousSourceId: null,
-    revisionNumber: 1,
+  });
+  const [previous] = await executor.select({
+    id: businessJobs.id,
+    revisionNumber: businessJobs.revisionNumber,
+  }).from(businessJobs).where(and(
+    eq(businessJobs.siteId, memory.site.id),
+    eq(businessJobs.sourceApp, sourceApp),
+  )).orderBy(desc(businessJobs.revisionNumber), desc(businessJobs.createdAt)).limit(1);
+  return {
+    id: memory.site.id,
+    clientId: memory.client.id,
+    clientName: memory.client.name,
+    clientContactName: memory.client.contactName,
+    clientContactPhone: memory.client.contactPhone,
+    clientContactEmail: memory.client.contactEmail,
+    siteName: memory.site.siteName,
+    address: memory.site.displayAddress,
+    locality: memory.site.locality,
+    state: memory.site.state,
+    postcode: memory.site.postcode,
+    countryCode: memory.site.countryCode,
+    latitude: memory.site.latitude,
+    longitude: memory.site.longitude,
+    geocodeStatus: memory.site.geocodingStatus,
+    geocodeProvider: memory.site.provider,
+    geocodePlaceId: memory.site.placeId,
+    addressSource: memory.site.source,
+    addressFingerprint: memory.site.fingerprint,
+    geocodedAt: memory.site.geocodingStatus === 'resolved' || memory.site.geocodingStatus === 'manual'
+      ? new Date(memory.site.updatedAt)
+      : null,
+    timezone: memory.site.timezone,
+    contactName: memory.site.contactName,
+    contactPhone: memory.site.contactPhone,
+    contactEmail: memory.site.contactEmail,
+    accessInformation: memory.site.accessInformation,
+    previousJobId: previous?.id ?? null,
+    revisionNumber: (previous?.revisionNumber ?? 0) + 1,
   };
 }
 
@@ -1424,6 +1682,12 @@ export async function listSchedulerSites(
     countryCode: businessSites.countryCode,
     latitude: businessSites.latitude,
     longitude: businessSites.longitude,
+    geocodeStatus: businessSites.geocodeStatus,
+    geocodeProvider: businessSites.geocodeProvider,
+    geocodePlaceId: businessSites.geocodePlaceId,
+    addressSource: businessSites.addressSource,
+    addressFingerprint: businessSites.addressFingerprint,
+    geocodedAt: businessSites.geocodedAt,
     timezone: businessSites.timezone,
     siteContactName: businessSites.contactName,
     siteContactPhone: businessSites.contactPhone,
@@ -1432,62 +1696,16 @@ export async function listSchedulerSites(
   }).from(businessSites).innerJoin(
     businessClients,
     eq(businessClients.id, businessSites.clientId),
-  ).where(or(
-    ilike(businessSites.name, pattern),
-    ilike(businessSites.address, pattern),
-    ilike(businessClients.name, pattern),
+  ).where(and(
+    eq(businessClients.companyKey, BUSINESS_COMPANY_KEY),
+    isNull(businessClients.mergedIntoClientId),
+    or(
+      ilike(businessSites.name, pattern),
+      ilike(businessSites.address, pattern),
+      ilike(businessClients.name, pattern),
+    ),
   )).orderBy(asc(businessClients.name), asc(businessSites.name)).limit(limit);
-  if (sites.length === 0) return [];
-  const jobs = opts.sourceApp
-    ? await db.select({
-      id: businessJobs.id,
-      siteId: businessJobs.siteId,
-      sourceId: businessJobs.sourceId,
-      revisionNumber: businessJobs.revisionNumber,
-    }).from(businessJobs).where(and(
-      inArray(businessJobs.siteId, sites.map((site) => site.id)),
-      eq(businessJobs.sourceApp, opts.sourceApp),
-    )).orderBy(desc(businessJobs.revisionNumber), desc(businessJobs.createdAt))
-    : [];
-  const latestBySite = new Map<string, typeof jobs[number]>();
-  for (const job of jobs) if (!latestBySite.has(job.siteId)) latestBySite.set(job.siteId, job);
-  const latestInstallations = opts.sourceApp === 'installhub'
-    ? await db.select({
-      id: ihInstallations.id,
-      workType: ihInstallations.serviceType,
-      meteringSolutionType: ihInstallations.meteringSolutionType,
-      customJobNumber: ihInstallations.customJobNumber,
-      jobComments: ihInstallations.jobComments,
-      maas: ihInstallations.maas,
-      electricityNmi: ihGridSupplies.nmi,
-    }).from(ihInstallations).leftJoin(ihGridSupplies, and(
-      eq(ihGridSupplies.installationId, ihInstallations.id),
-      eq(ihGridSupplies.isDefault, true),
-      isNull(ihGridSupplies.deletedAt),
-    )).where(inArray(
-      ihInstallations.id,
-      jobs.flatMap((job) => job.sourceId ? [job.sourceId] : []),
-    ))
-    : [];
-  const latestInstallationById = new Map(latestInstallations.map((row) => [row.id, row]));
-  return sites.map((site) => {
-    const latest = latestBySite.get(site.id);
-    const latestInstallation = latest?.sourceId
-      ? latestInstallationById.get(latest.sourceId)
-      : undefined;
-    return {
-      ...site,
-      latestJobId: latest?.id ?? null,
-      latestSourceId: latest?.sourceId ?? null,
-      latestRevisionNumber: latest?.revisionNumber ?? null,
-      latestWorkType: latestInstallation?.workType ?? null,
-      latestMeteringSolutionType: latestInstallation?.meteringSolutionType ?? null,
-      latestCustomJobNumber: latestInstallation?.customJobNumber ?? null,
-      latestJobComments: latestInstallation?.jobComments ?? null,
-      latestMaas: latestInstallation?.maas ?? null,
-      latestElectricityNmi: latestInstallation?.electricityNmi ?? null,
-    };
-  });
+  return sites.map(schedulerSitePrefillOption);
 }
 
 async function createDispatchedProductJob(
@@ -1504,91 +1722,6 @@ async function createDispatchedProductJob(
     ?? scheduledStartAt.toISOString().slice(0, 10);
   const inspectorName = assignee ? installHubSchedulerInspectorName(assignee) : '';
 
-  if (site.previousSourceId) {
-    if (sourceApp === 'ecoaudit') {
-      if (!assignee) throw badRequest('EcoAudit work must be assigned when it is created');
-      const sourceId = await copyEcoAuditForJob(executor, site.previousSourceId, {
-        siteName: site.siteName,
-        address: site.address,
-        siteLocality: site.locality,
-        siteState: site.state,
-        sitePostcode: site.postcode,
-        siteCountryCode: site.countryCode,
-        siteLatitude: site.latitude,
-        siteLongitude: site.longitude,
-      }, {
-        createdByUserId: requireProductUserId(actor, 'ecoaudit'),
-        assignedInspectorUserId: requireProductUserId(assignee, 'ecoaudit'),
-        inspectorName,
-        auditDate,
-      });
-      return { sourceId, sourceType: 'audit', label: site.siteName };
-    }
-    if (sourceApp === 'solarsense') {
-      if (!assignee) throw badRequest('SolarSense work must be assigned when it is created');
-      const buildingName = dispatchString(job, 'buildingIdName');
-      const sourceId = await copySolarAssessmentForJob(
-        executor,
-        site.previousSourceId,
-        {
-          siteName: site.siteName,
-          address: site.address,
-          siteLocality: site.locality,
-          siteState: site.state,
-          sitePostcode: site.postcode,
-          siteCountryCode: site.countryCode,
-          siteLatitude: site.latitude,
-          siteLongitude: site.longitude,
-        },
-        buildingName,
-        {
-          createdByUserId: requireProductUserId(actor, 'solarsense'),
-          assignedInspectorUserId: requireProductUserId(assignee, 'solarsense'),
-          inspectorName,
-          auditDate,
-        },
-      );
-      return { sourceId, sourceType: 'assessment', label: `${site.siteName} · ${buildingName}` };
-    }
-    const sourceId = await copyFieldInstallationForJob(
-      executor,
-      site.previousSourceId,
-      {
-        siteName: site.siteName,
-        address: site.address,
-        siteLocality: site.locality,
-        siteState: site.state,
-        sitePostcode: site.postcode,
-        siteCountryCode: site.countryCode,
-        siteLatitude: site.latitude,
-        siteLongitude: site.longitude,
-        clientName: site.clientName,
-        contactName: site.contactName,
-        contactPhone: site.contactPhone,
-        contactEmail: site.contactEmail,
-        accessInformation: site.accessInformation,
-        timezone: site.timezone,
-      },
-      {
-        createdByUserId: actor.fieldUserId,
-        assignedInspectorUserId: assignee?.fieldUserId ?? null,
-        inspectorName,
-        auditDate,
-      },
-      {
-        customerName: optionalDispatchString(job, 'customerName', INSTALLATION_METADATA_TEXT_LIMITS.customerName),
-        maas: optionalDispatchBoolean(job, 'maas'),
-        workType: optionalDispatchString(job, job.workType ? 'workType' : 'serviceType', INSTALLATION_METADATA_TEXT_LIMITS.serviceType),
-        meteringSolutionType: optionalDispatchString(job, 'meteringSolutionType', INSTALLATION_METADATA_TEXT_LIMITS.meteringSolutionType),
-        plannedMeterType: optionalDispatchString(job, 'plannedMeterType', INSTALLATION_METADATA_TEXT_LIMITS.plannedMeterType),
-        customJobNumber: optionalDispatchString(job, 'customJobNumber', INSTALLATION_METADATA_TEXT_LIMITS.customJobNumber),
-        jobComments: optionalDispatchString(job, 'jobComments', INSTALLATION_METADATA_TEXT_LIMITS.jobComments),
-        nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
-      },
-    );
-    return { sourceId, sourceType: 'installation', label: `${site.clientName} · ${site.siteName}` };
-  }
-
   if (sourceApp === 'ecoaudit') {
     if (!assignee) throw badRequest('EcoAudit work must be assigned when it is created');
     const sourceId = randomUUID();
@@ -1601,6 +1734,8 @@ async function createDispatchedProductJob(
       syncStatus: 'synced',
       updatedAt: now,
       deletedAt: null,
+      clientName: site.clientName,
+      businessSiteId: site.id,
       siteName,
       siteAddress,
       ...structuredAddress,
@@ -1631,6 +1766,8 @@ async function createDispatchedProductJob(
       syncStatus: 'synced',
       updatedAt: now,
       deletedAt: null,
+      clientName: site.clientName,
+      businessSiteId: site.id,
       siteName,
       location,
       ...structuredAddress,
@@ -1685,6 +1822,7 @@ async function createDispatchedProductJob(
       INSTALLATION_METADATA_TEXT_LIMITS.customerName,
     ),
     clientName,
+    businessSiteId: site.id,
     maas: optionalDispatchBoolean(job, 'maas'),
     serviceType: optionalDispatchString(
       job,
@@ -2151,6 +2289,25 @@ export async function updateScheduleEvent(
     if (input.status !== undefined) {
       patch.status = nextStatus;
       patch.cancelledAt = nextStatus === 'cancelled' ? new Date() : null;
+    }
+    if (
+      nextStatus === 'done'
+      && existing.status !== 'done'
+      && existing.sourceApp !== 'custom'
+      && existing.sourceType !== 'custom'
+      && existing.sourceId
+    ) {
+      assertSchedulerCompletionSource(
+        existing.sourceApp as ScheduleSourceApp,
+        existing.sourceType as ScheduleSourceType,
+        existing.sourceId,
+      );
+      await completeSchedulerLinkedSource(tx, {
+        sourceApp: existing.sourceApp as Exclude<ScheduleSourceApp, 'custom'>,
+        sourceType: existing.sourceType as Exclude<ScheduleSourceType, 'custom'>,
+        sourceId: existing.sourceId,
+        idempotencyKey: `scheduler-event:${existing.id}:complete`,
+      }, await loadActorSubject(tx, user));
     }
 
     if (estimatedDurationWasProvided || scheduledStartChanged) {

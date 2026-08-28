@@ -13,6 +13,7 @@ import {
   timestamp,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { businessSites } from './shared.js';
 
 const syncCols = {
   serverId: text('server_id'),
@@ -35,6 +36,11 @@ export const ssUsers = pgTable('ss_users', {
 export const ssSites = pgTable('ss_sites', {
   id: text('id').primaryKey(),
   ...syncCols,
+  clientName: text('client_name'),
+  businessSiteId: text('business_site_id').references(
+    () => businessSites.id,
+    { onDelete: 'restrict' },
+  ),
   siteName: text('site_name').notNull(),
   location: text('location'),
   siteLocality: text('site_locality'),
@@ -46,6 +52,7 @@ export const ssSites = pgTable('ss_sites', {
   siteGeocodeStatus: text('site_geocode_status'),
   siteGeocodeProvider: text('site_geocode_provider'),
   siteGeocodePlaceId: text('site_geocode_place_id'),
+  siteAddressSource: text('site_address_source').notNull().default('manual'),
   siteAddressFingerprint: text('site_address_fingerprint'),
   siteGeocodedAt: timestamp('site_geocoded_at'),
   dateOfAssessment: text('date_of_assessment'),
@@ -63,6 +70,11 @@ export const ssSites = pgTable('ss_sites', {
   status: text('status').notNull().default('Draft'),
   completedAt: timestamp('completed_at'),
 }, (table) => [
+  index('ss_sites_business_site_idx').on(table.businessSiteId, table.updatedAt),
+  check('ss_sites_client_name_check', sql`
+    ${table.clientName} IS NULL
+    OR char_length(btrim(${table.clientName})) BETWEEN 1 AND 300
+  `),
   check('ss_sites_country_check', sql`
     ${table.siteCountryCode} IS NULL OR ${table.siteCountryCode} = 'AU'
   `),
@@ -88,6 +100,9 @@ export const ssSites = pgTable('ss_sites', {
   check('ss_sites_geocode_evidence_check', sql`
     (${table.siteGeocodeStatus} IS DISTINCT FROM 'resolved')
     OR (${table.siteLatitude} IS NOT NULL AND ${table.siteLongitude} IS NOT NULL)
+  `),
+  check('ss_sites_address_source_check', sql`
+    ${table.siteAddressSource} IN ('suggested', 'manual', 'client_saved')
   `),
   check('ss_sites_address_fingerprint_check', sql`
     ${table.siteAddressFingerprint} IS NULL

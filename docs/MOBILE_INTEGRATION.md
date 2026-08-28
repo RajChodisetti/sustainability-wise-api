@@ -667,17 +667,15 @@ general_water:            photos[], extra_photos[]
 general_electricity:      photos[], extra_photos[]
 ```
 
-## Scheduler existing-site versions
+## Scheduler saved-site prefill
 
-When Scheduler creates Field work for an existing canonical site, the API
-creates a new Draft installation with fresh installation and child IDs. It
-copies the latest known grid supplies, zones, electrical hierarchy, site
-assets, meters, meter channels, and measurement assignments. Completed forms
-and active-time history are not copied into the new job. Original evidence is
-authorized through `photo_copy_references` rather than duplicated. The normal
-assigned-work pull then delivers this independent Draft to the selected Field
-user, who may replace a copied meter or add another meter without mutating the
-previous installation.
+Selecting an existing canonical site in Scheduler fills the editable client,
+site, address, contact, and access fields. Creating the job then produces a
+fresh Draft product record linked to that saved site. It does not copy an
+earlier audit, assessment, installation tree, device, form, photo, job scope,
+NMI, or comment. If the user edits the address, the saved-site binding is
+cleared and the new or matching address is linked without removing the original
+saved address.
 
 ---
 

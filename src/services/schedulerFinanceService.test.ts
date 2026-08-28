@@ -13,10 +13,22 @@ import {
   isCompletedSchedulerJobStatus,
   mergeResolvedRecordedActorTime,
   nextSchedulerInvoiceRevisionAt,
+  normalizeSchedulerSellerAbn,
   parseSchedulerInvoiceXeroDate,
   schedulerInvoiceCompletionReadiness,
   schedulerInvoiceHoursReadiness,
 } from './schedulerFinanceService.js';
+
+test('seller ABN accepts formatted input and stores one canonical 11-digit value', () => {
+  assert.equal(normalizeSchedulerSellerAbn('12 345 678 901'), '12345678901');
+  assert.equal(normalizeSchedulerSellerAbn(''), null);
+  assert.throws(
+    () => normalizeSchedulerSellerAbn('1234'),
+    (error: unknown) => error instanceof AppError
+      && error.statusCode === 400
+      && error.detail === 'Seller ABN must contain exactly 11 digits',
+  );
+});
 
 test('invoice issue allocates two strictly increasing revisions in one timestamp tick', () => {
   const original = new Date('2026-08-22T10:00:00.000Z');
@@ -358,7 +370,7 @@ test('legacy Field runtime adapters contain no ih finance writes or calendar-day
   }
 });
 
-test('invoice snapshots no longer lock job settings or require migrated legacy hours', () => {
+test('invoice revisions no longer lock job settings or require migrated legacy hours', () => {
   const service = readFileSync(
     new URL('./schedulerFinanceService.ts', import.meta.url),
     'utf8',
@@ -372,7 +384,7 @@ test('invoice snapshots no longer lock job settings or require migrated legacy h
     /Confirm or replace migrated legacy hours/,
   );
   assert.doesNotMatch(service, /requireInvoiceHoursReady/);
-  assert.match(service, /Existing invoices are immutable commercial snapshots/);
+  assert.match(service, /Stored PDF versions retain the values/);
 });
 
 test('0033 is append-only and declares the legacy review/counter migration', () => {

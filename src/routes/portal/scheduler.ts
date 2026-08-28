@@ -12,6 +12,7 @@ import { config } from '../../config.js';
 import {
   assertPortalSchedulerApp,
   cancelScheduleEvent,
+  completeSchedulerJob,
   createScheduleEvent,
   createSchedulerDispatch,
   getScheduleEvent,
@@ -24,6 +25,7 @@ import {
   searchJobOptions,
   updateScheduleEvent,
   type ScheduleSourceApp,
+  type ScheduleSourceType,
   type ScheduleStatus,
 } from '../../services/scheduleService.js';
 import { badRequest, forbidden } from '../../utils/errors.js';
@@ -58,6 +60,7 @@ import {
   updateSchedulerDraftInvoice,
   updateSchedulerDraftInvoiceByFinanceId,
   updateConsolidatedSchedulerDraftInvoice,
+  updateSchedulerInvoiceSeller,
   updateSchedulerExpense,
   updateSchedulerExpenseByFinanceId,
   updateSchedulerFinance,
@@ -72,6 +75,7 @@ import {
   type FinanceUpdateInput,
   type QuickInvoiceInput,
   type UpdateDraftInvoiceInput,
+  type UpdateSchedulerInvoiceSellerInput,
 } from '../../services/schedulerFinanceService.js';
 import { exportArtifactContentDisposition } from '../pdfJobs.js';
 import {
@@ -100,6 +104,11 @@ import {
 import { getSchedulerAnalytics } from '../../services/schedulerAnalyticsService.js';
 import { suggestSchedulerAddresses } from '../../services/schedulerMapProvider.js';
 import { getSchedulerRouteSuggestion } from '../../services/schedulerRouteService.js';
+import {
+  listClientDirectory,
+  mergeBusinessClients,
+  suggestClientAndProviderAddresses,
+} from '../../services/clientSiteMemoryService.js';
 
 function parseOptionalDate(value: unknown, name: string): Date | undefined {
   if (value === undefined || value === null || value === '') return undefined;
@@ -411,6 +420,95 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     }));
   });
 
+  app.get('/scheduler/clients', {
+    schema: {
+      tags: ['Portal Scheduler'],
+      summary: 'Search company clients and all saved site addresses',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          q: { type: 'string', maxLength: 300 },
+          clientId: { type: 'string', minLength: 1, maxLength: 200 },
+          limit: { type: 'integer', minimum: 1, maximum: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => {
+    const query = request.query as { q?: string; clientId?: string; limit?: number };
+    return reply.send({
+      companyScope: 'current',
+      clients: await listClientDirectory({
+        query: query.q,
+        clientId: query.clientId,
+        limit: query.limit,
+      }),
+    });
+  });
+
+  app.post('/scheduler/client-address-suggestions', {
+    schema: {
+      tags: ['Portal Scheduler Routing'],
+      summary: 'Return saved client addresses and Australian provider suggestions together',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          clientId: { type: 'string', minLength: 1, maxLength: 200 },
+          query: { type: 'string', maxLength: 300 },
+          postcode: { type: 'string', pattern: '^[0-9]{4}$' },
+          limit: { type: 'integer', minimum: 1, maximum: 10 },
+        },
+      },
+    },
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    preHandler: [authenticate, portalSchedulerGate],
+  }, async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      clientId?: string;
+      query?: string;
+      postcode?: string;
+      limit?: number;
+    };
+    return reply.send(await suggestClientAndProviderAddresses({
+      clientId: body.clientId,
+      query: body.query ?? '',
+      postcode: body.postcode,
+      limit: body.limit,
+    }));
+  });
+
+  app.post<{ Params: { id: string } }>('/scheduler/clients/:id/merge', {
+    schema: {
+      tags: ['Portal Scheduler'],
+      summary: 'Merge one duplicate client into another without deleting addresses',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['targetClientId', 'reason'],
+        properties: {
+          targetClientId: { type: 'string', minLength: 1, maxLength: 200 },
+          reason: { type: 'string', minLength: 1, maxLength: 1000 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { targetClientId: string; reason: string };
+    return reply.send({
+      client: await mergeBusinessClients({
+        sourceClientId: request.params.id,
+        targetClientId: body.targetClientId,
+        mergedByUserId: request.user.userId,
+        reason: body.reason,
+      }),
+    });
+  });
+
   app.post('/scheduler/route-suggestions', {
     schema: {
       tags: ['Portal Scheduler Routing'],
@@ -704,6 +802,34 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       status: body.status,
     });
     return reply.send(event);
+  });
+
+  app.post<{
+    Params: { sourceApp: string; sourceType: string; sourceId: string };
+  }>('/scheduler/jobs/:sourceApp/:sourceType/:sourceId/complete', {
+    schema: {
+      tags: ['Portal Scheduler'],
+      summary: 'Mark a linked product job complete from Scheduler',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['idempotencyKey'],
+        properties: {
+          idempotencyKey: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as { idempotencyKey: string };
+    const result = await completeSchedulerJob(request.user, {
+      sourceApp: request.params.sourceApp as Exclude<ScheduleSourceApp, 'custom'>,
+      sourceType: request.params.sourceType as Exclude<ScheduleSourceType, 'custom'>,
+      sourceId: request.params.sourceId,
+      idempotencyKey: body.idempotencyKey,
+    });
+    return reply.send(result);
   });
 
   app.delete<{ Params: { id: string } }>('/scheduler/events/:id', {
@@ -1018,21 +1144,49 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     (request.body ?? {}) as UpdateDraftInvoiceInput,
   )));
 
+  app.patch<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/seller', {
+    schema: {
+      tags: ['Portal Scheduler Finance'],
+      summary: 'Save the current seller ABN and apply it to this invoice',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['sellerAbn', 'expectedUpdatedAt'],
+        properties: {
+          sellerAbn: { type: ['string', 'null'], maxLength: 100 },
+          expectedUpdatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => reply.send(await updateSchedulerInvoiceSeller(
+    request.user,
+    request.params.invoiceId,
+    request.body as UpdateSchedulerInvoiceSellerInput,
+  )));
+
   app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/issue', {
     schema: {
       tags: ['Portal Scheduler Finance'],
-      summary: 'Issue and freeze a consolidated invoice snapshot',
+      summary: 'Issue or reissue a consolidated invoice revision',
       security: [{ bearerAuth: [] }],
       body: invoiceVersionBodySchema,
     },
     preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
   }, async (request, reply) => {
     const body = request.body as { expectedUpdatedAt: string };
-    return reply.send(await issueConsolidatedSchedulerInvoice(
+    const invoice = await issueConsolidatedSchedulerInvoice(
       request.user,
       request.params.invoiceId,
       body.expectedUpdatedAt,
-    ));
+    );
+    const pdfExport = await queueSchedulerInvoicePdfByInvoiceId(
+      request.user,
+      invoice.id,
+      invoice.updatedAt,
+    );
+    return reply.send({ ...invoice, pdfExport });
   });
 
   app.post<{ Params: { invoiceId: string } }>('/scheduler/invoices/:invoiceId/void', {
@@ -1392,7 +1546,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Issue and freeze a scheduler invoice snapshot',
+        summary: 'Issue or reissue a scheduler invoice revision',
         security: [{ bearerAuth: [] }],
         body: invoiceVersionBodySchema,
       },
@@ -1400,12 +1554,19 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     },
     async (request, reply) => {
       const body = request.body as { expectedUpdatedAt: string };
-      return reply.send(await issueSchedulerInvoiceByFinanceId(
+      const invoice = await issueSchedulerInvoiceByFinanceId(
         request.user,
         request.params.financeId,
         request.params.invoiceId,
         body.expectedUpdatedAt,
-      ));
+      );
+      const pdfExport = await queueSchedulerInvoicePdfByFinanceId(
+        request.user,
+        request.params.financeId,
+        invoice.id,
+        invoice.updatedAt,
+      );
+      return reply.send({ ...invoice, pdfExport });
     },
   );
 
@@ -1614,7 +1775,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     {
       schema: {
         tags: ['Portal Scheduler Finance'],
-        summary: 'Get an invoice with immutable job and billing snapshots',
+        summary: 'Get an invoice with its current job and billing values',
         security: [{ bearerAuth: [] }],
       },
       preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
@@ -1658,12 +1819,19 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     },
     async (request, reply) => {
       const body = request.body as { expectedUpdatedAt: string };
-      return reply.send(await issueSchedulerInvoice(
+      const invoice = await issueSchedulerInvoice(
         request.user,
         request.params.id,
         request.params.invoiceId,
         body.expectedUpdatedAt,
-      ));
+      );
+      const pdfExport = await queueSchedulerInvoicePdfByEventId(
+        request.user,
+        request.params.id,
+        invoice.id,
+        invoice.updatedAt,
+      );
+      return reply.send({ ...invoice, pdfExport });
     },
   );
 
@@ -1770,7 +1938,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
   app.get('/scheduler/sites', {
     schema: {
       tags: ['Portal Scheduler'],
-      summary: 'List canonical client sites for new-version job creation',
+      summary: 'List canonical client sites for editable job prefill',
       security: [{ bearerAuth: [] }],
       querystring: {
         type: 'object',

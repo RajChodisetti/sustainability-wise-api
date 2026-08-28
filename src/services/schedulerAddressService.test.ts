@@ -43,9 +43,14 @@ test('selected Photon address stores normalized Australian structure and coordin
     siteGeocodeStatus: 'resolved',
     siteGeocodeProvider: 'photon',
     siteGeocodePlaceId: 'photon:123',
-    siteAddressFingerprint: schedulerAddressFingerprint(
-      '1 Main Street, Sydney NSW 2000',
-    ),
+    siteAddressSource: 'suggested',
+    siteAddressFingerprint: schedulerAddressFingerprint({
+      displayAddress: '1 Main Street, Sydney NSW 2000',
+      locality: 'Sydney',
+      state: 'NSW',
+      postcode: '2000',
+      countryCode: 'AU',
+    }),
     siteGeocodedAt: now,
   });
 });
@@ -56,6 +61,7 @@ test('manual and composed free text remain valid while partial provider evidence
     countryCode: 'AU',
   }, 'Remote access track, NSW');
   assert.equal(manual.siteGeocodeStatus, 'unresolved');
+  assert.equal(manual.siteAddressSource, 'manual');
 
   const composed = parseSchedulerDispatchAddress({
     freeform: '10 George Street',
@@ -102,6 +108,25 @@ test('manual and composed free text remain valid while partial provider evidence
       (error: unknown) => error instanceof AppError && error.statusCode === 400,
     );
   }
+});
+
+test('address providers are limited to the cross-client wire allowlist', () => {
+  assert.throws(
+    () => parseSchedulerDispatchAddress({
+      freeform: '10 George Street, Sydney NSW 2000',
+      locality: 'Sydney',
+      state: 'NSW',
+      postcode: '2000',
+      countryCode: 'AU',
+      latitude: -33.8688,
+      longitude: 151.2093,
+      provider: 'google',
+      placeId: 'provider-place-1',
+    }, '10 George Street, Sydney NSW 2000'),
+    (error: unknown) => error instanceof AppError
+      && error.statusCode === 400
+      && /geoapify or photon/u.test(error.detail ?? ''),
+  );
 });
 
 test('stored coordinates are ignored after authoritative free text changes', () => {

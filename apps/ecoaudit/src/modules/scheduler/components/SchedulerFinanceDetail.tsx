@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
@@ -9,6 +9,7 @@ import { useToast } from '@/contexts/ToastContext';
 import { ExpenseLedger } from '@/modules/scheduler/components/ExpenseLedger';
 import { FinanceSettingsPanel } from '@/modules/scheduler/components/FinanceSettingsPanel';
 import {
+  useCompleteSchedulerJob,
   useSchedulerFinancialSummary,
   useUpdateSchedulerFinance,
 } from '@/modules/scheduler/hooks/useScheduler';
@@ -59,6 +60,9 @@ export function SchedulerFinanceDetail({
   overview: FinanceOverviewItem;
 }) {
   const query = useSchedulerFinancialSummary(financeId);
+  const complete = useCompleteSchedulerJob();
+  const completionIdempotencyKeyRef = useRef<string | null>(null);
+  const [completionError, setCompletionError] = useState<string | null>(null);
 
   if (query.isLoading) return <Spinner label={`Loading finance for ${overview.jobName}…`} />;
   if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
@@ -71,8 +75,29 @@ export function SchedulerFinanceDetail({
     .map((user) => user.displayName ?? user.userId);
   const tone = marginTone(summary.totals.marginPct);
 
+  async function markComplete() {
+    if (!window.confirm(
+      `Mark ${overview.jobName} complete? This closes the linked product job and Scheduler work.`,
+    )) return;
+    setCompletionError(null);
+    const idempotencyKey = completionIdempotencyKeyRef.current ?? crypto.randomUUID();
+    completionIdempotencyKeyRef.current = idempotencyKey;
+    try {
+      await complete.mutateAsync({
+        sourceApp: overview.sourceApp,
+        sourceType: overview.sourceType,
+        sourceId: overview.sourceId,
+        idempotencyKey,
+      });
+      completionIdempotencyKeyRef.current = null;
+    } catch (cause) {
+      setCompletionError(cloudConnectionErrorMessage(cause));
+    }
+  }
+
   return (
     <div className="min-w-0 space-y-5">
+      {completionError ? <ErrorBanner message={completionError} /> : null}
       <header className="rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)] sm:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
@@ -94,9 +119,21 @@ export function SchedulerFinanceDetail({
               {[summary.job.clientName, summary.job.siteName, summary.job.siteAddress].filter(Boolean).join(' · ') || 'Shared job commercial workspace'}
             </p>
           </div>
-          <span className={`rounded-full px-3 py-1.5 text-sm font-extrabold ${marginClasses[tone]}`}>
-            {summary.totals.marginPct == null ? 'Margin pending' : `${summary.totals.marginPct.toFixed(1)}% margin`}
-          </span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {!summary.invoiceReadiness.completionSatisfied ? (
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={complete.isPending}
+                onClick={() => void markComplete()}
+              >
+                {complete.isPending ? 'Completing…' : 'Mark job complete'}
+              </Button>
+            ) : null}
+            <span className={`rounded-full px-3 py-1.5 text-sm font-extrabold ${marginClasses[tone]}`}>
+              {summary.totals.marginPct == null ? 'Margin pending' : `${summary.totals.marginPct.toFixed(1)}% margin`}
+            </span>
+          </div>
         </div>
       </header>
 

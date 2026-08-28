@@ -14,6 +14,9 @@ export const AUSTRALIAN_STATES = [
 
 export type AustralianState = (typeof AUSTRALIAN_STATES)[number];
 
+export const ADDRESS_PROVIDERS = ['geoapify', 'photon'] as const;
+export type AddressProvider = (typeof ADDRESS_PROVIDERS)[number];
+
 /** Australia mainland and Tasmania bounds used by this Australia-only workflow. */
 export const AUSTRALIAN_ROUTING_BOUNDS = {
   minimumLatitude: -44,
@@ -40,9 +43,13 @@ export type SchedulerDispatchAddressInput = {
   countryCode: 'AU';
   latitude?: number;
   longitude?: number;
-  provider?: string;
+  provider?: AddressProvider;
   placeId?: string;
+  source?: AddressSource;
 };
+
+export const ADDRESS_SOURCES = ['suggested', 'manual', 'client_saved'] as const;
+export type AddressSource = (typeof ADDRESS_SOURCES)[number];
 
 export type SchedulerSiteLocationColumns = {
   siteLocality: string | null;
@@ -52,8 +59,9 @@ export type SchedulerSiteLocationColumns = {
   siteLatitude: number | null;
   siteLongitude: number | null;
   siteGeocodeStatus: 'unresolved' | 'resolved' | 'manual';
-  siteGeocodeProvider: string | null;
+  siteGeocodeProvider: AddressProvider | null;
   siteGeocodePlaceId: string | null;
+  siteAddressSource: AddressSource;
   siteAddressFingerprint: string;
   siteGeocodedAt: Date | null;
 };
@@ -68,6 +76,7 @@ const ADDRESS_FIELDS = new Set([
   'longitude',
   'provider',
   'placeId',
+  'source',
 ]);
 
 function optionalText(
@@ -102,10 +111,33 @@ export function normalizeSchedulerAddressText(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-AU');
 }
 
-export function schedulerAddressFingerprint(value: string): string {
-  return createHash('sha256')
-    .update(normalizeSchedulerAddressText(value), 'utf8')
-    .digest('hex');
+export type AustralianAddressFingerprintParts = {
+  displayAddress: string;
+  locality?: string | null;
+  state?: string | null;
+  postcode?: string | null;
+  countryCode?: string | null;
+};
+
+/** Includes structured locality data so repeated street names cannot collide. */
+export function schedulerAddressFingerprint(
+  value: string | AustralianAddressFingerprintParts,
+): string {
+  const parts = typeof value === 'string'
+    ? { displayAddress: value }
+    : value;
+  const normalized = [
+    parts.displayAddress,
+    parts.locality ?? '',
+    parts.state ?? '',
+    parts.postcode ?? '',
+    parts.countryCode ?? 'AU',
+  ].map(normalizeSchedulerAddressText).join('\u001f');
+  // PostgreSQL's built-in md5(text) makes legacy backfills deterministic
+  // without requiring a privileged database extension. Two domain-separated
+  // hashes retain the existing 64-hex wire/storage contract.
+  return createHash('md5').update(normalized, 'utf8').digest('hex')
+    + createHash('md5').update(`${normalized}\u001e2`, 'utf8').digest('hex');
 }
 
 export function parseSchedulerDispatchAddress(
@@ -113,7 +145,6 @@ export function parseSchedulerDispatchAddress(
   authoritativeFreeform: string,
   now = new Date(),
 ): SchedulerSiteLocationColumns {
-  const addressFingerprint = schedulerAddressFingerprint(authoritativeFreeform);
   if (value === undefined || value === null) {
     return {
       siteLocality: null,
@@ -125,7 +156,8 @@ export function parseSchedulerDispatchAddress(
       siteGeocodeStatus: 'unresolved',
       siteGeocodeProvider: null,
       siteGeocodePlaceId: null,
-      siteAddressFingerprint: addressFingerprint,
+      siteAddressSource: 'manual',
+      siteAddressFingerprint: schedulerAddressFingerprint(authoritativeFreeform),
       siteGeocodedAt: null,
     };
   }
@@ -166,11 +198,28 @@ export function parseSchedulerDispatchAddress(
   })) {
     throw badRequest('job.address coordinates must be within Australia');
   }
-  const provider = optionalText(input.provider, 'provider', 100);
+  const providerValue = optionalText(input.provider, 'provider', 100);
+  if (
+    providerValue !== null
+    && !ADDRESS_PROVIDERS.includes(providerValue as AddressProvider)
+  ) {
+    throw badRequest('job.address.provider must be geoapify or photon');
+  }
+  const provider = providerValue as AddressProvider | null;
   const placeId = optionalText(input.placeId, 'placeId', 500);
+  const sourceValue = optionalText(input.source, 'source', 20);
+  if (sourceValue !== null && !ADDRESS_SOURCES.includes(sourceValue as AddressSource)) {
+    throw badRequest('job.address.source must be suggested, manual, or client_saved');
+  }
+  const source = (sourceValue as AddressSource | null) ?? (provider ? 'suggested' : 'manual');
   if (placeId && !provider) throw badRequest('job.address.placeId requires provider');
   if ((provider || placeId) && latitude === null) {
     throw badRequest('job.address provider details require latitude and longitude');
+  }
+  if (source === 'suggested' && (!provider || !placeId || latitude === null)) {
+    throw badRequest(
+      'job.address suggested source requires coordinates, provider, and placeId',
+    );
   }
 
   return {
@@ -183,18 +232,35 @@ export function parseSchedulerDispatchAddress(
     siteGeocodeStatus: latitude === null ? 'unresolved' : provider ? 'resolved' : 'manual',
     siteGeocodeProvider: provider,
     siteGeocodePlaceId: placeId,
-    siteAddressFingerprint: addressFingerprint,
+    siteAddressSource: source,
+    siteAddressFingerprint: schedulerAddressFingerprint({
+      displayAddress: authoritativeFreeform,
+      locality,
+      state: stateValue,
+      postcode,
+      countryCode: 'AU',
+    }),
     siteGeocodedAt: latitude === null ? null : now,
   };
 }
 
 export function storedSchedulerCoordinatesAreCurrent(input: {
   freeform: string;
+  locality?: string | null;
+  state?: string | null;
+  postcode?: string | null;
+  countryCode?: string | null;
   latitude: number | null;
   longitude: number | null;
   addressFingerprint: string | null;
 }): input is typeof input & { latitude: number; longitude: number } {
   return input.latitude !== null
     && input.longitude !== null
-    && input.addressFingerprint === schedulerAddressFingerprint(input.freeform);
+    && input.addressFingerprint === schedulerAddressFingerprint({
+      displayAddress: input.freeform,
+      locality: input.locality,
+      state: input.state,
+      postcode: input.postcode,
+      countryCode: input.countryCode,
+    });
 }

@@ -67,6 +67,72 @@ test('unconfigured providers are explicitly unavailable without network access',
   });
 });
 
+test('Geoapify autocomplete is Australia-filtered and normalized without leaking credentials', async () => {
+  let requestedUrl = '';
+  const provider = createSchedulerMapProvider({
+    geoapifyApiKey: 'test-server-side-key',
+    photonUrl: 'https://unused-photon.example.test',
+    fetchImpl: async (input) => {
+      requestedUrl = String(input);
+      return jsonResponse({
+        results: [
+          {
+            formatted: '10 George Street, Sydney NSW 2000, Australia',
+            suburb: 'Sydney',
+            state: 'New South Wales',
+            state_code: 'NSW',
+            postcode: '2000',
+            country_code: 'au',
+            lat: -33.8688,
+            lon: 151.2093,
+            place_id: 'geoapify-place-123',
+          },
+          {
+            formatted: '10 Downing Street, London, United Kingdom',
+            city: 'London',
+            country_code: 'gb',
+            lat: 51.5034,
+            lon: -0.1276,
+            place_id: 'outside-australia',
+          },
+        ],
+      });
+    },
+  });
+
+  const result = await provider.suggestSchedulerAddresses({
+    query: '10 George Street',
+    postcode: '2000',
+    limit: 8,
+  });
+  assert.equal(result.available, true);
+  assert.equal(result.provider, 'geoapify');
+  assert.equal(result.suggestions.length, 1);
+  assert.deepEqual(result.suggestions[0], {
+    id: 'geoapify:geoapify-place-123',
+    label: '10 George Street, Sydney NSW 2000, Australia',
+    freeform: '10 George Street, Sydney NSW 2000, Australia',
+    locality: 'Sydney',
+    state: 'NSW',
+    postcode: '2000',
+    countryCode: 'AU',
+    latitude: -33.8688,
+    longitude: 151.2093,
+    provider: 'geoapify',
+    placeId: 'geoapify-place-123',
+  });
+
+  const url = new URL(requestedUrl);
+  assert.equal(url.origin + url.pathname, 'https://api.geoapify.com/v1/geocode/autocomplete');
+  assert.equal(url.searchParams.get('text'), '10 George Street 2000');
+  assert.equal(url.searchParams.get('filter'), 'countrycode:au');
+  assert.equal(url.searchParams.get('lang'), 'en');
+  assert.equal(url.searchParams.get('format'), 'json');
+  assert.equal(url.searchParams.get('limit'), '8');
+  assert.equal(url.searchParams.get('apiKey'), 'test-server-side-key');
+  assert.doesNotMatch(JSON.stringify(result), /test-server-side-key/u);
+});
+
 test('Photon suggestions are Australia-filtered and normalized to the shared DTO', async () => {
   let requestedUrl = '';
   const provider = createSchedulerMapProvider({
@@ -142,7 +208,7 @@ test('Photon suggestions are Australia-filtered and normalized to the shared DTO
   assert.deepEqual(result.suggestions[0], {
     id: 'photon:W:123',
     label: '10 George Street, Sustainability Wise, Sydney, NSW, 2000, Australia',
-    freeform: '10 George Street',
+    freeform: '10 George Street, Sustainability Wise, Sydney, NSW, 2000, Australia',
     locality: 'Sydney',
     state: 'NSW',
     postcode: '2000',

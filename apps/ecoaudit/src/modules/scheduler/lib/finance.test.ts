@@ -59,6 +59,14 @@ test('job and invoice selection boundaries remount stateful commercial editors',
   assert.match(invoices, /<GlobalInvoiceDetail key=\{selectedInvoiceId\}/);
 });
 
+test('issued invoices remain editable and issue no longer uses an immutability confirmation', () => {
+  const document = readFileSync(new URL('../components/InvoiceWorkspace.tsx', import.meta.url), 'utf8');
+  const register = readFileSync(new URL('../components/SchedulerInvoicesWorkspace.tsx', import.meta.url), 'utf8');
+  assert.match(document, /invoice\.status === 'draft' \|\| invoice\.status === 'issued'/);
+  assert.match(document, /Saved immediately for this and future invoices/);
+  assert.doesNotMatch(register, /immutable billing snapshot/);
+});
+
 test('finance detail selection cannot remain on a job hidden by queue filters', () => {
   const visible = [{ financeId: 'visible' } as FinanceOverviewItem];
   assert.equal(selectedVisibleFinanceJob(visible, 'visible')?.financeId, 'visible');

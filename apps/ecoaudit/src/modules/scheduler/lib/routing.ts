@@ -1,8 +1,10 @@
 import type {
   AustralianState,
   SchedulerAddressSuggestion,
+  SchedulerClientAddressSuggestion,
   SchedulerJobAddressInput,
 } from '@/modules/scheduler/types/routing';
+import type { SchedulerSiteOption } from '@/modules/scheduler/types/domain';
 
 export const AUSTRALIAN_STATES: Array<{ value: AustralianState; label: string }> = [
   { value: 'ACT', label: 'Australian Capital Territory' },
@@ -21,6 +23,7 @@ export const EMPTY_SCHEDULER_JOB_ADDRESS: SchedulerJobAddressInput = {
   state: undefined,
   postcode: '',
   countryCode: 'AU',
+  source: 'manual',
 };
 
 export function schedulerAddressFromSuggestion(
@@ -36,6 +39,24 @@ export function schedulerAddressFromSuggestion(
     longitude: suggestion.longitude,
     provider: suggestion.provider,
     placeId: suggestion.placeId ?? undefined,
+    source: 'suggested',
+  };
+}
+
+export function schedulerAddressFromClientSuggestion(
+  suggestion: SchedulerClientAddressSuggestion,
+): SchedulerJobAddressInput {
+  return {
+    freeform: suggestion.address.displayAddress,
+    locality: suggestion.address.locality ?? '',
+    state: suggestion.address.state ?? undefined,
+    postcode: suggestion.address.postcode ?? '',
+    countryCode: 'AU',
+    latitude: suggestion.address.latitude ?? undefined,
+    longitude: suggestion.address.longitude ?? undefined,
+    provider: suggestion.address.provider ?? undefined,
+    placeId: suggestion.address.placeId ?? undefined,
+    source: suggestion.kind === 'client_saved' ? 'client_saved' : 'suggested',
   };
 }
 
@@ -51,6 +72,7 @@ export function schedulerManualAddress(
     longitude: undefined,
     provider: undefined,
     placeId: undefined,
+    source: 'manual',
   };
 }
 
@@ -77,6 +99,11 @@ export function schedulerAddressIsComplete(value: SchedulerJobAddressInput): boo
 }
 
 export function schedulerAddressDisplay(value: SchedulerJobAddressInput): string {
+  if (
+    value.source === 'suggested'
+    || value.source === 'client_saved'
+    || value.provider
+  ) return value.freeform.trim();
   const localityLine = [
     value.locality?.trim(),
     value.state,
@@ -88,6 +115,7 @@ export function schedulerAddressDisplay(value: SchedulerJobAddressInput): string
 export function schedulerAddressPayload(
   value: SchedulerJobAddressInput,
 ): SchedulerJobAddressInput {
+  const provider = value.provider?.trim() || undefined;
   return {
     freeform: value.freeform.trim(),
     locality: value.locality?.trim() || undefined,
@@ -96,13 +124,41 @@ export function schedulerAddressPayload(
     countryCode: 'AU',
     latitude: value.latitude,
     longitude: value.longitude,
-    provider: value.provider?.trim() || undefined,
+    provider,
     placeId: value.placeId?.trim() || undefined,
+    source: value.source ?? (provider ? 'suggested' : 'manual'),
   };
 }
 
+export function schedulerDispatchSiteSelectionPayload(input: {
+  address: SchedulerJobAddressInput;
+  clientId?: string | null;
+  existingSiteId?: string | null;
+}): {
+  siteMode: 'new' | 'existing';
+  existingSiteId: string | null;
+  clientId: string | null;
+} {
+  const existingSiteId = input.existingSiteId?.trim() || null;
+  const useSavedSite = input.address.source === 'client_saved' && Boolean(existingSiteId);
+  return {
+    siteMode: useSavedSite ? 'existing' : 'new',
+    existingSiteId: useSavedSite ? existingSiteId : null,
+    clientId: input.clientId?.trim() || null,
+  };
+}
+
+export function schedulerSiteOptionLabel(
+  site: Pick<SchedulerSiteOption, 'clientName' | 'siteName' | 'address'>,
+): string {
+  return `${site.clientName} · ${site.siteName} · ${site.address}`;
+}
+
 export function uniquePostcodeLocalities(
-  suggestions: readonly SchedulerAddressSuggestion[],
+  suggestions: ReadonlyArray<{
+    locality: string | null;
+    state: AustralianState | null;
+  }>,
 ): Array<{ locality: string; state: AustralianState }> {
   const seen = new Set<string>();
   const options: Array<{ locality: string; state: AustralianState }> = [];

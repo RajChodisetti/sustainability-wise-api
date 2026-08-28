@@ -273,15 +273,47 @@ export const storageDeletionTasks = pgTable('storage_deletion_tasks', {
 /** Canonical customer identity shared by Scheduler and all product jobs. */
 export const businessClients = pgTable('business_clients', {
   id: text('id').primaryKey(),
+  /** Server-derived company boundary; clients never choose this value. */
+  companyKey: text('company_key').notNull(),
   name: text('name').notNull(),
+  /** NFKC, whitespace-collapsed, case-insensitive key used for matching. */
+  normalizedKey: text('normalized_key').notNull(),
   contactName: text('contact_name'),
   contactPhone: text('contact_phone'),
   contactEmail: text('contact_email'),
+  mergedIntoClientId: text('merged_into_client_id'),
+  mergedAt: timestamp('merged_at'),
+  mergedByUserId: text('merged_by_user_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
   index('business_clients_name_idx').on(table.name),
+  index('business_clients_company_normalized_idx').on(
+    table.companyKey,
+    table.normalizedKey,
+    table.mergedIntoClientId,
+  ),
+  index('business_clients_merged_into_idx').on(table.mergedIntoClientId),
+  foreignKey({
+    columns: [table.mergedIntoClientId],
+    foreignColumns: [table.id],
+    name: 'business_clients_merged_into_fk',
+  }).onDelete('restrict'),
+  check('business_clients_company_key_check', sql`
+    char_length(btrim(${table.companyKey})) BETWEEN 1 AND 100
+  `),
   check('business_clients_name_check', sql`char_length(btrim(${table.name})) BETWEEN 1 AND 300`),
+  check('business_clients_normalized_key_check', sql`
+    char_length(btrim(${table.normalizedKey})) BETWEEN 1 AND 300
+  `),
+  check('business_clients_merge_check', sql`
+    (${table.mergedIntoClientId} IS NULL AND ${table.mergedAt} IS NULL AND ${table.mergedByUserId} IS NULL)
+    OR (
+      ${table.mergedIntoClientId} IS NOT NULL
+      AND ${table.mergedIntoClientId} <> ${table.id}
+      AND ${table.mergedAt} IS NOT NULL
+    )
+  `),
   check('business_clients_contact_check', sql`
     (${table.contactName} IS NULL OR char_length(btrim(${table.contactName})) BETWEEN 1 AND 300)
     AND (${table.contactPhone} IS NULL OR char_length(btrim(${table.contactPhone})) BETWEEN 1 AND 50)
@@ -301,9 +333,15 @@ export const businessSites = pgTable('business_sites', {
   locality: text('locality'),
   state: text('state'),
   postcode: text('postcode'),
-  countryCode: text('country_code'),
+  countryCode: text('country_code').notNull().default('AU'),
   latitude: doublePrecision('latitude'),
   longitude: doublePrecision('longitude'),
+  addressSource: text('address_source').notNull().default('manual'),
+  geocodeStatus: text('geocode_status').notNull().default('unresolved'),
+  geocodeProvider: text('geocode_provider'),
+  geocodePlaceId: text('geocode_place_id'),
+  addressFingerprint: text('address_fingerprint').notNull(),
+  geocodedAt: timestamp('geocoded_at'),
   timezone: text('timezone').notNull().default('Australia/Sydney'),
   contactName: text('contact_name'),
   contactPhone: text('contact_phone'),
@@ -318,7 +356,7 @@ export const businessSites = pgTable('business_sites', {
   check('business_sites_timezone_check', sql`char_length(btrim(${table.timezone})) BETWEEN 1 AND 100`),
   check('business_sites_state_check', sql`${table.state} IS NULL OR ${table.state} IN ('ACT', 'NSW', 'NT', 'QLD', 'SA', 'TAS', 'VIC', 'WA')`),
   check('business_sites_postcode_check', sql`${table.postcode} IS NULL OR ${table.postcode} ~ '^[0-9]{4}$'`),
-  check('business_sites_country_check', sql`${table.countryCode} IS NULL OR ${table.countryCode} = 'AU'`),
+  check('business_sites_country_check', sql`${table.countryCode} = 'AU'`),
   check('business_sites_coordinates_check', sql`
     (${table.latitude} IS NULL AND ${table.longitude} IS NULL)
     OR (
@@ -328,11 +366,72 @@ export const businessSites = pgTable('business_sites', {
       AND ${table.longitude} BETWEEN 112 AND 154
     )
   `),
+  check('business_sites_address_source_check', sql`
+    ${table.addressSource} IN ('suggested', 'manual', 'client_saved')
+  `),
+  check('business_sites_geocode_status_check', sql`
+    ${table.geocodeStatus} IN ('unresolved', 'resolved', 'manual', 'failed')
+  `),
+  check('business_sites_geocode_evidence_check', sql`
+    (${table.geocodeStatus} <> 'resolved')
+    OR (
+      ${table.latitude} IS NOT NULL
+      AND ${table.longitude} IS NOT NULL
+      AND ${table.geocodeProvider} IS NOT NULL
+      AND ${table.geocodePlaceId} IS NOT NULL
+    )
+  `),
+  check('business_sites_suggested_evidence_check', sql`
+    (${table.addressSource} <> 'suggested')
+    OR (
+      ${table.geocodeStatus} = 'resolved'
+      AND ${table.latitude} IS NOT NULL
+      AND ${table.longitude} IS NOT NULL
+      AND ${table.geocodeProvider} IS NOT NULL
+      AND ${table.geocodePlaceId} IS NOT NULL
+    )
+  `),
+  check('business_sites_address_fingerprint_check', sql`
+    ${table.addressFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
   check('business_sites_contact_check', sql`
     (${table.contactName} IS NULL OR char_length(btrim(${table.contactName})) BETWEEN 1 AND 300)
     AND (${table.contactPhone} IS NULL OR char_length(btrim(${table.contactPhone})) BETWEEN 1 AND 50)
     AND (${table.contactEmail} IS NULL OR char_length(btrim(${table.contactEmail})) BETWEEN 1 AND 320)
     AND (${table.accessInformation} IS NULL OR char_length(btrim(${table.accessInformation})) BETWEEN 1 AND 5000)
+  `),
+]);
+
+/** Immutable audit trail for administrator-approved client consolidation. */
+export const businessClientMergeEvents = pgTable('business_client_merge_events', {
+  id: text('id').primaryKey(),
+  companyKey: text('company_key').notNull(),
+  sourceClientId: text('source_client_id').notNull().references(
+    () => businessClients.id,
+    { onDelete: 'restrict' },
+  ),
+  targetClientId: text('target_client_id').notNull().references(
+    () => businessClients.id,
+    { onDelete: 'restrict' },
+  ),
+  mergedByUserId: text('merged_by_user_id'),
+  reason: text('reason').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('business_client_merge_events_company_created_idx').on(
+    table.companyKey,
+    table.createdAt,
+  ),
+  index('business_client_merge_events_source_idx').on(table.sourceClientId),
+  index('business_client_merge_events_target_idx').on(table.targetClientId),
+  check('business_client_merge_events_company_key_check', sql`
+    char_length(btrim(${table.companyKey})) BETWEEN 1 AND 100
+  `),
+  check('business_client_merge_events_distinct_clients_check', sql`
+    ${table.sourceClientId} <> ${table.targetClientId}
+  `),
+  check('business_client_merge_events_reason_check', sql`
+    char_length(btrim(${table.reason})) BETWEEN 1 AND 1000
   `),
 ]);
 
@@ -1027,8 +1126,8 @@ export const schedulerExpenseAttachments = pgTable('scheduler_expense_attachment
 ]);
 
 /**
- * Immutable accounting content header; source and party fields are snapshots.
- * Xero fields are mutable external reconciliation metadata, not invoice identity.
+ * Live invoice content header. Issued rows may be revised and reissued; each
+ * generated PDF remains a retained versioned artifact.
  */
 export const schedulerInvoices = pgTable('scheduler_invoices', {
   id: text('id').primaryKey(),
@@ -1105,7 +1204,7 @@ export const schedulerInvoices = pgTable('scheduler_invoices', {
   `),
 ]);
 
-/** Immutable per-job provenance and source snapshot for single or consolidated invoices. */
+/** Per-job provenance for single or consolidated invoices. */
 export const schedulerInvoiceJobs = pgTable('scheduler_invoice_jobs', {
   invoiceId: text('invoice_id').notNull().references(
     () => schedulerInvoices.id,
@@ -1277,6 +1376,25 @@ export const schedulerInvoiceCounters = pgTable('scheduler_invoice_counters', {
 }, (table) => [
   check('scheduler_invoice_counters_year_check', sql`${table.year} BETWEEN 2000 AND 9999`),
   check('scheduler_invoice_counters_value_check', sql`${table.lastValue} >= 0`),
+]);
+
+/** Current seller details used by new and revised Scheduler invoices. */
+export const schedulerInvoiceSettings = pgTable('scheduler_invoice_settings', {
+  companyKey: text('company_key').primaryKey(),
+  sellerAbn: text('seller_abn'),
+  updatedByGlobalUserId: text('updated_by_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'set null' },
+  ),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  check('scheduler_invoice_settings_company_key_check', sql`
+    length(btrim(${table.companyKey})) BETWEEN 1 AND 100
+  `),
+  check('scheduler_invoice_settings_seller_abn_check', sql`
+    ${table.sellerAbn} IS NULL
+    OR length(regexp_replace(${table.sellerAbn}, '[^0-9]', '', 'g')) = 11
+  `),
 ]);
 
 /**

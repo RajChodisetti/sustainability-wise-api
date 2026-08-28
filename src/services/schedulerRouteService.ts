@@ -95,6 +95,10 @@ type EventRow = typeof portalScheduleEvents.$inferSelect;
 
 type StoredDestination = {
   address: string | null;
+  locality: string | null;
+  state: string | null;
+  postcode: string | null;
+  countryCode: string | null;
   latitude: number | null;
   longitude: number | null;
   addressFingerprint: string | null;
@@ -266,6 +270,10 @@ async function loadRouteEvents(
 
 function destinationSelection<T extends {
   address: unknown;
+  locality: unknown;
+  state: unknown;
+  postcode: unknown;
+  countryCode: unknown;
   latitude: unknown;
   longitude: unknown;
   addressFingerprint: unknown;
@@ -274,6 +282,10 @@ function destinationSelection<T extends {
     address: typeof row.address === 'string' && row.address.trim()
       ? row.address.trim()
       : null,
+    locality: typeof row.locality === 'string' ? row.locality : null,
+    state: typeof row.state === 'string' ? row.state : null,
+    postcode: typeof row.postcode === 'string' ? row.postcode : null,
+    countryCode: typeof row.countryCode === 'string' ? row.countryCode : null,
     latitude: typeof row.latitude === 'number' && Number.isFinite(row.latitude)
       ? row.latitude
       : null,
@@ -301,6 +313,10 @@ async function loadStoredDestinations(events: readonly EventRow[]): Promise<Map<
     ecoIds.length === 0 ? [] : db.select({
       id: eaAudits.id,
       address: eaAudits.siteAddress,
+      locality: eaAudits.siteLocality,
+      state: eaAudits.siteState,
+      postcode: eaAudits.sitePostcode,
+      countryCode: eaAudits.siteCountryCode,
       latitude: eaAudits.siteLatitude,
       longitude: eaAudits.siteLongitude,
       addressFingerprint: eaAudits.siteAddressFingerprint,
@@ -312,6 +328,10 @@ async function loadStoredDestinations(events: readonly EventRow[]): Promise<Map<
     solarIds.length === 0 ? [] : db.select({
       id: ssRooftopAssessments.id,
       address: ssSites.location,
+      locality: ssSites.siteLocality,
+      state: ssSites.siteState,
+      postcode: ssSites.sitePostcode,
+      countryCode: ssSites.siteCountryCode,
       latitude: ssSites.siteLatitude,
       longitude: ssSites.siteLongitude,
       addressFingerprint: ssSites.siteAddressFingerprint,
@@ -327,6 +347,10 @@ async function loadStoredDestinations(events: readonly EventRow[]): Promise<Map<
     fieldIds.length === 0 ? [] : db.select({
       id: ihInstallations.id,
       address: ihInstallations.siteAddress,
+      locality: ihInstallations.siteLocality,
+      state: ihInstallations.siteState,
+      postcode: ihInstallations.sitePostcode,
+      countryCode: ihInstallations.siteCountryCode,
       latitude: ihInstallations.siteLatitude,
       longitude: ihInstallations.siteLongitude,
       addressFingerprint: ihInstallations.siteAddressFingerprint,
@@ -396,6 +420,10 @@ async function resolveRoutableEvents(
 
     if (storedSchedulerCoordinatesAreCurrent({
       freeform: destination.address,
+      locality: destination.locality,
+      state: destination.state,
+      postcode: destination.postcode,
+      countryCode: destination.countryCode,
       latitude: destination.latitude,
       longitude: destination.longitude,
       addressFingerprint: destination.addressFingerprint,
@@ -412,7 +440,7 @@ async function resolveRoutableEvents(
       warnings.push(`Stored coordinates for ${event.title} were ignored because its address changed.`);
     }
 
-    if (!config.schedulerMaps.photonUrl) {
+    if (!config.schedulerMaps.geoapifyApiKey && !config.schedulerMaps.photonUrl) {
       unroutable.push(unroutableFromEvent(
         event,
         destination.address,

@@ -14,7 +14,7 @@ import {
   ihSiteAssets,
   ihZones,
 } from '../../db/schema/installhub.js';
-import { recordVersions } from '../../db/schema/shared.js';
+import { businessSites, recordVersions } from '../../db/schema/shared.js';
 import { conflict } from '../../utils/errors.js';
 import {
   installHubElectricalPhotoFieldReferences,
@@ -111,6 +111,11 @@ export async function loadCanonicalInstallationTree(
       ? eq(ihInstallations.id, installationId)
       : and(eq(ihInstallations.id, installationId), isNull(ihInstallations.deletedAt)));
   if (!installation) return null;
+  const [clientSiteMemory] = installation.businessSiteId
+    ? await executor.select({ clientId: businessSites.clientId }).from(businessSites).where(
+      eq(businessSites.id, installation.businessSiteId),
+    ).limit(1)
+    : [];
   const active = <T extends { installationId: unknown; deletedAt: unknown }>(
     table: T,
   ) => includeDeleted
@@ -177,6 +182,15 @@ export async function loadCanonicalInstallationTree(
       siteState: installation.siteState as CanonicalInstallationTree['installation']['siteState'],
       sitePostcode: installation.sitePostcode,
       siteCountryCode: installation.siteCountryCode as 'AU' | null,
+      clientId: clientSiteMemory?.clientId ?? null,
+      clientSiteId: installation.businessSiteId,
+      siteLatitude: installation.siteLatitude,
+      siteLongitude: installation.siteLongitude,
+      siteGeocodeProvider: installation.siteGeocodeProvider as CanonicalInstallationTree['installation']['siteGeocodeProvider'],
+      siteGeocodePlaceId: installation.siteGeocodePlaceId,
+      siteAddressSource: installation.siteAddressSource as CanonicalInstallationTree['installation']['siteAddressSource'],
+      siteGeocodeStatus: installation.siteGeocodeStatus as CanonicalInstallationTree['installation']['siteGeocodeStatus'],
+      siteAddressFingerprint: installation.siteAddressFingerprint,
       siteContactName: installation.siteContactName,
       siteContactPhone: installation.siteContactPhone,
       siteContactEmail: installation.siteContactEmail,

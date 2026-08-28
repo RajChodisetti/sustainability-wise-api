@@ -5,12 +5,16 @@ import {
 import { AppError, badRequest } from '../utils/errors.js';
 import {
   AUSTRALIAN_STATES,
+  type AddressProvider,
   type AustralianState,
   isAustralianRoutingCoordinate,
 } from './schedulerAddressService.js';
 
 const PHOTON_ATTRIBUTION = '© OpenStreetMap contributors';
+const GEOAPIFY_ATTRIBUTION = '© Geoapify, © OpenStreetMap contributors';
+const GEOAPIFY_AUTOCOMPLETE_URL = 'https://api.geoapify.com/v1/geocode/autocomplete';
 const PHOTON_MAX_RESPONSE_BYTES = 512 * 1024;
+const GEOAPIFY_MAX_RESPONSE_BYTES = 512 * 1024;
 const OSRM_MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_ADDRESS_QUERY_LENGTH = 300;
 const MAX_ADDRESS_SUGGESTIONS = 10;
@@ -33,13 +37,13 @@ export type SchedulerAddressSuggestion = {
   countryCode: 'AU';
   latitude: number;
   longitude: number;
-  provider: string;
+  provider: AddressProvider;
   placeId: string | null;
 };
 
 export type SchedulerAddressSuggestionsResult = {
   available: boolean;
-  provider: 'photon' | null;
+  provider: 'geoapify' | 'photon' | null;
   attribution: string | null;
   suggestions: SchedulerAddressSuggestion[];
 };
@@ -63,6 +67,7 @@ export type SchedulerMapProvider = {
 };
 
 type SchedulerMapProviderOptions = {
+  geoapifyApiKey?: string;
   photonUrl?: string;
   osrmUrl?: string;
   requestTimeoutMs?: number;
@@ -189,7 +194,7 @@ function photonSuggestion(feature: unknown): SchedulerAddressSuggestion | null {
   return {
     id: `photon:${placeId}`,
     label,
-    freeform: streetAddress ?? name ?? label,
+    freeform: label,
     locality,
     state,
     postcode,
@@ -197,6 +202,56 @@ function photonSuggestion(feature: unknown): SchedulerAddressSuggestion | null {
     latitude,
     longitude,
     provider: 'photon',
+    placeId,
+  };
+}
+
+function geoapifySuggestion(value: unknown): SchedulerAddressSuggestion | null {
+  if (!isRecord(value)) return null;
+
+  const latitude = value.lat;
+  const longitude = value.lon;
+  if (
+    typeof latitude !== 'number'
+    || typeof longitude !== 'number'
+    || !Number.isFinite(latitude)
+    || !Number.isFinite(longitude)
+    || !isAustralianRoutingCoordinate({ latitude, longitude })
+  ) return null;
+  if (optionalString(value.country_code)?.toUpperCase() !== 'AU') return null;
+
+  const state = normalizeAustralianState(value.state_code) ?? normalizeAustralianState(value.state);
+  const locality = optionalString(value.suburb)
+    ?? optionalString(value.city)
+    ?? optionalString(value.town)
+    ?? optionalString(value.village)
+    ?? optionalString(value.county);
+  const postcode = normalizeAustralianPostcode(value.postcode);
+  const formatted = optionalString(value.formatted);
+  const addressLine1 = optionalString(value.address_line1);
+  const addressLine2 = optionalString(value.address_line2);
+  const label = formatted ?? joinUniqueAddressParts([
+    addressLine1,
+    addressLine2,
+    locality,
+    state,
+    postcode,
+    'Australia',
+  ]);
+  const placeId = optionalString(value.place_id);
+  if (!label || !placeId) return null;
+
+  return {
+    id: `geoapify:${placeId}`,
+    label,
+    freeform: label,
+    locality,
+    state,
+    postcode,
+    countryCode: 'AU',
+    latitude,
+    longitude,
+    provider: 'geoapify',
     placeId,
   };
 }
@@ -306,6 +361,7 @@ function validatePoint(point: SchedulerMapPoint): void {
 export function createSchedulerMapProvider(
   options: SchedulerMapProviderOptions = {},
 ): SchedulerMapProvider {
+  const geoapifyApiKey = options.geoapifyApiKey?.trim() ?? '';
   const photonUrl = normalizeSchedulerMapProviderUrl('photonUrl', options.photonUrl);
   const osrmUrl = normalizeSchedulerMapProviderUrl('osrmUrl', options.osrmUrl);
   const timeoutMs = Math.min(20_000, Math.max(500, options.requestTimeoutMs ?? 5_000));
@@ -317,15 +373,6 @@ export function createSchedulerMapProvider(
     postcode?: string;
     limit?: number;
   }): Promise<SchedulerAddressSuggestionsResult> {
-    if (!photonUrl) {
-      return {
-        available: false,
-        provider: null,
-        attribution: null,
-        suggestions: [],
-      };
-    }
-
     const query = compactWhitespace(input.query);
     if (query.length > MAX_ADDRESS_QUERY_LENGTH) {
       throw badRequest(`Address query must be at most ${MAX_ADDRESS_QUERY_LENGTH} characters`);
@@ -338,15 +385,67 @@ export function createSchedulerMapProvider(
     }
     if (!query && !postcodeInput) {
       return {
-        available: true,
-        provider: 'photon',
-        attribution: PHOTON_ATTRIBUTION,
+        available: Boolean(geoapifyApiKey || photonUrl),
+        provider: geoapifyApiKey ? 'geoapify' : photonUrl ? 'photon' : null,
+        attribution: geoapifyApiKey
+          ? GEOAPIFY_ATTRIBUTION
+          : photonUrl
+            ? PHOTON_ATTRIBUTION
+            : null,
         suggestions: [],
       };
     }
 
     const requestedLimit = Number.isSafeInteger(input.limit) ? input.limit! : 8;
     const limit = Math.min(MAX_ADDRESS_SUGGESTIONS, Math.max(1, requestedLimit));
+    if (geoapifyApiKey) {
+      const url = new URL(GEOAPIFY_AUTOCOMPLETE_URL);
+      url.searchParams.set('text', [query, postcodeInput].filter(Boolean).join(' '));
+      url.searchParams.set('filter', 'countrycode:au');
+      url.searchParams.set('lang', 'en');
+      url.searchParams.set('format', 'json');
+      url.searchParams.set('limit', String(limit));
+      url.searchParams.set('apiKey', geoapifyApiKey);
+      const payload = await requestProviderJson({
+        fetchImpl,
+        url,
+        timeoutMs,
+        maxBytes: GEOAPIFY_MAX_RESPONSE_BYTES,
+        unavailableDetail: 'scheduler_geocoder_unavailable',
+      });
+      if (!isRecord(payload) || !Array.isArray(payload.results)) {
+        throw unavailable('scheduler_geocoder_unavailable');
+      }
+      const suggestions: SchedulerAddressSuggestion[] = [];
+      const seen = new Set<string>();
+      for (const result of payload.results) {
+        const suggestion = geoapifySuggestion(result);
+        if (
+          !suggestion
+          || (postcodeInput !== null && suggestion.postcode !== postcodeInput)
+          || seen.has(suggestion.id)
+        ) continue;
+        seen.add(suggestion.id);
+        suggestions.push(suggestion);
+        if (suggestions.length >= limit) break;
+      }
+      return {
+        available: true,
+        provider: 'geoapify',
+        attribution: GEOAPIFY_ATTRIBUTION,
+        suggestions,
+      };
+    }
+
+    if (!photonUrl) {
+      return {
+        available: false,
+        provider: null,
+        attribution: null,
+        suggestions: [],
+      };
+    }
+
     const url = providerUrl(photonUrl, query ? '/api' : '/structured');
     if (query) {
       url.searchParams.set('q', [query, postcodeInput].filter(Boolean).join(' '));
@@ -393,7 +492,7 @@ export function createSchedulerMapProvider(
     freeform: string,
   ): Promise<SchedulerAddressSuggestion | null> {
     const query = compactWhitespace(freeform);
-    if (!query || !photonUrl) return null;
+    if (!query || (!geoapifyApiKey && !photonUrl)) return null;
     const result = await suggestSchedulerAddresses({ query, limit: 1 });
     return result.suggestions[0] ?? null;
   }
@@ -453,6 +552,7 @@ export function createSchedulerMapProvider(
 }
 
 const configuredProvider = createSchedulerMapProvider({
+  geoapifyApiKey: config.schedulerMaps.geoapifyApiKey,
   photonUrl: config.schedulerMaps.photonUrl,
   osrmUrl: config.schedulerMaps.osrmUrl,
   requestTimeoutMs: config.schedulerMaps.requestTimeoutMs,

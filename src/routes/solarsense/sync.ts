@@ -40,6 +40,7 @@ import {
 } from '../../auth/uploadCapability.js';
 import { resolveSyncedCompletion } from './completionFence.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { rememberSolarSiteClientSite } from './clientSiteMemory.js';
 
 async function loadAccessibleSite(siteId: string, request: { user: Parameters<typeof assertSiteAccess>[1] }) {
   const [site] = await db
@@ -498,9 +499,14 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     const sites = body.sites ?? [];
     const assessments = body.assessments ?? [];
     const receivedAt = new Date();
+    const sitePayloadById = new Map(
+      sites.map((site) => [requiredString(site, 'id'), site] as const),
+    );
 
     const siteIds: Record<string, string> = {};
     const assessmentIds: Record<string, string> = {};
+    const clientIds: Record<string, string> = {};
+    const clientSiteIds: Record<string, string> = {};
     const versionNumbers: Record<string, number> = {};
 
     for (const site of sites) {
@@ -513,7 +519,21 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       ) {
         await assertSiteContextAccess(existing, request.user);
         assertDraftMutable(existing, 'Site');
-        siteIds[localId] = existing.serverId ?? existing.id;
+        // Assigned inspectors cannot replace Scheduler-owned site metadata, but
+        // a successful legacy sync must still establish the shared directory
+        // link. Use only the locked server snapshot, never the untrusted edits.
+        const remembered = await db.transaction(async (tx) => {
+          const [locked] = await tx.select().from(ssSites)
+            .where(eq(ssSites.id, localId))
+            .for('update');
+          const serverSite = assertFound(locked, 'Site');
+          await assertSiteContextAccess(serverSite, request.user);
+          assertDraftMutable(serverSite, 'Site');
+          return rememberSolarSiteClientSite(tx, {}, serverSite);
+        });
+        siteIds[localId] = remembered.site.serverId ?? remembered.site.id;
+        clientIds[localId] = remembered.clientId;
+        clientSiteIds[localId] = remembered.clientSiteId;
         continue;
       }
       if (existing) assertSiteAccess(existing, request.user);
@@ -521,7 +541,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       const { id: _id, ...updateValues } = values;
       const excludedStatus = sql.raw(`excluded.${ssSites.status.name}`);
       const excludedCompletedAt = sql.raw(`excluded.${ssSites.completedAt.name}`);
-      await db.transaction(async (tx) => {
+      const remembered = await db.transaction(async (tx) => {
         const [upserted] = await tx
           .insert(ssSites)
           .values(values)
@@ -538,8 +558,9 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
             },
             setWhere: sql`${ssSites.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
           })
-          .returning({ id: ssSites.id });
+          .returning();
         if (!upserted) throw conflict('site_completed_reopen_requires_explicit_transition');
+        const memory = await rememberSolarSiteClientSite(tx, site, upserted);
         if (values.status === 'Completed') {
           await completeLinkedSchedulerEvents(tx, {
             sourceApp: 'solarsense',
@@ -547,8 +568,11 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
             sourceId: localId,
           }, { observedAt: receivedAt });
         }
+        return memory;
       });
       siteIds[localId] = values.serverId;
+      clientIds[localId] = remembered.clientId;
+      clientSiteIds[localId] = remembered.clientSiteId;
       if (values.deletedAt) {
         await deletePhotosForSite(localId);
       }
@@ -557,7 +581,7 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
     for (const assessment of assessments) {
       const localId = requiredString(assessment, 'id');
       const siteId = requiredString(assessment, 'siteId');
-      const values = await db.transaction(async (tx) => {
+      const result = await db.transaction(async (tx) => {
         const [site] = await tx.select().from(ssSites)
           .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
           .for('update');
@@ -597,10 +621,20 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
             },
             setWhere: sql`${ssRooftopAssessments.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
           })
-          .returning({ id: ssRooftopAssessments.id });
+          .returning();
         if (!upserted) {
           throw conflict('assessment_completed_reopen_requires_explicit_transition');
         }
+        const memoryPayload = {
+          ...assessment,
+          ...(sitePayloadById.get(siteId) ?? {}),
+        };
+        const remembered = await rememberSolarSiteClientSite(
+          tx,
+          memoryPayload,
+          lockedSite,
+          upserted,
+        );
         if (lockedValues.status === 'Completed') {
           await completeLinkedSchedulerEvents(tx, {
             sourceApp: 'solarsense',
@@ -613,10 +647,12 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
               : 'historical_replay',
           });
         }
-        return lockedValues;
+        return { values: lockedValues, remembered };
       });
-      assessmentIds[localId] = values.serverId;
-      if (values.deletedAt) {
+      assessmentIds[localId] = result.values.serverId;
+      clientIds[siteId] = result.remembered.clientId;
+      clientSiteIds[siteId] = result.remembered.clientSiteId;
+      if (result.values.deletedAt) {
         await deletePhotosForAssessment(localId);
       }
     }
@@ -641,7 +677,13 @@ export async function solarsenseSyncRoutes(app: FastifyInstance): Promise<void> 
       });
     }
 
-    return reply.send({ siteIds, assessmentIds, versionNumbers });
+    return reply.send({
+      siteIds,
+      assessmentIds,
+      clientIds,
+      clientSiteIds,
+      versionNumbers,
+    });
   });
 
   app.get('/pull', {

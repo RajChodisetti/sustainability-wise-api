@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import { ErrorBanner, Spinner } from '@/components/ui/Card';
@@ -24,6 +24,7 @@ import {
   useSchedulerInvoices,
   useSendSchedulerInvoiceEmail,
   useUpdateSchedulerInvoice,
+  useUpdateSchedulerInvoiceSeller,
   useVoidSchedulerInvoice,
 } from '@/modules/scheduler/hooks/useScheduler';
 import {
@@ -278,7 +279,7 @@ export function InvoiceWorkspace({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 id="invoice-workspace-heading" className="font-extrabold text-[var(--text)]">Invoices</h2>
-          <p className="mt-1 text-sm text-[var(--text-sub)]">Draft, issue, download, mark paid, and retain immutable issued snapshots.</p>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">Draft, issue, revise, download, and retain every generated PDF version.</p>
         </div>
         <Button type="button" disabled={!jobCompleted} title={!jobCompleted ? 'Complete this job before creating an invoice' : undefined} onClick={() => {
           if (!quickOpen) setSelectedExpenseIds(availableExpenses.map((expense) => expense.id));
@@ -425,27 +426,28 @@ function InvoiceDetail({
       error={error}
       onClose={onClose}
       onRefresh={async () => { await query.refetch(); }}
-      onSave={async (input) => {
+      onSave={async (input, expectedUpdatedAt) => {
         setError(null);
         try {
           await update.mutateAsync({
             invoiceId,
-            input: { ...input, expectedUpdatedAt: query.data.updatedAt },
+            input: { ...input, expectedUpdatedAt },
           });
-          toast.success('Draft invoice saved.');
+          toast.success('Invoice saved.');
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }
       }}
-      onIssue={async () => {
-        if (!window.confirm(`Issue ${query.data.invoiceNumber}? Issued billing and line details cannot be edited.`)) return;
+      onIssue={async (expectedUpdatedAt) => {
         setError(null);
         try {
-          await issue.mutateAsync({
+          const issued = await issue.mutateAsync({
             invoiceId,
-            expectedUpdatedAt: query.data.updatedAt,
+            expectedUpdatedAt,
           });
-          toast.success(`${query.data.invoiceNumber} issued.`);
+          toast.success(issued.pdfExport?.invoiceVersion
+            ? `${query.data.invoiceNumber} issued; PDF v${issued.pdfExport.invoiceVersion} is being stored.`
+            : `${query.data.invoiceNumber} issued.`);
         } catch (cause) {
           setError(cloudConnectionErrorMessage(cause));
         }
@@ -493,14 +495,17 @@ export function InvoiceDocument({
   error: string | null;
   onClose: () => void;
   onRefresh: () => Promise<void>;
-  onSave: (input: InvoiceDraftSaveInput) => Promise<void>;
-  onIssue: () => Promise<void>;
+  onSave: (input: InvoiceDraftSaveInput, expectedUpdatedAt: string) => Promise<void>;
+  onIssue: (expectedUpdatedAt: string) => Promise<void>;
   onMarkPaid: () => Promise<void>;
   onVoid: () => Promise<void>;
-  onStartPdf?: () => ReturnType<typeof startSchedulerInvoicePdfExport>;
+  onStartPdf?: (expectedUpdatedAt: string) => ReturnType<typeof startSchedulerInvoicePdfExport>;
   currentJobStatuses?: Readonly<Record<string, string>>;
 }) {
-  const editable = invoice.status === 'draft';
+  const editable = invoice.status === 'draft' || invoice.status === 'issued';
+  const seller = useUpdateSchedulerInvoiceSeller(invoice.id);
+  const [sellerAbn, setSellerAbn] = useState(invoice.sellerAbn ?? '');
+  const sellerSaveRef = useRef<Promise<SchedulerInvoice> | null>(null);
   const [notes, setNotes] = useState(invoice.notes ?? '');
   const [dueDate, setDueDate] = useState(dateInput(invoice.dueDate));
   const [billToName, setBillToName] = useState(invoice.billToName ?? '');
@@ -580,6 +585,7 @@ export function InvoiceDocument({
     ),
   });
   const invoiceActionBusy = busy
+    || seller.isPending
     || pdfExport.starting
     || pdfExport.active
     || pdfExport.downloading
@@ -608,6 +614,24 @@ export function InvoiceDocument({
   const liveTotalIncGst = editable
     ? liveSubtotalExGst + liveGstAmount
     : invoice.totalIncGst;
+
+  async function saveSellerAbnIfNeeded(): Promise<string> {
+    if (sellerSaveRef.current) return (await sellerSaveRef.current).updatedAt;
+    const next = sellerAbn.trim() ? sellerAbn.replace(/\D/g, '') : null;
+    if (next === (invoice.sellerAbn ?? null)) return invoice.updatedAt;
+    const pending = seller.mutateAsync({
+      sellerAbn: next,
+      expectedUpdatedAt: invoice.updatedAt,
+    });
+    sellerSaveRef.current = pending;
+    try {
+      const updated = await pending;
+      setSellerAbn(updated.sellerAbn ?? '');
+      return updated.updatedAt;
+    } finally {
+      sellerSaveRef.current = null;
+    }
+  }
 
   async function saveDraft() {
     if (!billToName.trim()) {
@@ -638,6 +662,7 @@ export function InvoiceDocument({
       }
     }
     setValidation(null);
+    const expectedUpdatedAt = await saveSellerAbnIfNeeded();
     await onSave({
       notes: notes.trim() || null,
       dueDate: dueDate || null,
@@ -647,7 +672,7 @@ export function InvoiceDocument({
       billToAbn: billToAbn.trim() || null,
       purchaseOrderReference: purchaseOrderReference.trim() || null,
       lines: draftLines.map(editableLinePayload),
-    });
+    }, expectedUpdatedAt);
   }
 
   async function preparePdf() {
@@ -656,9 +681,10 @@ export function InvoiceDocument({
       return;
     }
     try {
+      const expectedUpdatedAt = await saveSellerAbnIfNeeded();
       await pdfExport.start(() => onStartPdf
-        ? onStartPdf()
-        : startSchedulerInvoicePdfExport(financeId, invoice.id, invoice.updatedAt));
+        ? onStartPdf(expectedUpdatedAt)
+        : startSchedulerInvoicePdfExport(financeId, invoice.id, expectedUpdatedAt));
       toast.success('Invoice PDF preparation started. You can leave this page while it finishes.');
     } catch (cause) {
       await onRefresh().catch(() => {});
@@ -691,8 +717,13 @@ export function InvoiceDocument({
       setValidation(recipientIssue);
       return;
     }
+    if (invoice.gstRate > 0 && !sellerAbn.trim()) {
+      setValidation('Enter the seller ABN before issuing an invoice with GST.');
+      return;
+    }
     setValidation(null);
-    await onIssue();
+    const expectedUpdatedAt = await saveSellerAbnIfNeeded();
+    await onIssue(expectedUpdatedAt);
   }
 
   async function emailInvoice() {
@@ -792,12 +823,9 @@ export function InvoiceDocument({
         <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>Close</Button>
       </div>
 
-      {!editable ? (
+      {invoice.status === 'issued' ? (
         <div className="mt-3 rounded-xl border border-[var(--primary)]/20 bg-[var(--primary-soft)] px-3 py-2.5 text-sm text-[var(--text)]">
-          <strong>Immutable {invoiceStatusLabel(invoice.status).toLowerCase()} snapshot.</strong>{' '}
-          {invoice.issuedAt
-            ? 'Bill-to, seller, job, and line details are retained from issuance and cannot be edited.'
-            : 'This voided draft is retained as an audit record and cannot be edited.'}
+          This issued invoice can be revised and reissued. Every generated PDF is retained as the next version.
         </div>
       ) : null}
 
@@ -807,7 +835,29 @@ export function InvoiceDocument({
         </div>
       ) : null}
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <InfoBlock label="Seller">
+          <strong>{invoice.sellerName}</strong>
+          {editable ? (
+            <>
+              <FieldLabel htmlFor={`invoice-seller-abn-${invoice.id}`}>Seller ABN</FieldLabel>
+              <Input
+                id={`invoice-seller-abn-${invoice.id}`}
+                inputMode="numeric"
+                value={sellerAbn}
+                placeholder="11 digit ABN"
+                disabled={seller.isPending}
+                onChange={(event) => setSellerAbn(event.target.value)}
+                onBlur={() => {
+                  void saveSellerAbnIfNeeded().catch((cause) => {
+                    setValidation(cloudConnectionErrorMessage(cause));
+                  });
+                }}
+              />
+              <FieldHint>{seller.isPending ? 'Saving seller ABN…' : 'Saved immediately for this and future invoices.'}</FieldHint>
+            </>
+          ) : invoice.sellerAbn ? <span>ABN: {invoice.sellerAbn}</span> : <span>No seller ABN</span>}
+        </InfoBlock>
         <InfoBlock label="Bill to">
           <strong>{(editable ? billToName : invoice.billToName) || invoice.job.clientName || 'Billing name not set'}</strong>
           <span>{(editable ? billToEmail : invoice.billToEmail) || 'No email'}</span>
@@ -897,7 +947,7 @@ export function InvoiceDocument({
             <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--text-sub)]">
               {editable
                 ? 'Edit the customer-facing description and amount. Quantity and rate stay hidden unless you choose to show them.'
-                : 'These charges are retained as part of the immutable invoice snapshot.'}
+                : 'Paid or void invoice charges are retained as historical accounting data.'}
             </p>
           </div>
           {editable ? (
@@ -1037,7 +1087,7 @@ export function InvoiceDocument({
       {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
       {pdfExport.error ? <div className="mt-4"><ErrorBanner message={cloudConnectionErrorMessage(pdfExport.error)} /></div> : null}
       {editable && dirty ? (
-        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save draft changes before issuing or preparing a PDF so the invoice uses the values shown here.</p>
+        <p className="mt-3 text-xs font-semibold text-[var(--amber)]">Save invoice changes before issuing or preparing a PDF so the generated version uses the values shown here.</p>
       ) : null}
       {editable && !everyJobHasPositiveDraftCharge ? (
         <p className="mt-3 text-xs font-semibold leading-5 text-[var(--amber)]">This draft can be saved, but every included job needs a positive charge before the invoice can be issued.</p>
@@ -1136,8 +1186,8 @@ export function InvoiceDocument({
                 ? 'Prepare new PDF'
                 : 'Prepare PDF'}
         </Button>
-        {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save draft'}</Button> : null}
-        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save draft first' : busy ? 'Issuing…' : 'Issue invoice'}</Button> : null}
+        {editable ? <Button type="button" variant="secondary" disabled={invoiceActionBusy} onClick={() => void saveDraft()}>{busy ? 'Saving…' : 'Save invoice'}</Button> : null}
+        {editable ? <Button type="button" disabled={invoiceActionBusy || dirty || !allJobsCompleted || !everyJobHasPositiveDraftCharge} onClick={() => void issueInvoice()}>{!allJobsCompleted ? 'Complete jobs before issue' : !everyJobHasPositiveDraftCharge ? 'Add positive charges to issue' : dirty ? 'Save invoice first' : busy ? 'Issuing…' : invoice.status === 'issued' ? 'Reissue invoice' : 'Issue invoice'}</Button> : null}
         {invoice.status === 'issued' ? <Button type="button" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onMarkPaid()}>{busy ? 'Updating…' : 'Mark paid'}</Button> : null}
         {(invoice.status === 'draft' || invoice.status === 'issued') ? <Button type="button" variant="danger" disabled={invoiceLifecycleBusy} title={emailRetryLocked ? 'Resolve the retained email request before changing invoice status' : undefined} onClick={() => void onVoid()}>{busy ? 'Voiding…' : 'Void'}</Button> : null}
       </div>

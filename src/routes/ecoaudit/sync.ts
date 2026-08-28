@@ -35,6 +35,7 @@ import {
   requireUploadCapability,
 } from '../../auth/uploadCapability.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { rememberEcoAuditClientSite } from './clientSiteMemory.js';
 
 function uploadUrl(sessionId: string): string {
   return createConfiguredUploadUrl(
@@ -352,10 +353,11 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
           } as any,
           setWhere: sql`${eaAudits.status} <> 'Completed' OR ${excludedStatus} = 'Completed'`,
         })
-        .returning({ id: eaAudits.id });
+        .returning();
       if (!upsertedAudit) {
         throw conflict('audit_completed_reopen_requires_explicit_transition');
       }
+      const remembered = await rememberEcoAuditClientSite(tx, auditPayload, upsertedAudit);
       if (values.status === 'Completed') {
         await completeLinkedSchedulerEvents(tx, {
           sourceApp: 'ecoaudit',
@@ -368,7 +370,13 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
             : 'historical_replay',
         });
       }
-      return values;
+      return {
+        serverId: remembered.audit.serverId ?? auditServerId,
+        deletedAt: remembered.audit.deletedAt,
+        clientId: remembered.clientId,
+        clientSiteId: remembered.clientSiteId,
+        clientName: remembered.audit.clientName,
+      };
     });
     if (auditValues.deletedAt) {
       await deletePhotosForAudit(localAuditId);
@@ -379,7 +387,14 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
         snapshot: body,
         userId: request.user.userId,
       });
-      return reply.send({ auditId: localAuditId, serverId: auditValues.serverId, versionNumber });
+      return reply.send({
+        auditId: localAuditId,
+        serverId: auditValues.serverId,
+        clientId: auditValues.clientId,
+        clientSiteId: auditValues.clientSiteId,
+        clientName: auditValues.clientName,
+        versionNumber,
+      });
     }
 
     // Upsert zones
@@ -522,7 +537,14 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       userId: request.user.userId,
     });
 
-    return reply.send({ auditId: localAuditId, serverId: auditValues.serverId, versionNumber });
+    return reply.send({
+      auditId: localAuditId,
+      serverId: auditValues.serverId,
+      clientId: auditValues.clientId,
+      clientSiteId: auditValues.clientSiteId,
+      clientName: auditValues.clientName,
+      versionNumber,
+    });
   });
 
   // GET /pull

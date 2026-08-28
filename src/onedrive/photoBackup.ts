@@ -7,7 +7,12 @@ import {
   uploadPhotoBackupToOneDrive,
   type OneDriveUploadResult,
 } from './uploadSession.js';
-import { joinOneDrivePath, joinOneDrivePathSegments, oneDrivePathForStorageKey } from './paths.js';
+import {
+  invoicePdfOneDrivePath,
+  joinOneDrivePath,
+  joinOneDrivePathSegments,
+  oneDrivePathForStorageKey,
+} from './paths.js';
 
 type Logger = {
   warn: (bindings: Record<string, unknown>, message?: string) => void;
@@ -79,6 +84,31 @@ export async function mirrorPdfToOneDrive(args: {
       contentType: 'application/pdf',
     });
   });
+}
+
+/**
+ * Invoice folders are created lazily by the upload itself, so clients with no
+ * generated invoice never receive an empty OneDrive directory.
+ */
+export async function mirrorInvoicePdfToOneDrive(args: {
+  clientName: string;
+  filename: string;
+  body: Buffer;
+  logger?: Logger;
+}): Promise<OneDriveUploadResult | null> {
+  const drivePath = invoicePdfOneDrivePath(
+    config.oneDrive.invoicesFolder,
+    args.clientName,
+    args.filename,
+  );
+  return withOneDriveBackup('invoice PDF', drivePath, args.logger, async () => (
+    uploadBufferToOneDrivePath({
+      target: config.oneDrive,
+      drivePath,
+      body: args.body,
+      contentType: 'application/pdf',
+    })
+  ));
 }
 
 async function withOneDriveBackup(

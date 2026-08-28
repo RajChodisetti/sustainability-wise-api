@@ -15,6 +15,72 @@ const validDispatch = {
   },
 };
 
+test('Scheduler product completion route is admin-only and rejects non-product sources', async () => {
+  const app = Fastify();
+  await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
+  await app.ready();
+  const url = '/v1/portal/scheduler/jobs/ecoaudit/audit/audit-1/complete';
+  const payload = { idempotencyKey: 'scheduler-completion-test' };
+  try {
+    assert.equal(app.hasRoute({
+      method: 'POST',
+      url: '/v1/portal/scheduler/jobs/:sourceApp/:sourceType/:sourceId/complete',
+    }), true);
+    assert.equal((await app.inject({ method: 'POST', url, payload })).statusCode, 401);
+
+    const inspector = await app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'eco-inspector',
+          app: 'ecoaudit',
+          role: 'inspector',
+        })}`,
+      },
+      payload,
+    });
+    assert.equal(inspector.statusCode, 403, inspector.body);
+
+    const wrongApp = await app.inject({
+      method: 'POST',
+      url,
+      headers: {
+        authorization: `Bearer ${signAccessToken({
+          userId: 'fleet-admin',
+          app: 'wattwatchers',
+          role: 'admin',
+        })}`,
+      },
+      payload,
+    });
+    assert.equal(wrongApp.statusCode, 403, wrongApp.body);
+
+    const adminToken = signAccessToken({
+      userId: 'eco-admin',
+      app: 'ecoaudit',
+      role: 'admin',
+    });
+    const missingIdempotency = await app.inject({
+      method: 'POST',
+      url,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {},
+    });
+    assert.equal(missingIdempotency.statusCode, 400, missingIdempotency.body);
+
+    const customSource = await app.inject({
+      method: 'POST',
+      url: '/v1/portal/scheduler/jobs/custom/custom/custom-1/complete',
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload,
+    });
+    assert.equal(customSource.statusCode, 400, customSource.body);
+  } finally {
+    await app.close();
+  }
+});
+
 test('Scheduler meter register route is admin-only and bounds search input', async () => {
   const app = Fastify();
   await app.register(portalSchedulerRoutes, { prefix: '/v1/portal' });
@@ -367,6 +433,7 @@ test('global Scheduler finance routes are admin-only, CAS-bound, and parse priva
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/refunds' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/refunds/:refundId/void' },
     { method: 'PATCH', url: '/v1/portal/scheduler/invoices/:invoiceId' },
+    { method: 'PATCH', url: '/v1/portal/scheduler/invoices/:invoiceId/seller' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/issue' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/void' },
     { method: 'POST', url: '/v1/portal/scheduler/invoices/:invoiceId/mark-paid' },

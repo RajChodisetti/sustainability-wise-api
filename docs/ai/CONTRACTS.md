@@ -227,8 +227,10 @@ excluded. These definitions and attribution-quality totals are returned with
 every analytics response.
 
 Financial analytics never converts or combines currencies. Invoice-created,
-issued, paid, and voided metrics use the invoice snapshot at the matching
-lifecycle timestamp and include ex-GST, GST, and inc-GST cents. Completed-work
+issued, paid, and voided metrics include ex-GST, GST, and inc-GST cents from the
+current retained invoice row. Draft and issued invoice content may be revised;
+each generated PDF is an append-only numbered artifact under the invoice's
+client folder. Paid and void invoices remain content-locked. Completed-work
 revenue for a new authoritative transition persists currency, ex-GST, GST,
 inc-GST, configured GST basis points, snapshot status, and capture time on the
 completion fact. First completion time, attribution, snapshot status, and money

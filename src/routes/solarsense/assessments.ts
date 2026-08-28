@@ -44,6 +44,7 @@ import {
   resolveSolarCompletionFence,
 } from './completionFence.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { rememberSolarSiteClientSite } from './clientSiteMemory.js';
 
 type AssessmentChanges = Partial<typeof ssRooftopAssessments.$inferInsert>;
 
@@ -181,6 +182,14 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const status = parseSolarLifecycleStatus(body.status);
 
     const created = await db.transaction(async (tx) => {
+      const [lockedSite] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
+        .for('update');
+      const foundSite = assertFound(lockedSite, 'Site');
+      assertSiteAccess(foundSite, request.user);
+      assertDraftMutable(foundSite, 'Site');
       const [inserted] = await tx.insert(ssRooftopAssessments).values({
         id,
         serverId: randomUUID(),
@@ -188,7 +197,7 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         updatedAt: dateOrNow(body.updatedAt),
         deletedAt: null,
         siteId,
-        siteName: changes.siteName ?? site.siteName,
+        siteName: changes.siteName ?? foundSite.siteName,
         buildingIdName: changes.buildingIdName ?? requiredString(body, 'buildingIdName'),
         heritageStatus: changes.heritageStatus ?? null,
         heritageDealBreaker: changes.heritageDealBreaker ?? false,
@@ -235,6 +244,12 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         completedAt: completionAtFirstObservation(status, receivedAt),
       }).returning();
       const foundCreated = assertFound(inserted, 'Assessment');
+      const remembered = await rememberSolarSiteClientSite(
+        tx,
+        body,
+        foundSite,
+        foundCreated,
+      );
       if (status === 'Completed') {
         await completeLinkedSchedulerEvents(tx, {
           sourceApp: 'solarsense',
@@ -245,11 +260,19 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
           completionProvenance: 'offline_transition',
         });
       }
-      return foundCreated;
+      return {
+        assessment: foundCreated,
+        clientId: remembered.clientId,
+        clientSiteId: remembered.clientSiteId,
+      };
     });
 
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
-    return reply.status(201).send(created);
+    return reply.status(201).send({
+      ...created.assessment,
+      clientId: created.clientId,
+      clientSiteId: created.clientSiteId,
+    });
   });
 
   app.get('/sites/:siteId/assessments/:id', {
@@ -395,33 +418,57 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
     const body = request.body as JsonRecord;
     if ('status' in body) throw badRequest('Use /complete to change status');
 
-    const site = await getSite(siteId);
-    assertDraftMutable(site, 'Site');
+    const updated = await db.transaction(async (tx) => {
+      const [site] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, siteId), isNull(ssSites.deletedAt)))
+        .for('update');
+      const foundSite = assertFound(site, 'Site');
+      assertDraftMutable(foundSite, 'Site');
 
-    const [assessment] = await db
-      .select()
-      .from(ssRooftopAssessments)
-      .where(and(
-        eq(ssRooftopAssessments.id, id),
-        eq(ssRooftopAssessments.siteId, siteId),
-        isNull(ssRooftopAssessments.deletedAt),
-      ));
-    const foundAssessment = assertFound(assessment, 'Assessment');
-    assertAssessmentAccess(site, foundAssessment, request.user);
-    assertDraftMutable(foundAssessment, 'Assessment');
+      const [assessment] = await tx
+        .select()
+        .from(ssRooftopAssessments)
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+          isNull(ssRooftopAssessments.deletedAt),
+        ))
+        .for('update');
+      const foundAssessment = assertFound(assessment, 'Assessment');
+      assertAssessmentAccess(foundSite, foundAssessment, request.user);
+      assertDraftMutable(foundAssessment, 'Assessment');
 
-    const [updated] = await db
-      .update(ssRooftopAssessments)
-      .set({ ...buildAssessmentChanges({ ...body, siteId }), syncStatus: 'local' })
-      .where(and(
-        eq(ssRooftopAssessments.id, id),
-        eq(ssRooftopAssessments.siteId, siteId),
-        isNull(ssRooftopAssessments.deletedAt),
-      ))
-      .returning();
+      const [baseUpdated] = await tx
+        .update(ssRooftopAssessments)
+        .set({ ...buildAssessmentChanges({ ...body, siteId }), syncStatus: 'local' })
+        .where(and(
+          eq(ssRooftopAssessments.id, id),
+          eq(ssRooftopAssessments.siteId, siteId),
+          isNull(ssRooftopAssessments.deletedAt),
+        ))
+        .returning();
+      const foundUpdated = assertFound(baseUpdated, 'Assessment');
+      const remembered = await rememberSolarSiteClientSite(
+        tx,
+        body,
+        foundSite,
+        foundUpdated,
+      );
+      return {
+        assessment: foundUpdated,
+        clientId: remembered.clientId,
+        clientSiteId: remembered.clientSiteId,
+      };
+    });
 
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: siteId, actor: request.user });
-    return reply.send(assertFound(updated, 'Assessment'));
+    return reply.send({
+      ...updated.assessment,
+      clientId: updated.clientId,
+      clientSiteId: updated.clientSiteId,
+    });
   });
 
   app.delete('/sites/:siteId/assessments/:id', {
@@ -527,6 +574,12 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         ))
         .returning();
       const foundCompleted = assertFound(completed, 'Assessment');
+      const remembered = await rememberSolarSiteClientSite(
+        tx,
+        {},
+        foundSite,
+        foundCompleted,
+      );
       await completeLinkedSchedulerEvents(tx, {
         sourceApp: 'solarsense',
         sourceType: 'assessment',
@@ -535,10 +588,18 @@ export async function solarsenseAssessmentRoutes(app: FastifyInstance): Promise<
         observedAt: completedAt,
         completionProvenance: 'direct_transition',
       });
-      return foundCompleted;
+      return {
+        assessment: foundCompleted,
+        clientId: remembered.clientId,
+        clientSiteId: remembered.clientSiteId,
+      };
     });
 
-    return reply.send(updated);
+    return reply.send({
+      ...updated.assessment,
+      clientId: updated.clientId,
+      clientSiteId: updated.clientSiteId,
+    });
   });
 
 }

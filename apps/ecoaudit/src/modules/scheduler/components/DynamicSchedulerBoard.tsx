@@ -8,6 +8,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -39,7 +40,6 @@ import {
 import { scheduledJobWeek } from '@/modules/scheduler/lib/jobsPool';
 import { schedulerSourceAppIsSelectable } from '@/modules/scheduler/lib/visibility';
 import {
-  dayKey,
   defaultDeadlineFromStart,
   slotDateTime,
   startOfWeekMonday,
@@ -52,8 +52,13 @@ import type {
   ScheduleSourceApp,
 } from '@/modules/scheduler/types/domain';
 
-type PendingAssign = {
+type PendingAssign = ({
+  type: 'job';
   job: JobOption;
+} | {
+  type: 'event';
+  event: ScheduleEvent;
+}) & {
   day: Date;
   hour: number;
 };
@@ -74,11 +79,12 @@ export function DynamicSchedulerBoard({
   const [cursor, setCursor] = useState(() => startOfWeekMonday(new Date()));
   const [staffFilter, setStaffFilter] = useState<string[]>([]);
   const [activeDrag, setActiveDrag] = useState<JobDragData | EventDragData | null>(null);
+  const [expandedDayKey, setExpandedDayKey] = useState<string | null>(null);
   const [pendingAssign, setPendingAssign] = useState<PendingAssign | null>(null);
   const [pickAssignee, setPickAssignee] = useState('');
   const [boardError, setBoardError] = useState<string | null>(null);
   const [staffPanelOpen, setStaffPanelOpen] = useState(false);
-  const [jobsPanelOpen, setJobsPanelOpen] = useState(false);
+  const [jobsPanelOpen, setJobsPanelOpen] = useState(isAdmin);
 
   const days = useMemo(() => weekDays(cursor), [cursor]);
   const range = useMemo(() => {
@@ -144,6 +150,7 @@ export function DynamicSchedulerBoard({
 
   async function handleDragEnd(event: DragEndEvent) {
     setActiveDrag(null);
+    setExpandedDayKey(null);
     setBoardError(null);
     if (!isAdmin) return;
 
@@ -158,9 +165,10 @@ export function DynamicSchedulerBoard({
       if (activeData.type === 'job' && overData.type === 'slot') {
         const job = activeData.job;
         if (!schedulerSourceAppIsSelectable(selectableSourceApps, job.sourceApp)) return;
-        setPendingAssign({ job, day: overData.day, hour: overData.hour });
+        setPendingAssign({ type: 'job', job, day: overData.day, hour: overData.hour });
         setPickAssignee(
-          job.assigneeFieldUserId
+          overData.assigneeFieldUserId
+            ?? job.assigneeFieldUserId
             ?? staffFilter[0]
             ?? staff[0]?.fieldUserId
             ?? '',
@@ -170,13 +178,19 @@ export function DynamicSchedulerBoard({
 
       if (activeData.type === 'event' && overData.type === 'slot') {
         const scheduledEvent = activeData.event;
-        const start = slotDateTime(overData.day, overData.hour);
-        await update.mutateAsync({
-          id: scheduledEvent.id,
-          input: {
-            scheduledStartAt: start.toISOString(),
-          },
+        setPendingAssign({
+          type: 'event',
+          event: scheduledEvent,
+          day: overData.day,
+          hour: overData.hour,
         });
+        setPickAssignee(
+          overData.assigneeFieldUserId
+            ?? scheduledEvent.assigneeFieldUserId
+            ?? staffFilter[0]
+            ?? staff[0]?.fieldUserId
+            ?? '',
+        );
         return;
       }
 
@@ -196,6 +210,14 @@ export function DynamicSchedulerBoard({
     setActiveDrag(data ?? null);
   }
 
+  function onDragOver(event: DragOverEvent) {
+    const activeData = event.active.data.current as JobDragData | EventDragData | undefined;
+    const overData = event.over?.data.current as SlotDropData | StaffDropData | undefined;
+    if ((activeData?.type === 'job' || activeData?.type === 'event') && overData?.type === 'slot') {
+      setExpandedDayKey(overData.dayKey);
+    }
+  }
+
   function showScheduledJob(job: JobOption) {
     const week = scheduledJobWeek(job);
     if (!week) return;
@@ -207,13 +229,24 @@ export function DynamicSchedulerBoard({
     if (!pendingAssign || !pickAssignee) return;
     setBoardError(null);
     try {
-      await createFromJob(
-        pendingAssign.job,
-        pendingAssign.day,
-        pendingAssign.hour,
-        pickAssignee,
-        estimatedDurationMinutes,
-      );
+      if (pendingAssign.type === 'job') {
+        await createFromJob(
+          pendingAssign.job,
+          pendingAssign.day,
+          pendingAssign.hour,
+          pickAssignee,
+          estimatedDurationMinutes,
+        );
+      } else {
+        const start = slotDateTime(pendingAssign.day, pendingAssign.hour);
+        await update.mutateAsync({
+          id: pendingAssign.event.id,
+          input: {
+            scheduledStartAt: start.toISOString(),
+            assigneeFieldUserId: pickAssignee,
+          },
+        });
+      }
       setPendingAssign(null);
     } catch (error) {
       setBoardError(error instanceof Error ? error.message : 'Could not assign job');
@@ -334,7 +367,7 @@ export function DynamicSchedulerBoard({
           <Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" />
           <p>
             {isAdmin
-              ? 'Open Jobs to filter Field work by person. Drag unscheduled work onto a time, or select scheduled work to open its week.'
+              ? 'Open Jobs and drag work across the calendar. Hover a day to expand its technician lanes, then drop on the right person and time.'
               : 'View your scheduled work for the week. Select an event to review its full details.'}
           </p>
         </div>
@@ -346,10 +379,14 @@ export function DynamicSchedulerBoard({
         id="scheduler-week-board"
         sensors={sensors}
         onDragStart={onDragStart}
+        onDragOver={onDragOver}
         onDragEnd={(event) => {
           void handleDragEnd(event);
         }}
-        onDragCancel={() => setActiveDrag(null)}
+        onDragCancel={() => {
+          setActiveDrag(null);
+          setExpandedDayKey(null);
+        }}
       >
         {isAdmin && staffPanelOpen ? (
           <StaffFilterPanel
@@ -374,6 +411,7 @@ export function DynamicSchedulerBoard({
             events={visibleEvents}
             staff={filteredStaff.length > 0 ? filteredStaff : staff}
             canDrag={isAdmin}
+            expandedDayKey={expandedDayKey}
             onSlotClick={(day, hour) => {
               onSlotCreate(slotDateTime(day, hour));
             }}
@@ -405,7 +443,7 @@ export function DynamicSchedulerBoard({
           pendingAssign={pendingAssign}
           pickAssignee={pickAssignee}
           staff={staff}
-          busy={create.isPending}
+          busy={create.isPending || update.isPending}
           onPickAssignee={setPickAssignee}
           onCancel={() => setPendingAssign(null)}
           onConfirm={(estimatedDurationMinutes) => {
@@ -440,6 +478,19 @@ function AssignStaffDialog({
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState('');
   const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
   const durationError = estimatedDurationError(estimatedDurationMinutes);
+  const jobName = pendingAssign.type === 'job'
+    ? pendingAssign.job.label
+    : pendingAssign.event.title;
+  const selectedPerson = staff.find((person) => person.fieldUserId === pickAssignee);
+  const scheduledAt = slotDateTime(pendingAssign.day, pendingAssign.hour);
+  const scheduledAtLabel = scheduledAt.toLocaleString('en-AU', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 
   useEffect(() => {
     cancelRef.current = onCancel;
@@ -499,11 +550,10 @@ function AssignStaffDialog({
           </span>
           <div>
             <h3 id="scheduler-assign-title" className="text-base font-extrabold text-[var(--text)]">
-              Assign staff
+              Confirm job assignment
             </h3>
             <p id="scheduler-assign-description" className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-              Schedule <span className="font-bold text-[var(--text)]">{pendingAssign.job.label}</span>{' '}
-              on {dayKey(pendingAssign.day)} at {pendingAssign.hour}:00.
+              Check the technician, job, and date before this calendar change is saved.
             </p>
           </div>
         </div>
@@ -516,7 +566,12 @@ function AssignStaffDialog({
           }}
         >
           <div className="mt-4">
-            <FieldLabel htmlFor="scheduler-pending-assignee">Assignee</FieldLabel>
+            <div className="mb-4 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)]">
+              <AssignmentSummaryRow label="Technician" value={selectedPerson?.label || 'Select a technician'} />
+              <AssignmentSummaryRow label="Job" value={jobName} />
+              <AssignmentSummaryRow label="Date & time" value={scheduledAtLabel} />
+            </div>
+            <FieldLabel htmlFor="scheduler-pending-assignee">Technician</FieldLabel>
             <Select
               id="scheduler-pending-assignee"
               value={pickAssignee}
@@ -529,31 +584,35 @@ function AssignStaffDialog({
                 </option>
               ))}
             </Select>
-            <FieldLabel htmlFor="scheduler-pending-estimated-duration">
-              Estimated time to complete (minutes, optional)
-            </FieldLabel>
-            <Input
-              id="scheduler-pending-estimated-duration"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              autoComplete="off"
-              maxLength={5}
-              placeholder="e.g. 90"
-              value={estimatedDurationMinutes}
-              onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
-              aria-invalid={Boolean(durationError)}
-              aria-describedby={durationError
-                ? 'scheduler-pending-estimated-duration-error scheduler-pending-estimated-duration-hint'
-                : 'scheduler-pending-estimated-duration-hint'}
-            />
-            <FieldHint id="scheduler-pending-estimated-duration-hint">
-              Leave blank if the duration is not known. The calendar uses this estimate only for planning.
-            </FieldHint>
-            <FieldError
-              id="scheduler-pending-estimated-duration-error"
-              message={durationError ?? undefined}
-            />
+            {pendingAssign.type === 'job' ? (
+              <>
+                <FieldLabel htmlFor="scheduler-pending-estimated-duration">
+                  Estimated time to complete (minutes, optional)
+                </FieldLabel>
+                <Input
+                  id="scheduler-pending-estimated-duration"
+                  type="text"
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  maxLength={5}
+                  placeholder="e.g. 90"
+                  value={estimatedDurationMinutes}
+                  onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
+                  aria-invalid={Boolean(durationError)}
+                  aria-describedby={durationError
+                    ? 'scheduler-pending-estimated-duration-error scheduler-pending-estimated-duration-hint'
+                    : 'scheduler-pending-estimated-duration-hint'}
+                />
+                <FieldHint id="scheduler-pending-estimated-duration-hint">
+                  Leave blank if the duration is not known. The calendar uses this estimate only for planning.
+                </FieldHint>
+                <FieldError
+                  id="scheduler-pending-estimated-duration-error"
+                  message={durationError ?? undefined}
+                />
+              </>
+            ) : null}
           </div>
           <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button type="button" variant="secondary" disabled={busy} onClick={onCancel}>
@@ -561,13 +620,22 @@ function AssignStaffDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!pickAssignee || parsedEstimatedDurationMinutes === undefined || busy}
+              disabled={!pickAssignee || (pendingAssign.type === 'job' && parsedEstimatedDurationMinutes === undefined) || busy}
             >
-              {busy ? 'Scheduling…' : 'Schedule'}
+              {busy ? 'Saving assignment…' : 'Confirm assignment'}
             </Button>
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+function AssignmentSummaryRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid gap-1 border-t border-[var(--border)] px-3 py-2.5 first:border-t-0 sm:grid-cols-[6.5rem_1fr] sm:items-start">
+      <span className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-[var(--muted)]">{label}</span>
+      <span className="text-sm font-bold text-[var(--text)]">{value}</span>
     </div>
   );
 }

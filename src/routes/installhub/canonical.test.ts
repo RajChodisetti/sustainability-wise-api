@@ -172,6 +172,15 @@ test('older canonical clients preserve additive server fields while explicit nul
       siteState: 'NSW',
       sitePostcode: '2000',
       siteCountryCode: 'AU',
+      clientId: 'client-1',
+      clientSiteId: 'site-1',
+      siteLatitude: -33.8688,
+      siteLongitude: 151.2093,
+      siteGeocodeProvider: 'geoapify',
+      siteGeocodePlaceId: 'geoapify:place-1',
+      siteAddressSource: 'suggested',
+      siteGeocodeStatus: 'resolved',
+      siteAddressFingerprint: 'a'.repeat(64),
       solarCapacityKw: 25,
     },
   });
@@ -189,6 +198,42 @@ test('older canonical clients preserve additive server fields while explicit nul
   retainOmittedCanonicalInstallationFields(current.installation, cleared.installation);
   assert.equal(cleared.installation.customerName, null);
   assert.equal(cleared.installation.maas, null);
+
+  const changedAddressPayload = baseTree();
+  changedAddressPayload.installation.siteAddress = '2 Test Street';
+  const changedAddress = normalizeInstallationTreeV2(changedAddressPayload);
+  retainOmittedCanonicalInstallationFields(
+    current.installation,
+    changedAddress.installation,
+  );
+  assert.equal(changedAddress.installation.clientId, 'client-1');
+  assert.equal(changedAddress.installation.clientSiteId, null);
+  assert.equal(changedAddress.installation.siteLocality, null);
+  assert.equal(changedAddress.installation.siteState, null);
+  assert.equal(changedAddress.installation.sitePostcode, null);
+  assert.equal(changedAddress.installation.siteCountryCode, 'AU');
+  assert.equal(changedAddress.installation.siteLatitude, null);
+  assert.equal(changedAddress.installation.siteLongitude, null);
+  assert.equal(changedAddress.installation.siteGeocodeProvider, null);
+  assert.equal(changedAddress.installation.siteGeocodePlaceId, null);
+  assert.equal(changedAddress.installation.siteAddressSource, 'manual');
+  assert.equal(changedAddress.installation.siteGeocodeStatus, 'unresolved');
+  assert.equal(changedAddress.installation.siteAddressFingerprint, null);
+});
+
+test('canonical InstallHub addresses reject providers outside the shared allowlist', () => {
+  const invalid = baseTree();
+  Object.assign(invalid.installation, {
+    siteLatitude: -33.8688,
+    siteLongitude: 151.2093,
+    siteGeocodeProvider: 'google',
+    siteGeocodePlaceId: 'provider-place-1',
+    siteAddressSource: 'suggested',
+  });
+  assert.throws(
+    () => normalizeInstallationTreeV2(invalid),
+    /siteGeocodeProvider must be geoapify or photon/u,
+  );
 });
 
 test('canonical grid-supply NMI is nullable, trimmed, and bounded to 100 characters', () => {
@@ -2668,5 +2713,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     JSON.stringify(preCompletionNotesSnapshot),
     preCompletionNotesBeforeComparison,
   );
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.8');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.9');
 });

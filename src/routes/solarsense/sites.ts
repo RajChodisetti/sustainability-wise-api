@@ -35,6 +35,7 @@ import {
   type CopiedPhotoEntity,
 } from '../../storage/photoCopyReferences.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { rememberSolarSiteClientSite } from './clientSiteMemory.js';
 
 type SiteChanges = Partial<typeof ssSites.$inferInsert>;
 
@@ -119,35 +120,42 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
     const changes = buildSiteChanges(body);
     const status = parseSolarLifecycleStatus(body.status);
 
-    const [created] = await db
-      .insert(ssSites)
-      .values({
-        id,
-        serverId: randomUUID(),
-        syncStatus: 'synced',
-        updatedAt: dateOrNow(body.updatedAt),
-        deletedAt: null,
-        siteName: changes.siteName ?? requiredString(body, 'siteName'),
-        location: changes.location ?? null,
-        dateOfAssessment: changes.dateOfAssessment ?? null,
-        documentClassification: changes.documentClassification ?? null,
-        electricalInfrastructureSummary: changes.electricalInfrastructureSummary ?? null,
-        knownConstraints: changes.knownConstraints ?? null,
-        loadProfileMeteringSummary: changes.loadProfileMeteringSummary ?? null,
-        ppaAssetDemarcation: changes.ppaAssetDemarcation ?? null,
-        appendixNotes: changes.appendixNotes ?? null,
-        appendixItems: changes.appendixItems ?? [],
-        reportPdfLocalPath: changes.reportPdfLocalPath ?? null,
-        reportPdfRemoteUrl: changes.reportPdfRemoteUrl ?? null,
-        createdByUserId: request.user.userId,
-        createdAt: dateOrNow(body.createdAt ?? now.toISOString()),
-        status,
-        completedAt: completionAtFirstObservation(status, now),
-      })
-      .returning();
+    const created = await db.transaction(async (tx) => {
+      const [inserted] = await tx
+        .insert(ssSites)
+        .values({
+          id,
+          serverId: randomUUID(),
+          syncStatus: 'synced',
+          updatedAt: dateOrNow(body.updatedAt),
+          deletedAt: null,
+          siteName: changes.siteName ?? requiredString(body, 'siteName'),
+          location: changes.location ?? null,
+          dateOfAssessment: changes.dateOfAssessment ?? null,
+          documentClassification: changes.documentClassification ?? null,
+          electricalInfrastructureSummary: changes.electricalInfrastructureSummary ?? null,
+          knownConstraints: changes.knownConstraints ?? null,
+          loadProfileMeteringSummary: changes.loadProfileMeteringSummary ?? null,
+          ppaAssetDemarcation: changes.ppaAssetDemarcation ?? null,
+          appendixNotes: changes.appendixNotes ?? null,
+          appendixItems: changes.appendixItems ?? [],
+          reportPdfLocalPath: changes.reportPdfLocalPath ?? null,
+          reportPdfRemoteUrl: changes.reportPdfRemoteUrl ?? null,
+          createdByUserId: request.user.userId,
+          createdAt: dateOrNow(body.createdAt ?? now.toISOString()),
+          status,
+          completedAt: completionAtFirstObservation(status, now),
+        })
+        .returning();
+      return rememberSolarSiteClientSite(tx, body, assertFound(inserted, 'Site'));
+    });
 
-    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: created.id, actor: request.user });
-    return reply.status(201).send(created);
+    await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: created.site.id, actor: request.user });
+    return reply.status(201).send({
+      ...created.site,
+      clientId: created.clientId,
+      clientSiteId: created.clientSiteId,
+    });
   });
 
   app.get('/:id', {
@@ -182,23 +190,35 @@ export async function solarsenseSiteRoutes(app: FastifyInstance): Promise<void> 
     const body = request.body as JsonRecord;
     if ('status' in body) throw badRequest('Use /complete to change status');
 
-    const [site] = await db
-      .select()
-      .from(ssSites)
-      .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)));
+    const updated = await db.transaction(async (tx) => {
+      const [site] = await tx
+        .select()
+        .from(ssSites)
+        .where(and(eq(ssSites.id, id), isNull(ssSites.deletedAt)))
+        .for('update');
 
-    const found = assertFound(site, 'Site');
-    assertSiteAccess(found, request.user);
-    assertDraftMutable(found, 'Site');
+      const found = assertFound(site, 'Site');
+      assertSiteAccess(found, request.user);
+      assertDraftMutable(found, 'Site');
 
-    const [updated] = await db
-      .update(ssSites)
-      .set({ ...buildSiteChanges(body), syncStatus: 'local' })
-      .where(eq(ssSites.id, id))
-      .returning();
+      const [baseUpdated] = await tx
+        .update(ssSites)
+        .set({ ...buildSiteChanges(body), syncStatus: 'local' })
+        .where(eq(ssSites.id, id))
+        .returning();
+      return rememberSolarSiteClientSite(
+        tx,
+        body,
+        assertFound(baseUpdated, 'Site'),
+      );
+    });
 
     await reconcilePhotoCopyReferencesForParent({ app: 'solarsense', parentId: id, actor: request.user });
-    return reply.send(assertFound(updated, 'Site'));
+    return reply.send({
+      ...updated.site,
+      clientId: updated.clientId,
+      clientSiteId: updated.clientSiteId,
+    });
   });
 
   app.delete('/:id', {

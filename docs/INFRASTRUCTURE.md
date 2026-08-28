@@ -157,8 +157,15 @@ Legacy Fergus and quote columns are retained for migration compatibility.
 0046 adds deterministic per-site/per-product job revision numbers and
 previous-job lineage. It ranks migrated jobs before creating the unique
 revision index, so an existing site with several historical jobs remains
-deployable. Apply 0045 and 0046 before releasing Scheduler code that creates
-existing-site versions; older code tolerates both additive migrations.
+deployable. This sequence is internal job lineage only: it is not displayed as
+a site version and does not trigger copying prior product data. Apply 0045 and
+0046 before releasing Scheduler code that creates multiple jobs for one saved
+site; older code tolerates both additive migrations.
+
+Deploy the saved-site prefill API behavior before its portal UI. The new API
+returns deprecated latest-job fields as null, which an older portal tolerates;
+an older API would still copy prior product data even when a newer portal hides
+the revision label.
 
 For the portal/API rollout, start the new API first and then the new portal. The
 API temporarily accepts and ignores deprecated `scheduledEndAt` values from a
@@ -196,9 +203,13 @@ adapter.
 Configure Scheduler defaults with `SCHEDULER_LABOUR_COST_RATE`,
 `SCHEDULER_LABOUR_BILLABLE_RATE`, `SCHEDULER_INVOICE_GST_RATE`,
 `SCHEDULER_INVOICE_DUE_DAYS`, and the `SCHEDULER_INVOICE_SELLER_*` variables.
-Rates and expense/bill inputs are ex-GST. Invoice creation snapshots configured
-seller values; issue freezes current draft bill-to/PO fields and current job
-name/date/site fields. Customer labour calculations use the nullable canonical
+The portal may persist a newer seller ABN in `scheduler_invoice_settings`;
+environment ABN configuration is the initial fallback. Invoice PDF mirroring
+uses `ONEDRIVE_INVOICES_FOLDER` (default `SustainabilityWise/invoices`) and
+creates client folders only when a PDF is uploaded.
+Rates and expense/bill inputs are ex-GST. Invoice creation uses the latest saved
+seller values. Draft and issued invoice content may be revised; each issue or
+manual generation retains the next numbered PDF artifact. Customer labour calculations use the nullable canonical
 per-user billing rate set by a portal administrator; the job-level billable
 default is retained for compatibility and must not be used to invent a missing
 user rate. App-recorded hours remain evidence, while effective commercial hours
@@ -212,8 +223,8 @@ Supplier bills are structured vendor/reference/date/category/cost/sell records
 with private PDF/image attachments. A billable expense is appended atomically
 to the job's sole existing draft invoice; if no draft exists it remains
 available for the next draft, and multiple drafts fail the bill write closed.
-Draft-only invoice lines and their attachments remain editable; issue freezes
-both the reviewed customer charge and bill evidence.
+Draft and issued invoice lines remain editable until payment or voiding. Posted
+refunds must be reversed before revising an issued invoice.
 `SCHEDULER_INVOICE_GST_RATE` is a decimal fraction from `0` through `1`; the API
 fails startup for an invalid or out-of-range value instead of allowing a later
 integer-column or invoice-total failure.

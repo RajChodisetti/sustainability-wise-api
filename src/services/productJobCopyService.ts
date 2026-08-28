@@ -54,6 +54,8 @@ type ProductIdentity = {
 };
 
 type SiteProjection = {
+  businessSiteId: string;
+  clientName: string;
   siteName: string;
   address: string;
   siteLocality: string | null;
@@ -62,6 +64,12 @@ type SiteProjection = {
   siteCountryCode: string | null;
   siteLatitude: number | null;
   siteLongitude: number | null;
+  siteGeocodeStatus: string;
+  siteGeocodeProvider: string | null;
+  siteGeocodePlaceId: string | null;
+  siteAddressSource: string;
+  siteAddressFingerprint: string;
+  siteGeocodedAt: Date | null;
 };
 
 const ecoEquipmentTables = [
@@ -101,6 +109,8 @@ export async function copyEcoAuditForJob(
   if (!source) throw conflict('existing_site_source_missing');
 
   const copiedAudit = cloneRecordForInsert(source, {
+    clientName: site.clientName,
+    businessSiteId: site.businessSiteId,
     siteName: site.siteName,
     siteAddress: site.address,
     siteLocality: site.siteLocality,
@@ -109,6 +119,12 @@ export async function copyEcoAuditForJob(
     siteCountryCode: site.siteCountryCode,
     siteLatitude: site.siteLatitude,
     siteLongitude: site.siteLongitude,
+    siteGeocodeStatus: site.siteGeocodeStatus,
+    siteGeocodeProvider: site.siteGeocodeProvider,
+    siteGeocodePlaceId: site.siteGeocodePlaceId,
+    siteAddressSource: site.siteAddressSource,
+    siteAddressFingerprint: site.siteAddressFingerprint,
+    siteGeocodedAt: site.siteGeocodedAt,
     inspectorName: identity.inspectorName,
     auditDate: identity.auditDate,
     status: 'Draft',
@@ -196,6 +212,8 @@ export async function copySolarAssessmentForJob(
   const now = new Date();
   const siteValues = sourceSite
     ? cloneRecordWithId(sourceSite, targetSiteId, {
+      clientName: site.clientName,
+      businessSiteId: site.businessSiteId,
       siteName: site.siteName,
       location: site.address,
       siteLocality: site.siteLocality,
@@ -204,6 +222,12 @@ export async function copySolarAssessmentForJob(
       siteCountryCode: site.siteCountryCode,
       siteLatitude: site.siteLatitude,
       siteLongitude: site.siteLongitude,
+      siteGeocodeStatus: site.siteGeocodeStatus,
+      siteGeocodeProvider: site.siteGeocodeProvider,
+      siteGeocodePlaceId: site.siteGeocodePlaceId,
+      siteAddressSource: site.siteAddressSource,
+      siteAddressFingerprint: site.siteAddressFingerprint,
+      siteGeocodedAt: site.siteGeocodedAt,
       dateOfAssessment: identity.auditDate,
       status: 'Draft',
       completedAt: null,
@@ -217,6 +241,8 @@ export async function copySolarAssessmentForJob(
       syncStatus: 'synced',
       updatedAt: now,
       deletedAt: null,
+      clientName: site.clientName,
+      businessSiteId: site.businessSiteId,
       siteName: site.siteName,
       location: site.address,
       siteLocality: site.siteLocality,
@@ -225,6 +251,12 @@ export async function copySolarAssessmentForJob(
       siteCountryCode: site.siteCountryCode,
       siteLatitude: site.siteLatitude,
       siteLongitude: site.siteLongitude,
+      siteGeocodeStatus: site.siteGeocodeStatus,
+      siteGeocodeProvider: site.siteGeocodeProvider,
+      siteGeocodePlaceId: site.siteGeocodePlaceId,
+      siteAddressSource: site.siteAddressSource,
+      siteAddressFingerprint: site.siteAddressFingerprint,
+      siteGeocodedAt: site.siteGeocodedAt,
       dateOfAssessment: identity.auditDate,
       createdByUserId: identity.createdByUserId,
       createdAt: now,
@@ -285,7 +317,6 @@ export async function copyFieldInstallationForJob(
   executor: ProductCopyExecutor,
   sourceInstallationId: string,
   site: SiteProjection & {
-    clientName: string;
     contactName: string | null;
     contactPhone: string | null;
     contactEmail: string | null;
@@ -333,6 +364,7 @@ export async function copyFieldInstallationForJob(
   await executor.insert(ihInstallations).values(cloneRecordWithId(source, installationId, {
     externalKey: `ih_${randomUUID()}`,
     clientName: site.clientName,
+    businessSiteId: site.businessSiteId,
     customerName: planning.customerName,
     maas: planning.maas,
     serviceType: planning.workType,
@@ -347,6 +379,12 @@ export async function copyFieldInstallationForJob(
     siteCountryCode: site.siteCountryCode,
     siteLatitude: site.siteLatitude,
     siteLongitude: site.siteLongitude,
+    siteGeocodeStatus: site.siteGeocodeStatus,
+    siteGeocodeProvider: site.siteGeocodeProvider,
+    siteGeocodePlaceId: site.siteGeocodePlaceId,
+    siteAddressSource: site.siteAddressSource,
+    siteAddressFingerprint: site.siteAddressFingerprint,
+    siteGeocodedAt: site.siteGeocodedAt,
     timezone: site.timezone,
     siteContactName: site.contactName,
     siteContactPhone: site.contactPhone,

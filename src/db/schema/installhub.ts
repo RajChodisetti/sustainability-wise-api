@@ -15,6 +15,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { businessSites } from './shared.js';
 
 const syncColumns = {
   serverId: text('server_id'),
@@ -50,6 +51,10 @@ export const ihInstallations = pgTable('ih_installations', {
   electricalMapLayoutUpdatedAt: timestamp('electrical_map_layout_updated_at'),
   customerName: text('customer_name'),
   clientName: text('client_name').notNull(),
+  businessSiteId: text('business_site_id').references(
+    () => businessSites.id,
+    { onDelete: 'restrict' },
+  ),
   maas: boolean('maas'),
   serviceType: text('service_type'),
   meteringSolutionType: text('metering_solution_type'),
@@ -65,6 +70,7 @@ export const ihInstallations = pgTable('ih_installations', {
   siteGeocodeStatus: text('site_geocode_status'),
   siteGeocodeProvider: text('site_geocode_provider'),
   siteGeocodePlaceId: text('site_geocode_place_id'),
+  siteAddressSource: text('site_address_source').notNull().default('manual'),
   siteAddressFingerprint: text('site_address_fingerprint'),
   siteGeocodedAt: timestamp('site_geocoded_at'),
   siteContactName: text('site_contact_name'),
@@ -99,6 +105,7 @@ export const ihInstallations = pgTable('ih_installations', {
   uniqueIndex('ih_installations_external_key_unique').on(table.externalKey),
   index('ih_installations_owner_idx').on(table.createdByUserId, table.updatedAt),
   index('ih_installations_assignee_idx').on(table.assignedInspectorUserId, table.updatedAt),
+  index('ih_installations_business_site_idx').on(table.businessSiteId, table.updatedAt),
   index('ih_installations_analytics_completed_idx').on(table.completedAt).where(sql`
     ${table.completedAt} IS NOT NULL AND ${table.deletedAt} IS NULL
   `),
@@ -196,6 +203,9 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_site_geocode_evidence_check', sql`
     (${table.siteGeocodeStatus} IS DISTINCT FROM 'resolved')
     OR (${table.siteLatitude} IS NOT NULL AND ${table.siteLongitude} IS NOT NULL)
+  `),
+  check('ih_installations_site_address_source_check', sql`
+    ${table.siteAddressSource} IN ('suggested', 'manual', 'client_saved')
   `),
   check('ih_installations_site_address_fingerprint_check', sql`
     ${table.siteAddressFingerprint} IS NULL

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { scheduledStartUpdate } from './eventUpdate';
+import {
+  scheduledStartUpdate,
+  shouldCompleteLinkedProductJob,
+} from './eventUpdate';
 
 test('unchanged rendered start is omitted from an event edit', () => {
   assert.deepEqual(
@@ -25,6 +28,24 @@ test('a changed rendered start is included as the converted instant', () => {
   );
 });
 
+test('selecting done completes only a linked, currently incomplete product job', () => {
+  assert.equal(shouldCompleteLinkedProductJob({
+    currentStatus: 'planned',
+    nextStatus: 'done',
+    sourceApp: 'installhub',
+    sourceType: 'installation',
+    sourceId: 'field-job-1',
+  }), true);
+  for (const input of [
+    { currentStatus: 'done', nextStatus: 'done', sourceApp: 'installhub', sourceType: 'installation', sourceId: 'field-job-1' },
+    { currentStatus: 'planned', nextStatus: 'planned', sourceApp: 'installhub', sourceType: 'installation', sourceId: 'field-job-1' },
+    { currentStatus: 'planned', nextStatus: 'done', sourceApp: 'custom', sourceType: 'custom', sourceId: null },
+    { currentStatus: 'planned', nextStatus: 'done', sourceApp: 'ecoaudit', sourceType: 'audit', sourceId: null },
+  ]) {
+    assert.equal(shouldCompleteLinkedProductJob(input), false);
+  }
+});
+
 test('event modal edit uses changed-field-aware start payloads', () => {
   const modalSource = readFileSync(
     new URL('../components/EventFormModal.tsx', import.meta.url),
@@ -35,6 +56,47 @@ test('event modal edit uses changed-field-aware start payloads', () => {
     modalSource,
     /\.\.\.scheduledStartUpdate\(\s*initial\.startLocal,\s*startLocal,/,
   );
+});
+
+test('opened product jobs expose Scheduler fallback completion controls', () => {
+  const modalSource = readFileSync(
+    new URL('../components/EventFormModal.tsx', import.meta.url),
+    'utf8',
+  );
+  const financeSource = readFileSync(
+    new URL('../components/SchedulerFinanceDetail.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(modalSource, /Mark job complete/);
+  assert.match(modalSource, /completes the linked product job and closes its Scheduler work/);
+  assert.match(modalSource, /useCompleteSchedulerJob/);
+  assert.match(modalSource, /shouldCompleteLinkedProductJob/);
+  assert.match(modalSource, /status: completeLinkedJob \? event\.status : status/);
+  assert.match(financeSource, /Mark job complete/);
+  assert.match(financeSource, /useCompleteSchedulerJob/);
+});
+
+test('calendar drag assignment expands a day into technician lanes and confirms the drop', () => {
+  const boardSource = readFileSync(
+    new URL('../components/DynamicSchedulerBoard.tsx', import.meta.url),
+    'utf8',
+  );
+  const gridSource = readFileSync(
+    new URL('../components/WeekTimeGrid.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(boardSource, /onDragOver=\{onDragOver\}/);
+  assert.match(boardSource, /setExpandedDayKey\(overData\.dayKey\)/);
+  assert.match(boardSource, /overData\.assigneeFieldUserId/);
+  assert.match(boardSource, /Confirm job assignment/);
+  assert.match(boardSource, /AssignmentSummaryRow label="Technician"/);
+  assert.match(boardSource, /AssignmentSummaryRow label="Job"/);
+  assert.match(boardSource, /AssignmentSummaryRow label="Date & time"/);
+  assert.match(gridSource, /expandedDayKey/);
+  assert.match(gridSource, /assigneeFieldUserId=\{user\.fieldUserId\}/);
+  assert.match(gridSource, /Technicians available on/);
 });
 
 test('new Field App jobs collect planning inputs without installation outcomes', () => {
@@ -79,7 +141,13 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
 
   assert.match(modalSource, /Is this work for a new or existing site\?/);
   assert.match(modalSource, /Find existing site/);
-  assert.match(modalSource, /siteMode: siteSelectionMode/);
-  assert.match(modalSource, /existingSiteId: siteSelectionMode === 'existing'/);
-  assert.match(modalSource, /new independent job version/);
+  assert.match(modalSource, /schedulerDispatchSiteSelectionPayload\(\{/);
+  assert.match(modalSource, /address: jobAddress/);
+  assert.match(modalSource, /existingSiteId,/);
+  assert.match(modalSource, /clientId: selectedClientId/);
+  assert.match(modalSource, /schedulerSiteOptionLabel\(site\)/);
+  assert.match(modalSource, /previous job data is not copied/);
+  assert.doesNotMatch(modalSource, /latestRevisionNumber/);
+  assert.doesNotMatch(modalSource, /latest(?:WorkType|MeteringSolutionType|CustomJobNumber|JobComments|Maas|ElectricityNmi)/);
+  assert.doesNotMatch(modalSource, /new independent job version/);
 });

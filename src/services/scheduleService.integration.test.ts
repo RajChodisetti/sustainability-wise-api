@@ -10,7 +10,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
 }, async () => {
   const [
     { db, closeDb },
-    { eaAudits },
+    { eaAudits, eaZones },
     {
       ihElectricalAssets,
       ihGridSupplies,
@@ -329,7 +329,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     });
     const [fieldBusinessJob] = await db.select().from(businessJobs)
       .where(eq(businessJobs.id, field.jobId!));
-    const versionedField = await createSchedulerDispatch(admin, {
+    const followUpField = await createSchedulerDispatch(admin, {
       ...baseDispatch,
       scheduledStartAt: '2026-08-24T09:00:00.000Z',
       deadlineAt: '2026-08-26T17:00:00.000Z',
@@ -351,17 +351,29 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
         },
       },
     });
-    createdProductIds.push(versionedField.sourceId!);
-    const [versionedJob] = await db.select().from(businessJobs)
-      .where(eq(businessJobs.id, versionedField.jobId!));
-    assert.equal(versionedJob.siteId, fieldBusinessJob.siteId);
-    assert.equal(versionedJob.previousJobId, fieldBusinessJob.id);
-    assert.equal(versionedJob.revisionNumber, fieldBusinessJob.revisionNumber + 1);
-    const copiedMeters = await db.select().from(ihMeterDevices)
-      .where(eq(ihMeterDevices.installationId, versionedField.sourceId!));
-    assert.equal(copiedMeters.length, 1);
-    assert.notEqual(copiedMeters[0].id, sourceMeterId);
-    assert.equal(copiedMeters[0].serialNumber, 'KNOWN-METER-001');
+    createdProductIds.push(followUpField.sourceId!);
+    const [followUpJob] = await db.select().from(businessJobs)
+      .where(eq(businessJobs.id, followUpField.jobId!));
+    assert.equal(followUpJob.siteId, fieldBusinessJob.siteId);
+    const [[followUpInstallation], followUpZones, followUpMeters, originalMeters] = await Promise.all([
+      db.select().from(ihInstallations)
+        .where(eq(ihInstallations.id, followUpField.sourceId!)),
+      db.select().from(ihZones)
+        .where(eq(ihZones.installationId, followUpField.sourceId!)),
+      db.select().from(ihMeterDevices)
+        .where(eq(ihMeterDevices.installationId, followUpField.sourceId!)),
+      db.select().from(ihMeterDevices)
+        .where(eq(ihMeterDevices.installationId, field.sourceId!)),
+    ]);
+    assert.equal(followUpInstallation.businessSiteId, fieldBusinessJob.siteId);
+    assert.equal(followUpInstallation.siteName, `Field ${runId}`);
+    assert.equal(followUpInstallation.siteAddress, '3 Field Street, Sydney NSW 2002, Australia');
+    assert.equal(followUpInstallation.serviceType, 'meter_replacement_m3');
+    assert.equal(followUpZones.length, 0);
+    assert.equal(followUpMeters.length, 0);
+    assert.equal(originalMeters.length, 1);
+    assert.equal(originalMeters[0].id, sourceMeterId);
+    assert.equal(originalMeters[0].serialNumber, 'KNOWN-METER-001');
 
     const [solarSite] = await db.select().from(ssSites)
       .where(eq(ssSites.id, solarRow.siteId!));
@@ -372,6 +384,103 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     assert.equal(solarSite.siteGeocodeStatus, 'resolved');
     assert.equal(fieldRow.sitePostcode, '2002');
     assert.equal(fieldRow.siteGeocodeStatus, 'resolved');
+
+    await db.insert(eaZones).values({
+      id: randomUUID(),
+      auditId: eco.sourceId!,
+      zoneName: 'Existing audit zone must not be copied',
+      zoneDescription: 'prior product data',
+      photos: [],
+      photoDescs: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.update(ssSites).set({
+      documentClassification: 'PRIOR-SITE-DATA',
+      updatedAt: now,
+    }).where(eq(ssSites.id, solarSite.id));
+    await db.update(ssRooftopAssessments).set({
+      heritageStatus: 'PRIOR-ASSESSMENT-DATA',
+      updatedAt: now,
+    }).where(eq(ssRooftopAssessments.id, solar.sourceId!));
+    const [[ecoBusinessJob], [solarBusinessJob]] = await Promise.all([
+      db.select().from(businessJobs).where(eq(businessJobs.id, eco.jobId!)),
+      db.select().from(businessJobs).where(eq(businessJobs.id, solar.jobId!)),
+    ]);
+    const [followUpEco, followUpSolar] = await Promise.all([
+      createSchedulerDispatch(admin, {
+        ...baseDispatch,
+        scheduledStartAt: '2026-08-24T10:00:00.000Z',
+        deadlineAt: '2026-08-26T17:00:00.000Z',
+        sourceApp: 'ecoaudit',
+        job: {
+          siteMode: 'existing',
+          existingSiteId: ecoBusinessJob.siteId,
+          clientName: `Eco ${runId}`,
+          siteName: `Eco ${runId}`,
+          siteAddress: '1 Eco Street',
+          auditDate: '2026-08-24',
+          address: {
+            freeform: '1 Eco Street',
+            locality: 'Sydney',
+            state: 'NSW',
+            postcode: '2000',
+            countryCode: 'AU',
+            latitude: -33.8688,
+            longitude: 151.2093,
+            provider: 'photon',
+            placeId: 'W:eco',
+            source: 'client_saved',
+          },
+        },
+      }),
+      createSchedulerDispatch(admin, {
+        ...baseDispatch,
+        scheduledStartAt: '2026-08-24T11:00:00.000Z',
+        deadlineAt: '2026-08-26T17:00:00.000Z',
+        sourceApp: 'solarsense',
+        job: {
+          siteMode: 'existing',
+          existingSiteId: solarBusinessJob.siteId,
+          clientName: `Solar ${runId}`,
+          siteName: `Solar ${runId}`,
+          location: 'North roof campus',
+          buildingIdName: 'Building B roof',
+          auditDate: '2026-08-24',
+          address: {
+            freeform: 'North roof campus',
+            locality: 'Sydney',
+            state: 'NSW',
+            postcode: '2001',
+            countryCode: 'AU',
+            latitude: -33.86,
+            longitude: 151.22,
+            provider: 'photon',
+            placeId: 'W:solar',
+            source: 'client_saved',
+          },
+        },
+      }),
+    ]);
+    createdProductIds.push(followUpEco.sourceId!, followUpSolar.sourceId!);
+    const [[followUpEcoRow], followUpEcoZones, [followUpSolarAssessment], originalEcoZones] = await Promise.all([
+      db.select().from(eaAudits).where(eq(eaAudits.id, followUpEco.sourceId!)),
+      db.select().from(eaZones).where(eq(eaZones.auditId, followUpEco.sourceId!)),
+      db.select().from(ssRooftopAssessments)
+        .where(eq(ssRooftopAssessments.id, followUpSolar.sourceId!)),
+      db.select().from(eaZones).where(eq(eaZones.auditId, eco.sourceId!)),
+    ]);
+    const [followUpSolarSite] = await db.select().from(ssSites)
+      .where(eq(ssSites.id, followUpSolarAssessment.siteId!));
+    createdSiteIds.push(followUpSolarSite.id);
+    assert.equal(followUpEcoRow.businessSiteId, ecoBusinessJob.siteId);
+    assert.equal(followUpEcoZones.length, 0);
+    assert.equal(originalEcoZones.length, 1);
+    assert.equal(originalEcoZones[0].zoneDescription, 'prior product data');
+    assert.equal(followUpSolarSite.businessSiteId, solarBusinessJob.siteId);
+    assert.equal(followUpSolarSite.documentClassification, null);
+    assert.equal(followUpSolarAssessment.buildingIdName, 'Building B roof');
+    assert.equal(followUpSolarAssessment.heritageStatus, null);
 
     const route = await getSchedulerRouteSuggestion(admin, {
       date: '2026-08-20',
@@ -688,6 +797,7 @@ test('scheduler dispatch creates Draft product work and keeps assignment aligned
     if (createdSiteIds.length > 0) {
       await db.delete(ssSites).where(inArray(ssSites.id, createdSiteIds));
     }
+    await db.delete(eaZones).where(inArray(eaZones.auditId, createdProductIds));
     await db.delete(eaAudits).where(inArray(eaAudits.id, createdProductIds));
     const createdBusinessJobs = await db.select({
       id: businessJobs.id,

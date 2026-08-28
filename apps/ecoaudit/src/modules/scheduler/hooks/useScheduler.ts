@@ -5,6 +5,7 @@ import {
   cancelScheduleEvent,
   cancelSchedulerLeaveRequest,
   checkConsolidatedSchedulerInvoiceEligibility,
+  completeSchedulerJob,
   createConsolidatedSchedulerInvoice,
   createQuickSchedulerInvoice,
   createScheduleEvent,
@@ -18,6 +19,8 @@ import {
   fetchGlobalSchedulerInvoices,
   fetchSchedulerAnalytics,
   fetchSchedulerAddressSuggestions,
+  fetchSchedulerClientAddressSuggestions,
+  fetchSchedulerClients,
   fetchSchedulerFinancialSummary,
   fetchSchedulerInventory,
   fetchSchedulerMeterRegister,
@@ -49,6 +52,7 @@ import {
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
+  updateSchedulerInvoiceSeller,
   updateScheduleEvent,
   uploadSchedulerExpenseAttachment,
   voidGlobalSchedulerInvoice,
@@ -117,6 +121,10 @@ export const schedulerKeys = {
     [...schedulerKeys.all, 'analytics', filters] as const,
   addressSuggestions: (query: string, postcode: string) =>
     [...schedulerKeys.all, 'address-suggestions', query, postcode] as const,
+  clients: (q: string, clientId: string) =>
+    [...schedulerKeys.all, 'clients', q, clientId] as const,
+  clientAddressSuggestions: (clientId: string, query: string, postcode: string) =>
+    [...schedulerKeys.all, 'client-address-suggestions', clientId, query, postcode] as const,
   route: () => [...schedulerKeys.all, 'route'] as const,
   leave: (filters: SchedulerLeaveFilters, adminView: boolean) =>
     [...schedulerKeys.all, 'leave', adminView ? 'team' : 'mine', filters] as const,
@@ -234,6 +242,44 @@ export function useSchedulerAddressSuggestions(
   });
 }
 
+export function useSchedulerClients(
+  input: { q?: string; clientId?: string } = {},
+  enabled = true,
+) {
+  const q = input.q?.trim() ?? '';
+  const clientId = input.clientId ?? '';
+  return useQuery({
+    queryKey: schedulerKeys.clients(q, clientId),
+    queryFn: () => fetchSchedulerClients({
+      q: q || undefined,
+      clientId: clientId || undefined,
+      limit: clientId ? 1 : 50,
+    }),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+export function useSchedulerClientAddressSuggestions(
+  input: { clientId?: string; query?: string; postcode?: string },
+  enabled = true,
+) {
+  const clientId = input.clientId ?? '';
+  const query = input.query?.trim() ?? '';
+  const postcode = input.postcode?.trim() ?? '';
+  return useQuery({
+    queryKey: schedulerKeys.clientAddressSuggestions(clientId, query, postcode),
+    queryFn: () => fetchSchedulerClientAddressSuggestions({
+      clientId: clientId || undefined,
+      query,
+      postcode: postcode || undefined,
+      limit: 8,
+    }),
+    enabled: enabled && Boolean(clientId || query.length >= 3 || /^\d{4}$/.test(postcode)),
+    staleTime: 5 * 60_000,
+  });
+}
+
 export function useSchedulerRouteSuggestion() {
   return useMutation({
     mutationFn: (input: {
@@ -302,6 +348,16 @@ export function useUpdateScheduleEvent() {
   return useMutation({
     mutationFn: ({ id, input }: { id: string; input: UpdateScheduleEventInput }) =>
       updateScheduleEvent(id, input),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: schedulerKeys.all });
+    },
+  });
+}
+
+export function useCompleteSchedulerJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: completeSchedulerJob,
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: schedulerKeys.all });
     },
@@ -741,6 +797,23 @@ export function useUpdateGlobalSchedulerInvoice() {
       await invalidateGlobalSchedulerCommercialData(qc, invoice.financeIds ?? [invoice.financeId]);
     },
     onError: async () => invalidateGlobalSchedulerCommercialData(qc),
+  });
+}
+
+export function useUpdateSchedulerInvoiceSeller(invoiceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sellerAbn, expectedUpdatedAt }: {
+      sellerAbn: string | null;
+      expectedUpdatedAt: string;
+    }) => updateSchedulerInvoiceSeller(invoiceId, sellerAbn, expectedUpdatedAt),
+    onSuccess: async (invoice) => {
+      qc.setQueryData(schedulerKeys.globalInvoice(invoice.id), invoice);
+      for (const financeId of invoice.financeIds ?? [invoice.financeId]) {
+        qc.setQueryData(schedulerKeys.invoice(financeId, invoice.id), invoice);
+      }
+      await invalidateGlobalSchedulerCommercialData(qc, invoice.financeIds ?? [invoice.financeId]);
+    },
   });
 }
 

@@ -9,12 +9,31 @@ import {
   installationValuesFromPayload,
   installHubInstallationStatusForSync,
   installHubSiteAddressChanged,
+  installHubSubmittedAddressSource,
   parseInstallHubUploadBaseTreeRevision,
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
   prepareCanonicalInstallHubWrite,
   validateCanonicalFormContractsForSync,
 } from './sync.js';
+
+test('InstallHub product provenance preserves the submitted address source', () => {
+  assert.equal(installHubSubmittedAddressSource({
+    siteAddressSource: 'manual',
+    siteGeocodeProvider: 'geoapify',
+    siteGeocodePlaceId: 'geoapify:place-1',
+  }), 'manual');
+  assert.equal(installHubSubmittedAddressSource({
+    siteAddressSource: 'client_saved',
+    siteGeocodeProvider: 'geoapify',
+    siteGeocodePlaceId: 'geoapify:place-1',
+  }), 'client_saved');
+  assert.equal(installHubSubmittedAddressSource({
+    siteAddressSource: null,
+    siteGeocodeProvider: 'photon',
+    siteGeocodePlaceId: 'W:123',
+  }), 'suggested');
+});
 
 test('installation sync cannot create a first completion outside the canonical endpoint', () => {
   assert.equal(installHubInstallationStatusForSync(undefined), 'Draft');

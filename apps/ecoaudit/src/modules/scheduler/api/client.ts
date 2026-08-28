@@ -43,11 +43,13 @@ import type {
   SchedulerInvoiceEmailDelivery,
   SchedulerInvoice,
   SchedulerInvoicePage,
+  SchedulerInvoicePdfExport,
   SchedulerInvoiceListItem,
   SchedulerPortfolioSummary,
   SchedulerSiteOption,
   ScheduleSummary,
   ScheduleSourceApp,
+  ScheduleSourceType,
   SendSchedulerInvoiceEmailInput,
   SendSchedulerInvoiceEmailResponse,
   UpdateSchedulerFinanceInput,
@@ -69,6 +71,8 @@ import type {
   SchedulerAnalyticsFilters,
 } from '@/modules/scheduler/types/analytics';
 import type {
+  SchedulerClientAddressSuggestionsResponse,
+  SchedulerClientDirectoryResponse,
   SchedulerAddressSuggestionsResponse,
   SchedulerCurrentLocation,
   SchedulerRouteSuggestion,
@@ -258,6 +262,35 @@ export function fetchSchedulerAddressSuggestions(input: {
   );
 }
 
+export function fetchSchedulerClients(input: {
+  q?: string;
+  clientId?: string;
+  limit?: number;
+} = {}): Promise<SchedulerClientDirectoryResponse> {
+  const query = new URLSearchParams();
+  if (input.q?.trim()) query.set('q', input.q.trim());
+  if (input.clientId) query.set('clientId', input.clientId);
+  if (input.limit) query.set('limit', String(input.limit));
+  const suffix = query.size > 0 ? `?${query}` : '';
+  return portalRequest(true)<SchedulerClientDirectoryResponse>(
+    'GET',
+    `/v1/portal/scheduler/clients${suffix}`,
+  );
+}
+
+export function fetchSchedulerClientAddressSuggestions(input: {
+  clientId?: string;
+  query?: string;
+  postcode?: string;
+  limit?: number;
+}): Promise<SchedulerClientAddressSuggestionsResponse> {
+  return portalRequest(true)<SchedulerClientAddressSuggestionsResponse>(
+    'POST',
+    '/v1/portal/scheduler/client-address-suggestions',
+    input,
+  );
+}
+
 export function fetchSchedulerRouteSuggestion(input: {
   date: string;
   currentLocation: SchedulerCurrentLocation;
@@ -275,6 +308,22 @@ export async function updateScheduleEvent(
   input: UpdateScheduleEventInput,
 ): Promise<ScheduleEvent> {
   return portalRequest(true)<ScheduleEvent>('PATCH', `/v1/portal/scheduler/events/${id}`, input);
+}
+
+export async function completeSchedulerJob(input: {
+  sourceApp: Exclude<ScheduleSourceApp, 'custom'>;
+  sourceType: Exclude<ScheduleSourceType, 'custom'>;
+  sourceId: string;
+  idempotencyKey: string;
+}): Promise<{ completed: true }> {
+  const sourceApp = encodeURIComponent(input.sourceApp);
+  const sourceType = encodeURIComponent(input.sourceType);
+  const sourceId = encodeURIComponent(input.sourceId);
+  return portalRequest(true)<{ completed: true }>(
+    'POST',
+    `/v1/portal/scheduler/jobs/${sourceApp}/${sourceType}/${sourceId}/complete`,
+    { idempotencyKey: input.idempotencyKey },
+  );
 }
 
 export async function cancelScheduleEvent(id: string): Promise<ScheduleEvent> {
@@ -744,12 +793,19 @@ export async function markSchedulerInvoicePaid(
   );
 }
 
-export type QueuedSchedulerInvoicePdfExport = {
-  jobId: string;
-  reused: boolean;
-  sourceUpdatedAt: string;
-  reportVariantKey: string;
-};
+export type QueuedSchedulerInvoicePdfExport = SchedulerInvoicePdfExport;
+
+export function updateSchedulerInvoiceSeller(
+  invoiceId: string,
+  sellerAbn: string | null,
+  expectedUpdatedAt: string,
+): Promise<SchedulerInvoice> {
+  return portalRequest(true)<SchedulerInvoice>(
+    'PATCH',
+    `/v1/portal/scheduler/invoices/${encodeURIComponent(invoiceId)}/seller`,
+    { sellerAbn, expectedUpdatedAt },
+  );
+}
 
 export function startSchedulerInvoicePdfExport(
   financeId: string,

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { AuthUser } from '../auth/middleware.js';
 import { db } from '../db/client.js';
 import {
@@ -7,14 +7,19 @@ import {
   schedulerInvoices,
   storageDeletionTasks,
 } from '../db/schema/shared.js';
-import { publicFileUrl, type StorageApp, writeLocalFile } from '../storage/localFiles.js';
+import {
+  publicFileUrl,
+  sanitizeStorageSegment,
+  type StorageApp,
+  writeLocalFile,
+} from '../storage/localFiles.js';
+import { mirrorInvoicePdfToOneDrive } from '../onedrive/photoBackup.js';
 import { AppError, conflict, forbidden, notFound } from '../utils/errors.js';
 import { buildInvoiceDownloadFilename } from './invoicePdf.js';
 import { enqueueExportTask } from './exportJobQueue.js';
 import {
   completeJob,
   EXPORT_JOB_INTERRUPTION_LEASE_MS,
-  findActiveExportJob,
   type ExportJobParams,
 } from './pdfJobService.js';
 import {
@@ -33,7 +38,6 @@ import {
   drainStorageDeletionTasks,
   SCHEDULER_INVOICE_PDF_UNATTACHED_REASON,
 } from './storageDeletionService.js';
-import { makePdfStorageKeyFromName } from './storageNaming.js';
 
 export const SCHEDULER_INVOICE_PDF_RENDERER_VERSION = 'scheduler-invoice-pdf:v3';
 
@@ -43,6 +47,7 @@ export type SchedulerInvoicePdfJobParams = ExportJobParams & {
   sourceUpdatedAt: string;
   reportVariantKey: string;
   rendererVersion: typeof SCHEDULER_INVOICE_PDF_RENDERER_VERSION;
+  invoiceVersion: number;
 };
 
 export type QueuedSchedulerInvoicePdfExport = {
@@ -50,6 +55,7 @@ export type QueuedSchedulerInvoicePdfExport = {
   reused: boolean;
   sourceUpdatedAt: string;
   reportVariantKey: string;
+  invoiceVersion?: number;
 };
 
 export type ClaimedSchedulerInvoicePdfJob = {
@@ -99,9 +105,13 @@ export function schedulerInvoicePdfJobParams(
     SchedulerInvoiceDto,
     'id' | 'financeId' | 'invoiceNumber' | 'updatedAt' | 'issueDate' | 'job' | 'jobCount'
   >,
+  invoiceVersion = 1,
 ): SchedulerInvoicePdfJobParams {
   if (!Number.isSafeInteger(invoice.jobCount) || invoice.jobCount < 1) {
     throw new TypeError('invoice jobCount must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(invoiceVersion) || invoiceVersion < 1) {
+    throw new TypeError('invoiceVersion must be a positive safe integer');
   }
   const additionalJobCount = Math.max(0, invoice.jobCount - 1);
   const invoiceCalendarDate = additionalJobCount > 0
@@ -109,19 +119,26 @@ export function schedulerInvoicePdfJobParams(
     : undefined;
   return {
     artifactType: 'pdf',
-    filename: buildInvoiceDownloadFilename({
+    filename: versionedInvoiceFilename(buildInvoiceDownloadFilename({
       jobName: invoice.job.jobName,
       jobDate: invoiceCalendarDate ?? invoice.job.jobDate,
       invoiceNumber: invoice.invoiceNumber,
       additionalJobCount,
-    }),
+    }), invoiceVersion),
     contentType: 'application/pdf',
     invoiceId: invoice.id,
     financeId: invoice.financeId,
     sourceUpdatedAt: invoice.updatedAt,
     reportVariantKey: schedulerInvoicePdfReportVariantKey(invoice),
     rendererVersion: SCHEDULER_INVOICE_PDF_RENDERER_VERSION,
+    invoiceVersion,
   };
+}
+
+function versionedInvoiceFilename(filename: string, invoiceVersion: number): string {
+  return filename.toLowerCase().endsWith('.pdf')
+    ? `${filename.slice(0, -4)}-v${invoiceVersion}.pdf`
+    : `${filename}-v${invoiceVersion}.pdf`;
 }
 
 class AmbiguousSchedulerInvoicePdfPublicationError extends Error {
@@ -139,6 +156,7 @@ type SchedulerInvoicePdfPublicationState = {
 export type SchedulerInvoicePdfArtifactDependencies = {
   queueCleanupTask: (app: StorageApp, storageKey: string) => Promise<string>;
   writeFile: typeof writeLocalFile;
+  mirrorFile?: typeof mirrorInvoicePdfToOneDrive;
   publishWithRevisionLock: (input: {
     user: AuthUser;
     financeId: string;
@@ -240,6 +258,7 @@ async function inspectSchedulerInvoicePdfPublication(
 const artifactDependencies: SchedulerInvoicePdfArtifactDependencies = {
   queueCleanupTask: queueSchedulerInvoicePdfCleanupTask,
   writeFile: writeLocalFile,
+  mirrorFile: mirrorInvoicePdfToOneDrive,
   publishWithRevisionLock: publishSchedulerInvoicePdfWithRevisionLock,
   inspectPublication: inspectSchedulerInvoicePdfPublication,
   async drainCleanupTask(taskId) {
@@ -262,6 +281,8 @@ export async function persistSchedulerInvoicePdfArtifact(
     storageKey: string;
     pdfUrl: string;
     buffer: Buffer;
+    clientName?: string;
+    filename?: string;
   },
   dependencyOverrides: Partial<SchedulerInvoicePdfArtifactDependencies> = {},
 ): Promise<void> {
@@ -290,6 +311,13 @@ export async function persistSchedulerInvoicePdfArtifact(
     requireStorageApp(input.user.app),
     input.storageKey,
   );
+  if (input.clientName && input.filename) {
+    await dependencies.mirrorFile?.({
+      clientName: input.clientName,
+      filename: input.filename,
+      body: input.buffer,
+    });
+  }
   try {
     await dependencies.publishWithRevisionLock({
       user: input.user,
@@ -447,6 +475,7 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
   financeId: string;
   invoiceId: string;
   sourceUpdatedAt: string;
+  invoiceVersion: number;
 } {
   const app = requireStorageApp(job.app as AuthUser['app']);
   const invoiceId = requiredClaimParam(job.params, 'invoiceId');
@@ -454,6 +483,7 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
   const sourceUpdatedAt = requiredClaimParam(job.params, 'sourceUpdatedAt');
   const filename = requiredClaimParam(job.params, 'filename');
   const reportVariantKey = requiredClaimParam(job.params, 'reportVariantKey');
+  const invoiceVersion = job.params.invoiceVersion ?? 1;
   if (
     job.params.artifactType !== 'pdf'
     || job.params.contentType !== 'application/pdf'
@@ -464,6 +494,8 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
       updatedAt: sourceUpdatedAt,
     })
     || !filename.toLowerCase().endsWith('.pdf')
+    || !Number.isSafeInteger(invoiceVersion)
+    || Number(invoiceVersion) < 1
   ) {
     throw new Error('scheduler_invoice_pdf_claim_invalid_provenance');
   }
@@ -479,6 +511,7 @@ function schedulerInvoicePdfExecutionArgs(job: ClaimedSchedulerInvoicePdfJob): {
     financeId,
     invoiceId,
     sourceUpdatedAt,
+    invoiceVersion: Number(invoiceVersion),
   };
 }
 
@@ -495,6 +528,7 @@ async function runSchedulerInvoicePdfExport(args: {
   financeId: string;
   invoiceId: string;
   sourceUpdatedAt: string;
+  invoiceVersion: number;
 }): Promise<void> {
   const claim = { id: args.jobId, claimToken: args.claimToken };
   try {
@@ -510,15 +544,14 @@ async function runSchedulerInvoicePdfExport(args: {
     await updateSchedulerInvoicePdfClaimPhase(claim, 'Rendering PDF');
     const pdf = await renderSchedulerInvoicePdf(invoice);
     await updateSchedulerInvoicePdfClaimPhase(claim, 'Saving PDF');
-    const storageKey = makePdfStorageKeyFromName({
-      app: requireStorageApp(args.user.app),
-      parentName: invoice.job.jobName,
-      fieldName: `scheduler-invoice-${invoice.id}`,
-      // A reclaimed job receives a new claim token. Including it prevents a
-      // stale owner cleaning up the new owner's bytes at the shared job key.
-      sessionId: `${args.jobId}-${args.claimToken}`,
-      filename: pdf.filename,
-    });
+    const clientName = invoice.billToName || invoice.job.clientName || 'Unassigned client';
+    const filename = versionedInvoiceFilename(pdf.filename, args.invoiceVersion);
+    const storageKey = [
+      requireStorageApp(args.user.app),
+      'invoices',
+      sanitizeStorageSegment(clientName),
+      sanitizeStorageSegment(filename),
+    ].join('/');
     await persistSchedulerInvoicePdfArtifact({
       user: args.user,
       financeId: args.financeId,
@@ -529,6 +562,8 @@ async function runSchedulerInvoicePdfExport(args: {
       storageKey,
       pdfUrl: publicFileUrl(storageKey),
       buffer: pdf.buffer,
+      clientName,
+      filename,
     });
   } catch (error) {
     const stale = isInvoiceRevisionConflict(error);
@@ -681,7 +716,6 @@ async function queueSchedulerInvoicePdfForSnapshot(
   }
   if (invoice.status === 'draft') await assertSchedulerInvoiceJobsCompleted(invoice);
   const app = requireStorageApp(user.app);
-  const params = schedulerInvoicePdfJobParams(invoice);
   const jobId = randomUUID();
   const queued = await db.transaction(async (tx) => {
     // Draft readiness locks finance/source rows before the invoice row, matching
@@ -704,22 +738,19 @@ async function queueSchedulerInvoicePdfForSnapshot(
     if (lockedInvoice.updatedAt.toISOString() !== invoice.updatedAt) {
       throw conflict('Invoice changed while its PDF export was being queued. Refresh and try again.');
     }
-    const active = await findActiveExportJob({
-      app,
-      entityId: invoice.id,
-      userId: user.userId,
-      params,
-      executor: tx,
-    });
-    if (active) {
-      return {
-        jobId: active.id,
-        reused: true,
-        sourceUpdatedAt: invoice.updatedAt,
-        reportVariantKey: params.reportVariantKey,
-      };
-    }
-
+    await tx.execute(sql`
+      SELECT pg_advisory_xact_lock(hashtextextended(
+        ${`scheduler-invoice-artifact:${invoice.financeId}`},
+        0
+      ))
+    `);
+    const [prior] = await tx.select({ count: count() }).from(pdfJobs).where(and(
+      eq(pdfJobs.entityType, 'scheduler_invoice'),
+      sql`${pdfJobs.params} ->> 'financeId' = ${invoice.financeId}`,
+      inArray(pdfJobs.status, ['queued', 'running', 'complete']),
+    ));
+    const invoiceVersion = Number(prior?.count ?? 0) + 1;
+    const params = schedulerInvoicePdfJobParams(invoice, invoiceVersion);
     await tx.insert(pdfJobs).values({
       id: jobId,
       // Scheduler is cross-product, but generic export access is deliberately
@@ -741,6 +772,7 @@ async function queueSchedulerInvoicePdfForSnapshot(
       reused: false,
       sourceUpdatedAt: invoice.updatedAt,
       reportVariantKey: params.reportVariantKey,
+      invoiceVersion,
     };
   });
 

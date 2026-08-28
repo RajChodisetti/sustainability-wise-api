@@ -27,6 +27,7 @@ import {
   schedulerInvoiceJobs,
   schedulerInvoiceLines,
   schedulerInvoiceRefunds,
+  schedulerInvoiceSettings,
   schedulerInvoices,
   schedulerJobExpenses,
   schedulerJobFinance,
@@ -443,6 +444,11 @@ export type UpdateDraftInvoiceInput = {
   purchaseOrderReference?: string | null;
   /** Draft-only customer-facing charges and their optional quantity/rate presentation. */
   lines?: InvoiceLineInput[];
+};
+
+export type UpdateSchedulerInvoiceSellerInput = {
+  sellerAbn: string | null;
+  expectedUpdatedAt?: string;
 };
 
 export type ConsolidatedBillToInput = {
@@ -2267,8 +2273,8 @@ async function updateSchedulerFinanceForContext(
     if (mergedPricingMode === 'quoted' && mergedQuotedAmount === null) {
       throw badRequest('quotedAmount is required when pricingMode is quoted');
     }
-    // Existing invoices are immutable commercial snapshots. Editing the job's
-    // current settings must not rewrite or be blocked by those snapshots.
+    // Invoice revisions do not rewrite the job's current commercial settings.
+    // Stored PDF versions retain the values that were issued at each point in time.
 
     const latestOverrideRecord = await latestHourOverrideRecord(finance.id, tx);
     const currentOverride = latestOverrideRecord?.action === 'set' ? latestOverrideRecord : null;
@@ -2599,13 +2605,58 @@ export async function deleteSchedulerExpenseByFinanceId(
   return deleteSchedulerExpenseForContext(await financeById(financeId), expenseId);
 }
 
-function invoiceSellerSnapshot() {
+export function normalizeSchedulerSellerAbn(value: string | null | undefined): string | null {
+  const normalized = optionalText(value, 100);
+  if (!normalized) return null;
+  const digits = normalized.replace(/\D/g, '');
+  if (digits.length !== 11) throw badRequest('Seller ABN must contain exactly 11 digits');
+  return digits;
+}
+
+async function invoiceSellerSnapshot(executor: FinanceExecutor = db) {
+  const [stored] = await executor.select({ sellerAbn: schedulerInvoiceSettings.sellerAbn })
+    .from(schedulerInvoiceSettings)
+    .where(eq(schedulerInvoiceSettings.companyKey, config.businessDirectory.companyKey))
+    .limit(1);
   return {
     sellerName: config.schedulerInvoice.sellerName.trim() || 'Sustainability Wise',
-    sellerAbn: optionalText(config.schedulerInvoice.sellerAbn, 100),
+    sellerAbn: normalizeSchedulerSellerAbn(stored?.sellerAbn ?? config.schedulerInvoice.sellerAbn),
     sellerAddress: optionalText(config.schedulerInvoice.sellerAddress, 1_000),
     sellerEmail: optionalText(config.schedulerInvoice.sellerEmail, 320),
   };
+}
+
+export async function updateSchedulerInvoiceSeller(
+  user: AuthUser,
+  invoiceId: string,
+  input: UpdateSchedulerInvoiceSellerInput,
+): Promise<SchedulerInvoiceDto> {
+  const actor = await requireGlobalFinanceAdmin(user);
+  const sellerAbn = normalizeSchedulerSellerAbn(input.sellerAbn);
+  await db.transaction(async (tx) => {
+    const [invoice] = await tx.select().from(schedulerInvoices)
+      .where(eq(schedulerInvoices.id, invoiceId))
+      .for('update')
+      .limit(1);
+    if (!invoice) throw notFound('Invoice');
+    if (invoice.status === 'void') throw conflict('Void invoices cannot be edited');
+    assertInvoiceVersion(invoice, input.expectedUpdatedAt);
+    const now = new Date();
+    await tx.insert(schedulerInvoiceSettings).values({
+      companyKey: config.businessDirectory.companyKey,
+      sellerAbn,
+      updatedByGlobalUserId: actor.globalUserId,
+      updatedAt: now,
+    }).onConflictDoUpdate({
+      target: schedulerInvoiceSettings.companyKey,
+      set: { sellerAbn, updatedByGlobalUserId: actor.globalUserId, updatedAt: now },
+    });
+    await tx.update(schedulerInvoices).set({
+      sellerAbn,
+      updatedAt: nextInvoiceUpdatedAt(invoice, now),
+    }).where(eq(schedulerInvoices.id, invoice.id));
+  });
+  return loadInvoiceDto(null, invoiceId);
 }
 
 function invoiceDto(
@@ -2956,6 +3007,9 @@ async function replaceDraftLines(
   const financeIds = [...financeById.keys()];
   const currentLines = await executor.select().from(schedulerInvoiceLines)
     .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
+  const currentExpenseIds = new Set(currentLines.flatMap((line) => (
+    line.expenseId ? [line.expenseId] : []
+  )));
 
   const activeRows = await executor.select({
     expenseId: schedulerInvoiceLines.expenseId,
@@ -3041,7 +3095,9 @@ async function replaceDraftLines(
         throw badRequest(`Expense ${expenseId} is not part of the selected job`);
       }
       if (!expense.billable) throw badRequest(`Expense ${expenseId} is not billable`);
-      if (expense.invoiced) throw conflict(`Expense ${expenseId} is already invoiced`);
+      if (expense.invoiced && !currentExpenseIds.has(expense.id)) {
+        throw conflict(`Expense ${expenseId} is already invoiced`);
+      }
       if (reservedExpenseIds.has(expense.id)) {
         throw conflict(`Expense ${expense.id} is already reserved by another invoice`);
       }
@@ -3074,6 +3130,24 @@ async function replaceDraftLines(
   if (values.length > 0) {
     await executor.insert(schedulerInvoiceLines).values(values);
   }
+  if (invoice.status === 'issued') {
+    const requestedExpenseIdSet = new Set(requestedExpenseIds);
+    const removedExpenseIds = [...currentExpenseIds].filter((expenseId) => (
+      !requestedExpenseIdSet.has(expenseId) && !reservedExpenseIds.has(expenseId)
+    ));
+    if (removedExpenseIds.length > 0) {
+      await executor.update(schedulerJobExpenses).set({
+        invoiced: false,
+        updatedAt: new Date(),
+      }).where(inArray(schedulerJobExpenses.id, removedExpenseIds));
+    }
+    if (requestedExpenseIds.length > 0) {
+      await executor.update(schedulerJobExpenses).set({
+        invoiced: true,
+        updatedAt: new Date(),
+      }).where(inArray(schedulerJobExpenses.id, requestedExpenseIds));
+    }
+  }
   await executor.update(schedulerInvoices).set({
     subtotalExGstCents: totals.subtotal,
     gstAmountCents: totals.gst,
@@ -3081,7 +3155,7 @@ async function replaceDraftLines(
     updatedAt,
   }).where(and(
     eq(schedulerInvoices.id, invoice.id),
-    eq(schedulerInvoices.status, 'draft'),
+    inArray(schedulerInvoices.status, ['draft', 'issued']),
   ));
 }
 
@@ -3205,7 +3279,7 @@ async function createQuickSchedulerInvoiceForContext(
     if (!Number.isSafeInteger(gstRateBps) || gstRateBps < 0 || gstRateBps > 10_000) {
       throw new Error('scheduler_invoice_gst_rate_invalid');
     }
-    const seller = invoiceSellerSnapshot();
+    const seller = await invoiceSellerSnapshot(tx);
     await tx.insert(schedulerInvoices).values({
       id: invoiceId,
       financeId: finance.id,
@@ -3557,6 +3631,7 @@ export async function createConsolidatedSchedulerInvoice(
     }
     const primary = contexts[0]!;
     const explicitBillTo = input.billTo;
+    const seller = await invoiceSellerSnapshot(tx);
     await tx.insert(schedulerInvoices).values({
       id: invoiceId,
       financeId: primary.finance.id,
@@ -3569,7 +3644,7 @@ export async function createConsolidatedSchedulerInvoice(
       totalIncGstCents: 0,
       gstRateBps,
       notes: optionalText(input.notes, 5_000),
-      ...invoiceSellerSnapshot(),
+      ...seller,
       billToName,
       billToAbn: explicitBillTo
         ? optionalText(explicitBillTo.abn, 100)
@@ -3730,8 +3805,18 @@ async function updateSchedulerDraftInvoiceForContext(
       || input.billToEmail !== undefined
       || input.purchaseOrderReference !== undefined
       || input.lines !== undefined;
-    if (invoice.status !== 'draft' && updatesInvoiceContent) {
-      throw conflict('Only draft invoice content can be edited');
+    if (invoice.status === 'paid' && updatesInvoiceContent) {
+      throw conflict('Paid invoice content cannot be edited');
+    }
+    if (invoice.status === 'issued' && updatesInvoiceContent) {
+      const [postedRefund] = await tx.select({ id: schedulerInvoiceRefunds.id })
+        .from(schedulerInvoiceRefunds)
+        .where(and(
+          eq(schedulerInvoiceRefunds.invoiceId, invoice.id),
+          eq(schedulerInvoiceRefunds.status, 'posted'),
+        ))
+        .limit(1);
+      if (postedRefund) throw conflict('Reverse posted refunds before revising this invoice');
     }
     assertInvoiceVersion(invoice, input.expectedUpdatedAt);
     const mutationUpdatedAt = nextInvoiceUpdatedAt(invoice);
@@ -3835,7 +3920,9 @@ async function issueSchedulerInvoiceForContext(
     const [invoice] = await tx.select().from(schedulerInvoices)
       .where(eq(schedulerInvoices.id, invoiceId)).for('update').limit(1);
     if (!invoice) throw notFound('Invoice');
-    if (invoice.status !== 'draft') throw conflict('Only draft invoices can be issued');
+    if (invoice.status !== 'draft' && invoice.status !== 'issued') {
+      throw conflict('Only draft or issued invoices can be issued');
+    }
     assertInvoiceVersion(invoice, expectedUpdatedAt);
     let lines = await tx.select().from(schedulerInvoiceLines)
       .where(eq(schedulerInvoiceLines.invoiceId, invoice.id));
@@ -3888,7 +3975,7 @@ async function issueSchedulerInvoiceForContext(
     ) {
       throw conflict('Invoice due date cannot be before its issue date');
     }
-    const seller = invoiceSellerSnapshot();
+    const seller = await invoiceSellerSnapshot(tx);
     if (invoice.gstRateBps > 0 && !seller.sellerAbn) {
       throw conflict('Configure the seller ABN before issuing an invoice with GST');
     }
@@ -3929,8 +4016,8 @@ async function issueSchedulerInvoiceForContext(
     await markCurrentMultiJobInvoiceWriter(tx);
     const [issuedInvoice] = await tx.update(schedulerInvoices).set({
       status: 'issued',
-      issueDate: transitionAt,
-      issuedAt: transitionAt,
+      issueDate: invoice.issueDate ?? transitionAt,
+      issuedAt: invoice.issuedAt ?? transitionAt,
       dueDate: invoice.dueDate
         ?? new Date(transitionAt.getTime() + config.schedulerInvoice.dueDays * 86_400_000),
       ...seller,
@@ -3943,7 +4030,7 @@ async function issueSchedulerInvoiceForContext(
       updatedAt: issuedUpdatedAt,
     }).where(and(
       eq(schedulerInvoices.id, invoice.id),
-      eq(schedulerInvoices.status, 'draft'),
+      inArray(schedulerInvoices.status, ['draft', 'issued']),
       eq(schedulerInvoices.updatedAt, normalizationUpdatedAt),
     )).returning({ id: schedulerInvoices.id });
     if (!issuedInvoice) throw conflict('Invoice changed; refresh before issuing');

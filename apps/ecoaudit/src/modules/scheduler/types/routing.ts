@@ -2,6 +2,9 @@ import type { ScheduleSourceApp, ScheduleSourceType } from './domain';
 
 export type AustralianState = 'ACT' | 'NSW' | 'NT' | 'QLD' | 'SA' | 'TAS' | 'VIC' | 'WA';
 
+export type SchedulerAddressSource = 'suggested' | 'manual' | 'client_saved';
+export type SchedulerGeocodingStatus = 'unresolved' | 'resolved' | 'manual' | 'failed';
+
 export type SchedulerJobAddressInput = {
   freeform: string;
   locality?: string;
@@ -12,6 +15,7 @@ export type SchedulerJobAddressInput = {
   longitude?: number;
   provider?: string;
   placeId?: string;
+  source?: SchedulerAddressSource;
 };
 
 export type SchedulerAddressSuggestion = {
@@ -30,9 +34,83 @@ export type SchedulerAddressSuggestion = {
 
 export type SchedulerAddressSuggestionsResponse = {
   available: boolean;
-  provider: 'photon' | null;
+  provider: 'geoapify' | 'photon' | null;
   attribution: string | null;
   suggestions: SchedulerAddressSuggestion[];
+};
+
+export type SchedulerClientSite = {
+  id: string;
+  clientId: string;
+  siteName: string;
+  displayAddress: string;
+  locality: string | null;
+  state: AustralianState | null;
+  postcode: string | null;
+  countryCode: 'AU';
+  latitude: number | null;
+  longitude: number | null;
+  provider: string | null;
+  placeId: string | null;
+  source: SchedulerAddressSource;
+  geocodingStatus: SchedulerGeocodingStatus;
+  fingerprint: string;
+  timezone: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  accessInformation: string | null;
+  updatedAt: string;
+};
+
+export type SchedulerClient = {
+  id: string;
+  name: string;
+  normalizedKey: string;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  updatedAt: string;
+  sites: SchedulerClientSite[];
+};
+
+export type SchedulerClientDirectoryResponse = {
+  companyScope: 'current';
+  clients: SchedulerClient[];
+};
+
+export type SchedulerContractAddress = {
+  displayAddress: string;
+  locality: string | null;
+  state: AustralianState | null;
+  postcode: string | null;
+  countryCode: 'AU';
+  latitude: number | null;
+  longitude: number | null;
+  provider: string | null;
+  placeId: string | null;
+  source: SchedulerAddressSource;
+  geocodingStatus: SchedulerGeocodingStatus;
+  fingerprint: string;
+};
+
+export type SchedulerClientAddressSuggestion = {
+  kind: 'client_saved' | 'provider';
+  id: string;
+  label: string;
+  clientId: string | null;
+  clientSiteId: string | null;
+  siteName: string | null;
+  address: SchedulerContractAddress;
+};
+
+export type SchedulerClientAddressSuggestionsResponse = {
+  available: boolean;
+  provider: 'geoapify' | 'photon' | null;
+  attribution: string | null;
+  storedSuggestions: SchedulerClientAddressSuggestion[];
+  providerSuggestions: SchedulerClientAddressSuggestion[];
+  suggestions: SchedulerClientAddressSuggestion[];
 };
 
 export type SchedulerCurrentLocation = {

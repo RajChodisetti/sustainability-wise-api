@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   checkConsolidatedSchedulerInvoiceEligibility,
+  completeSchedulerJob,
   createConsolidatedSchedulerInvoice,
   createSchedulerDispatch,
   downloadSchedulerInvoicePdfExport,
   fetchSchedulerAddressSuggestions,
+  fetchSchedulerClientAddressSuggestions,
+  fetchSchedulerClients,
   fetchSchedulerInvoiceEmailDeliveries,
   fetchSchedulerAnalytics,
   fetchSchedulerRouteSuggestion,
@@ -16,6 +19,7 @@ import {
   getSchedulerInvoicePdfExportStatus,
   issueSchedulerInvoice,
   markGlobalSchedulerInvoicePaid,
+  updateSchedulerInvoiceSeller,
   sendSchedulerInvoiceEmail,
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
@@ -30,6 +34,139 @@ function jwt(role: 'admin' | 'inspector', subject: string): string {
   const payload = Buffer.from(JSON.stringify({ role, sub: subject })).toString('base64url');
   return `header.${payload}.signature`;
 }
+
+test('client memory and mixed address lookup stay on authenticated portal routes', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'scheduler-admin');
+  const values = new Map<string, string>([['ea_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{
+    url: string;
+    method?: string;
+    body: string;
+    authorization: string | null;
+  }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      method: init?.method,
+      body: String(init?.body ?? ''),
+      authorization: new Headers(init?.headers).get('Authorization'),
+    });
+    return String(input).includes('client-address-suggestions')
+      ? Response.json({
+          available: true,
+          provider: 'geoapify',
+          attribution: 'Geoapify',
+          storedSuggestions: [],
+          providerSuggestions: [],
+          suggestions: [],
+        })
+      : Response.json({ companyScope: 'current', clients: [] });
+  };
+
+  try {
+    await fetchSchedulerClients({ q: 'ABC Energy', limit: 20 });
+    await fetchSchedulerClientAddressSuggestions({
+      clientId: 'client-1',
+      query: '10 George',
+      limit: 8,
+    });
+    assert.equal(requests.length, 2);
+    const directoryUrl = new URL(requests[0]?.url ?? '', 'http://portal.test');
+    assert.equal(directoryUrl.pathname, '/v1/portal/scheduler/clients');
+    assert.deepEqual(Object.fromEntries(directoryUrl.searchParams), {
+      q: 'ABC Energy',
+      limit: '20',
+    });
+    assert.equal(
+      new URL(requests[1]?.url ?? '', 'http://portal.test').pathname,
+      '/v1/portal/scheduler/client-address-suggestions',
+    );
+    assert.deepEqual(JSON.parse(requests[1]?.body ?? ''), {
+      clientId: 'client-1',
+      query: '10 George',
+      limit: 8,
+    });
+    assert.equal(requests[0]?.authorization, `Bearer ${admin}`);
+    assert.equal(requests[1]?.authorization, `Bearer ${admin}`);
+    assert.equal(requests.some((request) => request.url.includes('apiKey=')), false);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('Scheduler completion client uses the cross-product admin endpoint and idempotency body', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'scheduler-admin');
+  const values = new Map<string, string>([['ea_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{
+    url: string;
+    method?: string;
+    body: string;
+    authorization: string | null;
+  }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      method: init?.method,
+      body: String(init?.body ?? ''),
+      authorization: new Headers(init?.headers).get('Authorization'),
+    });
+    return Response.json({ completed: true });
+  };
+
+  try {
+    assert.deepEqual(await completeSchedulerJob({
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: 'field job/1',
+      idempotencyKey: 'completion-attempt-1',
+    }), { completed: true });
+    const request = requests[0];
+    assert.ok(request);
+    assert.equal(request.method, 'POST');
+    assert.equal(
+      new URL(request.url, 'http://portal.test').pathname,
+      '/v1/portal/scheduler/jobs/installhub/installation/field%20job%2F1/complete',
+    );
+    assert.deepEqual(JSON.parse(request.body), {
+      idempotencyKey: 'completion-attempt-1',
+    });
+    assert.equal(request.authorization, `Bearer ${admin}`);
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
 
 test('scheduler analytics preserves the inclusive window and selects an administrator credential', async () => {
   const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -532,6 +669,11 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     });
     await voidGlobalSchedulerInvoice('invoice/1', '2026-08-16T01:00:00.000Z');
     await markGlobalSchedulerInvoicePaid('invoice/1', '2026-08-16T02:00:00.000Z');
+    await updateSchedulerInvoiceSeller(
+      'invoice/1',
+      '12 345 678 901',
+      '2026-08-16T02:00:00.000Z',
+    );
     await fetchSchedulerInvoiceEmailDeliveries('invoice/1');
     await sendSchedulerInvoiceEmail('invoice/1', {
       expectedUpdatedAt: '2026-08-16T02:00:00.000Z',
@@ -562,6 +704,12 @@ test('global finance clients preserve server filters, consolidated CAS, and raw 
     assert.deepEqual(JSON.parse(String(voidRequest?.body)), { expectedUpdatedAt: '2026-08-16T01:00:00.000Z' });
     const paidRequest = requests.find((request) => request.url.endsWith('/mark-paid'));
     assert.deepEqual(JSON.parse(String(paidRequest?.body)), { expectedUpdatedAt: '2026-08-16T02:00:00.000Z' });
+    const sellerRequest = requests.find((request) => request.url.endsWith('/seller'));
+    assert.equal(sellerRequest?.method, 'PATCH');
+    assert.deepEqual(JSON.parse(String(sellerRequest?.body)), {
+      sellerAbn: '12 345 678 901',
+      expectedUpdatedAt: '2026-08-16T02:00:00.000Z',
+    });
     const emailHistory = requests.find((request) => request.url.endsWith('/email-deliveries'));
     assert.equal(emailHistory?.method, 'GET');
     assert.equal(emailHistory?.headers.get('Authorization'), `Bearer ${admin}`);

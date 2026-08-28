@@ -52,6 +52,7 @@ import {
   type CopiedPhotoEntity,
 } from '../../storage/photoCopyReferences.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
+import { rememberEcoAuditClientSite } from './clientSiteMemory.js';
 
 const equipmentTables = [
   { table: eaMainSwitchboards, entityType: 'main_switchboard' },
@@ -191,6 +192,7 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
         createdAt,
       }).returning();
       const foundCreated = assertFound(inserted, 'Audit');
+      const remembered = await rememberEcoAuditClientSite(tx, body, foundCreated);
       if (status === 'Completed') {
         await completeLinkedSchedulerEvents(tx, {
           sourceApp: 'ecoaudit',
@@ -201,9 +203,13 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
           completionProvenance: 'offline_transition',
         });
       }
-      return foundCreated;
+      return remembered;
     });
-    return reply.status(201).send(created);
+    return reply.status(201).send({
+      ...created.audit,
+      clientId: created.clientId,
+      clientSiteId: created.clientSiteId,
+    });
   });
 
   app.get('/:id', {
@@ -307,17 +313,39 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
     const { id } = request.params as { id: string };
     const body = request.body as JsonRecord;
     if ('status' in body) throw badRequest('Use /complete or /reopen to change status');
-    const [audit] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
-    const found = assertFound(audit, 'Audit');
-    assertAuditAccess(found, request.user);
-    assertDraftMutable(found, 'Audit');
-    const changes: Partial<typeof eaAudits.$inferInsert> = { updatedAt: new Date(), syncStatus: 'local' };
-    const sv = optionalString(body, 'siteName'); if (sv !== undefined) changes.siteName = sv ?? found.siteName;
-    const sa = optionalString(body, 'siteAddress'); if (sa !== undefined) changes.siteAddress = sa ?? found.siteAddress;
-    const iname = optionalString(body, 'inspectorName'); if (iname !== undefined) changes.inspectorName = iname ?? found.inspectorName;
-    if ('auditDate' in body) changes.auditDate = typeof body.auditDate === 'string' ? body.auditDate : null;
-    const [updated] = await db.update(eaAudits).set(changes).where(eq(eaAudits.id, id)).returning();
-    return reply.send(assertFound(updated, 'Audit'));
+    const updated = await db.transaction(async (tx) => {
+      const [audit] = await tx.select().from(eaAudits)
+        .where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)))
+        .for('update');
+      const found = assertFound(audit, 'Audit');
+      assertAuditAccess(found, request.user);
+      assertDraftMutable(found, 'Audit');
+      const changes: Partial<typeof eaAudits.$inferInsert> = {
+        updatedAt: new Date(),
+        syncStatus: 'local',
+      };
+      const sv = optionalString(body, 'siteName');
+      if (sv !== undefined) changes.siteName = sv ?? found.siteName;
+      const sa = optionalString(body, 'siteAddress');
+      if (sa !== undefined) changes.siteAddress = sa ?? found.siteAddress;
+      const iname = optionalString(body, 'inspectorName');
+      if (iname !== undefined) changes.inspectorName = iname ?? found.inspectorName;
+      if ('auditDate' in body) {
+        changes.auditDate = typeof body.auditDate === 'string' ? body.auditDate : null;
+      }
+      const [baseUpdated] = await tx.update(eaAudits).set(changes)
+        .where(eq(eaAudits.id, id)).returning();
+      return rememberEcoAuditClientSite(
+        tx,
+        body,
+        assertFound(baseUpdated, 'Audit'),
+      );
+    });
+    return reply.send({
+      ...updated.audit,
+      clientId: updated.clientId,
+      clientSiteId: updated.clientSiteId,
+    });
   });
 
   app.delete('/:id', {

@@ -103,14 +103,30 @@ global projections never grant it.
 | GET | `/v1/portal/scheduler/events` | portal user | List the caller's calendar (admins may filter all users) |
 | POST | `/v1/portal/scheduler/events` | admin | Link one existing active Draft Eco Audit, Solar Sense, or Field App Complete job, or create a custom event |
 | POST | `/v1/portal/scheduler/dispatches` | admin | Atomically create a new Draft product job, assign it, and create its planned event |
-| POST | `/v1/portal/scheduler/address-suggestions` | portal user | Return Australia-only Photon address/postcode suggestions; reports `available: false` when the optional server-side geocoder is not configured |
+| GET | `/v1/portal/scheduler/clients?q=...&clientId=...` | portal user | Search normalized, company-scoped clients and return every saved Australian site/address for each match |
+| POST | `/v1/portal/scheduler/client-address-suggestions` | portal user | Return a selected client's saved addresses first and Geoapify/Photon Australian suggestions second in one response |
+| POST | `/v1/portal/scheduler/address-suggestions` | portal user | Return Australia-only address/postcode suggestions; uses server-side Geoapify when `GEOAPIFY_API_KEY` is configured, otherwise the optional Photon service, and never returns provider credentials |
+| POST | `/v1/portal/scheduler/clients/:id/merge` | admin | Merge a duplicate client into a target client, preserving all sites and recording an audit event |
 | POST | `/v1/portal/scheduler/route-suggestions` | portal user | Suggest an open driving route from a fresh Australian current location through that user's active jobs for one local calendar date; admin overrides require an explicitly authorized origin |
-| PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event and keep the product assignment aligned |
+| PATCH | `/v1/portal/scheduler/events/:id` | admin | Edit or reassign an event; setting a linked product event to `done` completes the canonical product job in the same transaction |
+| POST | `/v1/portal/scheduler/jobs/:sourceApp/:sourceType/:sourceId/complete` | admin | Idempotently complete an Eco Audit, Solar Sense, or Field App Complete job from Scheduler and close its linked events |
 | DELETE | `/v1/portal/scheduler/events/:id` | admin | Cancel the event and clear its product assignment without deleting the product |
 | POST | `/v1/portal/scheduler/events/:id/remind` | admin | Idempotently queue an immediate reminder for the active event's assigned mobile user |
 | GET | `/v1/portal/scheduler/job-options` | admin | Search active Draft jobs eligible for an existing-work link |
 | GET | `/v1/portal/scheduler/sites?sourceApp=installhub&q=...` | admin | Search canonical client sites and the latest same-product job revision used to seed new work |
 | GET | `/v1/portal/scheduler/unscheduled-jobs` | admin | List Draft jobs; defaults to jobs without an active event |
+
+The three product namespaces expose the same mobile client-memory reads:
+`GET /v1/{installhub|ecoaudit|solarsense}/client-directory` and
+`POST /v1/{installhub|ecoaudit|solarsense}/client-address-suggestions`. They
+require the matching app token and at least the inspector role. Sync/save paths
+upsert the normalized client, preserve or create the selected site, link the
+product row and update its business job inside the product transaction.
+
+The directory uses the server-owned `sustainability-wise` company scope; it is
+not client- or environment-configurable. Keep `GEOAPIFY_API_KEY` server-side;
+clients receive provider attribution, place IDs and normalized address fields,
+never the key.
 
 `GET /scheduler/unscheduled-jobs` accepts `unscheduledOnly=false` to include
 scheduled Draft jobs. Scheduled Field options include the assigned Field user,
@@ -228,7 +244,12 @@ Product completion marks every non-cancelled linked calendar event done and
 cancels its pending automated reminders; manual reminder history is preserved.
 The projection is idempotently reconciled by explicit completion, and by Eco
 Audit/Solar Sense mobile sync ingestion. Field App Complete uses its canonical
-completion endpoint. Event status changes do not complete or reopen product data.
+completion transaction. Scheduler administrators may use the explicit product-job
+completion endpoint or set a linked event to `done`; both paths complete the
+canonical product first and then close every linked event atomically. Field App
+Complete retains its schema-version, TBC-readiness, immutable-version, revision,
+and idempotency gates. Planned, in-progress, cancelled, and reopen transitions do
+not complete or reopen product data.
 
 Address suggestions accept `{ query?, postcode?, limit? }`; an empty search
 returns no suggestions. The response is `{ available, provider, attribution,
@@ -518,8 +539,9 @@ and `needsHoursReview`.
 | GET | `/v1/portal/scheduler/invoices` | Paginated global invoice list; `limit`, `cursor`, `status`, `sourceApp`, `financeId`, and `search` filters; each item exposes every participating finance/job/source |
 | POST | `/v1/portal/scheduler/invoices/eligibility` | Preview 1–50 unique finance IDs, per-job available labour/quote/expenses, common currency, GST rate, structured issues, and whether explicit bill-to is required |
 | POST | `/v1/portal/scheduler/invoices/quick` | Create one reservation-safe draft for 1–50 Completed jobs; auto labour is an editable suggestion |
-| GET/PATCH | `/v1/portal/scheduler/invoices/:invoiceId` | Read any single/consolidated invoice or edit its draft header and lines; PATCH requires `expectedUpdatedAt` |
-| POST | `/v1/portal/scheduler/invoices/:invoiceId/issue` | Issue the immutable all-job snapshot using required `{expectedUpdatedAt}` |
+| GET/PATCH | `/v1/portal/scheduler/invoices/:invoiceId` | Read any single/consolidated invoice or edit its draft/issued header and lines; PATCH requires `expectedUpdatedAt` |
+| PATCH | `/v1/portal/scheduler/invoices/:invoiceId/seller` | Save the seller ABN immediately for the current invoice and future invoices |
+| POST | `/v1/portal/scheduler/invoices/:invoiceId/issue` | Issue or reissue using required `{expectedUpdatedAt}` and automatically queue the next retained PDF version |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/void` | Void an unpaid invoice and release every job reservation using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/mark-paid` | Mark an issued invoice paid using required `{expectedUpdatedAt}` and optional `{paidAt}` |
 | POST | `/v1/portal/scheduler/invoices/:invoiceId/pdf/jobs` | Queue the exact consolidated PDF revision using required `{expectedUpdatedAt}` |
@@ -536,8 +558,8 @@ and `needsHoursReview`.
 | PATCH/DELETE | `/v1/portal/scheduler/finance/:financeId/expenses/:expenseId` | Edit/delete an unreserved expense |
 | GET | `/v1/portal/scheduler/finance/:financeId/invoices` | List draft/issued/paid/void invoices |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/quick` | Create a Completed job's draft with editable quote/labour and selected billable-expense suggestions |
-| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft bill-to, due date, notes, PO reference, and lines; PATCH requires displayed `expectedUpdatedAt` |
-| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/issue` | Freeze current seller, bill-to, job, and line snapshots using `{expectedUpdatedAt}` |
+| GET/PATCH | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId` | Read invoice / edit draft or issued bill-to, due date, notes, PO reference, and lines; PATCH requires displayed `expectedUpdatedAt` |
+| POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/issue` | Issue or reissue current seller, bill-to, job, and line values using `{expectedUpdatedAt}` and queue the next PDF version |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/mark-paid` | Mark issued invoice paid; required `{expectedUpdatedAt}`, optional `{paidAt}` between issue and transition time |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/void` | Void unpaid invoice and release reservations using required `{expectedUpdatedAt}` |
 | POST | `/v1/portal/scheduler/finance/:financeId/invoices/:invoiceId/pdf/jobs` | Queue a durable branded PDF using `{expectedUpdatedAt}` for the invoice's exact `id` + revision; returns HTTP 202 with `jobId`, `sourceUpdatedAt`, and `reportVariantKey` |
@@ -580,8 +602,8 @@ product. Start, latest, status, and download therefore use the same selected
 administrator credential. Every access revalidates that exact owner as a
 currently active canonical global administrator; same-app administrator bypass
 is disabled for these finance artifacts. `reportVariantKey` includes the
-renderer version, immutable invoice id, and invoice `updatedAt`, so draft edits,
-issue, mark-paid, and void transitions cannot surface an older PDF.
+renderer version, invoice id, and invoice `updatedAt`, so draft/issued edits,
+reissue, mark-paid, and void transitions cannot surface an older PDF.
 Persisted Scheduler PDF jobs are claimed by a startup/poll worker using a
 heartbeat lease and ownership token. Queued work survives a crash before local
 dispatch; expired running work is safely resumed, while fresh rolling-old jobs
@@ -605,13 +627,13 @@ instead of overwriting or issuing values reviewed in another session.
 Void, mark-paid, and PDF enqueue apply the same required revision contract.
 
 Quick Invoice lines are suggestions, not a customer-facing derivation contract.
-While an invoice is a draft, PATCH may add, edit, or remove its lines, including
+While an invoice is draft or issued, PATCH may add, edit, or remove its lines, including
 manual `other` charges and suggested labour. Each line supplies description,
 quantity, ex-GST unit amount, optional job `financeId`, optional linked expense,
 and optional `showQuantityAndRate`. New lines default to amount-only display;
 quantity/hours and unit/billing rate appear in the PDF only when an
-administrator explicitly enables `showQuantityAndRate`. Issue freezes the
-reviewed lines as immutable accounting snapshots.
+administrator explicitly enables `showQuantityAndRate`. Reissuing keeps the
+live invoice editable and creates the next retained PDF artifact version.
 
 Released Field clients retain the legacy direct download adapter at
 `GET /v1/installhub/installations/:installationId/invoices/:invoiceId/pdf`.
@@ -619,10 +641,10 @@ The Scheduler portal does not use that synchronous route.
 
 All wire amounts and stored job expenses are ex-GST decimal currency values;
 the database stores integer cents and invoices add the configured GST snapshot.
-Issuing a GST-bearing invoice requires a nonblank
-`SCHEDULER_INVOICE_SELLER_ABN`; absence returns a controlled HTTP 409 instead of
-publishing a GST invoice without the supplier identity. QA/production must set
-the legal Sustainability Wise seller ABN before enabling invoice issue.
+Issuing a GST-bearing invoice requires a nonblank seller ABN. Administrators can
+save it directly on the invoice page; the database-backed value is used for the
+current invoice and future invoices. `SCHEDULER_INVOICE_SELLER_ABN` remains the
+initial fallback until a portal value is saved.
 `time.actualMilliseconds` is the immutable sum of foreground work sessions.
 Every insert and revision is rejected when cumulative active time exceeds its
 `startedAt`→`lastActiveAt` wall span by more than the documented five-second
@@ -669,8 +691,8 @@ provenance. A draft/issued/paid reservation is visible and enforced from every
 participating job, including secondary jobs.
 Every job must have current status `Completed` before draft creation and again
 before issue. A draft PDF also requires all live jobs to remain Completed;
-issued and paid historical snapshots remain exportable without reopening the
-operational job.
+issued and paid PDFs remain exportable without reopening the operational job.
+Reissuing an editable issued invoice creates the next numbered PDF version.
 Migration 0034 deliberately fails closed for pre-0034 line rewrites and
 consolidated lifecycle updates. Before multi-job creation is used, every old API
 process must be drained and the current API must pass health checks. Once any
