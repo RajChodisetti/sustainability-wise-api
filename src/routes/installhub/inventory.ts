@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { and, asc, desc, eq, ilike, isNull, or } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole, type AuthUser } from '../../auth/middleware.js';
 import { db } from '../../db/client.js';
 import {
@@ -11,6 +11,8 @@ import {
 import { globalUsers } from '../../db/schema/shared.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
 import {
+  claimInventoryMeterByDeviceId,
+  NON_INSTALLED_INVENTORY_STATUSES,
   parseInventoryMeterRegistration,
   registerInventoryMeter,
 } from '../../services/inventoryMeterService.js';
@@ -66,15 +68,9 @@ async function listInventory(input: {
 }) {
   if (input.scope === 'company') await requireMaintainer(input.actor);
   const needle = input.q?.trim();
-  const rows = await db.select({
-    meter: ihInventoryMeters,
-    custodianName: ihUsers.fullName,
-    custodianEmail: ihUsers.email,
-  }).from(ihInventoryMeters).leftJoin(
-    ihUsers,
-    eq(ihUsers.id, ihInventoryMeters.custodianUserId),
-  ).where(and(
+  const where = and(
     isNull(ihInventoryMeters.deletedAt),
+    inArray(ihInventoryMeters.status, [...NON_INSTALLED_INVENTORY_STATUSES]),
     input.scope === 'mine'
       ? and(
           eq(ihInventoryMeters.status, 'user'),
@@ -88,11 +84,27 @@ async function listInventory(input: {
           ilike(ihUsers.fullName, `%${needle.replace(/[%_]/g, '')}%`),
         )
       : undefined,
-  )).orderBy(desc(ihInventoryMeters.updatedAt), asc(ihInventoryMeters.deviceId)).limit(500);
-  return rows.map(({ meter, custodianName, custodianEmail }) => ({
+  );
+  const [rows, totals] = await Promise.all([
+    db.select({
+      meter: ihInventoryMeters,
+      custodianName: ihUsers.fullName,
+      custodianEmail: ihUsers.email,
+    }).from(ihInventoryMeters).leftJoin(
+      ihUsers,
+      eq(ihUsers.id, ihInventoryMeters.custodianUserId),
+    ).where(where).orderBy(desc(ihInventoryMeters.updatedAt), asc(ihInventoryMeters.deviceId)).limit(500),
+    db.select({ total: count() }).from(ihInventoryMeters).leftJoin(
+      ihUsers,
+      eq(ihUsers.id, ihInventoryMeters.custodianUserId),
+    ).where(where),
+  ]);
+  const data = rows.map(({ meter, custodianName, custodianEmail }) => ({
     ...meter,
     custodianName: custodianName?.trim() || custodianEmail || null,
   }));
+  const total = Number(totals[0]?.total ?? 0);
+  return { data, total, truncated: total > data.length };
 }
 
 export async function installhubInventoryRoutes(app: FastifyInstance): Promise<void> {
@@ -112,7 +124,7 @@ export async function installhubInventoryRoutes(app: FastifyInstance): Promise<v
   }, async (request, reply) => {
     const query = request.query as { scope?: string; q?: string };
     const scope = query.scope === 'company' ? 'company' : 'mine';
-    return reply.send({ data: await listInventory({ actor: request.user, scope, q: query.q }) });
+    return reply.send(await listInventory({ actor: request.user, scope, q: query.q }));
   });
 
   app.post('/meters', {
@@ -241,6 +253,28 @@ export async function installhubInventoryRoutes(app: FastifyInstance): Promise<v
       if (uniqueViolation(error)) throw conflict('This Device ID is already registered');
       throw error;
     }
+  });
+
+  app.post('/meters/claim-by-device', {
+    schema: {
+      tags: ['Field App Complete Inventory'],
+      summary: 'Transfer an existing company-stock meter to the current user',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object', required: ['deviceId'], additionalProperties: false,
+        properties: {
+          deviceId: { type: 'string', minLength: 1, maxLength: 200 },
+        },
+      },
+    },
+    preHandler: fieldUser,
+  }, async (request, reply) => {
+    const body = request.body as { deviceId: string };
+    const meter = await claimInventoryMeterByDeviceId({
+      deviceId: body.deviceId,
+      actorUserId: request.user.userId,
+    });
+    return reply.send(meter);
   });
 
   app.post('/meters/:meterId/claim', {

@@ -277,10 +277,11 @@ between 0 and 1,000,000 inclusive.
 migration/import fields. Current Scheduler and Field App authoring UIs do not
 request or write them. Scheduler also omits `customJobNumber` and relies on the
 server-generated shared Job ID; installed clients may continue to exchange the
-legacy nullable field. New authoring uses M1-M5 scope values in `serviceType`
-and the controlled NEM/revenue/monitoring/water values (or free-text Other) in
-`meteringSolutionType`. `serviceType` remains the compatibility projection of
-the shared Field job detail `workType` for installed clients.
+legacy nullable field. Scheduler creation does not request NMI, MaaS, scope,
+metering type, or job-scope comments; those optional values remain available to
+Field App installation authoring and installed-client compatibility.
+`serviceType` remains the compatibility projection of the shared Field job
+detail `workType` for installed clients.
 
 These fields do not replace existing authorities. Installation lifecycle owns
 the `Draft`/`Completed` status, and the completion endpoint owns `completedAt`

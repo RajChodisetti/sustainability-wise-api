@@ -99,26 +99,23 @@ test('calendar drag assignment expands a day into technician lanes and confirms 
   assert.match(gridSource, /Technicians available on/);
 });
 
-test('new Field App jobs collect planning inputs without installation outcomes', () => {
+test('new Field App jobs omit planning and installation outcome inputs', () => {
   const modalSource = readFileSync(
     new URL('../components/EventFormModal.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(modalSource, /Field App job planning and scope/);
-  assert.match(modalSource, /Scope categorization/);
-  assert.match(modalSource, /M1 - New install/);
-  assert.match(modalSource, /M2 - Faults \/ COMMS fault/);
-  assert.match(modalSource, /M3 - Inspection/);
-  assert.match(modalSource, /M4 - BD\/Upselling/);
-  assert.match(modalSource, /M5 — Other/);
-  assert.match(modalSource, /Metering type selection/);
+  assert.doesNotMatch(modalSource, /Field App job planning and scope/);
+  assert.doesNotMatch(modalSource, /Scope categorization/);
+  assert.doesNotMatch(
+    modalSource,
+    /scheduler-(?:electricity-nmi|work-type|metering-solution|maas|job-comments)/,
+  );
   assert.doesNotMatch(modalSource, /scheduler-custom-job-number|customJobNumber/);
   assert.match(modalSource, /titleSuffix: fieldJobTitleSuffix/);
   assert.match(modalSource, /schedulerFieldJobTitlePreview\(/);
   assert.doesNotMatch(modalSource, / - XXX/);
   assert.doesNotMatch(modalSource, /scheduler-planned-meter-type/);
-  assert.match(modalSource, /scheduler-job-comments/);
   assert.doesNotMatch(modalSource, /scheduler-(?:fergus-job|quote-number|customer-name)/);
   assert.doesNotMatch(
     modalSource,

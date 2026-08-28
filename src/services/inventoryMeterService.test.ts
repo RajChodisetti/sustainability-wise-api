@@ -2,9 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppError } from '../utils/errors.js';
 import {
+  inventoryClaimDecision,
+  NON_INSTALLED_INVENTORY_STATUSES,
   parseInventoryMeterRegistration,
   toNonInstalledInventoryMeterItem,
 } from './inventoryMeterService.js';
+
+test('active inventory excludes installed meter history', () => {
+  assert.deepEqual(NON_INSTALLED_INVENTORY_STATUSES, ['company', 'user']);
+  assert.equal(NON_INSTALLED_INVENTORY_STATUSES.includes('installed' as never), false);
+});
 
 test('inventory registration accepts and normalizes meter-only company stock details', () => {
   assert.deepEqual(parseInventoryMeterRegistration({
@@ -77,6 +84,22 @@ test('OTHER inventory meters require a custom manufacturer and model', () => {
       (error) => error instanceof AppError
         && error.statusCode === 400
         && error.detail === 'OTHER meters require customManufacturerName and customModelName',
+    );
+  }
+});
+
+test('Field inventory claims transfer company stock and are idempotent only for the same user', () => {
+  assert.equal(inventoryClaimDecision({ status: 'company', custodianUserId: null }, 'user-1'), 'transfer');
+  assert.equal(inventoryClaimDecision({ status: 'user', custodianUserId: 'user-1' }, 'user-1'), 'already-held');
+
+  for (const [state, detail] of [
+    [null, 'This meter is not registered in company stock'],
+    [{ status: 'installed', custodianUserId: null }, 'This meter is already installed'],
+    [{ status: 'user', custodianUserId: 'user-2' }, 'This meter is assigned to another user'],
+  ] as const) {
+    assert.throws(
+      () => inventoryClaimDecision(state, 'user-1'),
+      (error) => error instanceof AppError && error.statusCode === 409 && error.detail === detail,
     );
   }
 });

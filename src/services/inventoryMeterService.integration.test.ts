@@ -20,7 +20,12 @@ test('Scheduler inventory lists only non-installed stock and resolves the curren
       ihZones,
     },
     { eq, inArray },
-    { listNonInstalledInventoryMeters, parseInventoryMeterRegistration, registerInventoryMeter },
+    {
+      claimInventoryMeterByDeviceId,
+      listNonInstalledInventoryMeters,
+      parseInventoryMeterRegistration,
+      registerInventoryMeter,
+    },
   ] = await Promise.all([
     import('../db/client.js'),
     import('../db/schema/installhub.js'),
@@ -140,6 +145,28 @@ test('Scheduler inventory lists only non-installed stock and resolves the curren
     assert.equal(movement[0]?.action, 'registered');
     assert.equal(movement[0]?.toStatus, 'company');
     assert.equal(movement[0]?.toCustodianUserId, null);
+
+    const claimed = await claimInventoryMeterByDeviceId({
+      deviceId: ` company-${suffix} `,
+      actorUserId: userId,
+    });
+    assert.equal(claimed.status, 'user');
+    assert.equal(claimed.custodianUserId, userId);
+    assert.equal(claimed.revision, companyStock.revision + 1);
+
+    const repeatedClaim = await claimInventoryMeterByDeviceId({
+      deviceId: `COMPANY-${suffix}`,
+      actorUserId: userId,
+    });
+    assert.equal(repeatedClaim.id, claimed.id);
+    assert.equal(repeatedClaim.revision, claimed.revision);
+
+    const movementsAfterClaim = await db.select().from(ihInventoryMeterMovements)
+      .where(eq(ihInventoryMeterMovements.inventoryMeterId, companyStock.id));
+    assert.deepEqual(movementsAfterClaim.map((item) => item.action), ['registered', 'claimed']);
+    assert.equal(movementsAfterClaim[1]?.fromStatus, 'company');
+    assert.equal(movementsAfterClaim[1]?.toStatus, 'user');
+    assert.equal(movementsAfterClaim[1]?.toCustodianUserId, userId);
   } finally {
     const stockIds = [userStockId, installedStockId];
     if (companyStockId) stockIds.push(companyStockId);

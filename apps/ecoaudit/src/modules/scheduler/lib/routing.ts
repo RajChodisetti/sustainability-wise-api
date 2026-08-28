@@ -181,7 +181,7 @@ export function schedulerFieldJobTitlePreview(
   siteName: string,
   suffix: string,
 ): string {
-  const scopeNumber = workType.match(/^\s*(M[1-5])\b/i)?.[1]?.toUpperCase() ?? 'M#';
+  const scopeNumber = workType.match(/^\s*(M[1-5])\b/i)?.[1]?.toUpperCase() ?? 'M5';
   const normalizedSuffix = suffix.toUpperCase();
   const suffixSegment = ` - ${normalizedSuffix}`;
   const prefix = `${scopeNumber} - ${clientName.trim() || 'Client'} - ${siteName.trim() || 'Site'}`;

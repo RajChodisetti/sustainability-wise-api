@@ -133,43 +133,6 @@ function addressFromSite(site: SchedulerSiteOption): SchedulerJobAddressInput {
   };
 }
 
-function nullableBooleanValue(value: boolean | null): string {
-  return value === null ? '' : value ? 'yes' : 'no';
-}
-
-function nullableBooleanFromValue(value: string): boolean | null {
-  if (value === 'yes') return true;
-  if (value === 'no') return false;
-  return null;
-}
-
-function NullableBooleanSelect({
-  id,
-  label,
-  value,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  value: boolean | null;
-  onChange: (value: boolean | null) => void;
-}) {
-  return (
-    <div>
-      <FieldLabel htmlFor={id}>{label}</FieldLabel>
-      <Select
-        id={id}
-        value={nullableBooleanValue(value)}
-        onChange={(event) => onChange(nullableBooleanFromValue(event.target.value))}
-      >
-        <option value="">Not recorded</option>
-        <option value="yes">Yes</option>
-        <option value="no">No</option>
-      </Select>
-    </div>
-  );
-}
-
 function installHubJobPayload(details: InstallHubJobDetails) {
   return {
     electricityNmi: optionalJobText(details.electricityNmi),
@@ -192,16 +155,6 @@ const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
   { value: 'installhub', label: 'Field App installation' },
   { value: 'custom', label: 'Custom job' },
 ];
-
-const FIELD_WORK_TYPES = [
-  ['M1 - New install', 'M1 — New install'],
-  ['M2 - Faults / COMMS fault', 'M2 — Faults / COMMS fault'],
-  ['M3 - Inspection', 'M3 — Inspection'],
-  ['M4 - BD/Upselling', 'M4 — BD/Upselling'],
-] as const;
-const OTHER_WORK_TYPE = 'M5 - ';
-const METERING_TYPES = ['NEM meter', 'Revenue metering', 'Monitoring / sub-meter', 'Water meter'] as const;
-const OTHER_METERING_TYPE = '__other_metering_type__';
 
 function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
   if (app === 'ecoaudit') return 'audit';
@@ -387,9 +340,6 @@ export function EventFormModal({
       jobClientName.trim()
       && jobSiteName.trim()
       && schedulerAddressIsComplete(jobAddress)
-      && installHubJobDetails.workType
-      && installHubJobDetails.workType !== OTHER_WORK_TYPE
-      && installHubJobDetails.meteringSolutionType !== OTHER_METERING_TYPE
     );
   }, [
     isAdmin,
@@ -409,8 +359,6 @@ export function EventFormModal({
     jobAddress,
     jobBuildingName,
     jobClientName,
-    installHubJobDetails.workType,
-    installHubJobDetails.meteringSolutionType,
   ]);
 
   const saving = create.isPending
@@ -1016,47 +964,6 @@ export function EventFormModal({
                             </div>
                           </div>
                         </section>
-                        {sourceApp === 'installhub' ? (
-                          <div className="mt-4 space-y-4 border-t border-[var(--border)] pt-4">
-                            <section aria-labelledby="scheduler-field-job-planning">
-                              <h3 id="scheduler-field-job-planning" className="text-sm font-extrabold text-[var(--text)]">Field App job planning and scope</h3>
-                              <div className="grid gap-x-3 sm:grid-cols-2">
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-electricity-nmi">Electricity NMI</FieldLabel>
-                                  <Input id="scheduler-electricity-nmi" value={installHubJobDetails.electricityNmi} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, electricityNmi: event.target.value }))} />
-                                </div>
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-work-type">Scope categorization</FieldLabel>
-                                  <Select id="scheduler-work-type" value={installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : installHubJobDetails.workType} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: event.target.value }))}>
-                                    <option value="">Select scope</option>
-                                    {FIELD_WORK_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                                    <option value={OTHER_WORK_TYPE}>M5 — Other</option>
-                                  </Select>
-                                  {installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? (
-                                    <Input aria-label="Other scope" placeholder="Enter other scope" value={installHubJobDetails.workType.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: `${OTHER_WORK_TYPE}${event.target.value}` }))} />
-                                  ) : null}
-                                </div>
-                                <div>
-                                  <FieldLabel htmlFor="scheduler-metering-solution">Metering type selection</FieldLabel>
-                                  <Select id="scheduler-metering-solution" value={METERING_TYPES.some((value) => value === installHubJobDetails.meteringSolutionType) ? installHubJobDetails.meteringSolutionType : installHubJobDetails.meteringSolutionType ? OTHER_METERING_TYPE : ''} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value }))}>
-                                    <option value="">Select metering type</option>
-                                    {METERING_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}
-                                    <option value={OTHER_METERING_TYPE}>Other</option>
-                                  </Select>
-                                  {installHubJobDetails.meteringSolutionType === OTHER_METERING_TYPE || (installHubJobDetails.meteringSolutionType && !METERING_TYPES.some((value) => value === installHubJobDetails.meteringSolutionType)) ? (
-                                    <Input aria-label="Other metering type" placeholder="Enter other metering type" value={installHubJobDetails.meteringSolutionType === OTHER_METERING_TYPE ? '' : installHubJobDetails.meteringSolutionType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value || OTHER_METERING_TYPE }))} />
-                                  ) : null}
-                                </div>
-                                <NullableBooleanSelect id="scheduler-maas" label="MaaS" value={installHubJobDetails.maas} onChange={(maas) => setInstallHubJobDetails((current) => ({ ...current, maas }))} />
-                                <div className="sm:col-span-2">
-                                  <FieldLabel htmlFor="scheduler-job-comments">Job comments / scope</FieldLabel>
-                                  <Textarea id="scheduler-job-comments" rows={3} value={installHubJobDetails.jobComments} maxLength={5000} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, jobComments: event.target.value }))} />
-                                </div>
-                              </div>
-                            </section>
-
-                          </div>
-                        ) : null}
                         {sourceApp === 'solarsense' ? (
                           <>
                             <FieldLabel>Building / roof name</FieldLabel>

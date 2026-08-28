@@ -146,6 +146,10 @@ test('Field title preview uses one three-character alphanumeric suffix', () => {
     schedulerFieldJobTitlePreview('M3 - Inspection', 'Client Co', 'North Site', suffix),
     'M3 - Client Co - North Site - AZ9',
   );
+  assert.equal(
+    schedulerFieldJobTitlePreview('', 'Client Co', 'North Site', suffix),
+    'M5 - Client Co - North Site - AZ9',
+  );
   assert.match(suffix, /^[A-Z0-9]{3}$/);
 });
 

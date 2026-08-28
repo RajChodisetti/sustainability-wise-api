@@ -203,6 +203,13 @@ the row to company stock. Canonical installation completion atomically changes
 the row to `installed`, clears user custody, and removes it from both active
 stock counts and the stock register without deleting its movement history.
 
+The current Field App claim flow accepts a scanned or manually entered Device
+ID only when that meter already exists in company stock. Claiming it is one
+transaction: company stock decreases by one and the authenticated user's stock
+increases by one. A repeated claim by the same user is idempotent; installed,
+deleted, unknown, or another user's meter cannot be claimed. The legacy scan
+registration route remains available for installed-client compatibility.
+
 ## Scheduler visibility, workforce, and analytics
 
 Public Scheduler planning exposes Field App Complete (`installhub`) jobs and

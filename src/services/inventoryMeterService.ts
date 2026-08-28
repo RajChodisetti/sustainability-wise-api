@@ -10,6 +10,7 @@ import { badRequest, conflict } from '../utils/errors.js';
 
 export type InventoryMeterModel = 'A3RM' | 'A6M' | 'OTHER';
 export type NonInstalledInventoryMeterStatus = 'company' | 'user';
+export const NON_INSTALLED_INVENTORY_STATUSES = ['company', 'user'] as const;
 
 export type InventoryMeterRegistration = {
   deviceId: string;
@@ -31,6 +32,7 @@ export type NonInstalledInventoryMeterItem = InventoryMeterRegistration & {
 };
 
 type InventoryMeterRecord = typeof ihInventoryMeters.$inferSelect;
+type InventoryClaimState = Pick<InventoryMeterRecord, 'status' | 'custodianUserId'>;
 
 const INVENTORY_REGISTRATION_FIELDS = new Set([
   'deviceId',
@@ -135,6 +137,56 @@ export async function registerInventoryMeter(input: {
   }
 }
 
+export function inventoryClaimDecision(
+  current: InventoryClaimState | null,
+  actorUserId: string,
+): 'transfer' | 'already-held' {
+  if (!current) throw conflict('This meter is not registered in company stock');
+  if (current.status === 'installed') throw conflict('This meter is already installed');
+  if (current.status === 'user' && current.custodianUserId !== actorUserId) {
+    throw conflict('This meter is assigned to another user');
+  }
+  if (current.status === 'user') return 'already-held';
+  if (current.status !== 'company') throw conflict('This meter is not available in company stock');
+  return 'transfer';
+}
+
+export async function claimInventoryMeterByDeviceId(input: {
+  deviceId: string;
+  actorUserId: string;
+}): Promise<InventoryMeterRecord> {
+  const normalizedDeviceId = requiredDeviceId(input.deviceId);
+  return db.transaction(async (tx) => {
+    const [current] = await tx.select().from(ihInventoryMeters).where(and(
+      eq(ihInventoryMeters.deviceId, normalizedDeviceId),
+      isNull(ihInventoryMeters.deletedAt),
+    )).for('update').limit(1);
+
+    if (inventoryClaimDecision(current ?? null, input.actorUserId) === 'already-held') return current!;
+
+    const now = new Date();
+    const [meter] = await tx.update(ihInventoryMeters).set({
+      status: 'user',
+      custodianUserId: input.actorUserId,
+      revision: current.revision + 1,
+      updatedByUserId: input.actorUserId,
+      updatedAt: now,
+    }).where(eq(ihInventoryMeters.id, current.id)).returning();
+    await tx.insert(ihInventoryMeterMovements).values({
+      id: randomUUID(),
+      inventoryMeterId: meter.id,
+      action: 'claimed',
+      fromStatus: current.status,
+      toStatus: 'user',
+      fromCustodianUserId: current.custodianUserId,
+      toCustodianUserId: input.actorUserId,
+      actorUserId: input.actorUserId,
+      occurredAt: now,
+    });
+    return meter;
+  });
+}
+
 export function toNonInstalledInventoryMeterItem(input: {
   meter: InventoryMeterRecord;
   custodianName?: string | null;
@@ -180,7 +232,7 @@ export async function listNonInstalledInventoryMeters(input: {
     : undefined;
   const where = and(
     isNull(ihInventoryMeters.deletedAt),
-    inArray(ihInventoryMeters.status, ['company', 'user']),
+    inArray(ihInventoryMeters.status, [...NON_INSTALLED_INVENTORY_STATUSES]),
     searchFilter,
   );
   const [rows, totalRows] = await Promise.all([
