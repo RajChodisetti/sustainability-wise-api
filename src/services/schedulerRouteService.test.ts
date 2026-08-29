@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   appendScheduleWarnings,
-  buildSchedulerGoogleMapsUrl,
   optimizeOpenRoute,
   parseSchedulerCurrentLocation,
+  parseSchedulerRouteOriginInput,
+  resolveSchedulerRouteOrigin,
   straightLineMatrix,
 } from './schedulerRouteService.js';
 import { AppError } from '../utils/errors.js';
@@ -58,36 +59,30 @@ test('straight-line fallback is finite, symmetric, and deterministic', () => {
   );
 });
 
-test('Google Maps URL preserves the optimized stop order without an API key', () => {
-  const current = {
-    latitude: -33.86,
-    longitude: 151.2,
-    accuracyMeters: 15,
-    capturedAt: '2026-08-22T00:00:00.000Z',
-  };
-  const url = buildSchedulerGoogleMapsUrl(current, [
-    { latitude: -33.87, longitude: 151.21 },
-    { latitude: -33.88, longitude: 151.22 },
-    { latitude: -33.89, longitude: 151.23 },
-  ]);
-  assert.ok(url);
-  const parsed = new URL(url);
-  assert.equal(parsed.origin, 'https://www.google.com');
-  assert.equal(parsed.searchParams.get('origin'), '-33.86,151.2');
-  assert.equal(parsed.searchParams.get('waypoints'), '-33.87,151.21|-33.88,151.22');
-  assert.equal(parsed.searchParams.get('destination'), '-33.89,151.23');
-  assert.equal(parsed.searchParams.has('key'), false);
+test('exact optimizer supports a full route beyond the former four-job map limit', () => {
+  const pointCount = 7;
+  const optimized = optimizeOpenRoute(matrix(Array.from(
+    { length: pointCount },
+    (_, from) => Array.from(
+      { length: pointCount },
+      (_, to) => from === to ? 0 : 1,
+    ),
+  )), pointCount - 1);
+
+  assert.deepEqual(optimized.order, [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(optimized.unrouted, []);
+  assert.equal(optimized.totalDuration, 6);
 });
 
-test('Google Maps URL is null when no job can be routed', () => {
-  assert.equal(buildSchedulerGoogleMapsUrl({
-    latitude: -33.86,
-    longitude: 151.2,
-  }, []), null);
-});
-
-test('current location must be Australian and genuinely current when timestamped', () => {
+test('route origins accept selected Australian coordinates and require fresh live timestamps', () => {
   const now = new Date('2026-08-22T12:00:00.000Z');
+  assert.deepEqual(parseSchedulerCurrentLocation({
+    latitude: -37.8136,
+    longitude: 144.9631,
+  }, now), {
+    latitude: -37.8136,
+    longitude: 144.9631,
+  });
   assert.deepEqual(parseSchedulerCurrentLocation({
     latitude: -33.8688,
     longitude: 151.2093,
@@ -118,6 +113,74 @@ test('current location must be Australian and genuinely current when timestamped
       (error: unknown) => error instanceof AppError && error.statusCode === 400,
     );
   }
+});
+
+test('route origin input keeps current location and free-form starting address mutually exclusive', () => {
+  const now = new Date('2026-08-22T12:00:00.000Z');
+  assert.deepEqual(parseSchedulerRouteOriginInput({
+    startingAddress: '  Flinders Street Station, Melbourne VIC 3000  ',
+  }, now), {
+    kind: 'starting_address',
+    startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+  });
+  assert.deepEqual(parseSchedulerRouteOriginInput({
+    currentLocation: {
+      latitude: -37.8136,
+      longitude: 144.9631,
+      capturedAt: '2026-08-22T11:59:00.000Z',
+    },
+  }, now), {
+    kind: 'current_location',
+    currentLocation: {
+      latitude: -37.8136,
+      longitude: 144.9631,
+      capturedAt: '2026-08-22T11:59:00.000Z',
+    },
+  });
+  for (const input of [
+    {},
+    {
+      currentLocation: { latitude: -37.8136, longitude: 144.9631 },
+      startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+    },
+    { startingAddress: '  ' },
+  ]) {
+    assert.throws(
+      () => parseSchedulerRouteOriginInput(input, now),
+      (error: unknown) => error instanceof AppError && error.statusCode === 400,
+    );
+  }
+});
+
+test('free-form route origin is geocoded server-side and returned without a live timestamp', async () => {
+  let receivedAddress = '';
+  const currentLocation = await resolveSchedulerRouteOrigin({
+    startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+  }, {
+    geocodingAvailable: true,
+    geocode: async (address) => {
+      receivedAddress = address;
+      return { latitude: -37.8183, longitude: 144.9671 };
+    },
+  });
+  assert.equal(receivedAddress, 'Flinders Street Station, Melbourne VIC 3000');
+  assert.deepEqual(currentLocation, { latitude: -37.8183, longitude: 144.9671 });
+
+  await assert.rejects(
+    resolveSchedulerRouteOrigin({ startingAddress: 'Unknown Australian address' }, {
+      geocodingAvailable: true,
+      geocode: async () => null,
+    }),
+    (error: unknown) => error instanceof AppError && error.statusCode === 400,
+  );
+  await assert.rejects(
+    resolveSchedulerRouteOrigin({ startingAddress: 'Flinders Street Station, Melbourne VIC 3000' }, {
+      geocodingAvailable: false,
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.statusCode === 503
+      && error.detail === 'scheduler_geocoder_unavailable',
+  );
 });
 
 test('schedule warnings identify actionable titled stops without exposing event IDs', () => {

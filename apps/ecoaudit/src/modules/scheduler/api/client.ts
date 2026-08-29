@@ -75,8 +75,8 @@ import type {
   SchedulerClientAddressSuggestionsResponse,
   SchedulerClientDirectoryResponse,
   SchedulerAddressSuggestionsResponse,
-  SchedulerCurrentLocation,
   SchedulerRouteSuggestion,
+  SchedulerRouteSuggestionInput,
 } from '@/modules/scheduler/types/routing';
 
 type PortalRequest = <T>(method: string, path: string, body?: unknown) => Promise<T>;
@@ -302,11 +302,9 @@ export function fetchSchedulerClientAddressSuggestions(input: {
   );
 }
 
-export function fetchSchedulerRouteSuggestion(input: {
-  date: string;
-  currentLocation: SchedulerCurrentLocation;
-  assigneeFieldUserId?: string;
-}): Promise<SchedulerRouteSuggestion> {
+export function fetchSchedulerRouteSuggestion(
+  input: SchedulerRouteSuggestionInput,
+): Promise<SchedulerRouteSuggestion> {
   return portalRequest(Boolean(input.assigneeFieldUserId))<SchedulerRouteSuggestion>(
     'POST',
     '/v1/portal/scheduler/route-suggestions',

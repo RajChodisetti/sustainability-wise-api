@@ -455,6 +455,18 @@ test('Scheduler map routes are authenticated, Australia-bound, and safely unavai
       },
     });
     assert.equal(outsideAustralia.statusCode, 400, outsideAustralia.body);
+
+    const conflictingOrigins = await app.inject({
+      method: 'POST',
+      url: routeUrl,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: {
+        date: '2026-08-22',
+        currentLocation: { latitude: -37.8136, longitude: 144.9631 },
+        startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+      },
+    });
+    assert.equal(conflictingOrigins.statusCode, 400, conflictingOrigins.body);
   } finally {
     await app.close();
   }

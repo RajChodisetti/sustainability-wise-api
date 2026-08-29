@@ -81,7 +81,7 @@ import type {
 } from '@/modules/scheduler/types/workforce';
 import type { PostSchedulerInvoiceRefundInput } from '@/modules/scheduler/types/refunds';
 import type { SchedulerAnalyticsFilters } from '@/modules/scheduler/types/analytics';
-import type { SchedulerCurrentLocation } from '@/modules/scheduler/types/routing';
+import type { SchedulerRouteSuggestionInput } from '@/modules/scheduler/types/routing';
 
 export const schedulerKeys = {
   all: ['portal', 'scheduler'] as const,
@@ -298,11 +298,7 @@ export function useSchedulerClientAddressSuggestions(
 
 export function useSchedulerRouteSuggestion() {
   return useMutation({
-    mutationFn: (input: {
-      date: string;
-      currentLocation: SchedulerCurrentLocation;
-      assigneeFieldUserId?: string;
-    }) => fetchSchedulerRouteSuggestion(input),
+    mutationFn: (input: SchedulerRouteSuggestionInput) => fetchSchedulerRouteSuggestion(input),
   });
 }
 

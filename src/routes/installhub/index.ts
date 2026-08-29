@@ -7,10 +7,12 @@ import { installhubCanonicalRoutes } from './canonicalRoutes.js';
 import { installhubFinanceRoutes } from './finance.js';
 import { installhubInvoiceRoutes } from './invoices.js';
 import { installhubInventoryRoutes } from './inventory.js';
+import { installhubRouteSuggestionRoutes } from './routeSuggestions.js';
 import { productClientDirectoryRoutes } from '../clientDirectory.js';
 
 export async function installhubRoutes(app: FastifyInstance): Promise<void> {
   await app.register(productClientDirectoryRoutes('installhub'));
+  await app.register(installhubRouteSuggestionRoutes);
   await app.register(installhubSyncRoutes, { prefix: '/sync' });
   await app.register(installhubUserRoutes, { prefix: '/users' });
   await app.register(installhubInventoryRoutes, { prefix: '/inventory' });

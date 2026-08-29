@@ -1,21 +1,39 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { ApiError, cloudConnectionErrorMessage } from '@/api/client';
-import { Button, buttonClassName } from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner } from '@/components/ui/Card';
-import { FieldHint, FieldLabel, Input } from '@/components/ui/FormFields';
+import { FieldHint, FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
-import { useSchedulerRouteSuggestion } from '@/modules/scheduler/hooks/useScheduler';
+import {
+  usePortalAssignees,
+  useSchedulerAddressSuggestions,
+  useSchedulerRouteSuggestion,
+} from '@/modules/scheduler/hooks/useScheduler';
 import {
   schedulerRouteDistance,
   schedulerRouteDuration,
   schedulerRouteJobTypeLabel,
+  schedulerRouteLocationIsAustralian,
+  schedulerRouteOriginFromAddress,
 } from '@/modules/scheduler/lib/routing';
 import type {
+  SchedulerAddressSuggestion,
   SchedulerCurrentLocation,
   SchedulerRouteJob,
 } from '@/modules/scheduler/types/routing';
+
+const EMPTY_START_SUGGESTIONS: SchedulerAddressSuggestion[] = [];
+
+function useDebouncedValue(value: string, delayMs = 300): string {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
+}
 
 function currentBrowserLocation(): Promise<SchedulerCurrentLocation> {
   return new Promise((resolve, reject) => {
@@ -53,28 +71,99 @@ function scheduledTimeLabel(job: SchedulerRouteJob, timezone: string): string {
   return end ? `${start}–${end}` : start;
 }
 
-export function SchedulerRouteWorkspace() {
+export function SchedulerRouteWorkspace({ isAdmin }: { isAdmin: boolean }) {
+  const generatedId = useId().replaceAll(':', '');
   const [date, setDate] = useState('');
+  const [assigneeFieldUserId, setAssigneeFieldUserId] = useState('');
+  const [originMode, setOriginMode] = useState<'current' | 'address'>('current');
+  const [originQuery, setOriginQuery] = useState('');
+  const [originOpen, setOriginOpen] = useState(false);
+  const [selectedOrigin, setSelectedOrigin] = useState<SchedulerAddressSuggestion | null>(null);
+  const [submittedOriginLabel, setSubmittedOriginLabel] = useState('');
+  const [submittedAssigneeLabel, setSubmittedAssigneeLabel] = useState('');
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const route = useSchedulerRouteSuggestion();
+  const assignees = usePortalAssignees(isAdmin);
+  const debouncedOriginQuery = useDebouncedValue(originQuery.trim());
+  const originSuggestions = useSchedulerAddressSuggestions(
+    { query: debouncedOriginQuery },
+    originMode === 'address',
+  );
+  const startSuggestions = originSuggestions.data?.suggestions ?? EMPTY_START_SUGGESTIONS;
+
+  function resetResult() {
+    route.reset();
+    setError(null);
+    setSubmittedOriginLabel('');
+    setSubmittedAssigneeLabel('');
+  }
 
   async function suggestRoute() {
     setError(null);
     route.reset();
     setLocating(true);
     try {
-      const currentLocation = await currentBrowserLocation();
+      let routeOrigin:
+        | { currentLocation: SchedulerCurrentLocation }
+        | { startingAddress: string };
+      let originLabel: string;
+      if (originMode === 'address') {
+        const startingAddress = originQuery.trim();
+        if (startingAddress.length < 3) {
+          throw new Error('Enter an Australian starting address before planning the route.');
+        }
+        if (startingAddress.length > 300) {
+          throw new Error('The Australian starting address must be 300 characters or fewer.');
+        }
+        routeOrigin = schedulerRouteOriginFromAddress(startingAddress, selectedOrigin)!;
+        originLabel = selectedOrigin?.label === startingAddress
+          ? selectedOrigin.label
+          : startingAddress;
+      } else {
+        let currentLocation: SchedulerCurrentLocation;
+        try {
+          currentLocation = await currentBrowserLocation();
+        } catch (caught) {
+          setOriginMode('address');
+          throw caught;
+        }
+        if (!schedulerRouteLocationIsAustralian(currentLocation)) {
+          setOriginMode('address');
+          throw new Error(
+            'Your current location is outside Australia. Choose an Australian starting address to preview the route.',
+          );
+        }
+        routeOrigin = { currentLocation };
+        originLabel = 'Current device location';
+      }
+      if (isAdmin && !assigneeFieldUserId) {
+        throw new Error('Choose a technician before planning the route.');
+      }
       await route.mutateAsync({
         date,
-        currentLocation,
+        ...routeOrigin,
+        assigneeFieldUserId: isAdmin ? assigneeFieldUserId : undefined,
       });
-    } catch (caught) {
-      setError(
-        caught instanceof ApiError
-          ? caught.detail ?? caught.message
-          : cloudConnectionErrorMessage(caught),
+      setSubmittedOriginLabel(originLabel);
+      setSubmittedAssigneeLabel(
+        isAdmin
+          ? assignees.data?.find((user) => user.fieldUserId === assigneeFieldUserId)?.label ?? ''
+          : '',
       );
+    } catch (caught) {
+      const apiDetail = caught instanceof ApiError ? caught.detail ?? caught.message : '';
+      if (caught instanceof ApiError && /^Scheduler user not found$/i.test(apiDetail)) {
+        setError(
+          'This account is not linked to an active Field user. Ask an administrator to review the Scheduler user record.',
+        );
+      } else if (caught instanceof ApiError && /^Assignee not found$/i.test(apiDetail)) {
+        setError(
+          'The selected technician is not linked to an active Field user. Choose another technician or review that user record.',
+        );
+      } else {
+        setError(caught instanceof ApiError ? apiDetail : cloudConnectionErrorMessage(caught));
+      }
     } finally {
       setLocating(false);
     }
@@ -82,11 +171,13 @@ export function SchedulerRouteWorkspace() {
 
   const result = route.data;
   const busy = locating || route.isPending;
+  const originInputId = `scheduler-route-origin-${generatedId}`;
+  const originListboxId = `${originInputId}-suggestions`;
 
   return (
     <div className="space-y-5">
       <Card>
-        <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+        <div className={`grid gap-4 ${isAdmin ? 'lg:grid-cols-3' : 'sm:grid-cols-2'}`}>
           <div>
             <FieldLabel htmlFor="scheduler-route-date" className="!mt-0">Work date</FieldLabel>
             <Input
@@ -96,20 +187,141 @@ export function SchedulerRouteWorkspace() {
               disabled={busy}
               onChange={(event) => {
                 setDate(event.target.value);
-                route.reset();
-                setError(null);
+                resetResult();
               }}
             />
           </div>
-          <Button onClick={() => void suggestRoute()} disabled={busy || !date}>
+          {isAdmin ? (
+            <div>
+              <FieldLabel htmlFor="scheduler-route-assignee" className="!mt-0">Technician</FieldLabel>
+              <Select
+                id="scheduler-route-assignee"
+                value={assigneeFieldUserId}
+                disabled={busy || assignees.isLoading}
+                onChange={(event) => {
+                  setAssigneeFieldUserId(event.target.value);
+                  resetResult();
+                }}
+              >
+                <option value="">Select technician</option>
+                {(assignees.data ?? []).map((user) => (
+                  <option key={user.key} value={user.fieldUserId}>
+                    {user.label}{user.email ? ` · ${user.email}` : ''}
+                  </option>
+                ))}
+              </Select>
+              {assignees.isError ? (
+                <FieldHint>Technicians could not be loaded. Refresh the page and try again.</FieldHint>
+              ) : null}
+            </div>
+          ) : null}
+          <div>
+            <FieldLabel htmlFor="scheduler-route-origin-mode" className="!mt-0">Starting point</FieldLabel>
+            <Select
+              id="scheduler-route-origin-mode"
+              value={originMode}
+              disabled={busy}
+              onChange={(event) => {
+                setOriginMode(event.target.value as 'current' | 'address');
+                resetResult();
+              }}
+            >
+              <option value="current">Current device location</option>
+              <option value="address">Australian address</option>
+            </Select>
+          </div>
+        </div>
+
+        {originMode === 'address' ? (
+          <div className="mt-4">
+            <FieldLabel htmlFor={originInputId}>Australian starting address</FieldLabel>
+            <div className="relative">
+              <Input
+                id={originInputId}
+                value={originQuery}
+                disabled={busy}
+                maxLength={300}
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={originOpen && startSuggestions.length > 0}
+                aria-controls={originListboxId}
+                aria-busy={originSuggestions.isFetching}
+                autoComplete="street-address"
+                placeholder="Start typing an Australian address"
+                onFocus={() => setOriginOpen(true)}
+                onBlur={() => window.setTimeout(() => setOriginOpen(false), 120)}
+                onChange={(event) => {
+                  setOriginQuery(event.target.value);
+                  setSelectedOrigin(null);
+                  setOriginOpen(true);
+                  resetResult();
+                }}
+              />
+              {originOpen && startSuggestions.length > 0 ? (
+                <div className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]">
+                  <div id={originListboxId} role="listbox" aria-label="Australian starting-address suggestions">
+                    {startSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion.id}
+                        type="button"
+                        role="option"
+                        aria-selected={selectedOrigin?.id === suggestion.id}
+                        className="block w-full rounded-lg px-3 py-2.5 text-left text-sm leading-5 text-[var(--text)] hover:bg-[var(--surface2)]"
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                          setSelectedOrigin(suggestion);
+                          setOriginQuery(suggestion.label);
+                          setOriginOpen(false);
+                          resetResult();
+                        }}
+                      >
+                        {suggestion.label}
+                      </button>
+                    ))}
+                  </div>
+                  {originSuggestions.data?.attribution ? (
+                    <p className="px-3 py-1 text-[10px] text-[var(--muted)]">
+                      {originSuggestions.data.attribution}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+            {originSuggestions.isFetching ? <FieldHint>Searching Australian addresses…</FieldHint> : null}
+            {originSuggestions.isError ? (
+              <FieldHint>
+                Suggestions are temporarily unavailable. You can still enter a complete Australian address.
+              </FieldHint>
+            ) : null}
+            {originSuggestions.data?.available === false ? (
+              <FieldHint>
+                Address geocoding is not configured, so an administrator must enable it before entered addresses can be planned.
+              </FieldHint>
+            ) : null}
+          </div>
+        ) : null}
+
+        <div className="mt-4 flex justify-end">
+          <Button
+            onClick={() => void suggestRoute()}
+            disabled={
+              busy
+              || !date
+              || (isAdmin && !assigneeFieldUserId)
+              || (
+                originMode === 'address'
+                && (originQuery.trim().length < 3 || originQuery.trim().length > 300)
+              )
+            }
+          >
             <Icon name="map-pin" size={18} />
-            {busy ? 'Finding route…' : 'Use current location'}
+            {busy ? 'Finding route…' : 'Plan route'}
           </Button>
         </div>
         <FieldHint>
-          Choose the work date in your saved workforce timezone. The route includes only jobs assigned to you.
-          {' '}Your current coordinates are sent only for this calculation and are not saved as attendance or location history.
-          {' '}Opening the generated route shares its coordinates with Google Maps.
+          The selected technician’s saved timezone defines the work date.
+          {' '}The entered address or starting coordinates are used only for this calculation and are not saved as attendance, location, or route history.
+          {' '}This planner returns stop order and travel estimates only; it does not provide maps or navigation.
         </FieldHint>
       </Card>
 
@@ -119,7 +331,7 @@ export function SchedulerRouteWorkspace() {
         <EmptyState
           icon="map-pin"
           title="Ready to plan the day"
-          description="Choose a date, then allow location access to order the day's Field App jobs from your current position."
+          description="Choose a date and starting point to order the day's Field App jobs. Administrators also choose the technician."
         />
       ) : null}
 
@@ -137,6 +349,9 @@ export function SchedulerRouteWorkspace() {
                 <p className="mt-1 text-sm text-[var(--text-sub)]">
                   {schedulerRouteDistance(result.totalDistanceMeters)} · approximately {schedulerRouteDuration(result.totalDurationSeconds)} driving
                 </p>
+                <p className="mt-1 text-xs font-bold text-[var(--text-sub)]">
+                  {submittedAssigneeLabel ? `${submittedAssigneeLabel} · ` : ''}Starting from {submittedOriginLabel || 'the selected point'}
+                </p>
                 <p className="mt-1 text-xs text-[var(--muted)]">
                   Times use {result.timezone}.{' '}
                   {result.optimization === 'road_duration'
@@ -150,17 +365,6 @@ export function SchedulerRouteWorkspace() {
                   </p>
                 ) : null}
               </div>
-              {result.googleMapsUrl ? (
-                <a
-                  href={result.googleMapsUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={buttonClassName('primary', 'shrink-0')}
-                >
-                  <Icon name="map-pin" size={18} />
-                  Open route in Google Maps
-                </a>
-              ) : null}
             </div>
           </Card>
 

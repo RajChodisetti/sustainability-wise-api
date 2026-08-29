@@ -36,7 +36,7 @@ export const SCHEDULER_NAVIGATION_GROUPS: SchedulerNavigationGroup[] = [
     items: [
       { id: 'overview', label: 'Overview', icon: 'gauge' },
       { id: 'calendar', label: 'Calendar', icon: 'calendar' },
-      { id: 'my-route', label: 'My route', icon: 'map-pin' },
+      { id: 'my-route', label: 'Route planner', icon: 'map-pin' },
       { id: 'deadlines', label: 'Deadlines', icon: 'clipboard' },
     ],
   },

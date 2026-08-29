@@ -2,6 +2,7 @@ import type {
   AustralianState,
   SchedulerAddressSuggestion,
   SchedulerClientAddressSuggestion,
+  SchedulerCurrentLocation,
   SchedulerJobAddressInput,
 } from '@/modules/scheduler/types/routing';
 import type { SchedulerSiteOption } from '@/modules/scheduler/types/domain';
@@ -244,6 +245,41 @@ export function schedulerRouteDuration(value: number): string {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
   return remainder ? `${hours} hr ${remainder} min` : `${hours} hr`;
+}
+
+export function schedulerRouteLocationIsAustralian(
+  location: Pick<SchedulerCurrentLocation, 'latitude' | 'longitude'>,
+): boolean {
+  return Number.isFinite(location.latitude)
+    && Number.isFinite(location.longitude)
+    && location.latitude >= -44
+    && location.latitude <= -9
+    && location.longitude >= 112
+    && location.longitude <= 154;
+}
+
+export function schedulerRouteLocationFromSuggestion(
+  suggestion: Pick<SchedulerAddressSuggestion, 'latitude' | 'longitude'>,
+): SchedulerCurrentLocation | null {
+  const location = {
+    latitude: suggestion.latitude,
+    longitude: suggestion.longitude,
+  };
+  return schedulerRouteLocationIsAustralian(location) ? location : null;
+}
+
+export function schedulerRouteOriginFromAddress(
+  value: string,
+  selectedSuggestion: SchedulerAddressSuggestion | null,
+): { currentLocation: SchedulerCurrentLocation } | { startingAddress: string } | null {
+  const startingAddress = value.trim();
+  if (startingAddress.length < 3 || startingAddress.length > 300) return null;
+  const selectedLocation = selectedSuggestion?.label === startingAddress
+    ? schedulerRouteLocationFromSuggestion(selectedSuggestion)
+    : null;
+  return selectedLocation
+    ? { currentLocation: selectedLocation }
+    : { startingAddress };
 }
 
 export function schedulerRouteJobTypeLabel(sourceApp: string): string {

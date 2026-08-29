@@ -388,7 +388,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(route.jobs.length, 1);
     assert.equal(route.unroutableJobs.length, 0);
     assert.deepEqual(new Set(route.jobs.map((job) => job.sourceApp)), new Set(['installhub']));
-    assert.match(route.googleMapsUrl ?? '', /^https:\/\/www\.google\.com\/maps\/dir\//);
+    assert.equal(route.googleMapsUrl, null);
 
     const reassignedEvent = await updateScheduleEvent(admin, field.id, {
       assigneeFieldUserId: secondAssignee.fieldUserId,

@@ -16,6 +16,9 @@ import {
   schedulerManualAddress,
   schedulerRouteDistance,
   schedulerRouteDuration,
+  schedulerRouteLocationFromSuggestion,
+  schedulerRouteLocationIsAustralian,
+  schedulerRouteOriginFromAddress,
   uniquePostcodeLocalities,
 } from './routing';
 
@@ -224,4 +227,41 @@ test('formatters keep route metrics compact', () => {
   assert.equal(schedulerRouteDistance(850), '850 m');
   assert.equal(schedulerRouteDistance(12_500), '13 km');
   assert.equal(schedulerRouteDuration(5_400), '1 hr 30 min');
+});
+
+test('route origins are validated against the Australian operating area before submission', () => {
+  assert.equal(schedulerRouteLocationIsAustralian({
+    latitude: -33.8688,
+    longitude: 151.2093,
+  }), true);
+  assert.equal(schedulerRouteLocationIsAustralian({
+    latitude: 33.4484,
+    longitude: -112.074,
+  }), false);
+  assert.equal(schedulerRouteLocationIsAustralian({
+    latitude: Number.NaN,
+    longitude: 151.2093,
+  }), false);
+  assert.deepEqual(schedulerRouteLocationFromSuggestion(suggestion), {
+    latitude: -33.86,
+    longitude: 151.21,
+  });
+  assert.equal(schedulerRouteLocationFromSuggestion({
+    latitude: 33.4484,
+    longitude: -112.074,
+  }), null);
+});
+
+test('route address origin accepts free-form text, reuses a selected point, and bounds length', () => {
+  assert.deepEqual(schedulerRouteOriginFromAddress(suggestion.label, suggestion), {
+    currentLocation: { latitude: -33.86, longitude: 151.21 },
+  });
+  assert.deepEqual(schedulerRouteOriginFromAddress(
+    '  Flinders Street Station, Melbourne VIC 3000  ',
+    null,
+  ), {
+    startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+  });
+  assert.equal(schedulerRouteOriginFromAddress('AU', null), null);
+  assert.equal(schedulerRouteOriginFromAddress('A'.repeat(301), null), null);
 });

@@ -1,6 +1,7 @@
 import {
   config,
   normalizeSchedulerMapProviderUrl,
+  SCHEDULER_ROUTE_STOP_LIMIT,
 } from '../config.js';
 import { AppError, badRequest } from '../utils/errors.js';
 import {
@@ -365,7 +366,10 @@ export function createSchedulerMapProvider(
   const photonUrl = normalizeSchedulerMapProviderUrl('photonUrl', options.photonUrl);
   const osrmUrl = normalizeSchedulerMapProviderUrl('osrmUrl', options.osrmUrl);
   const timeoutMs = Math.min(20_000, Math.max(500, options.requestTimeoutMs ?? 5_000));
-  const maxStops = Math.min(4, Math.max(1, options.maxStops ?? 4));
+  const maxStops = Math.min(
+    SCHEDULER_ROUTE_STOP_LIMIT,
+    Math.max(1, options.maxStops ?? SCHEDULER_ROUTE_STOP_LIMIT),
+  );
   const fetchImpl = options.fetchImpl ?? fetch;
 
   async function suggestSchedulerAddresses(input: {

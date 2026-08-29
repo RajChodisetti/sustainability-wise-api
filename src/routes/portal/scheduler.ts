@@ -530,10 +530,11 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       body: {
         type: 'object',
         additionalProperties: false,
-        required: ['date', 'currentLocation'],
+        required: ['date'],
         properties: {
           date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
           assigneeFieldUserId: { type: 'string', minLength: 1, maxLength: 200 },
+          startingAddress: { type: 'string', minLength: 3, maxLength: 300 },
           currentLocation: {
             type: 'object',
             additionalProperties: false,
@@ -546,6 +547,10 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
             },
           },
         },
+        oneOf: [
+          { required: ['currentLocation'], not: { required: ['startingAddress'] } },
+          { required: ['startingAddress'], not: { required: ['currentLocation'] } },
+        ],
       },
     },
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
@@ -555,6 +560,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
     return reply.send(await getSchedulerRouteSuggestion(request.user, {
       date: body.date,
       currentLocation: body.currentLocation,
+      startingAddress: body.startingAddress,
       assigneeFieldUserId: body.assigneeFieldUserId,
     }));
   });

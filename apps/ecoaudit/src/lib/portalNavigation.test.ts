@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   portalAppForPath,
@@ -74,8 +75,43 @@ test('portalLoginRedirectPath sends legacy app login URLs to the canonical login
 test('InstallHub routes are grouped under the Field App Complete navigation scope', () => {
   assert.equal(portalNavigationScopeForPath('/field'), 'field');
   assert.equal(portalNavigationScopeForPath('/installhub/dashboard'), 'field');
+  assert.equal(portalNavigationScopeForPath('/installhub/route'), 'field');
   assert.equal(portalNavigationScopeForPath('/installhub/installations/installation-1'), 'field');
   assert.equal(portalNavigationScopeForPath('/ecoaudit/audits'), 'ecoaudit');
   assert.equal(portalNavigationScopeForPath('/fleet/devices'), 'fleet');
   assert.equal(portalNavigationScopeForPath('/scheduler'), 'portal');
+});
+
+test('Field App exposes its own route planner without importing the Scheduler workspace', () => {
+  const shell = readFileSync(
+    new URL('../components/portal/PortalShell.tsx', import.meta.url),
+    'utf8',
+  );
+  const routeEntry = readFileSync(
+    new URL('../app/(portal)/installhub/(app)/route/page.tsx', import.meta.url),
+    'utf8',
+  );
+  const routePage = readFileSync(
+    new URL('../modules/installhub/pages/RoutePage.tsx', import.meta.url),
+    'utf8',
+  );
+  const routeApi = readFileSync(
+    new URL('../modules/installhub/api/routing.ts', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(shell, /href: '\/installhub\/route', label: 'Route planner'/);
+  assert.match(routeEntry, /InstallHubRoutePage/);
+  assert.match(routePage, /useInstallHubRouteSuggestion/);
+  assert.match(routePage, /Current device location/);
+  assert.match(routePage, /Australian address/);
+  assert.match(routePage, /new Date\(position\.timestamp\)\.toISOString\(\)/);
+  assert.match(routePage, /startingAddress/);
+  assert.doesNotMatch(routePage, /originMode === 'address' && !selectedOrigin/);
+  assert.doesNotMatch(routePage, /SchedulerRouteWorkspace|modules\/scheduler/);
+  assert.doesNotMatch(routePage, /assigneeFieldUserId|Technician/);
+  assert.match(routePage, /does not provide maps or navigation/);
+  assert.match(routeApi, /'\/v1\/installhub\/route-suggestions'/);
+  assert.match(routeApi, /installHubRequest/);
+  assert.doesNotMatch(routeApi, /portalRequest|modules\/scheduler|assigneeFieldUserId/);
 });

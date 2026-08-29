@@ -217,7 +217,7 @@ test('Scheduler routing excludes hidden product rows and reads Field destination
       new Set(['installhub']),
     );
     assert.equal(adminRoute.unroutableJobs.length, 0);
-    assert.match(adminRoute.googleMapsUrl ?? '', /^https:\/\/www\.google\.com\/maps\/dir\//);
+    assert.equal(adminRoute.googleMapsUrl, null);
 
     const inspector = {
       userId: ecoUserId,

@@ -250,15 +250,16 @@ the base URL of a controlled Photon-compatible geocoder, and
 an Australia driving extract. Leave either value blank to disable that
 capability safely; never expose the service URLs to portal or mobile clients.
 `SCHEDULER_MAP_REQUEST_TIMEOUT_MS` is clamped to 500-20000 ms, and
-`SCHEDULER_ROUTE_MAX_STOPS` to 1-4 so one Google Maps mobile directions URL can
-contain every optimized stop. Provider requests and responses are bounded,
+`SCHEDULER_ROUTE_MAX_STOPS` to 1-12 to bound the exact map-free optimizer and
+provider matrix. Provider requests and responses are bounded,
 country-filtered to AU, and coordinates are rejected outside the supported
 Australian bounding box. The API forwards user-entered address text to the
 configured geocoder and job coordinates to the configured router, so operate
 both services under the approved privacy, retention, logging, and OpenStreetMap
-attribution policy. Route calls do not store the caller's current coordinates
-or transient geocoder result. Google Maps receives coordinates only when the
-user chooses the returned external directions URL.
+attribution policy. Route calls do not store the caller's current coordinates,
+a user-entered starting address or its resolved coordinate, transient geocoder results, or the
+calculated stop order. The route response supplies order and travel estimates
+only; it does not return an external maps/navigation URL.
 
 Currency is normalized to uppercase during legacy conversion, and migration
 fails closed on mixed-currency Field ledgers rather than aggregating unlike

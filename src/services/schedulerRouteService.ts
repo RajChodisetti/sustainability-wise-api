@@ -14,7 +14,7 @@ import { eaAudits } from '../db/schema/ecoaudit.js';
 import { ihInstallations } from '../db/schema/installhub.js';
 import { globalUsers, portalScheduleEvents } from '../db/schema/shared.js';
 import { ssRooftopAssessments, ssSites } from '../db/schema/solarsense.js';
-import { badRequest, forbidden, notFound } from '../utils/errors.js';
+import { AppError, badRequest, forbidden, notFound } from '../utils/errors.js';
 import {
   addCalendarDays,
   isValidAnalyticsTimeZone,
@@ -39,6 +39,7 @@ import {
 
 const DEFAULT_STRAIGHT_LINE_SPEED_METRES_PER_SECOND = 50_000 / 3_600;
 const DEFAULT_UNSCHEDULED_JOB_DURATION_MS = 60 * 60 * 1_000;
+const SCHEDULER_GEOCODE_CONCURRENCY = 4;
 
 export type SchedulerRouteCurrentLocation = {
   latitude: number;
@@ -87,9 +88,14 @@ export type SchedulerRouteSuggestion = {
 
 export type SchedulerRouteSuggestionInput = {
   date: unknown;
-  currentLocation: unknown;
+  currentLocation?: unknown;
+  startingAddress?: unknown;
   assigneeFieldUserId?: unknown;
 };
+
+export type SchedulerRouteOriginInput =
+  | { kind: 'current_location'; currentLocation: SchedulerRouteCurrentLocation }
+  | { kind: 'starting_address'; startingAddress: string };
 
 type EventRow = typeof portalScheduleEvents.$inferSelect;
 
@@ -109,6 +115,12 @@ type RoutableEvent = {
   address: string;
   latitude: number;
   longitude: number;
+};
+
+type RoutableEventResolution = {
+  routable?: RoutableEvent;
+  unroutable?: SchedulerUnroutableJob;
+  warning?: string;
 };
 
 type Matrix = {
@@ -206,6 +218,55 @@ export function parseSchedulerCurrentLocation(
     longitude,
     ...(accuracyMeters === null ? {} : { accuracyMeters: accuracyMeters as number }),
     ...(capturedAt === null ? {} : { capturedAt }),
+  };
+}
+
+export function parseSchedulerRouteOriginInput(
+  input: Pick<SchedulerRouteSuggestionInput, 'currentLocation' | 'startingAddress'>,
+  now = new Date(),
+): SchedulerRouteOriginInput {
+  const hasCurrentLocation = input.currentLocation !== undefined && input.currentLocation !== null;
+  const hasStartingAddress = input.startingAddress !== undefined && input.startingAddress !== null;
+  if (hasCurrentLocation === hasStartingAddress) {
+    throw badRequest('Provide exactly one of currentLocation or startingAddress');
+  }
+  if (hasCurrentLocation) {
+    return {
+      kind: 'current_location',
+      currentLocation: parseSchedulerCurrentLocation(input.currentLocation, now),
+    };
+  }
+  if (typeof input.startingAddress !== 'string') {
+    throw badRequest('startingAddress must be an Australian address');
+  }
+  const startingAddress = input.startingAddress.trim().replace(/\s+/gu, ' ');
+  if (startingAddress.length < 3 || startingAddress.length > 300) {
+    throw badRequest('startingAddress must contain between 3 and 300 characters');
+  }
+  return { kind: 'starting_address', startingAddress };
+}
+
+export async function resolveSchedulerRouteOrigin(
+  input: Pick<SchedulerRouteSuggestionInput, 'currentLocation' | 'startingAddress'>,
+  options: {
+    geocodingAvailable?: boolean;
+    geocode?: (address: string) => Promise<{ latitude: number; longitude: number } | null>;
+  } = {},
+): Promise<SchedulerRouteCurrentLocation> {
+  const origin = parseSchedulerRouteOriginInput(input);
+  if (origin.kind === 'current_location') return origin.currentLocation;
+  const geocodingAvailable = options.geocodingAvailable
+    ?? Boolean(config.schedulerMaps.geoapifyApiKey || config.schedulerMaps.photonUrl);
+  if (!geocodingAvailable) {
+    throw new AppError(503, 'Service unavailable', 'scheduler_geocoder_unavailable');
+  }
+  const geocoded = await (options.geocode ?? geocodeSchedulerAddress)(origin.startingAddress);
+  if (!geocoded) {
+    throw badRequest('startingAddress could not be resolved to an Australian location');
+  }
+  return {
+    latitude: geocoded.latitude,
+    longitude: geocoded.longitude,
   };
 }
 
@@ -395,27 +456,24 @@ async function resolveRoutableEvents(
   warnings: string[],
 ): Promise<{ routable: RoutableEvent[]; unroutable: SchedulerUnroutableJob[] }> {
   const destinations = await loadStoredDestinations(events);
-  const routable: RoutableEvent[] = [];
-  const unroutable: SchedulerUnroutableJob[] = [];
 
-  for (const event of events) {
+  async function resolveEvent(event: EventRow): Promise<RoutableEventResolution> {
     if (!event.sourceId) {
-      unroutable.push(unroutableFromEvent(event, null, 'The job is not linked to a product record'));
-      continue;
+      return {
+        unroutable: unroutableFromEvent(event, null, 'The job is not linked to a product record'),
+      };
     }
     const key = `${event.sourceApp}:${event.sourceType}:${event.sourceId}`;
     const destination = destinations.get(key);
     if (!destination) {
-      unroutable.push(unroutableFromEvent(
-        event,
-        null,
-        'The linked Draft job is unavailable',
-      ));
-      continue;
+      return {
+        unroutable: unroutableFromEvent(event, null, 'The linked Draft job is unavailable'),
+      };
     }
     if (!destination.address) {
-      unroutable.push(unroutableFromEvent(event, null, 'The job does not have an address'));
-      continue;
+      return {
+        unroutable: unroutableFromEvent(event, null, 'The job does not have an address'),
+      };
     }
 
     if (storedSchedulerCoordinatesAreCurrent({
@@ -428,50 +486,75 @@ async function resolveRoutableEvents(
       longitude: destination.longitude,
       addressFingerprint: destination.addressFingerprint,
     })) {
-      routable.push({
-        event,
-        address: destination.address,
-        latitude: destination.latitude!,
-        longitude: destination.longitude!,
-      });
-      continue;
+      return {
+        routable: {
+          event,
+          address: destination.address,
+          latitude: destination.latitude!,
+          longitude: destination.longitude!,
+        },
+      };
     }
-    if (destination.latitude !== null || destination.longitude !== null) {
-      warnings.push(`Stored coordinates for ${event.title} were ignored because its address changed.`);
-    }
+    const warning = destination.latitude !== null || destination.longitude !== null
+      ? `Stored coordinates for ${event.title} were ignored because its address changed.`
+      : undefined;
 
     if (!config.schedulerMaps.geoapifyApiKey && !config.schedulerMaps.photonUrl) {
-      unroutable.push(unroutableFromEvent(
-        event,
-        destination.address,
-        'Address geocoding is not configured',
-      ));
-      continue;
+      return {
+        unroutable: unroutableFromEvent(
+          event,
+          destination.address,
+          'Address geocoding is not configured',
+        ),
+        warning,
+      };
     }
 
     try {
       const geocoded = await geocodeSchedulerAddress(destination.address);
       if (geocoded) {
-        routable.push({
-          event,
-          address: destination.address,
-          latitude: geocoded.latitude,
-          longitude: geocoded.longitude,
-        });
-      } else {
-        unroutable.push(unroutableFromEvent(
+        return {
+          routable: {
+            event,
+            address: destination.address,
+            latitude: geocoded.latitude,
+            longitude: geocoded.longitude,
+          },
+          warning,
+        };
+      }
+      return {
+        unroutable: unroutableFromEvent(
           event,
           destination.address,
           'The address could not be geocoded',
-        ));
-      }
+        ),
+        warning,
+      };
     } catch {
-      unroutable.push(unroutableFromEvent(
-        event,
-        destination.address,
-        'The address geocoder was unavailable',
-      ));
+      return {
+        unroutable: unroutableFromEvent(
+          event,
+          destination.address,
+          'The address geocoder was unavailable',
+        ),
+        warning,
+      };
     }
+  }
+
+  const resolutions: RoutableEventResolution[] = [];
+  for (let offset = 0; offset < events.length; offset += SCHEDULER_GEOCODE_CONCURRENCY) {
+    const batch = events.slice(offset, offset + SCHEDULER_GEOCODE_CONCURRENCY);
+    resolutions.push(...await Promise.all(batch.map(resolveEvent)));
+  }
+
+  const routable: RoutableEvent[] = [];
+  const unroutable: SchedulerUnroutableJob[] = [];
+  for (const resolution of resolutions) {
+    if (resolution.routable) routable.push(resolution.routable);
+    if (resolution.unroutable) unroutable.push(resolution.unroutable);
+    if (resolution.warning) warnings.push(resolution.warning);
   }
   return { routable, unroutable };
 }
@@ -521,44 +604,77 @@ function compareNumericPaths(left: readonly number[], right: readonly number[]):
   return left.length - right.length;
 }
 
-/** Exact open route: start at matrix index 0, visit the largest drivable job set, no return. */
+type PartialOpenRoute = {
+  duration: number;
+  order: number[];
+};
+
+function routeIsBetter(candidate: PartialOpenRoute, current: PartialOpenRoute): boolean {
+  return candidate.order.length > current.order.length
+    || (
+      candidate.order.length === current.order.length
+      && (
+        candidate.duration < current.duration
+        || (
+          candidate.duration === current.duration
+          && compareNumericPaths(candidate.order, current.order) < 0
+        )
+      )
+    );
+}
+
+/** Exact map-free open route: start at matrix index 0, visit the largest drivable set, no return. */
 export function optimizeOpenRoute(matrix: Matrix, jobCount: number): OpenRouteOptimization {
   if (!Number.isInteger(jobCount) || jobCount < 0 || jobCount > config.schedulerMaps.maxStops) {
     throw badRequest(`jobCount must be between 0 and ${config.schedulerMaps.maxStops}`);
   }
-  let bestOrder: number[] = [];
-  let bestDuration = 0;
+  const states = Array.from(
+    { length: 2 ** jobCount },
+    () => new Map<number, PartialOpenRoute>(),
+  );
+  let best: PartialOpenRoute = { duration: 0, order: [] };
 
-  function visit(currentPoint: number, remaining: number[], path: number[], duration: number): void {
-    if (
-      path.length > bestOrder.length
-      || (
-        path.length === bestOrder.length
-        && (
-          duration < bestDuration
-          || (duration === bestDuration && compareNumericPaths(path, bestOrder) < 0)
-        )
-      )
-    ) {
-      bestOrder = [...path];
-      bestDuration = duration;
-    }
-    for (let position = 0; position < remaining.length; position += 1) {
-      const jobIndex = remaining[position]!;
-      const nextPoint = jobIndex + 1;
-      const legDuration = finiteMatrixValue(matrix.durations, currentPoint, nextPoint);
-      const legDistance = finiteMatrixValue(matrix.distances, currentPoint, nextPoint);
-      if (legDuration === null || legDistance === null) continue;
-      visit(
-        nextPoint,
-        remaining.filter((_, index) => index !== position),
-        [...path, jobIndex],
-        duration + legDuration,
-      );
+  for (let jobIndex = 0; jobIndex < jobCount; jobIndex += 1) {
+    const nextPoint = jobIndex + 1;
+    const legDuration = finiteMatrixValue(matrix.durations, 0, nextPoint);
+    const legDistance = finiteMatrixValue(matrix.distances, 0, nextPoint);
+    if (legDuration === null || legDistance === null) continue;
+    const initial = { duration: legDuration, order: [jobIndex] };
+    states[2 ** jobIndex]!.set(jobIndex, initial);
+    if (routeIsBetter(initial, best)) best = initial;
+  }
+
+  for (let visitedMask = 1; visitedMask < states.length; visitedMask += 1) {
+    for (const [lastJobIndex, partial] of states[visitedMask]!) {
+      if (routeIsBetter(partial, best)) best = partial;
+      for (let nextJobIndex = 0; nextJobIndex < jobCount; nextJobIndex += 1) {
+        const nextBit = 2 ** nextJobIndex;
+        if ((visitedMask & nextBit) !== 0) continue;
+        const legDuration = finiteMatrixValue(
+          matrix.durations,
+          lastJobIndex + 1,
+          nextJobIndex + 1,
+        );
+        const legDistance = finiteMatrixValue(
+          matrix.distances,
+          lastJobIndex + 1,
+          nextJobIndex + 1,
+        );
+        if (legDuration === null || legDistance === null) continue;
+        const candidate: PartialOpenRoute = {
+          duration: partial.duration + legDuration,
+          order: [...partial.order, nextJobIndex],
+        };
+        const nextStates = states[visitedMask + nextBit]!;
+        const existing = nextStates.get(nextJobIndex);
+        if (!existing || routeIsBetter(candidate, existing)) {
+          nextStates.set(nextJobIndex, candidate);
+        }
+      }
     }
   }
 
-  visit(0, Array.from({ length: jobCount }, (_, index) => index), [], 0);
+  const bestOrder = best.order;
   const orderSet = new Set(bestOrder);
   const unrouted = Array.from({ length: jobCount }, (_, index) => index)
     .filter((index) => !orderSet.has(index));
@@ -579,26 +695,6 @@ export function optimizeOpenRoute(matrix: Matrix, jobCount: number): OpenRouteOp
     totalDistance: legDistances.reduce((sum, value) => sum + value, 0),
     totalDuration: legDurations.reduce((sum, value) => sum + value, 0),
   };
-}
-
-export function buildSchedulerGoogleMapsUrl(
-  current: SchedulerRouteCurrentLocation,
-  ordered: readonly { latitude: number; longitude: number }[],
-): string | null {
-  if (ordered.length === 0) return null;
-  const params = new URLSearchParams({
-    api: '1',
-    origin: `${current.latitude},${current.longitude}`,
-    destination: `${ordered.at(-1)!.latitude},${ordered.at(-1)!.longitude}`,
-    travelmode: 'driving',
-    dir_action: 'navigate',
-  });
-  if (ordered.length > 1) {
-    params.set('waypoints', ordered.slice(0, -1).map((job) => (
-      `${job.latitude},${job.longitude}`
-    )).join('|'));
-  }
-  return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
 export function appendScheduleWarnings(
@@ -643,7 +739,7 @@ export async function getSchedulerRouteSuggestion(
   input: SchedulerRouteSuggestionInput,
 ): Promise<SchedulerRouteSuggestion> {
   const date = requireCalendarDate(input.date);
-  const currentLocation = parseSchedulerCurrentLocation(input.currentLocation);
+  const currentLocation = await resolveSchedulerRouteOrigin(input);
   const assignee = await resolveRouteAssignee(user, input.assigneeFieldUserId);
   const events = await loadRouteEvents(assignee.fieldUserId, date, assignee.timezone);
   const warnings: string[] = [];
@@ -713,7 +809,9 @@ export async function getSchedulerRouteSuggestion(
     totalDistanceMeters: Math.round(optimized.totalDistance),
     totalDurationSeconds: Math.round(optimized.totalDuration),
     optimization,
-    googleMapsUrl: buildSchedulerGoogleMapsUrl(currentLocation, orderedInternal),
+    // Retained as a null compatibility field for portal clients deployed before
+    // route planning became map-free.
+    googleMapsUrl: null,
     warnings: [...new Set(warnings)],
   };
 }

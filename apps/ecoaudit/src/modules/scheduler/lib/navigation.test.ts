@@ -16,7 +16,7 @@ test('Scheduler sidebar groups expose planning, finance, and inventory sub-tabs'
       items: group.items.map((item) => item.label),
     })),
     [
-      { label: 'Planning', items: ['Overview', 'Calendar', 'My route', 'Deadlines'] },
+      { label: 'Planning', items: ['Overview', 'Calendar', 'Route planner', 'Deadlines'] },
       { label: 'Finance', items: ['Users', 'Analytics', 'Summary', 'Bills & expenses', 'Invoices'] },
       { label: 'Inventory', items: ['Dashboard', 'Meter Register'] },
     ],
@@ -47,6 +47,18 @@ test('Scheduler navigation lives in the portal sidebar and the page no longer du
   assert.match(shell, /SchedulerNavigation/);
   assert.doesNotMatch(page, /aria-label="Scheduler views"/);
   assert.match(page, /<SchedulerMeterRegister \/>/);
+});
+
+test('Scheduler route planner supports one-time location and free-form Australian origins', () => {
+  const workspace = readFileSync(
+    new URL('../components/SchedulerRouteWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspace, /Current device location/);
+  assert.match(workspace, /Australian address/);
+  assert.match(workspace, /new Date\(position\.timestamp\)\.toISOString\(\)/);
+  assert.match(workspace, /startingAddress/);
+  assert.doesNotMatch(workspace, /originMode === 'address' && !selectedOrigin/);
 });
 
 test('Scheduler Inventory stays meter-only and does not expose job creation', () => {

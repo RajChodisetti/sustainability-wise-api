@@ -305,22 +305,38 @@ coordinates are used only while their fingerprint still matches the current
 authoritative legacy address; otherwise route calculation ignores them and
 transiently geocodes the current text.
 
-Route suggestions accept `{ date, currentLocation: { latitude, longitude,
-accuracyMeters?, capturedAt? }, assigneeFieldUserId? }`. Inspectors are always
+Route suggestions accept exactly one origin: `{ date, currentLocation: {
+latitude, longitude, accuracyMeters?, capturedAt? }, assigneeFieldUserId? }`
+for a one-time device fix or an already resolved selected suggestion, or
+`{ date, startingAddress, assigneeFieldUserId? }`
+for a trimmed 3–300 character Australian address that the API geocodes
+server-side. `capturedAt` is supplied only for a live device fix. Inspectors are always
 restricted to themselves; an administrator may choose another active canonical
 Field user through the API only when the submitted current location is an
-explicitly authorized starting point. The shared portal keeps browser-location
-planning self-only so an administrator's device location is never presented as
-an employee's. The user's saved IANA timezone defines the requested local day. The
-API reads planned/in-progress Field App Complete installations, then returns optimized `jobs`, explicit
-`unroutableJobs`, leg and total estimates, schedule warnings, and one
-`googleMapsUrl` in the optimized order. A configured OSRM table supplies exact
+explicitly authorized starting point. The shared portal lets an administrator
+select the technician and either use this device's current Australian location
+or type an Australian starting address, with suggestions offered as a
+convenience rather than a requirement. That point is the route
+origin only and is never presented or stored as the employee's tracked
+location. The selected user's saved IANA timezone defines the requested local
+day. The API reads planned/in-progress Field App Complete installations, then
+returns optimized `jobs`, explicit `unroutableJobs`, leg and total estimates,
+and schedule warnings. The legacy `googleMapsUrl` response field is retained as
+`null` for rolling portal compatibility. A configured OSRM table supplies exact
 road-duration ordering; an unavailable router produces a deterministic
 straight-line-distance fallback and warning. The operation is advisory: it
 does not persist current location, provider geocodes, route order, or any
-Scheduler mutation. To keep every stop in one Google Maps mobile URL, the
-server accepts at most four jobs for the day (destination plus three
-waypoints).
+Scheduler mutation, and it does not return maps or navigation. The exact
+map-free optimizer accepts a configured maximum of 1-12 jobs for the day.
+
+Field App Complete exposes the same optimizer at
+`POST /v1/installhub/route-suggestions` for its portal and installed mobile
+client. That additive route requires an `installhub` inspector-or-admin JWT; it
+does not accept API keys, tokens from another application, or
+`assigneeFieldUserId`. Its request is the self-only subset
+`{ date, currentLocation }` or `{ date, startingAddress }`, and its response has the same route-suggestion
+shape described above. The existing Portal Scheduler route and administrator
+override remain unchanged.
 
 Event create and update use the same optional estimate contract. Updating an
 unrelated field on a historical event does not erase its legacy end timestamp;

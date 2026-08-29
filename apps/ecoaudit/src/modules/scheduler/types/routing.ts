@@ -157,3 +157,11 @@ export type SchedulerRouteSuggestion = {
   googleMapsUrl: string | null;
   warnings: string[];
 };
+
+export type SchedulerRouteSuggestionInput = {
+  date: string;
+  assigneeFieldUserId?: string;
+} & (
+  | { currentLocation: SchedulerCurrentLocation; startingAddress?: never }
+  | { currentLocation?: never; startingAddress: string }
+);

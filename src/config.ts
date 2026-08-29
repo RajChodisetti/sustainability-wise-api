@@ -53,10 +53,15 @@ export function parseSchedulerMapRequestTimeoutMs(value: string | undefined): nu
   return Math.min(20_000, Math.max(500, optionalIntValue(value, 5_000)));
 }
 
+export const SCHEDULER_ROUTE_STOP_LIMIT = 12;
+
 export function parseSchedulerRouteMaxStops(value: string | undefined): number {
-  // One Google Maps URL supports the origin, destination, and at most three
-  // intermediate waypoints on mobile. Four jobs therefore keeps every stop.
-  return Math.min(4, Math.max(1, optionalIntValue(value, 4)));
+  // The map-free exact optimizer is deliberately bounded so one request cannot
+  // create unbounded route-search work or provider matrices.
+  return Math.min(
+    SCHEDULER_ROUTE_STOP_LIMIT,
+    Math.max(1, optionalIntValue(value, SCHEDULER_ROUTE_STOP_LIMIT)),
+  );
 }
 
 function optionalIntValue(value: string | undefined, fallback: number): number {

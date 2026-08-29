@@ -204,6 +204,59 @@ The API owns a separate namespace:
 | Tables | Product IDs remain in `ea_users`, `ss_users`, and `ih_users`; `global_users` owns identity/role/state, `global_user_credentials` preserves migrated credentials, and `unified_users` maps all three projections to one Field subject |
 | Shared media registry | `photo_registry` rows with `app = installhub` |
 
+### Daily route suggestions
+
+Field App Complete can request the signed-in user's advisory daily route with a
+normal human session:
+
+```http
+POST /v1/installhub/route-suggestions
+Authorization: Bearer <installhub inspector-or-admin JWT>
+Content-Type: application/json
+
+{
+  "date": "2026-08-24",
+  "currentLocation": {
+    "latitude": -33.8688,
+    "longitude": 151.2093,
+    "accuracyMeters": 15,
+    "capturedAt": "2026-08-24T08:15:00.000Z"
+  }
+}
+```
+
+Alternatively, address mode sends the user-entered text in the same
+authenticated POST body for server-side Australian geocoding:
+
+```json
+{
+  "date": "2026-08-24",
+  "startingAddress": "Flinders Street Station, Melbourne VIC 3000"
+}
+```
+
+This route is self-only: it rejects API keys, other application namespaces, and
+an `assigneeFieldUserId` request field. The authenticated user's saved IANA
+timezone defines the local calendar day. The response uses the shared Scheduler
+route-suggestion shape: optimized planned/in-progress Field jobs, unroutable
+jobs, per-leg and total distance/time estimates, the optimization mode, and
+warnings. `googleMapsUrl` remains `null`; clients must not add map, navigation,
+or turn-by-turn behavior.
+
+Capture location only after an explicit foreground action. Send `capturedAt`
+for a device location so the API can enforce freshness. Address mode may reuse
+an unchanged selected suggestion's Australian coordinates without
+`capturedAt`; otherwise send a trimmed `startingAddress` of 3–300 characters.
+Suggestions are optional, and the API resolves free-form text through its
+Australia-filtered server-side geocoder. Exactly one of `currentLocation` or
+`startingAddress` is accepted.
+The API does not persist the origin,
+provider geocodes, or optimized order. It can forward the selected origin and
+job coordinates to the configured OSRM-compatible router, whose approved
+privacy, retention, and logging policy therefore applies. Precise coordinates
+belong in this authenticated POST body; clients and the API must not add them to
+URLs, notifications, or application logs.
+
 ### Installation lifecycle endpoints
 
 | Method and route | Purpose |

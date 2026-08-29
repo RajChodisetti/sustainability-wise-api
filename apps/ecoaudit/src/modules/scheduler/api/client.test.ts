@@ -508,6 +508,66 @@ test('an explicit admin-planned route selects an administrator credential in mix
   }
 });
 
+test('a free-form starting address stays in the authenticated route POST body', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const inspector = jwt('inspector', 'field-user');
+  const values = new Map<string, string>([['ea_web_jwt', inspector]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ url: string; authorization: string | null; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      url: String(input),
+      authorization: new Headers(init?.headers).get('Authorization'),
+      body: String(init?.body ?? ''),
+    });
+    return Response.json({
+      date: '2026-08-29',
+      timezone: 'Australia/Melbourne',
+      assigneeFieldUserId: 'field-user',
+      currentLocation: { latitude: -37.8183, longitude: 144.9671 },
+      jobs: [],
+      unroutableJobs: [],
+      totalDistanceMeters: 0,
+      totalDurationSeconds: 0,
+      optimization: 'straight_line_distance',
+      googleMapsUrl: null,
+      warnings: [],
+    });
+  };
+
+  try {
+    await fetchSchedulerRouteSuggestion({
+      date: '2026-08-29',
+      startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+    });
+    const request = requests[0];
+    assert.ok(request);
+    assert.equal(new URL(request.url, 'http://portal.test').pathname, '/v1/portal/scheduler/route-suggestions');
+    assert.equal(new URL(request.url, 'http://portal.test').search, '');
+    assert.equal(request.authorization, `Bearer ${inspector}`);
+    assert.deepEqual(JSON.parse(request.body), {
+      date: '2026-08-29',
+      startingAddress: 'Flinders Street Station, Melbourne VIC 3000',
+    });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
 test('scheduler invoice export start/latest/status/download stay on one selected admin credential', async () => {
   const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
   const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');

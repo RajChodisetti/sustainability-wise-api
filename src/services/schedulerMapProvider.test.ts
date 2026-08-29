@@ -40,9 +40,9 @@ test('map configuration is optional, URL-safe, and bounded', () => {
   assert.equal(parseSchedulerMapRequestTimeoutMs(undefined), 5_000);
   assert.equal(parseSchedulerMapRequestTimeoutMs('1'), 500);
   assert.equal(parseSchedulerMapRequestTimeoutMs('999999'), 20_000);
-  assert.equal(parseSchedulerRouteMaxStops(undefined), 4);
+  assert.equal(parseSchedulerRouteMaxStops(undefined), 12);
   assert.equal(parseSchedulerRouteMaxStops('0'), 1);
-  assert.equal(parseSchedulerRouteMaxStops('99'), 4);
+  assert.equal(parseSchedulerRouteMaxStops('99'), 12);
 });
 
 test('unconfigured providers are explicitly unavailable without network access', async () => {

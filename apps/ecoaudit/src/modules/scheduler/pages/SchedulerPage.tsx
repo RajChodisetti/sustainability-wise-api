@@ -155,7 +155,7 @@ export default function SchedulerPage({
 
       {activeTab === 'my-route' ? (
         <div id="scheduler-panel-my-route" role="region" aria-label="Planning route" tabIndex={0} className="outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]/30">
-          <SchedulerRouteWorkspace />
+          <SchedulerRouteWorkspace isAdmin={isAdmin} />
         </div>
       ) : null}
 
@@ -241,7 +241,7 @@ export default function SchedulerPage({
 
 function schedulerSubtitle(tab: SchedulerTab, fieldOnly: boolean): string {
   if (tab === 'my-route') {
-    return 'Order assigned Australian jobs from your current location and open the suggested route in Google Maps.';
+    return 'Order a technician’s Australian jobs from a live or selected starting point, with travel-time estimates.';
   }
   if (tab === 'inventory') {
     return 'See company stock and the meters currently held by each Field user.';
