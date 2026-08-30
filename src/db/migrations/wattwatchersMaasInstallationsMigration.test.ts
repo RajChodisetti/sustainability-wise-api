@@ -9,7 +9,7 @@ const snapshotUrl = new URL('./meta/0053_snapshot.json', import.meta.url);
 
 test('0053 adds source-auditable Fleet installation and replacement assignments', async () => {
   const migration = await readFile(migrationUrl, 'utf8');
-  assert.match(migration, /CREATE TABLE "ww_device_installation_assignments"/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS "ww_device_installation_assignments"/);
   assert.match(migration, /"fleet_account_client_id" text NOT NULL/);
   assert.match(migration, /"business_client_id" text NOT NULL/);
   assert.match(migration, /"business_site_id" text/);

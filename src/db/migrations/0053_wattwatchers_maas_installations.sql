@@ -1,4 +1,4 @@
-CREATE TABLE "ww_device_installation_assignments" (
+CREATE TABLE IF NOT EXISTS "ww_device_installation_assignments" (
 	"id" text PRIMARY KEY NOT NULL,
 	"source_key" text NOT NULL,
 	"source_workbook" text NOT NULL,
@@ -39,14 +39,32 @@ CREATE TABLE "ww_device_installation_assignments" (
   )
 );
 --> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_fleet_account_client_id_ww_clients_id_fk" FOREIGN KEY ("fleet_account_client_id") REFERENCES "public"."ww_clients"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_business_client_id_business_clients_id_fk" FOREIGN KEY ("business_client_id") REFERENCES "public"."business_clients"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_business_site_id_business_sites_id_fk" FOREIGN KEY ("business_site_id") REFERENCES "public"."business_sites"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_existing_device_id_ww_devices_id_fk" FOREIGN KEY ("existing_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_new_device_id_ww_devices_id_fk" FOREIGN KEY ("new_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_current_device_id_ww_devices_id_fk" FOREIGN KEY ("current_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "ww_device_installation_assignments_source_unique" ON "ww_device_installation_assignments" USING btree ("source_key");--> statement-breakpoint
-CREATE INDEX "ww_device_installation_assignments_account_idx" ON "ww_device_installation_assignments" USING btree ("fleet_account_client_id");--> statement-breakpoint
-CREATE INDEX "ww_device_installation_assignments_business_client_idx" ON "ww_device_installation_assignments" USING btree ("business_client_id");--> statement-breakpoint
-CREATE INDEX "ww_device_installation_assignments_site_idx" ON "ww_device_installation_assignments" USING btree ("business_site_id");--> statement-breakpoint
-CREATE INDEX "ww_device_installation_assignments_current_device_idx" ON "ww_device_installation_assignments" USING btree ("current_device_id");
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_fleet_account_client_id_ww_clients_id_fk" FOREIGN KEY ("fleet_account_client_id") REFERENCES "public"."ww_clients"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_business_client_id_business_clients_id_fk" FOREIGN KEY ("business_client_id") REFERENCES "public"."business_clients"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_business_site_id_business_sites_id_fk" FOREIGN KEY ("business_site_id") REFERENCES "public"."business_sites"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_existing_device_id_ww_devices_id_fk" FOREIGN KEY ("existing_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_new_device_id_ww_devices_id_fk" FOREIGN KEY ("new_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+DO $$ BEGIN
+ ALTER TABLE "ww_device_installation_assignments" ADD CONSTRAINT "ww_device_installation_assignments_current_device_id_ww_devices_id_fk" FOREIGN KEY ("current_device_id") REFERENCES "public"."ww_devices"("id") ON DELETE restrict ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "ww_device_installation_assignments_source_unique" ON "ww_device_installation_assignments" USING btree ("source_key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ww_device_installation_assignments_account_idx" ON "ww_device_installation_assignments" USING btree ("fleet_account_client_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ww_device_installation_assignments_business_client_idx" ON "ww_device_installation_assignments" USING btree ("business_client_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ww_device_installation_assignments_site_idx" ON "ww_device_installation_assignments" USING btree ("business_site_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ww_device_installation_assignments_current_device_idx" ON "ww_device_installation_assignments" USING btree ("current_device_id");
