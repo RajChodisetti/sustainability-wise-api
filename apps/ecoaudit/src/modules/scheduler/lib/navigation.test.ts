@@ -7,6 +7,7 @@ import {
   schedulerTabFromQuery,
   schedulerTabHref,
   schedulerTabIsAdminOnly,
+  schedulerTabShowsUserRatesAction,
 } from './navigation';
 
 test('Scheduler sidebar groups expose planning, finance, and inventory sub-tabs', () => {
@@ -17,7 +18,7 @@ test('Scheduler sidebar groups expose planning, finance, and inventory sub-tabs'
     })),
     [
       { label: 'Planning', items: ['Overview', 'Calendar', 'Route planner', 'Deadlines'] },
-      { label: 'Finance', items: ['Users', 'Analytics', 'Summary', 'Bills & expenses', 'Invoices'] },
+      { label: 'Finance', items: ['User rates', 'Analytics', 'Summary', 'Bills & expenses', 'Invoices'] },
       { label: 'Inventory', items: ['Dashboard', 'Meter Register'] },
     ],
   );
@@ -28,6 +29,8 @@ test('Scheduler sidebar groups expose planning, finance, and inventory sub-tabs'
   assert.equal(schedulerTabAllowsJobCreation('calendar'), true);
   assert.equal(schedulerTabAllowsJobCreation('inventory'), false);
   assert.equal(schedulerTabAllowsJobCreation('meter-register'), false);
+  assert.equal(schedulerTabShowsUserRatesAction('financial-summary'), true);
+  assert.equal(schedulerTabShowsUserRatesAction('overview'), false);
 });
 
 test('Scheduler query parsing preserves legacy finance links and new inventory views', () => {
@@ -47,6 +50,8 @@ test('Scheduler navigation lives in the portal sidebar and the page no longer du
   assert.match(shell, /SchedulerNavigation/);
   assert.doesNotMatch(page, /aria-label="Scheduler views"/);
   assert.match(page, /<SchedulerMeterRegister \/>/);
+  assert.match(page, /schedulerTabShowsUserRatesAction\(activeTab\)/);
+  assert.match(page, />\s*User rates\s*</);
 });
 
 test('Scheduler route planner supports one-time location and free-form Australian origins', () => {

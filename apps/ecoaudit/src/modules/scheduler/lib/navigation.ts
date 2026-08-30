@@ -46,7 +46,7 @@ export const SCHEDULER_NAVIGATION_GROUPS: SchedulerNavigationGroup[] = [
     icon: 'file-text',
     adminOnly: true,
     items: [
-      { id: 'users', label: 'Users', icon: 'users' },
+      { id: 'users', label: 'User rates', icon: 'users' },
       { id: 'finance-analytics', label: 'Analytics', icon: 'activity' },
       { id: 'financial-summary', label: 'Summary', icon: 'gauge' },
       { id: 'bills', label: 'Bills & expenses', icon: 'file-text' },
@@ -85,6 +85,10 @@ export function schedulerTabIsAdminOnly(tab: SchedulerTab): boolean {
 
 export function schedulerTabAllowsJobCreation(tab: SchedulerTab): boolean {
   return tab !== 'inventory' && tab !== 'meter-register';
+}
+
+export function schedulerTabShowsUserRatesAction(tab: SchedulerTab): boolean {
+  return tab === 'financial-summary';
 }
 
 export function schedulerTabHref(tab: SchedulerTab): string {

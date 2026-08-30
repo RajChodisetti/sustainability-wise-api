@@ -21,6 +21,7 @@ import {
   schedulerTabHref,
   schedulerTabAllowsJobCreation,
   schedulerTabIsAdminOnly,
+  schedulerTabShowsUserRatesAction,
   type SchedulerTab,
 } from '@/modules/scheduler/lib/navigation';
 import {
@@ -108,14 +109,22 @@ export default function SchedulerPage({
       <PageHeader
         title="Scheduler"
         subtitle={schedulerSubtitle(activeTab, fieldOnly)}
-        actions={
-          isAdmin && schedulerTabAllowsJobCreation(activeTab) ? (
-            <Button onClick={() => openCreate()}>
-              <Icon name="plus" size={18} />
-              Schedule job
-            </Button>
-          ) : undefined
-        }
+        actions={isAdmin ? (
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {schedulerTabAllowsJobCreation(activeTab) ? (
+              <Button onClick={() => openCreate()}>
+                <Icon name="plus" size={18} />
+                Schedule job
+              </Button>
+            ) : null}
+            {schedulerTabShowsUserRatesAction(activeTab) ? (
+              <Button variant="secondary" onClick={() => activateTab('users')}>
+                <Icon name="users" size={18} />
+                User rates
+              </Button>
+            ) : null}
+          </div>
+        ) : undefined}
       />
 
       {activeTab === 'deadlines' && isAdmin ? (
