@@ -88,7 +88,7 @@ export function schedulerTabAllowsJobCreation(tab: SchedulerTab): boolean {
 }
 
 export function schedulerTabShowsUserRatesAction(tab: SchedulerTab): boolean {
-  return tab === 'financial-summary';
+  return tab === 'overview' || tab === 'financial-summary';
 }
 
 export function schedulerTabHref(tab: SchedulerTab): string {

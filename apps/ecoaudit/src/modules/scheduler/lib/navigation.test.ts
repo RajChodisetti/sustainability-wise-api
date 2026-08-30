@@ -29,8 +29,9 @@ test('Scheduler sidebar groups expose planning, finance, and inventory sub-tabs'
   assert.equal(schedulerTabAllowsJobCreation('calendar'), true);
   assert.equal(schedulerTabAllowsJobCreation('inventory'), false);
   assert.equal(schedulerTabAllowsJobCreation('meter-register'), false);
+  assert.equal(schedulerTabShowsUserRatesAction('overview'), true);
   assert.equal(schedulerTabShowsUserRatesAction('financial-summary'), true);
-  assert.equal(schedulerTabShowsUserRatesAction('overview'), false);
+  assert.equal(schedulerTabShowsUserRatesAction('calendar'), false);
 });
 
 test('Scheduler query parsing preserves legacy finance links and new inventory views', () => {
