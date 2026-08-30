@@ -28,10 +28,27 @@ test('normalizes embedded customer addresses and account ownership without losin
   assert.equal(normalized.siteAddress, '25 Wishart Road Wishart, NT 0822');
   assert.equal(normalized.siteState, 'NT');
   assert.equal(normalized.sitePostcode, '0822');
+  assert.equal(normalized.siteName, 'Hastings Deering (Australia) Limited - Wishart');
+  assert.equal(normalized.deviceLabel, 'Hastings Deering (Australia) Limited - Wishart');
   assert.equal(normalized.jobCompletionDate, '2025-12-08');
   assert.equal(normalized.maasStartDate, null);
   assert.equal(normalized.currentExternalDeviceId, 'DD93710148684');
   assert.ok(normalized.siteAddressFingerprint?.match(/^[0-9a-f]{64}$/u));
+});
+
+test('separates Proten farm and shed identity from the physical street address', () => {
+  const normalized = normalizeMaasWorkbookRow(row({
+    sourceRow: 63,
+    customerName: 'Proten SA',
+    siteAddress: 'Proten - Yarrata Farm 3 (Shed 8) 195 St Station Road, Saints SA 5461 ',
+    jobCompletionDate: null,
+    maasStartDate: '2026-06-24',
+    existingDeviceId: 'DD63710148506',
+  }));
+  assert.equal(normalized.siteName, 'Proten - Yarrata Farm 3 (Shed 8)');
+  assert.equal(normalized.siteAddress, '195 St Station Road, Saints SA 5461');
+  assert.equal(normalized.siteLocality, 'Saints');
+  assert.equal(normalized.deviceLabel, 'Proten - Yarrata Farm 3 (Shed 8)');
 });
 
 test('uses the new device as current and preserves both sides of replacement history', () => {

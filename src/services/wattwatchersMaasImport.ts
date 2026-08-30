@@ -117,8 +117,18 @@ function structuredAddress(value: string): {
   const beforeState = address.slice(0, statePostcode.index).replace(/[\s,]+$/u, '');
   const commaParts = beforeState.split(',').map((part) => compact(part)).filter(Boolean);
   const finalPart = commaParts.at(-1) ?? '';
-  const locality = /^[A-Z][A-Z\s]+$/u.test(finalPart) ? finalPart.replace(/\s+/gu, ' ') : null;
+  const commaLocality = commaParts.length >= 2 && /^[A-Z][A-Z\s.'-]+$/iu.test(finalPart)
+    ? finalPart
+    : null;
+  const streetLocality = finalPart.match(
+    /\b(?:Avenue|Ave|Boulevard|Circuit|Court|Crescent|Cres|Drive|Dr|Highway|Parade|Place|Pl|Road|Rd|Street|St|Terrace|Way)\.?\s+([A-Z][A-Z\s.'-]+)$/iu,
+  )?.[1] ?? null;
+  const locality = compact(commaLocality ?? streetLocality ?? '') || null;
   return { address, locality, state, postcode };
+}
+
+function titleCaseLocation(value: string): string {
+  return value.toLocaleLowerCase('en-AU').replace(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase('en-AU'));
 }
 
 function siteNameFor(
@@ -132,7 +142,7 @@ function siteNameFor(
   if (/^Keyton\s*-/iu.test(rawCustomerName)) return compact(rawCustomerName.replace(/^Keyton\s*-\s*/iu, ''));
   if (/^Broadway Plaza\s*-/iu.test(rawCustomerName)) return 'Broadway Plaza - Punchbowl';
   if (rawCustomerName === 'Mount Penang Gardens (Devices rolled over to MaaS)') return 'Mount Penang Gardens';
-  if (parsedLocality) return `${customerName} - ${parsedLocality.replace(/\b\w/gu, (value) => value.toUpperCase())}`;
+  if (parsedLocality) return `${customerName} - ${titleCaseLocation(parsedLocality)}`;
   return `${customerName} - ${address}`;
 }
 
@@ -143,6 +153,7 @@ function deviceLabelFor(
 ): string {
   if (/^Broadway Plaza\s*-/iu.test(rawCustomerName)) return rawCustomerName;
   if (/^Keyton\s*-/iu.test(rawCustomerName)) return rawCustomerName;
+  if (/^Proten\b/iu.test(siteName)) return siteName;
   if (/^Hastings Deering\s*-/iu.test(rawCustomerName)) return siteName;
   if (siteName.toLocaleLowerCase('en-AU').startsWith(customerName.toLocaleLowerCase('en-AU'))) {
     return siteName;
@@ -182,8 +193,9 @@ export function normalizeMaasWorkbookRow(input: MaasWorkbookRow): NormalizedMaas
   const siteName = parsed
     ? siteNameFor(rawCustomerName, customerName, parsed.address, parsed.locality, proten?.siteName ?? null)
     : null;
+  const logicalSiteDiscriminator = proten?.siteName?.toLocaleLowerCase('en-AU') ?? '';
   const siteKey = siteName && parsed
-    ? `${customerNormalizedKey}\u001f${siteName.toLocaleLowerCase('en-AU')}\u001f${parsed.address.toLocaleLowerCase('en-AU')}`
+    ? `${customerNormalizedKey}\u001f${parsed.address.toLocaleLowerCase('en-AU')}\u001f${logicalSiteDiscriminator}`
     : null;
   const deviceLabel = siteName
     ? deviceLabelFor(rawCustomerName, customerName, siteName)
