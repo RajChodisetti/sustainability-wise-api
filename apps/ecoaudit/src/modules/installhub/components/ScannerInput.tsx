@@ -18,19 +18,26 @@ function detectorConstructor(): BarcodeDetectorConstructor | null {
 }
 
 export function ScannerInput({
+  inputId,
   value,
   onChange,
+  onScanResult,
+  autoOpenKey,
   modes,
   disabled,
 }: {
+  inputId?: string;
   value: string;
   onChange: (value: string) => void;
-  modes: ScanMode[];
+  onScanResult?: (value: string) => void;
+  autoOpenKey?: number;
+  modes: readonly ScanMode[];
   disabled?: boolean;
 }) {
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lastAutoOpenKeyRef = useRef<number | undefined>(undefined);
   const includesBarcode = modes.includes('barcode');
   const includesQr = modes.includes('qr');
   const scanLabel =
@@ -39,6 +46,13 @@ export function ScannerInput({
       : includesQr
         ? 'Scan QR code'
         : 'Scan barcode';
+
+  useEffect(() => {
+    if (autoOpenKey === undefined || disabled || lastAutoOpenKeyRef.current === autoOpenKey) return;
+    lastAutoOpenKeyRef.current = autoOpenKey;
+    setError(null);
+    setScanning(true);
+  }, [autoOpenKey, disabled]);
 
   useEffect(() => {
     if (!scanning) return;
@@ -55,12 +69,21 @@ export function ScannerInput({
         return;
       }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const acquiredStream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: 'environment' } },
           audio: false,
         });
+        if (stopped) {
+          acquiredStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        stream = acquiredStream;
         video = videoRef.current;
-        if (!video || stopped) return;
+        if (!video) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+          return;
+        }
         video.srcObject = stream;
         await video.play();
         const formats = modes.flatMap((mode) =>
@@ -76,6 +99,7 @@ export function ScannerInput({
             const result = results.find((item) => item.rawValue);
             if (result?.rawValue) {
               onChange(result.rawValue);
+              onScanResult?.(result.rawValue);
               setScanning(false);
               return;
             }
@@ -86,6 +110,7 @@ export function ScannerInput({
         };
         void scan();
       } catch (cause) {
+        if (stopped) return;
         setError(
           cause instanceof Error && cause.name === 'NotAllowedError'
             ? 'Camera access was denied. Enter the value manually or allow camera access.'
@@ -102,12 +127,13 @@ export function ScannerInput({
       stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
     };
-  }, [modes, onChange, scanning]);
+  }, [modes, onChange, onScanResult, scanning]);
 
   return (
     <div>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Input
+          id={inputId}
           value={value}
           disabled={disabled}
           onChange={(event) => onChange(event.target.value)}

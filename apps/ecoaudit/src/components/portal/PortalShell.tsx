@@ -624,6 +624,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const fieldChildren: ChildNavItem[] = [
     { href: '/installhub/dashboard', label: 'Field App Complete', icon: 'tool', exact: true },
     { href: '/installhub/installations', label: 'Installations', icon: 'building' },
+    { href: '/installhub/inventory', label: 'Inventory', icon: 'clipboard' },
     { href: '/installhub/route', label: 'Route planner', icon: 'map-pin' },
     { href: '/installhub/settings', label: 'Settings', icon: 'settings' },
     ...(ihAdmin

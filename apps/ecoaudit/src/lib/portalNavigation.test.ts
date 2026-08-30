@@ -115,3 +115,44 @@ test('Field App exposes its own route planner without importing the Scheduler wo
   assert.match(routeApi, /installHubRequest/);
   assert.doesNotMatch(routeApi, /portalRequest|modules\/scheduler|assigneeFieldUserId/);
 });
+
+test('Field App exposes its own inventory navigation and custody-claim workflow', () => {
+  const shell = readFileSync(
+    new URL('../components/portal/PortalShell.tsx', import.meta.url),
+    'utf8',
+  );
+  const inventoryEntry = readFileSync(
+    new URL('../app/(portal)/installhub/(app)/inventory/page.tsx', import.meta.url),
+    'utf8',
+  );
+  const inventoryPage = readFileSync(
+    new URL('../modules/installhub/pages/InventoryPage.tsx', import.meta.url),
+    'utf8',
+  );
+  const inventoryApi = readFileSync(
+    new URL('../modules/installhub/api/inventory.ts', import.meta.url),
+    'utf8',
+  );
+  const scanner = readFileSync(
+    new URL('../modules/installhub/components/ScannerInput.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(shell, /href: '\/installhub\/inventory', label: 'Inventory'/);
+  assert.match(inventoryEntry, /InstallHubInventoryPage/);
+  assert.match(inventoryPage, /My inventory/);
+  assert.match(inventoryPage, /Company inventory/);
+  assert.match(inventoryPage, /Scan barcode/);
+  assert.match(inventoryPage, /Enter manually/);
+  assert.match(inventoryPage, /Confirm meter/);
+  assert.match(inventoryPage, /autoOpenKey/);
+  assert.match(inventoryPage, /setPendingScannedId\(''\)/);
+  assert.match(inventoryPage, /debouncedSearch/);
+  assert.match(inventoryApi, /query\.set\('q', normalizedSearch\)/);
+  assert.match(inventoryApi, /'\/v1\/installhub\/inventory\/meters\/claim-by-device'/);
+  assert.match(scanner, /onScanResult/);
+  assert.match(scanner, /autoOpenKey/);
+  assert.match(scanner, /acquiredStream\.getTracks\(\)\.forEach\(\(track\) => track\.stop\(\)\)/);
+  assert.doesNotMatch(inventoryPage, /modules\/scheduler|portalRequest/);
+  assert.doesNotMatch(inventoryApi, /modules\/scheduler|portalRequest/);
+});
