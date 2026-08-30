@@ -70,7 +70,6 @@ export function SchedulerFinanceDetail({
 
   const summary = query.data;
   const overdueCount = summary.invoices.filter((invoice) => invoice.overdue && invoice.status === 'issued').length;
-  const legacyHoursNeedReview = summary.time.overrideSource === 'legacy_estimate';
   const missingBillingRateNames = summary.time.missingBillingRateUsers
     .map((user) => user.displayName ?? user.userId);
   const tone = marginTone(summary.totals.marginPct);
@@ -143,10 +142,9 @@ export function SchedulerFinanceDetail({
         <Metric label="Gross profit" value={money(summary.totals.grossProfit, summary.currency)} detail={summary.totals.marginPct == null ? 'Margin pending' : `${summary.totals.marginPct.toFixed(1)}% current margin`} tone={tone === 'neutral' ? 'neutral' : tone} />
       </section>
 
-      {(!summary.invoiceReadiness.completionSatisfied || legacyHoursNeedReview || missingBillingRateNames.length > 0 || overdueCount > 0 || summary.totals.unbilledQuoteBalance > 0) ? (
+      {(!summary.invoiceReadiness.completionSatisfied || missingBillingRateNames.length > 0 || overdueCount > 0 || summary.totals.unbilledQuoteBalance > 0) ? (
         <section className="grid gap-2 sm:grid-cols-2" aria-label="Finance attention items">
           {!summary.invoiceReadiness.completionSatisfied ? <Cue tone="warning" title="Complete the job before invoicing" detail="The source audit, assessment, or installation must be marked Completed before a draft can be created or issued." /> : null}
-          {legacyHoursNeedReview ? <Cue tone="warning" title="Migrated hours need review" detail="Replace the migrated value for accurate internal reporting. It no longer blocks invoice issue or PDF generation." /> : null}
           {missingBillingRateNames.length > 0 ? <Cue tone="warning" title="Billing rates need setup" detail={`Ask an admin to set a fixed billing rate for ${missingBillingRateNames.join(', ')}.`} /> : null}
           {overdueCount > 0 ? <Cue tone="danger" title={`${overdueCount} overdue invoice${overdueCount === 1 ? '' : 's'}`} detail="Follow up or mark paid once payment is confirmed." /> : null}
           {summary.pricing.mode === 'quoted' && summary.totals.unbilledQuoteBalance > 0 ? <Cue tone="warning" title={`${money(summary.totals.unbilledQuoteBalance, summary.currency)} quote balance`} detail="Quoted value remains available for a new invoice draft." /> : null}

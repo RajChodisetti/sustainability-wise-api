@@ -16,6 +16,8 @@ export type EventLaneLayout = {
   widthPercent: number;
 };
 
+export type CalendarEventVisualState = 'default' | 'completed' | 'overdue';
+
 export function startOfWeekMonday(date: Date): Date {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const day = d.getDay(); // 0 Sun
@@ -37,6 +39,18 @@ export function weekDays(cursor: Date): Date[] {
 export function dayKey(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+export function calendarEventVisualState(
+  status: 'planned' | 'in_progress' | 'done' | 'cancelled',
+  scheduledStartAt: string,
+  now = new Date(),
+): CalendarEventVisualState {
+  if (status === 'done') return 'completed';
+  if (status === 'cancelled') return 'default';
+  const scheduledDay = new Date(scheduledStartAt);
+  if (Number.isNaN(scheduledDay.getTime())) return 'default';
+  return dayKey(scheduledDay) < dayKey(now) ? 'overdue' : 'default';
 }
 
 export function hoursInGrid(): number[] {

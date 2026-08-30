@@ -29,3 +29,12 @@ export function estimatedDurationUpdate(
 ): { estimatedDurationMinutes?: number | null } {
   return current === next ? {} : { estimatedDurationMinutes: next };
 }
+
+export function formatEstimatedDuration(minutes: number | null): string {
+  if (minutes === null) return 'Not estimated';
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours === 0) return `${remainingMinutes} min`;
+  if (remainingMinutes === 0) return `${hours} ${hours === 1 ? 'hr' : 'hrs'}`;
+  return `${hours} ${hours === 1 ? 'hr' : 'hrs'} ${remainingMinutes} min`;
+}

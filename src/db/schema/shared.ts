@@ -1430,6 +1430,33 @@ export const schedulerInvoiceSettings = pgTable('scheduler_invoice_settings', {
   `),
 ]);
 
+/** Year-specific operational revenue target used by Scheduler pacing dashboards. */
+export const schedulerAnnualTargets = pgTable('scheduler_annual_targets', {
+  companyKey: text('company_key').notNull(),
+  year: integer('year').notNull(),
+  amountExGstCents: bigint('amount_ex_gst_cents', { mode: 'number' }).notNull(),
+  currency: text('currency').notNull().default('AUD'),
+  updatedByGlobalUserId: text('updated_by_global_user_id').references(
+    () => globalUsers.id,
+    { onDelete: 'set null' },
+  ),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.companyKey, table.year] }),
+  check('scheduler_annual_targets_company_key_check', sql`
+    length(btrim(${table.companyKey})) BETWEEN 1 AND 100
+  `),
+  check('scheduler_annual_targets_year_check', sql`${table.year} BETWEEN 2000 AND 9999`),
+  check('scheduler_annual_targets_amount_check', sql`
+    ${table.amountExGstCents} > 0
+    AND ${table.amountExGstCents} <= 9007199254740991
+  `),
+  check('scheduler_annual_targets_currency_check', sql`
+    ${table.currency} ~ '^[A-Z]{3}$'
+  `),
+]);
+
 /**
  * Durable, idempotent audit trail for Scheduler invoice email delivery.
  *

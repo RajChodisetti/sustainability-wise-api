@@ -8,7 +8,6 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
-  type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,7 +24,7 @@ import { Icon } from '@/components/ui/Icon';
 import { JobsPoolPanel, type JobDragData } from '@/modules/scheduler/components/JobsPoolPanel';
 import { StaffFilterPanel } from '@/modules/scheduler/components/StaffFilterPanel';
 import type { EventDragData } from '@/modules/scheduler/components/ScheduleEventBlock';
-import { WeekTimeGrid, type SlotDropData, type StaffDropData } from '@/modules/scheduler/components/WeekTimeGrid';
+import { WeekTimeGrid, type SlotDropData } from '@/modules/scheduler/components/WeekTimeGrid';
 import {
   useCreateScheduleEvent,
   usePortalAssignees,
@@ -35,6 +34,7 @@ import {
 import { appChipClass, SOURCE_APP_LABEL } from '@/modules/scheduler/lib/colors';
 import {
   estimatedDurationError,
+  estimatedDurationUpdate,
   parseEstimatedDurationMinutes,
 } from '@/modules/scheduler/lib/estimatedDuration';
 import { scheduledJobWeek } from '@/modules/scheduler/lib/jobsPool';
@@ -79,7 +79,6 @@ export function DynamicSchedulerBoard({
   const [cursor, setCursor] = useState(() => startOfWeekMonday(new Date()));
   const [staffFilter, setStaffFilter] = useState<string[]>([]);
   const [activeDrag, setActiveDrag] = useState<JobDragData | EventDragData | null>(null);
-  const [expandedDayKey, setExpandedDayKey] = useState<string | null>(null);
   const [pendingAssign, setPendingAssign] = useState<PendingAssign | null>(null);
   const [pickAssignee, setPickAssignee] = useState('');
   const [boardError, setBoardError] = useState<string | null>(null);
@@ -112,19 +111,12 @@ export function DynamicSchedulerBoard({
 
   const staff = useMemo(() => assignees.data ?? [], [assignees.data]);
   const allEvents = useMemo(() => (
-    (eventsQuery.data ?? []).filter((event) => (
-      event.status !== 'done' && visibleSourceApps.includes(event.sourceApp)
-    ))
+    (eventsQuery.data ?? []).filter((event) => visibleSourceApps.includes(event.sourceApp))
   ), [eventsQuery.data, visibleSourceApps]);
   const visibleEvents = useMemo(() => {
     if (staffFilter.length === 0) return allEvents;
     return allEvents.filter((event) => staffFilter.includes(event.assigneeFieldUserId));
   }, [allEvents, staffFilter]);
-
-  const filteredStaff = useMemo(() => {
-    if (staffFilter.length === 0) return staff;
-    return staff.filter((person) => staffFilter.includes(person.fieldUserId));
-  }, [staff, staffFilter]);
 
   async function createFromJob(
     job: JobOption,
@@ -150,7 +142,6 @@ export function DynamicSchedulerBoard({
 
   async function handleDragEnd(event: DragEndEvent) {
     setActiveDrag(null);
-    setExpandedDayKey(null);
     setBoardError(null);
     if (!isAdmin) return;
 
@@ -158,7 +149,7 @@ export function DynamicSchedulerBoard({
     if (!over) return;
 
     const activeData = event.active.data.current as JobDragData | EventDragData | undefined;
-    const overData = over.data.current as SlotDropData | StaffDropData | undefined;
+    const overData = over.data.current as SlotDropData | undefined;
     if (!activeData || !overData) return;
 
     try {
@@ -167,8 +158,7 @@ export function DynamicSchedulerBoard({
         if (!schedulerSourceAppIsSelectable(selectableSourceApps, job.sourceApp)) return;
         setPendingAssign({ type: 'job', job, day: overData.day, hour: overData.hour });
         setPickAssignee(
-          overData.assigneeFieldUserId
-            ?? job.assigneeFieldUserId
+          job.assigneeFieldUserId
             ?? staffFilter[0]
             ?? staff[0]?.fieldUserId
             ?? '',
@@ -185,20 +175,12 @@ export function DynamicSchedulerBoard({
           hour: overData.hour,
         });
         setPickAssignee(
-          overData.assigneeFieldUserId
-            ?? scheduledEvent.assigneeFieldUserId
+          scheduledEvent.assigneeFieldUserId
             ?? staffFilter[0]
             ?? staff[0]?.fieldUserId
             ?? '',
         );
         return;
-      }
-
-      if (activeData.type === 'event' && overData.type === 'staff') {
-        await update.mutateAsync({
-          id: activeData.event.id,
-          input: { assigneeFieldUserId: overData.fieldUserId },
-        });
       }
     } catch (error) {
       setBoardError(error instanceof Error ? error.message : 'Calendar update failed');
@@ -208,14 +190,6 @@ export function DynamicSchedulerBoard({
   function onDragStart(event: DragStartEvent) {
     const data = event.active.data.current as JobDragData | EventDragData | undefined;
     setActiveDrag(data ?? null);
-  }
-
-  function onDragOver(event: DragOverEvent) {
-    const activeData = event.active.data.current as JobDragData | EventDragData | undefined;
-    const overData = event.over?.data.current as SlotDropData | StaffDropData | undefined;
-    if ((activeData?.type === 'job' || activeData?.type === 'event') && overData?.type === 'slot') {
-      setExpandedDayKey(overData.dayKey);
-    }
   }
 
   function showScheduledJob(job: JobOption) {
@@ -244,6 +218,10 @@ export function DynamicSchedulerBoard({
           input: {
             scheduledStartAt: start.toISOString(),
             assigneeFieldUserId: pickAssignee,
+            ...estimatedDurationUpdate(
+              pendingAssign.event.estimatedDurationMinutes,
+              estimatedDurationMinutes,
+            ),
           },
         });
       }
@@ -367,7 +345,7 @@ export function DynamicSchedulerBoard({
           <Icon name="lightbulb" size={16} className="mt-0.5 shrink-0 text-[var(--accent)]" />
           <p>
             {isAdmin
-              ? 'Open Jobs and drag work across the calendar. Hover a day to expand its technician lanes, then drop on the right person and time.'
+              ? 'Open Jobs and drop work on the required day and time. Confirm the technician and optional estimate before it is added to the calendar.'
               : 'View your scheduled work for the week. Select an event to review its full details.'}
           </p>
         </div>
@@ -379,13 +357,11 @@ export function DynamicSchedulerBoard({
         id="scheduler-week-board"
         sensors={sensors}
         onDragStart={onDragStart}
-        onDragOver={onDragOver}
         onDragEnd={(event) => {
           void handleDragEnd(event);
         }}
         onDragCancel={() => {
           setActiveDrag(null);
-          setExpandedDayKey(null);
         }}
       >
         {isAdmin && staffPanelOpen ? (
@@ -409,9 +385,7 @@ export function DynamicSchedulerBoard({
             className="order-2 2xl:order-1"
             days={days}
             events={visibleEvents}
-            staff={filteredStaff.length > 0 ? filteredStaff : staff}
             canDrag={isAdmin}
-            expandedDayKey={expandedDayKey}
             onSlotClick={(day, hour) => {
               onSlotCreate(slotDateTime(day, hour));
             }}
@@ -475,7 +449,11 @@ function AssignStaffDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(onCancel);
   const busyRef = useRef(busy);
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState('');
+  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState(() => (
+    pendingAssign.type === 'event' && pendingAssign.event.estimatedDurationMinutes !== null
+      ? String(pendingAssign.event.estimatedDurationMinutes)
+      : ''
+  ));
   const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
   const durationError = estimatedDurationError(estimatedDurationMinutes);
   const jobName = pendingAssign.type === 'job'
@@ -584,35 +562,31 @@ function AssignStaffDialog({
                 </option>
               ))}
             </Select>
-            {pendingAssign.type === 'job' ? (
-              <>
-                <FieldLabel htmlFor="scheduler-pending-estimated-duration">
-                  Estimated time to complete (minutes, optional)
-                </FieldLabel>
-                <Input
-                  id="scheduler-pending-estimated-duration"
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  autoComplete="off"
-                  maxLength={5}
-                  placeholder="e.g. 90"
-                  value={estimatedDurationMinutes}
-                  onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
-                  aria-invalid={Boolean(durationError)}
-                  aria-describedby={durationError
-                    ? 'scheduler-pending-estimated-duration-error scheduler-pending-estimated-duration-hint'
-                    : 'scheduler-pending-estimated-duration-hint'}
-                />
-                <FieldHint id="scheduler-pending-estimated-duration-hint">
-                  Leave blank if the duration is not known. The calendar uses this estimate only for planning.
-                </FieldHint>
-                <FieldError
-                  id="scheduler-pending-estimated-duration-error"
-                  message={durationError ?? undefined}
-                />
-              </>
-            ) : null}
+            <FieldLabel htmlFor="scheduler-pending-estimated-duration">
+              Estimated time to complete (minutes, optional)
+            </FieldLabel>
+            <Input
+              id="scheduler-pending-estimated-duration"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="off"
+              maxLength={5}
+              placeholder="e.g. 90"
+              value={estimatedDurationMinutes}
+              onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
+              aria-invalid={Boolean(durationError)}
+              aria-describedby={durationError
+                ? 'scheduler-pending-estimated-duration-error scheduler-pending-estimated-duration-hint'
+                : 'scheduler-pending-estimated-duration-hint'}
+            />
+            <FieldHint id="scheduler-pending-estimated-duration-hint">
+              Leave blank if the duration is not known. The calendar uses this estimate only for planning.
+            </FieldHint>
+            <FieldError
+              id="scheduler-pending-estimated-duration-error"
+              message={durationError ?? undefined}
+            />
           </div>
           <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button type="button" variant="secondary" disabled={busy} onClick={onCancel}>
@@ -620,7 +594,7 @@ function AssignStaffDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!pickAssignee || (pendingAssign.type === 'job' && parsedEstimatedDurationMinutes === undefined) || busy}
+              disabled={!pickAssignee || parsedEstimatedDurationMinutes === undefined || busy}
             >
               {busy ? 'Saving assignment…' : 'Confirm assignment'}
             </Button>

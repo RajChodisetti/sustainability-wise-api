@@ -13,6 +13,7 @@ import {
   fetchSchedulerInvoiceEmailDeliveries,
   fetchSchedulerMeterRegister,
   fetchSchedulerAnalytics,
+  fetchSchedulerAnnualTarget,
   fetchSchedulerRouteSuggestion,
   fetchPortalAssignees,
   fetchGlobalSchedulerExpenses,
@@ -23,6 +24,7 @@ import {
   markGlobalSchedulerInvoicePaid,
   updateSchedulerInvoiceSeller,
   updateSchedulerActorBillingRateOverride,
+  updateSchedulerAnnualTarget,
   sendSchedulerInvoiceEmail,
   startSchedulerInvoicePdfExport,
   updateSchedulerInvoice,
@@ -286,6 +288,51 @@ test('scheduler analytics preserves the inclusive window and selects an administ
       from: '2026-08-17',
       to: '2026-08-23',
       timezone: 'Australia/Sydney',
+    });
+  } finally {
+    globalThis.fetch = priorFetch;
+    if (priorWindow) Object.defineProperty(globalThis, 'window', priorWindow);
+    else Reflect.deleteProperty(globalThis, 'window');
+    if (priorStorage) Object.defineProperty(globalThis, 'localStorage', priorStorage);
+    else Reflect.deleteProperty(globalThis, 'localStorage');
+  }
+});
+
+test('annual target clients keep year and money on admin-authenticated routes', async () => {
+  const priorWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  const priorStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  const priorFetch = globalThis.fetch;
+  const admin = jwt('admin', 'scheduler-admin');
+  const values = new Map<string, string>([['ih_web_jwt', admin]]);
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: {} });
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    },
+  });
+  const requests: Array<{ method: string; url: string; body: string }> = [];
+  globalThis.fetch = async (input, init) => {
+    requests.push({ method: init?.method ?? 'GET', url: String(input), body: String(init?.body ?? '') });
+    return Response.json({ target: null });
+  };
+
+  try {
+    await fetchSchedulerAnnualTarget(2026);
+    await updateSchedulerAnnualTarget({
+      year: 2026,
+      amountExGstCents: 100_000_000,
+      currency: 'AUD',
+    });
+    assert.equal(new URL(requests[0]!.url, 'http://portal.test').pathname, '/v1/portal/scheduler/annual-target');
+    assert.equal(new URL(requests[0]!.url, 'http://portal.test').searchParams.get('year'), '2026');
+    assert.equal(requests[1]!.method, 'PATCH');
+    assert.deepEqual(JSON.parse(requests[1]!.body), {
+      year: 2026,
+      amountExGstCents: 100_000_000,
+      currency: 'AUD',
     });
   } finally {
     globalThis.fetch = priorFetch;

@@ -416,7 +416,6 @@ function FinanceExceptionFilters({
   const filters: Array<{ key: FinanceExceptionFilter; label: string; count: number }> = [
     { key: 'all', label: 'All jobs', count: total },
     { key: 'overdue', label: 'Overdue', count: counts.overdue },
-    { key: 'hours_review', label: 'Hours', count: counts.hours_review },
     { key: 'completed_without_invoice', label: 'No invoice', count: counts.completed_without_invoice },
   ];
   return (

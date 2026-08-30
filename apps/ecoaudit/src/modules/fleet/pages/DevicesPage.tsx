@@ -8,10 +8,10 @@ import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components
 import { Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
-import { FleetStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
+import { FleetStatusBadge, ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
 import { useFleetClients, useFleetDevices } from '@/modules/fleet/hooks/useFleet';
-import { formatDate, formatDateTime, formatDuration, formatNumber } from '@/modules/fleet/lib/format';
+import { formatDate, formatNumber } from '@/modules/fleet/lib/format';
 import { FLEET_STATUSES, type FleetStatus } from '@/modules/fleet/types/domain';
 
 const pageSize = 50;
@@ -27,11 +27,6 @@ export default function DevicesPage() {
     initialMaas === 'true' || initialMaas === 'false' ? initialMaas : '',
   );
   const [model, setModel] = useState(searchParams.get('model') ?? '');
-  const [reportOffline, setReportOffline] = useState<'' | 'true' | 'false'>(
-    searchParams.get('reportOffline') === 'true' ? 'true' : '',
-  );
-  const [sort, setSort] = useState<'lastHeardAt' | 'communicationAge' | 'label'>('communicationAge');
-  const [direction, setDirection] = useState<'asc' | 'desc'>('desc');
   const [offset, setOffset] = useState(0);
 
   const clientsQuery = useFleetClients();
@@ -41,11 +36,10 @@ export default function DevicesPage() {
     clientId,
     maas,
     model: model.trim(),
-    reportOffline,
     limit: pageSize,
     offset,
-    sort,
-    direction,
+    sort: 'label',
+    direction: 'asc',
   });
   const clients = clientsQuery.data?.data ?? [];
   const devices = devicesQuery.data?.data ?? [];
@@ -64,9 +58,6 @@ export default function DevicesPage() {
     setClientId('');
     setMaas('');
     setModel('');
-    setReportOffline('');
-    setSort('communicationAge');
-    setDirection('desc');
     setOffset(0);
   }
 
@@ -78,7 +69,7 @@ export default function DevicesPage() {
     <div>
       <PageHeader
         title="Devices"
-        subtitle="Search the latest published fleet snapshot and distinguish current connectivity from the 24-hour report cohort."
+        subtitle="Browse registered Wattwatchers devices and their latest published condition."
         actions={(
           <Button variant="secondary" disabled={devicesQuery.isFetching} onClick={() => void devicesQuery.refetch()}>
             <Icon name="activity" size={17} />
@@ -92,7 +83,7 @@ export default function DevicesPage() {
       ) : null}
 
       <Card className="mb-5 !p-4 sm:!p-5">
-        <fieldset className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <fieldset className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-5">
           <legend className="sr-only">Device filters</legend>
           <label className="block text-xs font-bold text-[var(--text-sub)]">
             Search device
@@ -107,7 +98,7 @@ export default function DevicesPage() {
             </div>
           </label>
           <label className="block text-xs font-bold text-[var(--text-sub)]">
-            Connectivity status
+            Condition
             <Select className="mt-1.5" value={status} onChange={(event) => { setStatus(event.target.value); resetPage(); }}>
               <option value="">All statuses</option>
               {FLEET_STATUSES.map((value) => (
@@ -141,45 +132,22 @@ export default function DevicesPage() {
               placeholder="Exact model name"
             />
           </label>
-          <label className="block text-xs font-bold text-[var(--text-sub)]">
-            Email report cohort
-            <Select className="mt-1.5" value={reportOffline} onChange={(event) => { setReportOffline(event.target.value as typeof reportOffline); resetPage(); }}>
-              <option value="">All devices</option>
-              <option value="true">Report offline only</option>
-            </Select>
-          </label>
-          <label className="block text-xs font-bold text-[var(--text-sub)]">
-            Sort by
-            <Select className="mt-1.5" value={sort} onChange={(event) => { setSort(event.target.value as typeof sort); resetPage(); }}>
-              <option value="communicationAge">Communication age</option>
-              <option value="lastHeardAt">Last heard</option>
-              <option value="label">Device label</option>
-            </Select>
-          </label>
-          <div className="flex items-end gap-2">
-            <label className="min-w-0 flex-1 text-xs font-bold text-[var(--text-sub)]">
-              Direction
-              <Select className="mt-1.5" value={direction} onChange={(event) => { setDirection(event.target.value as typeof direction); resetPage(); }}>
-                <option value="desc">Descending</option>
-                <option value="asc">Ascending</option>
-              </Select>
-            </label>
+          <div className="flex items-end">
             <Button variant="ghost" className="shrink-0" onClick={clearFilters}>Clear</Button>
           </div>
         </fieldset>
       </Card>
 
-      <div className="mb-4 flex flex-col gap-2 text-sm text-[var(--text-sub)] sm:flex-row sm:items-center sm:justify-between">
+      <div className="mb-4 text-sm text-[var(--text-sub)]">
         <p aria-live="polite">
           <span className="font-bold text-[var(--text)]">{formatNumber(total)}</span> devices
           {run ? ` in the ${formatDate(run.reportingDate)} snapshot` : ''}
         </p>
-        <p>“Last-known signal” is retained telemetry, not a live signal test.</p>
       </div>
 
       {devices.length === 0 && !devicesQuery.error ? (
         <EmptyState
-          icon="wifi"
+          icon="gauge"
           title="No devices match these filters"
           description="Clear one or more filters, or wait for a complete fleet snapshot to be published."
           actions={<Button variant="secondary" onClick={clearFilters}>Clear filters</Button>}
@@ -188,17 +156,12 @@ export default function DevicesPage() {
         <Card className="min-w-0 !p-0">
           <div className="overflow-x-auto">
             <table className={tableClass}>
-              <caption className="sr-only">Wattwatchers devices in the latest published snapshot</caption>
+              <caption className="sr-only">Registered Wattwatchers devices with their model and latest published condition</caption>
               <thead>
                 <tr>
                   <th className={tableHeadClass} scope="col">Device</th>
-                  <th className={tableHeadClass} scope="col">Client</th>
-                  <th className={tableHeadClass} scope="col">Status</th>
-                  <th className={tableHeadClass} scope="col">Last heard</th>
-                  <th className={tableHeadClass} scope="col">Communication age</th>
-                  <th className={tableHeadClass} scope="col">Model / firmware</th>
-                  <th className={tableHeadClass} scope="col">Last-known signal</th>
-                  <th className={tableHeadClass} scope="col">Report cohort</th>
+                  <th className={tableHeadClass} scope="col">Model</th>
+                  <th className={tableHeadClass} scope="col">Condition</th>
                 </tr>
               </thead>
               <tbody>
@@ -213,26 +176,14 @@ export default function DevicesPage() {
                       </Link>
                       {device.label ? <p className="mt-1 max-w-52 break-all text-xs text-[var(--muted)]">{device.deviceId}</p> : null}
                     </td>
-                    <td className={tableCellClass}>
-                      <p className="font-semibold">{device.client?.name ?? 'Unassigned'}</p>
-                      {device.client?.isMaas ? <p className="mt-1 text-xs font-bold text-[var(--primary)]">MaaS</p> : null}
-                    </td>
-                    <td className={tableCellClass}><FleetStatusBadge status={device.status as FleetStatus} /></td>
-                    <td className={`${tableCellClass} whitespace-nowrap`}>{formatDateTime(device.lastHeardAt)}</td>
-                    <td className={`${tableCellClass} whitespace-nowrap font-semibold`}>{formatDuration(device.communicationAgeSeconds)}</td>
-                    <td className={tableCellClass}>
-                      <p>{device.model || '—'}</p>
-                      <p className="mt-1 text-xs text-[var(--text-sub)]">{device.firmwareVersion || 'Firmware unknown'}</p>
-                    </td>
-                    <td className={`${tableCellClass} whitespace-nowrap`}>
-                      {typeof device.signalQualityDbm === 'number' ? `${device.signalQualityDbm} dBm` : '—'}
-                    </td>
-                    <td className={tableCellClass}>
-                      {device.reportOffline ? (
-                        <span className="inline-flex rounded-full bg-[var(--red-soft)] px-2.5 py-1 text-xs font-bold text-[var(--red)]">Report offline</span>
-                      ) : (
-                        <span className="text-xs text-[var(--text-sub)]">Not in cohort</span>
-                      )}
+                    <td className={`${tableCellClass} font-semibold`}>{device.model || 'N/A'}</td>
+                    <td className={`${tableCellClass} min-w-44`}>
+                      {device.fetchStatus === 'not_collected' ? (
+                        <>
+                          <ProcessStatusBadge status="Not collected" />
+                          <p className="mt-1 text-xs text-[var(--text-sub)]">Awaiting a published collection</p>
+                        </>
+                      ) : <FleetStatusBadge status={device.status as FleetStatus} />}
                     </td>
                   </tr>
                 ))}

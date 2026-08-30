@@ -84,6 +84,24 @@ export function toggleConsolidatedInvoiceJob(
   return { financeIds: [...current, financeId], atLimit: false };
 }
 
+export type InvoiceJobSelectionState = 'incomplete' | 'completed' | 'invoiced';
+
+export function invoiceJobSelectionState(
+  job: Pick<FinanceOverviewItem, 'jobStatus' | 'invoiceCount'>,
+): InvoiceJobSelectionState {
+  if (job.invoiceCount > 0) return 'invoiced';
+  return job.jobStatus.trim().toLocaleLowerCase('en-AU') === 'completed'
+    ? 'completed'
+    : 'incomplete';
+}
+
+export function invoiceJobVisibleForSelection(
+  job: Pick<FinanceOverviewItem, 'invoiceCount'>,
+  showInvoicedJobs: boolean,
+): boolean {
+  return showInvoicedJobs || job.invoiceCount === 0;
+}
+
 export function schedulerInvoicePdfReportVariantKey(
   invoice: Pick<SchedulerInvoiceListItem, 'id' | 'updatedAt'>,
 ): string {

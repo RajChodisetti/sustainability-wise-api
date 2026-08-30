@@ -18,6 +18,8 @@ import {
   financeTargetFromPages,
   financeTargetRequiresJobLookup,
   invoiceEmailAttemptNeedsSameIdempotencyKey,
+  invoiceJobSelectionState,
+  invoiceJobVisibleForSelection,
   invoiceDraftIsDirty,
   manualHoursEntryIssue,
   invoiceFilenameFromContentDisposition,
@@ -76,6 +78,28 @@ test('job and invoice selection boundaries remount stateful commercial editors',
   const invoices = readFileSync(new URL('../components/SchedulerInvoicesWorkspace.tsx', import.meta.url), 'utf8');
   assert.match(workspace, /<SchedulerFinanceDetail key=\{selected\.financeId\}/);
   assert.match(invoices, /<GlobalInvoiceDetail key=\{selectedInvoiceId\}/);
+});
+
+test('finance summary removes hours selection and retains job rate controls', () => {
+  const settings = readFileSync(
+    new URL('../components/FinanceSettingsPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  const workspace = readFileSync(
+    new URL('../components/SchedulerFinanceWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.doesNotMatch(settings, /Labour hours &amp; charge/);
+  assert.doesNotMatch(settings, /id="finance-billable-hours"/);
+  assert.doesNotMatch(settings, /id="finance-cost-hours"/);
+  assert.doesNotMatch(settings, /Save labour settings/);
+  assert.doesNotMatch(settings, /useUpdateSchedulerFinance/);
+  assert.doesNotMatch(settings, /id="finance-cost-rate"/);
+  assert.doesNotMatch(settings, /Reason for changing hours/);
+  assert.doesNotMatch(settings, /Use app-recorded hours/);
+  assert.match(settings, /Job employee billing rates/);
+  assert.match(settings, /Edit job rates/);
+  assert.doesNotMatch(workspace, /key: 'hours_review', label: 'Hours'/);
 });
 
 test('invoice workspace exposes explicit final-PDF and multi-recipient delivery controls', () => {
@@ -487,6 +511,19 @@ test('consolidated invoice job selection prevents a 51st job before the API call
     financeIds: fifty.slice(1),
     atLimit: false,
   });
+});
+
+test('invoice job selection distinguishes incomplete, completed, and invoiced work', () => {
+  assert.equal(invoiceJobSelectionState({ jobStatus: 'In Progress', invoiceCount: 0 }), 'incomplete');
+  assert.equal(invoiceJobSelectionState({ jobStatus: 'Completed', invoiceCount: 0 }), 'completed');
+  assert.equal(invoiceJobSelectionState({ jobStatus: 'Completed', invoiceCount: 1 }), 'invoiced');
+  assert.equal(invoiceJobSelectionState({ jobStatus: 'Draft', invoiceCount: 2 }), 'invoiced');
+});
+
+test('invoiced jobs stay hidden until the selector explicitly shows all jobs', () => {
+  assert.equal(invoiceJobVisibleForSelection({ invoiceCount: 0 }, false), true);
+  assert.equal(invoiceJobVisibleForSelection({ invoiceCount: 1 }, false), false);
+  assert.equal(invoiceJobVisibleForSelection({ invoiceCount: 1 }, true), true);
 });
 
 test('draft dirty detection blocks issuing stale invoice metadata', () => {

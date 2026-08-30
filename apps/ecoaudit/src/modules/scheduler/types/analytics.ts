@@ -7,6 +7,13 @@ export type SchedulerAnalyticsFilters = {
   timezone: string;
 };
 
+export type SchedulerAnnualTarget = {
+  year: number;
+  amountExGstCents: number;
+  currency: string;
+  updatedAt: string;
+};
+
 export type SchedulerMoneyMetric = {
   amountExGstCents: number;
   gstAmountCents: number | null;
@@ -49,12 +56,15 @@ export type SchedulerAnalyticsLeaderboardRow = {
   workingDays: number;
   workingHoursOnSite: number;
   workingHoursOnSiteMilliseconds: number;
+  sitesWorked?: number;
+  averageHoursOnSitePerSite?: number;
   averageWorkingHoursOnSitePerWorkingDay: number;
   completedJobs: number;
   averageDailyJobs: number;
   scheduledJobs: number;
   unscheduledJobs: number;
   backlogJobs: number;
+  futureScheduledJobs?: number;
   pipelineJobs0To7Days: number;
   pipelineJobs8To30Days: number;
   revenue: SchedulerAnalyticsCurrencyMetrics[];
@@ -82,6 +92,37 @@ export type SchedulerAnalyticsDto = {
       date: string;
       currencies: SchedulerAnalyticsCurrencyMetrics[];
     }>;
+  };
+  operations?: {
+    completedJobsByType: Record<
+      'installs' | 'faults' | 'upgrades' | 'audits' | 'other',
+      number
+    >;
+    completedJobsByOperationalType?: Record<
+      'newMaasInstalls' | 'otherInstalls' | 'communicationsFaults' | 'replacements' | 'other',
+      number
+    >;
+    newMetersEstablished: number;
+    newMeters?: {
+      maas: number;
+      general: number;
+      unclassified: number;
+      unattributed: number;
+      byStaff: Array<{
+        userId: string;
+        displayName: string;
+        email: string;
+        total: number;
+        maas: number;
+        general: number;
+        unclassified: number;
+      }>;
+    };
+    staffCount: number;
+    averageDailyJobsPerStaff: number;
+    averageHoursOnSitePerEmployee: number;
+    pipelineUpcomingWeek: number;
+    totalScheduled?: number;
   };
   leaderboard: SchedulerAnalyticsLeaderboardRow[];
   quality: {

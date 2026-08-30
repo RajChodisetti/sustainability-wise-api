@@ -330,9 +330,10 @@ between 0 and 1,000,000 inclusive.
 migration/import fields. Current Scheduler and Field App authoring UIs do not
 request or write them. Scheduler also omits `customJobNumber` and relies on the
 server-generated shared Job ID; installed clients may continue to exchange the
-legacy nullable field. Scheduler creation does not request NMI, MaaS, scope,
-metering type, or job-scope comments; those optional values remain available to
-Field App installation authoring and installed-client compatibility.
+legacy nullable field. Scheduler creation requests NMI, MaaS, scope, and
+metering type, but does not request job-scope comments; those optional values
+remain available to Field App installation authoring and installed-client
+compatibility.
 `serviceType` remains the compatibility projection of the shared Field job
 detail `workType` for installed clients.
 

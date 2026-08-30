@@ -12,6 +12,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import { businessClients, businessSites } from './shared.js';
 
 const instant = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -95,6 +96,76 @@ export const wwDeviceClients = pgTable('ww_device_clients', {
 }, (table) => [
   uniqueIndex('ww_device_clients_unique').on(table.deviceId, table.clientId),
   index('ww_device_clients_client_idx').on(table.clientId, table.isCurrent),
+]);
+
+/**
+ * Source-auditable installation and replacement facts for Fleet devices.
+ * These records enrich Fleet without fabricating Field App forms, boards, or
+ * electrical hierarchy when the source only supplies customer/site/device data.
+ */
+export const wwDeviceInstallationAssignments = pgTable('ww_device_installation_assignments', {
+  id: text('id').primaryKey(),
+  sourceKey: text('source_key').notNull(),
+  sourceWorkbook: text('source_workbook').notNull(),
+  sourceSheet: text('source_sheet').notNull(),
+  sourceRow: integer('source_row').notNull(),
+  fleetAccountClientId: text('fleet_account_client_id').notNull().references(
+    () => wwClients.id,
+    { onDelete: 'restrict' },
+  ),
+  businessClientId: text('business_client_id').notNull().references(
+    () => businessClients.id,
+    { onDelete: 'restrict' },
+  ),
+  businessSiteId: text('business_site_id').references(
+    () => businessSites.id,
+    { onDelete: 'restrict' },
+  ),
+  customerNameSnapshot: text('customer_name_snapshot').notNull(),
+  siteNameSnapshot: text('site_name_snapshot'),
+  siteAddressSnapshot: text('site_address_snapshot'),
+  deviceLabelSnapshot: text('device_label_snapshot').notNull(),
+  jobCompletionDate: date('job_completion_date'),
+  maasStartDate: date('maas_start_date'),
+  effectiveDate: date('effective_date').notNull(),
+  existingDeviceId: text('existing_device_id').references(
+    () => wwDevices.id,
+    { onDelete: 'restrict' },
+  ),
+  newDeviceId: text('new_device_id').references(
+    () => wwDevices.id,
+    { onDelete: 'restrict' },
+  ),
+  currentDeviceId: text('current_device_id').notNull().references(
+    () => wwDevices.id,
+    { onDelete: 'restrict' },
+  ),
+  notes: text('notes'),
+  createdAt: instant('created_at').notNull().defaultNow(),
+  updatedAt: instant('updated_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('ww_device_installation_assignments_source_unique').on(table.sourceKey),
+  index('ww_device_installation_assignments_account_idx').on(table.fleetAccountClientId),
+  index('ww_device_installation_assignments_business_client_idx').on(table.businessClientId),
+  index('ww_device_installation_assignments_site_idx').on(table.businessSiteId),
+  index('ww_device_installation_assignments_current_device_idx').on(table.currentDeviceId),
+  check('ww_device_installation_assignments_source_row_check', sql`${table.sourceRow} >= 2`),
+  check('ww_device_installation_assignments_date_check', sql`
+    num_nonnulls(${table.jobCompletionDate}, ${table.maasStartDate}) = 1
+    AND ${table.effectiveDate} = coalesce(${table.jobCompletionDate}, ${table.maasStartDate})
+  `),
+  check('ww_device_installation_assignments_device_check', sql`
+    num_nonnulls(${table.existingDeviceId}, ${table.newDeviceId}) >= 1
+    AND ${table.currentDeviceId} = coalesce(${table.newDeviceId}, ${table.existingDeviceId})
+    AND (${table.newDeviceId} IS NULL OR ${table.existingDeviceId} IS NULL OR ${table.newDeviceId} <> ${table.existingDeviceId})
+  `),
+  check('ww_device_installation_assignments_unknown_site_check', sql`
+    (${table.businessSiteId} IS NULL AND ${table.siteAddressSnapshot} IS NULL)
+    OR (${table.businessSiteId} IS NOT NULL AND ${table.siteAddressSnapshot} IS NOT NULL)
+  `),
+  check('ww_device_installation_assignments_notes_check', sql`
+    ${table.notes} IS NULL OR char_length(${table.notes}) <= 2_000
+  `),
 ]);
 
 export const wwCollectionRuns = pgTable('ww_collection_runs', {

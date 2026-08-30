@@ -78,6 +78,21 @@ export function currentWeekAnalyticsFilters(
   };
 }
 
+export function yearToDateAnalyticsFilters(
+  timezone = DEFAULT_SCHEDULER_ANALYTICS_TIMEZONE,
+  now = new Date(),
+): SchedulerAnalyticsFilters {
+  const safeTimezone = validIanaTimezone(timezone)
+    ? timezone
+    : DEFAULT_SCHEDULER_ANALYTICS_TIMEZONE;
+  const today = dateKeyInTimezone(now, safeTimezone);
+  return {
+    from: `${today.slice(0, 4)}-01-01`,
+    to: today,
+    timezone: safeTimezone,
+  };
+}
+
 export function SchedulerAnalyticsFilters({
   filters,
   onApply,

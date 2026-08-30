@@ -601,9 +601,9 @@ export function InstallHubCanonicalDataPage() {
           <div className="mt-3"><InlineNotice>
             {electricalView === 'TREE' ? (
               tree.installation.status === 'Completed' ? (
-                <><strong>Saved client view:</strong> this arrangement is pinned to the completed report version. Reopen the installation to move symbols and save a new report layout.</>
+                <><strong>Saved site view:</strong> this arrangement is pinned to this completed record. New work at the same site starts from the latest electrical state and can save the next site view.</>
               ) : (
-                <><strong>Hierarchy view:</strong> straight lines show confirmed supply paths from the grid through each level. Drag any symbol to move it, then save the layout for the PDF report. Arrange items also enables keyboard movement.</>
+                <><strong>Site hierarchy:</strong> straight lines show confirmed supply paths from the grid through each level. Drag any symbol to move it, then save the site layout. Arrange items also enables keyboard movement.</>
               )
             ) : (
               <><strong>Supply and measurement stay separate:</strong> FED_FROM builds the electrical parent/child hierarchy. MEASURES shows which installed meter board measures a target and never changes that target’s supply parent.</>
@@ -625,7 +625,7 @@ export function InstallHubCanonicalDataPage() {
                       resolvedElectrical.treeRevision,
                       resolvedElectrical.mapLayout?.layoutRevision ?? 0,
                     );
-                    toast.success('Electrical map layout saved for PDF reports.');
+                    toast.success('Site electrical map layout saved.');
                     return saved;
                   } catch (error) {
                     throw new Error(installHubConnectionErrorMessage(error));

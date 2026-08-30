@@ -77,7 +77,7 @@ test('opened product jobs expose Scheduler fallback completion controls', () => 
   assert.match(financeSource, /useCompleteSchedulerJob/);
 });
 
-test('calendar drag assignment expands a day into technician lanes and confirms the drop', () => {
+test('calendar drop confirms assignment details without expanding technician lanes', () => {
   const boardSource = readFileSync(
     new URL('../components/DynamicSchedulerBoard.tsx', import.meta.url),
     'utf8',
@@ -87,30 +87,65 @@ test('calendar drag assignment expands a day into technician lanes and confirms 
     'utf8',
   );
 
-  assert.match(boardSource, /onDragOver=\{onDragOver\}/);
-  assert.match(boardSource, /setExpandedDayKey\(overData\.dayKey\)/);
-  assert.match(boardSource, /overData\.assigneeFieldUserId/);
+  assert.doesNotMatch(boardSource, /onDragOver=\{onDragOver\}/);
+  assert.doesNotMatch(boardSource, /expandedDayKey/);
+  assert.doesNotMatch(boardSource, /overData\.assigneeFieldUserId/);
   assert.match(boardSource, /Confirm job assignment/);
   assert.match(boardSource, /AssignmentSummaryRow label="Technician"/);
   assert.match(boardSource, /AssignmentSummaryRow label="Job"/);
   assert.match(boardSource, /AssignmentSummaryRow label="Date & time"/);
-  assert.match(gridSource, /expandedDayKey/);
-  assert.match(gridSource, /assigneeFieldUserId=\{user\.fieldUserId\}/);
-  assert.match(gridSource, /Technicians available on/);
+  assert.match(boardSource, /Estimated time to complete \(minutes, optional\)/);
+  assert.match(boardSource, /estimatedDurationUpdate\(/);
+  assert.doesNotMatch(gridSource, /expandedDayKey|StaffChipDrop|Technicians available on/);
+  assert.doesNotMatch(gridSource, /Drop an event on a person/);
 });
 
-test('new Field App jobs omit planning and installation outcome inputs', () => {
+test('calendar keeps completed jobs and renders completed and overdue markers', () => {
+  const boardSource = readFileSync(
+    new URL('../components/DynamicSchedulerBoard.tsx', import.meta.url),
+    'utf8',
+  );
+  const blockSource = readFileSync(
+    new URL('../components/ScheduleEventBlock.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(boardSource, /event\.status !== 'done'/);
+  assert.match(blockSource, /calendarEventVisualState/);
+  assert.match(blockSource, /title="Completed"/);
+  assert.match(blockSource, /Scheduled day passed; not complete/);
+  assert.match(blockSource, /disabled: !draggable/);
+});
+
+test('calendar jobs use source backgrounds and expand details after a 1.2 second hover', () => {
+  const blockSource = readFileSync(
+    new URL('../components/ScheduleEventBlock.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(blockSource, /DETAILS_HOVER_DELAY_MS = 1_200/);
+  assert.match(blockSource, /setTimeout\(\(\) => \{/);
+  assert.match(blockSource, /appEventSurfaceClass\(event\.sourceApp\)/);
+  assert.match(blockSource, /EventDetail label="Assigned to"/);
+  assert.match(blockSource, /EventDetail label="Estimated time"/);
+  assert.match(blockSource, /duration-500 ease-out/);
+});
+
+test('new Field App jobs collect planning inputs but omit job comments and installation outcomes', () => {
   const modalSource = readFileSync(
     new URL('../components/EventFormModal.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.doesNotMatch(modalSource, /Field App job planning and scope/);
-  assert.doesNotMatch(modalSource, /Scope categorization/);
-  assert.doesNotMatch(
-    modalSource,
-    /scheduler-(?:electricity-nmi|work-type|metering-solution|maas|job-comments)/,
-  );
+  assert.match(modalSource, /Field App job planning and scope/);
+  assert.match(modalSource, /Scope categorization/);
+  assert.match(modalSource, /scheduler-electricity-nmi/);
+  assert.match(modalSource, /scheduler-work-type/);
+  assert.match(modalSource, /M1 — New install/);
+  assert.match(modalSource, /M5 — Other/);
+  assert.match(modalSource, /scheduler-metering-solution/);
+  assert.match(modalSource, /scheduler-maas/);
+  assert.doesNotMatch(modalSource, /scheduler-job-comments/);
   assert.doesNotMatch(modalSource, /scheduler-custom-job-number|customJobNumber/);
   assert.match(modalSource, /titleSuffix: fieldJobTitleSuffix/);
   assert.match(modalSource, /schedulerFieldJobTitlePreview\(/);
@@ -146,7 +181,7 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
   assert.match(modalSource, /existingSiteId,/);
   assert.match(modalSource, /clientId: selectedClientId/);
   assert.match(modalSource, /schedulerSiteOptionLabel\(site\)/);
-  assert.match(modalSource, /previous job data is not copied/);
+  assert.match(modalSource, /latest electrical site state is carried/);
   assert.ok(
     (modalSource.match(/clearSchedulerFieldJobPlanning\(current\)/g) ?? []).length >= 3,
     'every existing-site entry path clears Field planning values',
@@ -154,4 +189,15 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
   assert.doesNotMatch(modalSource, /latestRevisionNumber/);
   assert.doesNotMatch(modalSource, /latest(?:WorkType|MeteringSolutionType|CustomJobNumber|JobComments|Maas|ElectricityNmi)/);
   assert.doesNotMatch(modalSource, /new independent job version/);
+});
+
+test('scheduler product work always creates a new job without a create-or-link choice', () => {
+  const modalSource = readFileSync(
+    new URL('../components/EventFormModal.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(modalSource, /Creation mode|Create new work|Link existing/);
+  assert.doesNotMatch(modalSource, /Search existing Draft work|useJobOptions/);
+  assert.match(modalSource, /else if \(sourceApp !== 'custom'\) \{\s*await dispatch\.mutateAsync/);
 });

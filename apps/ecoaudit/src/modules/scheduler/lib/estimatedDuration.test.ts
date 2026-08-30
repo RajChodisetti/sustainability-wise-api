@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   estimatedDurationError,
   estimatedDurationUpdate,
+  formatEstimatedDuration,
   MAX_ESTIMATED_DURATION_MINUTES,
   parseEstimatedDurationMinutes,
 } from './estimatedDuration';
@@ -34,4 +35,12 @@ test('unchanged blank estimate does not clear a historical end time during edit'
   assert.deepEqual(estimatedDurationUpdate(90, 90), {});
   assert.deepEqual(estimatedDurationUpdate(90, null), { estimatedDurationMinutes: null });
   assert.deepEqual(estimatedDurationUpdate(null, 45), { estimatedDurationMinutes: 45 });
+});
+
+test('estimated duration is formatted for delayed calendar details', () => {
+  assert.equal(formatEstimatedDuration(null), 'Not estimated');
+  assert.equal(formatEstimatedDuration(45), '45 min');
+  assert.equal(formatEstimatedDuration(60), '1 hr');
+  assert.equal(formatEstimatedDuration(90), '1 hr 30 min');
+  assert.equal(formatEstimatedDuration(120), '2 hrs');
 });

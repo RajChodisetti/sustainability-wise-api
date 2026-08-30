@@ -10,14 +10,13 @@ import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
-import { useFleetClients, useRemoveFleetClientApiKey, useSaveFleetClientApiKey } from '@/modules/fleet/hooks/useFleet';
+import { useFleetClients, useSaveFleetClientApiKey } from '@/modules/fleet/hooks/useFleet';
 import { formatDate, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
 
 export default function ClientsPage() {
   const { wwUser } = usePortalAuth();
   const query = useFleetClients();
   const saveApiKey = useSaveFleetClientApiKey();
-  const removeApiKey = useRemoveFleetClientApiKey();
   const [search, setSearch] = useState('');
   const [maas, setMaas] = useState<'all' | 'true' | 'false'>('all');
   const [quality, setQuality] = useState<'all' | 'healthy' | 'issues'>('all');
@@ -193,7 +192,7 @@ export default function ClientsPage() {
                                 setEditingClientId(client.id);
                               }}
                             >
-                              {client.apiKeyConfigured ? 'Replace key' : 'Add key'}
+                              {client.apiKeyConfigured ? 'Update key' : 'Add key'}
                             </Button>
                           ) : null}
                         </td>
@@ -213,7 +212,7 @@ export default function ClientsPage() {
         }}>
           <Card className="w-full max-w-lg" role="dialog" aria-modal="true" aria-labelledby="fleet-api-key-title">
             <h2 id="fleet-api-key-title" className="text-lg font-extrabold text-[var(--text)]">
-              {editingClient.apiKeyConfigured ? 'Replace' : 'Add'} API key for {editingClient.name}
+              {editingClient.apiKeyConfigured ? 'Update' : 'Add'} API key for {editingClient.name}
             </h2>
             <p className="mt-2 text-sm leading-6 text-[var(--text-sub)]">
               The key is encrypted after submission and is never displayed again.
@@ -223,29 +222,16 @@ export default function ClientsPage() {
                 Wattwatchers API key
                 <Input className="mt-1.5" type="password" autoComplete="new-password" minLength={8} required value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoFocus />
               </label>
-              {saveApiKey.error || removeApiKey.error ? (
-                <div className="mt-3"><ErrorBanner message={fleetConnectionErrorMessage(saveApiKey.error ?? removeApiKey.error)} /></div>
+              {saveApiKey.error ? (
+                <div className="mt-3"><ErrorBanner message={fleetConnectionErrorMessage(saveApiKey.error)} /></div>
               ) : null}
-              <div className="mt-5 flex flex-wrap justify-between gap-2">
-                <div>
-                  {editingClient.apiKeyConfigured ? (
-                    <Button
-                      type="button"
-                      variant="danger"
-                      disabled={removeApiKey.isPending || saveApiKey.isPending}
-                      onClick={() => {
-                        if (!window.confirm(`Remove the API key for ${editingClient.name}? Collection for this client will stop.`)) return;
-                        void removeApiKey.mutateAsync(editingClient.id).then(() => setEditingClientId(null));
-                      }}
-                    >
-                      Remove key
-                    </Button>
-                  ) : null}
-                </div>
+              <div className="mt-5 flex justify-end gap-2">
                 <div className="flex gap-2">
                   <Button type="button" variant="secondary" onClick={() => setEditingClientId(null)}>Cancel</Button>
-                  <Button type="submit" disabled={apiKey.trim().length < 8 || saveApiKey.isPending || removeApiKey.isPending}>
-                    {saveApiKey.isPending ? 'Saving…' : 'Save API key'}
+                  <Button type="submit" disabled={apiKey.trim().length < 8 || saveApiKey.isPending}>
+                    {saveApiKey.isPending
+                      ? 'Saving…'
+                      : editingClient.apiKeyConfigured ? 'Update API key' : 'Add API key'}
                   </Button>
                 </div>
               </div>

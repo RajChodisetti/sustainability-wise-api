@@ -68,6 +68,7 @@ import type {
   SchedulerInvoiceRefund,
 } from '@/modules/scheduler/types/refunds';
 import type {
+  SchedulerAnnualTarget,
   SchedulerAnalyticsDto,
   SchedulerAnalyticsFilters,
 } from '@/modules/scheduler/types/analytics';
@@ -557,6 +558,27 @@ export function fetchSchedulerAnalytics(
   return portalRequest(true)<SchedulerAnalyticsDto>(
     'GET',
     `/v1/portal/scheduler/analytics?${query}`,
+  );
+}
+
+export function fetchSchedulerAnnualTarget(
+  year: number,
+): Promise<{ target: SchedulerAnnualTarget | null }> {
+  return portalRequest(true)<{ target: SchedulerAnnualTarget | null }>(
+    'GET',
+    `/v1/portal/scheduler/annual-target?year=${encodeURIComponent(year)}`,
+  );
+}
+
+export function updateSchedulerAnnualTarget(input: {
+  year: number;
+  amountExGstCents: number;
+  currency: string;
+}): Promise<{ target: SchedulerAnnualTarget }> {
+  return portalRequest(true)<{ target: SchedulerAnnualTarget }>(
+    'PATCH',
+    '/v1/portal/scheduler/annual-target',
+    input,
   );
 }
 

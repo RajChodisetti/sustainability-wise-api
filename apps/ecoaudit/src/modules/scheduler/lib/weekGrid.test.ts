@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { eventBlockStyle, eventLaneLayout } from './weekGrid';
+import { calendarEventVisualState, eventBlockStyle, eventLaneLayout } from './weekGrid';
+
+test('calendar retains completed jobs and warns only after an incomplete scheduled day passes', () => {
+  const now = new Date(2026, 7, 29, 12, 0, 0);
+
+  assert.equal(calendarEventVisualState('done', '2026-08-30T09:00:00', now), 'completed');
+  assert.equal(calendarEventVisualState('planned', '2026-08-28T09:00:00', now), 'overdue');
+  assert.equal(calendarEventVisualState('in_progress', '2026-08-28T09:00:00', now), 'overdue');
+  assert.equal(calendarEventVisualState('planned', '2026-08-29T08:00:00', now), 'default');
+  assert.equal(calendarEventVisualState('planned', '2026-08-30T08:00:00', now), 'default');
+  assert.equal(calendarEventVisualState('cancelled', '2026-08-28T09:00:00', now), 'default');
+});
 
 function event(
   id: string,

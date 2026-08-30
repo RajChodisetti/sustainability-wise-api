@@ -34,6 +34,7 @@ import {
   deleteSchedulerExpense,
   deleteSchedulerExpenseAttachment,
   deleteSchedulerExpenseByFinanceId,
+  getSchedulerAnnualTarget,
   getSchedulerFinancialSummary,
   getSchedulerFinancialSummaryById,
   getSchedulerFinancePortfolioSummary,
@@ -55,6 +56,7 @@ import {
   updateSchedulerDraftInvoice,
   updateSchedulerDraftInvoiceByFinanceId,
   updateConsolidatedSchedulerDraftInvoice,
+  updateSchedulerAnnualTarget,
   updateSchedulerInvoiceSeller,
   updateSchedulerExpense,
   updateSchedulerExpenseByFinanceId,
@@ -295,8 +297,6 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         .from(ihInventoryMeters)
         .where(and(
           isNull(ihInventoryMeters.deletedAt),
-          // Installed meters belong to sites and are no longer available inventory.
-          eq(ihInventoryMeters.status, 'company'),
         ))
         .groupBy(ihInventoryMeters.status),
       db.select({
@@ -312,12 +312,18 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         ))
         .groupBy(ihUsers.id, ihUsers.fullName, ihUsers.email),
     ]);
-    const companyMeters = Number(totals[0]?.meterCount ?? 0);
+    const totalFor = (status: string) => Number(
+      totals.find((row) => row.status === status)?.meterCount ?? 0,
+    );
+    const companyMeters = totalFor('company');
     const userMeters = users.reduce((sum, user) => sum + Number(user.meterCount), 0);
+    const installedMeters = totalFor('installed');
     return reply.send({
       companyMeters,
       userMeters,
+      installedMeters,
       totalMetersInInventory: companyMeters + userMeters,
+      totalTrackedMeters: companyMeters + userMeters + installedMeters,
       users: users.map((user) => ({
         userId: user.userId,
         name: user.fullName?.trim() || user.email,
@@ -405,6 +411,50 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       to: query.to,
       timezone: query.timezone,
     }));
+  });
+
+  app.get('/scheduler/annual-target', {
+    schema: {
+      tags: ['Portal Scheduler Analytics'],
+      summary: 'Get the company annual revenue target for one calendar year',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['year'],
+        properties: { year: { type: 'integer', minimum: 2000, maximum: 9999 } },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const { year } = request.query as { year: number };
+    return reply.send({ target: await getSchedulerAnnualTarget(request.user, year) });
+  });
+
+  app.patch('/scheduler/annual-target', {
+    schema: {
+      tags: ['Portal Scheduler Analytics'],
+      summary: 'Set the company annual revenue target for one calendar year',
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['year', 'amountExGstCents', 'currency'],
+        properties: {
+          year: { type: 'integer', minimum: 2000, maximum: 9999 },
+          amountExGstCents: { type: 'integer', minimum: 1 },
+          currency: { type: 'string', pattern: '^[A-Za-z]{3}$' },
+        },
+      },
+    },
+    preHandler: [authenticate, portalSchedulerGate, requireRole('admin')],
+  }, async (request, reply) => {
+    const body = request.body as {
+      year: number;
+      amountExGstCents: number;
+      currency: string;
+    };
+    return reply.send({ target: await updateSchedulerAnnualTarget(request.user, body) });
   });
 
   app.post('/scheduler/address-suggestions', {

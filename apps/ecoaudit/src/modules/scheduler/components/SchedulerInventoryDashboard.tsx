@@ -10,13 +10,32 @@ export function SchedulerInventoryDashboard() {
     return <ErrorBanner message="Meter inventory could not be loaded." />;
   }
   const summary = inventory.data;
+  const installedMeters = summary.installedMeters ?? 0;
+  const totalTrackedMeters = summary.totalTrackedMeters ?? (
+    summary.totalMetersInInventory + installedMeters
+  );
   return (
     <div className="space-y-5">
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="Total meters in inventory" value={summary.totalMetersInInventory} icon="gauge" />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatCard label="Total tracked meters" value={totalTrackedMeters} icon="gauge" />
+        <StatCard label="Available inventory" value={summary.totalMetersInInventory} icon="grid" />
         <StatCard label="Company stock" value={summary.companyMeters} icon="clipboard" tone="success" />
         <StatCard label="Meters with users" value={summary.userMeters} icon="users" tone="warning" />
       </div>
+      <Card className="!p-4 sm:!p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="font-extrabold text-[var(--text)]">Meter custody lifecycle</h2>
+            <p className="mt-1 text-sm text-[var(--text-sub)]">
+              Available inventory excludes meters already transferred to an installation.
+            </p>
+          </div>
+          <div className="rounded-[var(--radius-sm)] bg-[var(--primary-soft)] px-4 py-3 text-right">
+            <p className="text-xs font-bold uppercase tracking-[0.06em] text-[var(--text-sub)]">Installed from register</p>
+            <p className="mt-1 text-2xl font-extrabold text-[var(--primary)]">{installedMeters}</p>
+          </div>
+        </div>
+      </Card>
       {summary.users.length === 0 ? (
         <EmptyState
           title="No meters are assigned to users"

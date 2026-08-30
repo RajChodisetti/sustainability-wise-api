@@ -15,10 +15,14 @@ import { compareSchedulerCompletionAttributionEvents } from './schedulerCompleti
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
 import {
+  ihFormSubmissions,
   ihInstallations,
+  ihInventoryMeterMovements,
   ihInstallationWorkSessions,
 } from '../db/schema/installhub.js';
 import {
+  businessJobs,
+  fieldAppJobDetails,
   globalUsers,
   portalScheduleEvents,
   schedulerInvoiceJobs,
@@ -51,6 +55,7 @@ const MAX_INVOICE_LINES = 20_000;
 const MAX_OPEN_SCHEDULE_EVENTS = 10_000;
 const MAX_OPEN_PRODUCT_JOBS_PER_APP = 10_000;
 const MAX_ATTRIBUTION_EVENTS = 20_000;
+const MAX_NEW_METER_MOVEMENTS = 20_000;
 const QUERY_CHUNK_SIZE = 500;
 const COMPLETION_FINANCE_CONCURRENCY = 0;
 const MILLISECONDS_PER_HOUR = 3_600_000;
@@ -113,12 +118,15 @@ export type SchedulerAnalyticsLeaderboardRow = {
   workingDays: number;
   workingHoursOnSite: number;
   workingHoursOnSiteMilliseconds: number;
+  sitesWorked: number;
+  averageHoursOnSitePerSite: number;
   averageWorkingHoursOnSitePerWorkingDay: number;
   completedJobs: number;
   averageDailyJobs: number;
   scheduledJobs: number;
   unscheduledJobs: number;
   backlogJobs: number;
+  futureScheduledJobs: number;
   pipelineJobs0To7Days: number;
   pipelineJobs8To30Days: number;
   revenue: SchedulerAnalyticsCurrencyMetrics[];
@@ -146,6 +154,31 @@ export type SchedulerAnalyticsDto = {
       date: string;
       currencies: SchedulerAnalyticsCurrencyMetrics[];
     }>;
+  };
+  operations: {
+    completedJobsByType: Record<SchedulerCompletedJobCategory, number>;
+    completedJobsByOperationalType: Record<SchedulerOperationalJobCategory, number>;
+    newMetersEstablished: number;
+    newMeters: {
+      maas: number;
+      general: number;
+      unclassified: number;
+      unattributed: number;
+      byStaff: Array<{
+        userId: string;
+        displayName: string;
+        email: string;
+        total: number;
+        maas: number;
+        general: number;
+        unclassified: number;
+      }>;
+    };
+    staffCount: number;
+    averageDailyJobsPerStaff: number;
+    averageHoursOnSitePerEmployee: number;
+    pipelineUpcomingWeek: number;
+    totalScheduled: number;
   };
   leaderboard: SchedulerAnalyticsLeaderboardRow[];
   quality: {
@@ -211,6 +244,20 @@ export type SchedulerAnalyticsDto = {
   };
 };
 
+export type SchedulerCompletedJobCategory =
+  | 'installs'
+  | 'faults'
+  | 'upgrades'
+  | 'audits'
+  | 'other';
+
+export type SchedulerOperationalJobCategory =
+  | 'newMaasInstalls'
+  | 'otherInstalls'
+  | 'communicationsFaults'
+  | 'replacements'
+  | 'other';
+
 type ActiveUser = {
   id: string;
   fieldUserId: string;
@@ -222,6 +269,7 @@ type ActiveUser = {
 
 type SessionObservation = {
   sourceApp: SourceApp;
+  siteKey: string;
   actorUserId: string;
   lastActiveAt: Date;
   endedAt: Date | null;
@@ -238,6 +286,39 @@ type CompletionObservation = FinanceSource & {
   gstAmountCents: number | null;
   totalIncGstCents: number | null;
   gstRateBps: number | null;
+};
+
+export function schedulerCompletedJobCategory(
+  workType: string | null | undefined,
+): SchedulerCompletedJobCategory {
+  const normalized = workType?.trim().toLowerCase() ?? '';
+  if (normalized.startsWith('m1') || normalized.includes('new install')) return 'installs';
+  if (normalized.startsWith('m2') || normalized.includes('fault')) return 'faults';
+  if (normalized.includes('upgrade')) return 'upgrades';
+  if (normalized.startsWith('m3') || normalized.includes('inspection') || normalized.includes('audit')) {
+    return 'audits';
+  }
+  return 'other';
+}
+
+export function schedulerOperationalJobCategory(
+  workType: string | null | undefined,
+  options: { maas?: boolean | null; replacement?: boolean } = {},
+): SchedulerOperationalJobCategory {
+  const normalized = workType?.trim().toLowerCase() ?? '';
+  if (options.replacement) return 'replacements';
+  if (normalized.startsWith('m1') || normalized.includes('new install')) {
+    return options.maas === true ? 'newMaasInstalls' : 'otherInstalls';
+  }
+  if (normalized.startsWith('m2') || normalized.includes('fault')) return 'communicationsFaults';
+  return 'other';
+}
+
+type NewMeterObservation = {
+  inventoryMeterId: string;
+  installationId: string | null;
+  actorUserId: string;
+  maas: boolean | null;
 };
 
 type SourceAttribution = {
@@ -760,11 +841,14 @@ async function loadSessions(
 ): Promise<SessionObservation[]> {
   const installationBoundary = sql<Date>`COALESCE(${ihInstallationWorkSessions.endedAt}, ${ihInstallationWorkSessions.lastActiveAt})`;
   const installations = await executor.select({
+    siteKey: sql<string>`COALESCE(${ihInstallations.businessSiteId}, ${ihInstallationWorkSessions.installationId})`,
     actorUserId: ihInstallationWorkSessions.actorUserId,
     lastActiveAt: ihInstallationWorkSessions.lastActiveAt,
     endedAt: ihInstallationWorkSessions.endedAt,
     activeMilliseconds: ihInstallationWorkSessions.activeMilliseconds,
-  }).from(ihInstallationWorkSessions).where(and(
+  }).from(ihInstallationWorkSessions)
+    .leftJoin(ihInstallations, eq(ihInstallations.id, ihInstallationWorkSessions.installationId))
+    .where(and(
     gte(installationBoundary, sql.param(window.startAt, ihInstallationWorkSessions.lastActiveAt)),
     lt(installationBoundary, sql.param(window.endAt, ihInstallationWorkSessions.lastActiveAt)),
   )).limit(MAX_SESSIONS_PER_APP + 1);
@@ -856,6 +940,93 @@ async function loadCompletions(
       gstRateBps: nullableInteger(fact.gstRateBps, 'Completed-work GST rate'),
     } as CompletionObservation;
   });
+}
+
+async function loadCompletedJobTypeCounts(
+  executor: SchedulerAnalyticsExecutor,
+  completions: readonly CompletionObservation[],
+): Promise<{
+  legacy: Record<SchedulerCompletedJobCategory, number>;
+  operational: Record<SchedulerOperationalJobCategory, number>;
+}> {
+  const legacy: Record<SchedulerCompletedJobCategory, number> = {
+    installs: 0,
+    faults: 0,
+    upgrades: 0,
+    audits: 0,
+    other: 0,
+  };
+  const operational: Record<SchedulerOperationalJobCategory, number> = {
+    newMaasInstalls: 0,
+    otherInstalls: 0,
+    communicationsFaults: 0,
+    replacements: 0,
+    other: 0,
+  };
+  const ids = [...new Set(completions.map((completion) => completion.sourceId))];
+  const detailsBySourceId = new Map<string, { workType: string | null; maas: boolean | null }>();
+  const replacementSourceIds = new Set<string>();
+  for (const idChunk of chunks(ids)) {
+    if (idChunk.length === 0) continue;
+    const [detailRows, replacementRows] = await Promise.all([
+      executor.select({
+        sourceId: businessJobs.sourceId,
+        workType: fieldAppJobDetails.workType,
+        maas: fieldAppJobDetails.maas,
+      }).from(businessJobs)
+        .leftJoin(fieldAppJobDetails, eq(fieldAppJobDetails.jobId, businessJobs.id))
+        .where(and(
+          eq(businessJobs.sourceApp, 'installhub'),
+          eq(businessJobs.sourceType, 'installation'),
+          inArray(businessJobs.sourceId, idChunk),
+        )),
+      executor.select({ installationId: ihFormSubmissions.installationId })
+        .from(ihFormSubmissions)
+        .where(and(
+          inArray(ihFormSubmissions.installationId, idChunk),
+          eq(ihFormSubmissions.formType, 'comms-fault'),
+          eq(ihFormSubmissions.status, 'Completed'),
+          sql`${ihFormSubmissions.answers}->>'works.replace_device' = 'yes'`,
+        )),
+    ]);
+    for (const row of detailRows) {
+      detailsBySourceId.set(row.sourceId, { workType: row.workType, maas: row.maas });
+    }
+    for (const row of replacementRows) replacementSourceIds.add(row.installationId);
+  }
+  for (const completion of completions) {
+    const details = detailsBySourceId.get(completion.sourceId);
+    legacy[schedulerCompletedJobCategory(details?.workType)] += 1;
+    operational[schedulerOperationalJobCategory(details?.workType, {
+      maas: details?.maas,
+      replacement: replacementSourceIds.has(completion.sourceId),
+    })] += 1;
+  }
+  return { legacy, operational };
+}
+
+async function loadNewMetersEstablished(
+  executor: SchedulerAnalyticsExecutor,
+  window: SchedulerAnalyticsWindow,
+): Promise<NewMeterObservation[]> {
+  const rows = await executor.select({
+    inventoryMeterId: ihInventoryMeterMovements.inventoryMeterId,
+    installationId: ihInventoryMeterMovements.installationId,
+    actorUserId: ihInventoryMeterMovements.actorUserId,
+    maas: ihInstallations.maas,
+  }).from(ihInventoryMeterMovements)
+    .leftJoin(
+      ihInstallations,
+      eq(ihInstallations.id, ihInventoryMeterMovements.installationId),
+    )
+    .where(and(
+      eq(ihInventoryMeterMovements.action, 'installed'),
+      gte(ihInventoryMeterMovements.occurredAt, window.startAt),
+      lt(ihInventoryMeterMovements.occurredAt, window.endAt),
+    ))
+    .limit(MAX_NEW_METER_MOVEMENTS + 1);
+  assertBounded(rows, MAX_NEW_METER_MOVEMENTS, 'New meter movements');
+  return [...new Map(rows.map((row) => [row.inventoryMeterId, row])).values()];
 }
 
 async function loadUndatedCompletedJobCount(
@@ -1419,6 +1590,7 @@ export async function getSchedulerAnalytics(
       openWork,
       openProducts,
       undatedCompletedJobs,
+      newMeters,
     ] = await Promise.all([
       executor.select({
       id: globalUsers.id,
@@ -1435,7 +1607,10 @@ export async function getSchedulerAnalytics(
       loadOpenScheduleEvents(executor, window),
       loadOpenProductSources(executor),
       loadUndatedCompletedJobCount(executor),
+      loadNewMetersEstablished(executor, window),
     ]);
+
+  const completedJobTypes = await loadCompletedJobTypeCounts(executor, completions);
 
   const refundInvoiceIds = [...new Set(refundEvents.map((refund) => refund.invoiceId))];
   const knownInvoices = new Map(invoiceEvents.map((invoice) => [invoice.id, invoice]));
@@ -1515,12 +1690,15 @@ export async function getSchedulerAnalytics(
       ...workingDays,
       workingHoursOnSite: 0,
       workingHoursOnSiteMilliseconds: 0,
+      sitesWorked: 0,
+      averageHoursOnSitePerSite: 0,
       averageWorkingHoursOnSitePerWorkingDay: 0,
       completedJobs: 0,
       averageDailyJobs: 0,
       scheduledJobs: 0,
       unscheduledJobs: 0,
       backlogJobs: 0,
+      futureScheduledJobs: 0,
       pipelineJobs0To7Days: 0,
       pipelineJobs8To30Days: 0,
       attribution: {
@@ -1564,7 +1742,13 @@ export async function getSchedulerAnalytics(
     ids.add(session.actorUserId);
     sessionOriginIds.set(session.sourceApp, ids);
   }
+  for (const meter of newMeters) {
+    const ids = sessionOriginIds.get('installhub') ?? new Set<string>();
+    ids.add(meter.actorUserId);
+    sessionOriginIds.set('installhub', ids);
+  }
   const sessionIdentity = await loadOriginIdentityMap(executor, sessionOriginIds);
+  const sessionSitesByUser = new Map<string, Set<string>>();
   for (const session of sessions) {
     quality.sessionCount += 1;
     requireSafeNonnegativeInteger(session.activeMilliseconds, 'Working hours on site');
@@ -1585,6 +1769,9 @@ export async function getSchedulerAnalytics(
       'Working hours on site',
     );
     row.attribution.workingSessionCount += 1;
+    const sites = sessionSitesByUser.get(row.userId) ?? new Set<string>();
+    sites.add(session.siteKey);
+    sessionSitesByUser.set(row.userId, sites);
   }
 
   for (const event of workload.scheduledInWindow) {
@@ -1605,6 +1792,7 @@ export async function getSchedulerAnalytics(
     const user = activeUserByFieldId.get(event.assigneeFieldUserId);
     const row = user ? leaderboardByUser.get(user.id) : undefined;
     const eventTime = event.scheduledStartAt.getTime();
+    if (row && eventTime >= openWork.anchorStart.getTime()) row.futureScheduledJobs += 1;
     if (eventTime >= openWork.pipeline31End.getTime()) continue;
     const bucket = eventTime < openWork.anchorStart.getTime()
       ? 'backlog'
@@ -1825,6 +2013,10 @@ export async function getSchedulerAnalytics(
 
   for (const row of leaderboardByUser.values()) {
     row.workingHoursOnSite = round(row.workingHoursOnSiteMilliseconds / MILLISECONDS_PER_HOUR);
+    row.sitesWorked = sessionSitesByUser.get(row.userId)?.size ?? 0;
+    row.averageHoursOnSitePerSite = row.sitesWorked > 0
+      ? round(row.workingHoursOnSite / row.sitesWorked)
+      : 0;
     row.averageWorkingHoursOnSitePerWorkingDay = row.workingDays > 0
       ? round(row.workingHoursOnSite / row.workingDays)
       : 0;
@@ -1838,6 +2030,51 @@ export async function getSchedulerAnalytics(
     const { revenueBook, ...plainRow } = row;
     return { ...plainRow, revenue: sortedBook(revenueBook) };
   });
+  const staffCount = activeUsers.length;
+  const totalWorkingHours = leaderboard.reduce(
+    (sum, row) => sum + row.workingHoursOnSite,
+    0,
+  );
+  const pipelineUpcomingWeek = leaderboard.reduce(
+    (sum, row) => sum + row.pipelineJobs0To7Days,
+    quality.unattributedPipeline0To7,
+  );
+  const newMeterCounts = { maas: 0, general: 0, unclassified: 0, unattributed: 0 };
+  const newMetersByUser = new Map<string, {
+    userId: string;
+    displayName: string;
+    email: string;
+    total: number;
+    maas: number;
+    general: number;
+    unclassified: number;
+  }>();
+  for (const meter of newMeters) {
+    const classification = meter.maas === true
+      ? 'maas'
+      : meter.maas === false
+        ? 'general'
+        : 'unclassified';
+    newMeterCounts[classification] += 1;
+    const globalUserId = sessionIdentity.get(`installhub:${meter.actorUserId}`);
+    const staff = globalUserId ? leaderboardByUser.get(globalUserId) : undefined;
+    if (!staff) {
+      newMeterCounts.unattributed += 1;
+      continue;
+    }
+    const row = newMetersByUser.get(staff.userId) ?? {
+      userId: staff.userId,
+      displayName: staff.displayName,
+      email: staff.email,
+      total: 0,
+      maas: 0,
+      general: 0,
+      unclassified: 0,
+    };
+    row.total += 1;
+    row[classification] += 1;
+    newMetersByUser.set(staff.userId, row);
+  }
 
   return {
     complete: true,
@@ -1855,6 +2092,28 @@ export async function getSchedulerAnalytics(
         date,
         currencies: sortedBook(dailyBooks.get(date) ?? new Map()),
       })),
+    },
+    operations: {
+      completedJobsByType: completedJobTypes.legacy,
+      completedJobsByOperationalType: completedJobTypes.operational,
+      newMetersEstablished: newMeters.length,
+      newMeters: {
+        ...newMeterCounts,
+        byStaff: [...newMetersByUser.values()].sort((left, right) => (
+          right.total - left.total
+          || left.displayName.localeCompare(right.displayName)
+          || left.userId.localeCompare(right.userId)
+        )),
+      },
+      staffCount,
+      averageDailyJobsPerStaff: staffCount > 0
+        ? round(completions.length / staffCount / 5)
+        : 0,
+      averageHoursOnSitePerEmployee: staffCount > 0
+        ? round(totalWorkingHours / staffCount)
+        : 0,
+      pipelineUpcomingWeek,
+      totalScheduled: workload.activeEvents.length,
     },
     leaderboard,
     quality: {

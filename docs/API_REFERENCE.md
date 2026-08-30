@@ -953,4 +953,7 @@ material is AES-256-GCM encrypted with
 `WATTWATCHERS_CLIENT_KEY_ENCRYPTION_SECRET` and is never returned to a human
 session. Only a Wattwatchers `service_account` may call
 `GET /v1/wattwatchers/clients/collector/configured` to retrieve configured keys
-for collection.
+for collection. During migration from environment-backed configuration, that
+service account may call `POST /v1/wattwatchers/clients/collector/bootstrap`.
+The bootstrap creates missing client rows and encrypted credential rows only;
+it never replaces a credential already stored in the database.

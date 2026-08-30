@@ -12,11 +12,46 @@ import {
   rankLeaderboardRows,
   SCHEDULER_ANALYTICS_TRANSACTION_CONFIG,
   schedulerAnalyticsSourceKey,
+  schedulerCompletedJobCategory,
   schedulerCommercialSourceTypeForApp,
+  schedulerOperationalJobCategory,
   schedulerProductAssignmentIdentity,
   sessionIsIncludedInWindow,
   startOfCalendarDateInTimeZone,
 } from './schedulerAnalyticsService.js';
+
+test('completed Scheduler work types map only explicit operational categories', () => {
+  assert.equal(schedulerCompletedJobCategory('M1 - New install'), 'installs');
+  assert.equal(schedulerCompletedJobCategory('M2 - Faults / COMMS fault'), 'faults');
+  assert.equal(schedulerCompletedJobCategory('M3 - Inspection'), 'audits');
+  assert.equal(schedulerCompletedJobCategory('M5 - Meter upgrade'), 'upgrades');
+  assert.equal(schedulerCompletedJobCategory('M4 - BD/Upselling'), 'other');
+  assert.equal(schedulerCompletedJobCategory(null), 'other');
+});
+
+test('operational Scheduler work types split MaaS installs and completed replacements', () => {
+  assert.equal(
+    schedulerOperationalJobCategory('M1 - New install', { maas: true }),
+    'newMaasInstalls',
+  );
+  assert.equal(
+    schedulerOperationalJobCategory('M1 - New install', { maas: false }),
+    'otherInstalls',
+  );
+  assert.equal(
+    schedulerOperationalJobCategory('M1 - New install', { maas: null }),
+    'otherInstalls',
+  );
+  assert.equal(
+    schedulerOperationalJobCategory('M2 - Faults / COMMS fault'),
+    'communicationsFaults',
+  );
+  assert.equal(
+    schedulerOperationalJobCategory('M2 - Faults / COMMS fault', { replacement: true }),
+    'replacements',
+  );
+  assert.equal(schedulerOperationalJobCategory('M3 - Inspection'), 'other');
+});
 
 test('weekly Scheduler workload counts distinct open jobs and preserves future scheduling', () => {
   const products = [

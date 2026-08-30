@@ -365,6 +365,20 @@
       "when": 1787898587721,
       "tag": "0051_job_actor_billing_rate_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1788059549788,
+      "tag": "0052_scheduler_annual_targets",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1788065167805,
+      "tag": "0053_wattwatchers_maas_installations",
+      "breakpoints": true
     }
   ]
 }

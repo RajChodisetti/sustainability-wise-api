@@ -20,7 +20,6 @@ import {
   useCompleteSchedulerJob,
   useCreateScheduleEvent,
   useCreateSchedulerDispatch,
-  useJobOptions,
   usePortalAssignees,
   useSendScheduleEventReminder,
   useSchedulerSites,
@@ -81,7 +80,6 @@ type Props = {
   onOpenFinance?: (event: ScheduleEvent) => void;
 };
 
-type CreationMode = 'new' | 'existing';
 type SiteSelectionMode = 'new' | 'existing';
 
 type InstallHubJobDetails = {
@@ -133,6 +131,43 @@ function addressFromSite(site: SchedulerSiteOption): SchedulerJobAddressInput {
   };
 }
 
+function nullableBooleanValue(value: boolean | null): string {
+  return value === null ? '' : value ? 'yes' : 'no';
+}
+
+function nullableBooleanFromValue(value: string): boolean | null {
+  if (value === 'yes') return true;
+  if (value === 'no') return false;
+  return null;
+}
+
+function NullableBooleanSelect({
+  id,
+  label,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: boolean | null;
+  onChange: (value: boolean | null) => void;
+}) {
+  return (
+    <div>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Select
+        id={id}
+        value={nullableBooleanValue(value)}
+        onChange={(event) => onChange(nullableBooleanFromValue(event.target.value))}
+      >
+        <option value="">Not recorded</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+      </Select>
+    </div>
+  );
+}
+
 function installHubJobPayload(details: InstallHubJobDetails) {
   return {
     electricityNmi: optionalJobText(details.electricityNmi),
@@ -156,6 +191,16 @@ const appOptions: Array<{ value: ScheduleSourceApp; label: string }> = [
   { value: 'custom', label: 'Custom job' },
 ];
 
+const FIELD_WORK_TYPES = [
+  ['M1 - New install', 'M1 — New install'],
+  ['M2 - Faults / COMMS fault', 'M2 — Faults / COMMS fault'],
+  ['M3 - Inspection', 'M3 — Inspection'],
+  ['M4 - BD/Upselling', 'M4 — BD/Upselling'],
+] as const;
+const OTHER_WORK_TYPE = 'M5 - ';
+const METERING_TYPES = ['NEM meter', 'Revenue metering', 'Monitoring / sub-meter', 'Water meter'] as const;
+const OTHER_METERING_TYPE = '__other_metering_type__';
+
 function defaultTypeForApp(app: ScheduleSourceApp): ScheduleSourceType {
   if (app === 'ecoaudit') return 'audit';
   if (app === 'installhub') return 'installation';
@@ -173,8 +218,6 @@ function initialFormValues(
       sourceApp: event.sourceApp,
       sourceType: event.sourceType,
       sourceId: event.sourceId ?? '',
-      creationMode: 'existing' as CreationMode,
-      jobQuery: '',
       siteSelectionMode: 'new' as SiteSelectionMode,
       siteQuery: '',
       existingSiteId: '',
@@ -211,8 +254,6 @@ function initialFormValues(
     sourceApp: defaultSourceApp,
     sourceType: defaultTypeForApp(defaultSourceApp),
     sourceId: '',
-    creationMode: 'new' as CreationMode,
-    jobQuery: '',
     siteSelectionMode: 'new' as SiteSelectionMode,
     siteQuery: '',
     existingSiteId: '',
@@ -264,8 +305,6 @@ export function EventFormModal({
   const [sourceApp, setSourceApp] = useState<ScheduleSourceApp>(initial.sourceApp);
   const [sourceType, setSourceType] = useState<ScheduleSourceType>(initial.sourceType);
   const [sourceId, setSourceId] = useState(initial.sourceId);
-  const [creationMode, setCreationMode] = useState<CreationMode>(initial.creationMode);
-  const [jobQuery, setJobQuery] = useState(initial.jobQuery);
   const [siteSelectionMode, setSiteSelectionMode] = useState<SiteSelectionMode>(initial.siteSelectionMode);
   const [siteQuery, setSiteQuery] = useState(initial.siteQuery);
   const [existingSiteId, setExistingSiteId] = useState(initial.existingSiteId);
@@ -296,16 +335,10 @@ export function EventFormModal({
   const sourceCanCreateNew = sourceApp !== 'custom'
     && creatableSourceApps.includes(sourceApp);
 
-  const jobs = useJobOptions(
-    jobQuery,
-    sourceApp === 'custom' ? undefined : sourceApp,
-    open && isAdmin && sourceApp !== 'custom' && creationMode === 'existing',
-  );
   const sites = useSchedulerSites(
     siteQuery,
     sourceApp === 'custom' ? 'installhub' : sourceApp,
-    open && isAdmin && sourceApp !== 'custom' && creationMode === 'new'
-      && siteSelectionMode === 'existing',
+    open && isAdmin && sourceApp !== 'custom' && siteSelectionMode === 'existing',
   );
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
     sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
@@ -317,12 +350,10 @@ export function EventFormModal({
     if (!isAdmin) return false;
     if (!startLocal || !deadlineLocal) return false;
     const canCreateUnassignedFieldJob = !editing
-      && sourceApp === 'installhub'
-      && creationMode === 'new';
+      && sourceApp === 'installhub';
     if (!assigneeFieldUserId && !canCreateUnassignedFieldJob) return false;
     if (parsedEstimatedDurationMinutes === undefined) return false;
     if (sourceApp === 'custom') return Boolean(title.trim());
-    if (creationMode === 'existing') return Boolean(sourceId);
     if (!sourceCanCreateNew) return false;
     if (siteSelectionMode === 'existing' && !existingSiteId) return false;
     if (sourceApp === 'ecoaudit') return Boolean(
@@ -340,6 +371,9 @@ export function EventFormModal({
       jobClientName.trim()
       && jobSiteName.trim()
       && schedulerAddressIsComplete(jobAddress)
+      && installHubJobDetails.workType
+      && installHubJobDetails.workType !== OTHER_WORK_TYPE
+      && installHubJobDetails.meteringSolutionType !== OTHER_METERING_TYPE
     );
   }, [
     isAdmin,
@@ -350,15 +384,15 @@ export function EventFormModal({
     parsedEstimatedDurationMinutes,
     sourceApp,
     title,
-    creationMode,
     sourceCanCreateNew,
-    sourceId,
     siteSelectionMode,
     existingSiteId,
     jobSiteName,
     jobAddress,
     jobBuildingName,
     jobClientName,
+    installHubJobDetails.workType,
+    installHubJobDetails.meteringSolutionType,
   ]);
 
   const saving = create.isPending
@@ -607,7 +641,7 @@ export function EventFormModal({
           completionIdempotencyKeyRef.current = null;
           toast.success('The product job and linked Scheduler work are complete.');
         }
-      } else if (sourceApp !== 'custom' && creationMode === 'new') {
+      } else if (sourceApp !== 'custom') {
         await dispatch.mutateAsync({
           sourceApp,
           title: title.trim() || undefined,
@@ -774,11 +808,6 @@ export function EventFormModal({
                     setExistingSiteId('');
                     setSelectedClientId('');
                     setSelectedClient(null);
-                    setCreationMode(
-                      app !== 'custom' && creatableSourceApps.includes(app)
-                        ? 'new'
-                        : 'existing',
-                    );
                     setAssigneeFieldUserId('');
                     setTitle('');
                     setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
@@ -795,51 +824,13 @@ export function EventFormModal({
 
                 {sourceApp !== 'custom' ? (
                   <>
-                    <fieldset className="mt-4">
-                      <legend className="mb-1.5 text-sm font-bold text-[var(--text)]">
-                        Creation mode
-                      </legend>
-                      <div className={`grid gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-1 ${sourceCanCreateNew ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                      {([
-                        ...(sourceCanCreateNew ? [['new', 'Create new work'] as const] : []),
-                        ['existing', 'Link existing'] as const,
-                      ]).map(([value, label]) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => {
-                            setCreationMode(value);
-                            setSourceId('');
-                            setSiteSelectionMode('new');
-                            setSiteQuery('');
-                            setExistingSiteId('');
-                            setSelectedClientId('');
-                            setSelectedClient(null);
-                            setJobClientName('');
-                            setJobSiteName('');
-                            setJobAddress({ ...EMPTY_SCHEDULER_JOB_ADDRESS });
-                            setTitle('');
-                          }}
-                          aria-pressed={creationMode === value}
-                          className={`cursor-pointer rounded-lg px-3 py-2 text-sm font-extrabold transition-colors ${
-                            creationMode === value
-                              ? 'bg-[var(--surface)] text-[var(--primary)] shadow-sm'
-                              : 'text-[var(--text-sub)] hover:text-[var(--text)]'
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      </div>
-                    </fieldset>
                     {!sourceCanCreateNew ? (
                       <p className="mt-2 text-xs font-semibold text-[var(--text-sub)]">
-                        Your portal identity can link existing {appOptions.find((option) => option.value === sourceApp)?.label} work, but it needs an active account in that product to create a new record.
+                        Your portal identity needs an active account in {appOptions.find((option) => option.value === sourceApp)?.label} to create this job.
                       </p>
                     ) : null}
 
-                    {creationMode === 'new' ? (
-                      <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
+                    <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
                         <fieldset>
                           <legend className="mb-1.5 text-sm font-bold text-[var(--text)]">
                             Is this work for a new or existing site?
@@ -908,7 +899,8 @@ export function EventFormModal({
                             {existingSiteId ? (
                               <FieldHint>
                                 The saved client and site details are filled in below. You can edit them
-                                before creating this job; previous job data is not copied.
+                                before creating this new job. The latest electrical site state is carried
+                                forward so changes made during this job become the next site view.
                               </FieldHint>
                             ) : null}
                           </div>
@@ -964,62 +956,53 @@ export function EventFormModal({
                             </div>
                           </div>
                         </section>
+                        {sourceApp === 'installhub' ? (
+                          <section className="mt-4 border-t border-[var(--border)] pt-4" aria-labelledby="scheduler-field-job-planning">
+                            <h3 id="scheduler-field-job-planning" className="text-sm font-extrabold text-[var(--text)]">Field App job planning and scope</h3>
+                            <div className="mt-2 grid gap-x-3 sm:grid-cols-2">
+                              <div>
+                                <FieldLabel htmlFor="scheduler-electricity-nmi">Electricity NMI</FieldLabel>
+                                <Input id="scheduler-electricity-nmi" value={installHubJobDetails.electricityNmi} maxLength={100} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, electricityNmi: event.target.value }))} />
+                              </div>
+                              <div>
+                                <FieldLabel htmlFor="scheduler-work-type">Scope categorization</FieldLabel>
+                                <Select id="scheduler-work-type" value={installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : installHubJobDetails.workType} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: event.target.value }))}>
+                                  <option value="">Select scope</option>
+                                  {FIELD_WORK_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                                  <option value={OTHER_WORK_TYPE}>M5 — Other</option>
+                                </Select>
+                                {installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? (
+                                  <Input aria-label="Other scope" placeholder="Enter other scope" value={installHubJobDetails.workType.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: `${OTHER_WORK_TYPE}${event.target.value}` }))} />
+                                ) : null}
+                              </div>
+                              <div>
+                                <FieldLabel htmlFor="scheduler-metering-solution">Metering type selection</FieldLabel>
+                                <Select id="scheduler-metering-solution" value={METERING_TYPES.some((value) => value === installHubJobDetails.meteringSolutionType) ? installHubJobDetails.meteringSolutionType : installHubJobDetails.meteringSolutionType ? OTHER_METERING_TYPE : ''} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value }))}>
+                                  <option value="">Select metering type</option>
+                                  {METERING_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}
+                                  <option value={OTHER_METERING_TYPE}>Other</option>
+                                </Select>
+                                {installHubJobDetails.meteringSolutionType === OTHER_METERING_TYPE || (installHubJobDetails.meteringSolutionType && !METERING_TYPES.some((value) => value === installHubJobDetails.meteringSolutionType)) ? (
+                                  <Input aria-label="Other metering type" placeholder="Enter other metering type" value={installHubJobDetails.meteringSolutionType === OTHER_METERING_TYPE ? '' : installHubJobDetails.meteringSolutionType} maxLength={120} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value || OTHER_METERING_TYPE }))} />
+                                ) : null}
+                              </div>
+                              <NullableBooleanSelect id="scheduler-maas" label="MaaS" value={installHubJobDetails.maas} onChange={(maas) => setInstallHubJobDetails((current) => ({ ...current, maas }))} />
+                            </div>
+                          </section>
+                        ) : null}
                         {sourceApp === 'solarsense' ? (
                           <>
                             <FieldLabel>Building / roof name</FieldLabel>
                             <Input value={jobBuildingName} onChange={(e) => setJobBuildingName(e.target.value)} />
                           </>
                         ) : null}
-                      </div>
-                    ) : (
-                      <>
-                        <FieldLabel>Search existing Draft work</FieldLabel>
-                        <Input
-                          value={jobQuery}
-                          onChange={(e) => setJobQuery(e.target.value)}
-                          placeholder="Site name, client, address…"
-                        />
-                        <div className="mt-2 max-h-36 space-y-1 overflow-y-auto rounded-xl border border-[var(--border)] p-2">
-                          {(jobs.data ?? []).map((opt) => (
-                            <button
-                              key={`${opt.sourceType}-${opt.id}`}
-                              type="button"
-                              onClick={() => {
-                                setSourceId(opt.id);
-                                setSourceType(opt.sourceType);
-                                setTitle(opt.label);
-                              }}
-                              className={`block w-full cursor-pointer rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
-                                sourceId === opt.id
-                                  ? 'bg-[var(--primary-soft)] font-extrabold text-[var(--primary)]'
-                                  : 'hover:bg-[var(--surface2)]'
-                              }`}
-                            >
-                              <span className="font-bold">{opt.label}</span>
-                              {opt.subtitle ? (
-                                <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{opt.subtitle}</span>
-                              ) : null}
-                            </button>
-                          ))}
-                          {jobs.isLoading ? (
-                            <p className="px-2 py-1 text-xs text-[var(--text-sub)]" role="status" aria-live="polite">
-                              Searching…
-                            </p>
-                          ) : null}
-                          {!jobs.isLoading && (jobs.data?.length ?? 0) === 0 ? (
-                            <p className="px-2 py-1 text-xs text-[var(--text-sub)]" role="status" aria-live="polite">
-                              No matching Draft work.
-                            </p>
-                          ) : null}
-                        </div>
-                      </>
-                    )}
+                    </div>
                   </>
                 ) : null}
               </>
             ) : null}
 
-            {sourceApp === 'installhub' && creationMode === 'new' && !editing ? (
+            {sourceApp === 'installhub' && !editing ? (
               <>
                 <FieldLabel>Title</FieldLabel>
                 <Input readOnly value={schedulerFieldJobTitlePreview(
@@ -1045,7 +1028,7 @@ export function EventFormModal({
                 <FieldLabel>Job Comments / Scope</FieldLabel>
                 <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
               </>
-            ) : sourceApp === 'installhub' && creationMode === 'new' ? null : (
+            ) : sourceApp === 'installhub' ? null : (
               <>
                 <FieldLabel>Description</FieldLabel>
                 <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} />
@@ -1061,7 +1044,7 @@ export function EventFormModal({
             >
               <option value="">{assignees.isLoading
                 ? 'Loading users…'
-                : sourceApp === 'installhub' && creationMode === 'new' && !editing
+                : sourceApp === 'installhub' && !editing
                   ? 'Unassigned (leave unscheduled)'
                   : 'Select user…'}</option>
               {eligibleAssignees.map((u) => (
@@ -1070,7 +1053,7 @@ export function EventFormModal({
                 </option>
               ))}
             </Select>
-            {!assigneeFieldUserId && sourceApp === 'installhub' && creationMode === 'new' && !editing ? (
+            {!assigneeFieldUserId && sourceApp === 'installhub' && !editing ? (
               <FieldHint>The job will be created as incomplete and will appear first in the Field jobs sidebar.</FieldHint>
             ) : null}
             {assignees.isLoading ? (

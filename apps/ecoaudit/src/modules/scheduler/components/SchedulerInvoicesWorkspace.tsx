@@ -24,6 +24,8 @@ import {
 import {
   consolidatedInvoiceJobSubtotal,
   financeAppLabel,
+  invoiceJobSelectionState,
+  invoiceJobVisibleForSelection,
   invoiceStatusLabel,
   MAX_CONSOLIDATED_INVOICE_JOBS,
   schedulerFinanceHref,
@@ -51,10 +53,6 @@ function dateLabel(value: string | null): string {
   const date = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   if (Number.isNaN(date.valueOf())) return value;
   return date.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-function isCompletedJobStatus(status: string): boolean {
-  return status.trim().toLocaleLowerCase('en-AU') === 'completed';
 }
 
 const statusClasses = {
@@ -334,14 +332,18 @@ function ConsolidatedInvoiceBuilder({
   const eligibilityMutation = useCheckConsolidatedSchedulerInvoiceEligibility();
   const create = useCreateConsolidatedSchedulerInvoice();
   const toast = useToast();
+  const initialJob = initialFinanceId
+    ? jobs.find((job) => job.financeId === initialFinanceId)
+    : undefined;
   const [selectedIds, setSelectedIds] = useState<string[]>(() => (
-    initialFinanceId && jobs.some((job) => (
-      job.financeId === initialFinanceId && isCompletedJobStatus(job.jobStatus)
-    ))
+    initialFinanceId && initialJob && invoiceJobSelectionState(initialJob) !== 'incomplete'
       ? [initialFinanceId]
       : []
   ));
   const [jobSearch, setJobSearch] = useState('');
+  const [showInvoicedJobs, setShowInvoicedJobs] = useState(
+    () => Boolean(initialJob && invoiceJobSelectionState(initialJob) === 'invoiced'),
+  );
   const [eligibility, setEligibility] = useState<SchedulerInvoiceEligibility | null>(null);
   const [selections, setSelections] = useState<Record<string, JobSelection>>({});
   const [billToName, setBillToName] = useState('');
@@ -352,10 +354,34 @@ function ConsolidatedInvoiceBuilder({
   const [billToConfirmed, setBillToConfirmed] = useState(false);
   const [notes, setNotes] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const invoicedJobCount = useMemo(
+    () => jobs.filter((job) => invoiceJobSelectionState(job) === 'invoiced').length,
+    [jobs],
+  );
   const matchingJobs = useMemo(() => {
     const needle = jobSearch.trim().toLocaleLowerCase();
-    return jobs.filter((job) => !needle || `${job.jobName} ${job.clientName ?? ''} ${job.siteName} ${job.siteAddress ?? ''} ${job.userNames.join(' ')} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle));
-  }, [jobSearch, jobs]);
+    const stateRank = { completed: 0, incomplete: 1, invoiced: 2 } as const;
+    return jobs
+      .filter((job) => invoiceJobVisibleForSelection(job, showInvoicedJobs))
+      .filter((job) => !needle || `${job.jobName} ${job.clientName ?? ''} ${job.siteName} ${job.siteAddress ?? ''} ${job.userNames.join(' ')} ${job.sourceId} ${financeAppLabel(job.sourceApp)}`.toLocaleLowerCase().includes(needle))
+      .sort((left, right) => {
+        const stateDifference = stateRank[invoiceJobSelectionState(left)]
+          - stateRank[invoiceJobSelectionState(right)];
+        if (stateDifference !== 0) return stateDifference;
+        const dateDifference = right.jobDate.localeCompare(left.jobDate);
+        return dateDifference || left.jobName.localeCompare(right.jobName);
+      });
+  }, [jobSearch, jobs, showInvoicedJobs]);
+
+  function changeShowInvoicedJobs(show: boolean) {
+    setShowInvoicedJobs(show);
+    if (!show) {
+      setSelectedIds((current) => current.filter((financeId) => {
+        const job = jobs.find((candidate) => candidate.financeId === financeId);
+        return !job || invoiceJobSelectionState(job) !== 'invoiced';
+      }));
+    }
+  }
 
   async function review() {
     if (selectedIds.length < minimumJobs) {
@@ -363,7 +389,7 @@ function ConsolidatedInvoiceBuilder({
       return;
     }
     const incompleteJobs = jobs.filter((job) => (
-      selectedIds.includes(job.financeId) && !isCompletedJobStatus(job.jobStatus)
+      selectedIds.includes(job.financeId) && invoiceJobSelectionState(job) === 'incomplete'
     ));
     if (incompleteJobs.length > 0) {
       setError(`Complete ${incompleteJobs.map((job) => job.jobName).join(', ')} before creating an invoice.`);
@@ -442,32 +468,84 @@ function ConsolidatedInvoiceBuilder({
 
       {!eligibility ? (
         <>
-          <FieldLabel htmlFor="invoice-job-search">Find jobs</FieldLabel>
-          <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="User, job, client, site, or address" className="w-full" />
-          <p className="mt-2 text-sm font-bold text-[var(--text)]" aria-live="polite">{selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} selected {minimumJobs === 2 ? '· minimum 2' : ''}</p>
-          <fieldset className="mt-2 grid min-w-0 max-h-[28rem] w-full gap-2 overflow-y-auto rounded-xl border border-[var(--border)] p-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+            <div>
+              <FieldLabel className="!mt-0" htmlFor="invoice-job-search">Find jobs</FieldLabel>
+              <Input id="invoice-job-search" type="search" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="User, job, client, site, or address" className="w-full" />
+            </div>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] px-3">
+              <Checkbox
+                label={`Show all jobs, including invoiced (${invoicedJobCount})`}
+                checked={showInvoicedJobs}
+                onChange={changeShowInvoicedJobs}
+              />
+            </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm font-extrabold text-[var(--text)]" aria-live="polite">
+              {selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} selected
+              {minimumJobs === 2 ? ' · minimum 2' : ''}
+              <span className="ml-2 font-medium text-[var(--text-sub)]">· {matchingJobs.length} shown</span>
+            </p>
+            <div className="flex flex-wrap gap-2 text-xs font-bold" aria-label="Job status colours">
+              <span className="rounded-full bg-[var(--amber-soft)] px-2.5 py-1 text-[var(--amber)]">Needs completion</span>
+              <span className="rounded-full bg-[var(--green-soft)] px-2.5 py-1 text-[var(--green)]">Complete</span>
+              <span className="rounded-full bg-[var(--green)] px-2.5 py-1 text-white">Invoiced</span>
+            </div>
+          </div>
+
+          <fieldset className="mt-3 grid min-w-0 max-h-[34rem] w-full gap-3 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface2)]/40 p-3 lg:grid-cols-2">
             <legend className="sr-only">Jobs to invoice</legend>
             {matchingJobs.map((job) => {
               const selected = selectedIds.includes(job.financeId);
-              const completed = isCompletedJobStatus(job.jobStatus);
+              const jobState = invoiceJobSelectionState(job);
+              const completed = jobState !== 'incomplete';
+              const invoiced = jobState === 'invoiced';
+              const cardStateClasses = invoiced
+                ? 'border-[var(--green)] bg-[var(--green)] text-white hover:brightness-95'
+                : completed
+                  ? 'border-[var(--green)]/35 bg-[var(--green-soft)] hover:border-[var(--green)]/60'
+                  : 'border-[var(--amber)]/35 bg-[var(--amber-soft)]';
+              const selectedClasses = selected
+                ? 'ring-2 ring-[var(--primary)] ring-offset-2 ring-offset-[var(--surface)]'
+                : '';
+              const secondaryTextClass = invoiced ? 'text-white/80' : 'text-[var(--text-sub)]';
               return (
-                <div key={job.financeId} className={`min-h-28 min-w-0 rounded-xl border p-3 transition-colors ${!completed ? 'border-[var(--amber)]/30 bg-[var(--amber-soft)]' : selected ? 'border-[var(--primary)] bg-[var(--primary-soft)]' : 'border-[var(--border)] hover:bg-[var(--surface2)]'}`}>
-                  <label className={`flex min-w-0 items-start gap-3 ${completed ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                    <input type="checkbox" className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
+                <article key={job.financeId} className={`flex min-w-0 flex-col overflow-hidden rounded-xl border transition ${cardStateClasses} ${selectedClasses}`}>
+                  <label className={`flex min-w-0 items-start gap-3 p-3 sm:p-4 ${completed ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                    <input type="checkbox" aria-label={`Select ${job.jobName}`} className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
                       const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
                       setSelectedIds(result.financeIds);
                       setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
                     }} />
-                    <span className="min-w-0">
-                      <strong className="block truncate text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
-                      <span className="block truncate text-xs leading-5 text-[var(--text-sub)]">{job.siteName || 'Site not set'}</span>
-                      <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
-                      {!completed ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span> : job.needsHoursReview ? <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Internal billing setup needs review</span> : null}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex flex-wrap items-start justify-between gap-2">
+                        <strong className={`min-w-0 flex-1 break-words text-base leading-6 ${invoiced ? 'text-white' : 'text-[var(--text)]'}`}>{job.jobName}</strong>
+                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${
+                          invoiced
+                            ? 'bg-white/20 text-white'
+                            : completed
+                              ? 'bg-[var(--green)] text-white'
+                              : 'bg-[var(--amber)] text-white'
+                        }`}>
+                          {invoiced ? 'Invoiced' : completed ? 'Complete' : 'Needs completion'}
+                        </span>
+                      </span>
+                      <span className={`mt-0.5 block break-words text-xs leading-5 ${secondaryTextClass}`}>{job.siteName || 'Site not set'}</span>
+                      <span className={`mt-2 block text-xs leading-5 ${secondaryTextClass}`}>{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
+                      {invoiced ? (
+                        <span className="mt-1 block text-xs font-bold text-white">{job.invoiceCount} invoice{job.invoiceCount === 1 ? '' : 's'} already created</span>
+                      ) : !completed ? (
+                        <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span>
+                      ) : job.needsHoursReview ? (
+                        <span className="mt-1 block text-xs font-bold text-[var(--green)]">Internal billing setup needs review</span>
+                      ) : null}
                     </span>
                   </label>
                   {!completed && job.sourceApp === 'installhub' && job.sourceType === 'installation' ? (
                     <InvoiceJobCompletionAction
-                      className="mt-3 pl-8"
+                      className="mt-auto flex justify-end border-t border-[var(--amber)]/20 bg-white/35 px-3 py-2 sm:px-4"
                       job={{
                         financeId: job.financeId,
                         sourceApp: job.sourceApp,
@@ -478,11 +556,20 @@ function ConsolidatedInvoiceBuilder({
                       onCompleted={() => setError(null)}
                     />
                   ) : null}
-                </div>
+                </article>
               );
             })}
+            {matchingJobs.length === 0 ? (
+              <div className="col-span-full rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-10 text-center">
+                <p className="text-sm font-bold text-[var(--text)]">No jobs match the current view.</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+                  {!showInvoicedJobs && invoicedJobCount > 0
+                    ? 'Change the search or select “Show all jobs, including invoiced”.'
+                    : 'Change or clear the job search.'}
+                </p>
+              </div>
+            ) : null}
           </fieldset>
-          {matchingJobs.length === 0 ? <p className="mt-3 text-center text-sm text-[var(--text-sub)]">No jobs match this search.</p> : null}
           {hasMoreJobs ? <Button className="mt-3" variant="secondary" disabled={loadingMoreJobs} onClick={onLoadMoreJobs}>{loadingMoreJobs ? 'Loading jobs…' : 'Load more jobs'}</Button> : null}
           {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
           <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button className="w-full sm:w-auto" variant="secondary" disabled={eligibilityMutation.isPending} onClick={onCancel}>Cancel</Button><Button className="w-full sm:w-auto" disabled={eligibilityMutation.isPending || selectedIds.length < minimumJobs} aria-busy={eligibilityMutation.isPending} onClick={() => void review()}>{eligibilityMutation.isPending ? 'Checking jobs…' : 'Review invoice'}</Button></div>

@@ -38,6 +38,17 @@ test('job completion invalidates the Scheduler cache after success', () => {
   );
 });
 
+test('invoice job selector uses clear lifecycle colours and hides invoiced work by default', () => {
+  assert.match(invoiceRegister, /Show all jobs, including invoiced/);
+  assert.match(invoiceRegister, /invoiceJobVisibleForSelection\(job, showInvoicedJobs\)/);
+  assert.match(invoiceRegister, /bg-\[var\(--amber-soft\)\]/);
+  assert.match(invoiceRegister, /bg-\[var\(--green-soft\)\]/);
+  assert.match(invoiceRegister, /bg-\[var\(--green\)\] text-white/);
+  assert.match(invoiceRegister, /lg:grid-cols-2/);
+  assert.match(invoiceRegister, /mt-auto flex justify-end border-t/);
+  assert.doesNotMatch(invoiceRegister, /xl:grid-cols-3/);
+});
+
 test('automatic final-invoice email uses the newly issued invoice revision', () => {
   assert.match(invoiceWorkspace, /Email the final invoice automatically after issue/);
   assert.match(

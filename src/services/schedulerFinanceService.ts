@@ -22,6 +22,7 @@ import { ihInstallations, ihInstallationWorkSessions, ihUsers } from '../db/sche
 import {
   globalUsers,
   portalScheduleEvents,
+  schedulerAnnualTargets,
   schedulerExpenseAttachments,
   schedulerInvoiceCounters,
   schedulerInvoiceJobs,
@@ -76,6 +77,13 @@ export type FinanceSource = {
   sourceApp: FinanceSourceApp;
   sourceType: FinanceSourceType;
   sourceId: string;
+};
+
+export type SchedulerAnnualTargetDto = {
+  year: number;
+  amountExGstCents: number;
+  currency: string;
+  updatedAt: string;
 };
 
 export function schedulerFinanceSourceMutexKey(source: FinanceSource): string {
@@ -954,6 +962,80 @@ async function requireGlobalFinanceAdmin(
 /** Authorization gate shared by durable Scheduler invoice export routes. */
 export async function assertGlobalFinanceAdmin(user: AuthUser): Promise<void> {
   await requireGlobalFinanceAdmin(user);
+}
+
+function schedulerAnnualTargetYear(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 2000 || value > 9999) {
+    throw badRequest('Annual target year must be an integer from 2000 to 9999');
+  }
+  return value;
+}
+
+function schedulerAnnualTargetAmount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw badRequest('Annual target amount must be a positive whole number of cents');
+  }
+  return value;
+}
+
+function schedulerAnnualTargetCurrency(value: unknown): string {
+  if (typeof value !== 'string' || !/^[A-Z]{3}$/.test(value.trim().toUpperCase())) {
+    throw badRequest('Annual target currency must be a three-letter currency code');
+  }
+  return value.trim().toUpperCase();
+}
+
+export async function getSchedulerAnnualTarget(
+  user: AuthUser,
+  yearInput: unknown,
+): Promise<SchedulerAnnualTargetDto | null> {
+  await requireGlobalFinanceAdmin(user);
+  const year = schedulerAnnualTargetYear(yearInput);
+  const [target] = await db.select().from(schedulerAnnualTargets).where(and(
+    eq(schedulerAnnualTargets.companyKey, config.businessDirectory.companyKey),
+    eq(schedulerAnnualTargets.year, year),
+  )).limit(1);
+  return target ? {
+    year: target.year,
+    amountExGstCents: target.amountExGstCents,
+    currency: target.currency,
+    updatedAt: target.updatedAt.toISOString(),
+  } : null;
+}
+
+export async function updateSchedulerAnnualTarget(
+  user: AuthUser,
+  input: { year: unknown; amountExGstCents: unknown; currency: unknown },
+): Promise<SchedulerAnnualTargetDto> {
+  const actor = await requireGlobalFinanceAdmin(user);
+  const year = schedulerAnnualTargetYear(input.year);
+  const amountExGstCents = schedulerAnnualTargetAmount(input.amountExGstCents);
+  const currency = schedulerAnnualTargetCurrency(input.currency);
+  const now = new Date();
+  const [target] = await db.insert(schedulerAnnualTargets).values({
+    companyKey: config.businessDirectory.companyKey,
+    year,
+    amountExGstCents,
+    currency,
+    updatedByGlobalUserId: actor.globalUserId,
+    createdAt: now,
+    updatedAt: now,
+  }).onConflictDoUpdate({
+    target: [schedulerAnnualTargets.companyKey, schedulerAnnualTargets.year],
+    set: {
+      amountExGstCents,
+      currency,
+      updatedByGlobalUserId: actor.globalUserId,
+      updatedAt: now,
+    },
+  }).returning();
+  if (!target) throw conflict('Annual target could not be saved');
+  return {
+    year: target.year,
+    amountExGstCents: target.amountExGstCents,
+    currency: target.currency,
+    updatedAt: target.updatedAt.toISOString(),
+  };
 }
 
 async function loadEvent(eventId: string, executor: FinanceExecutor = db): Promise<ScheduleEventRow> {

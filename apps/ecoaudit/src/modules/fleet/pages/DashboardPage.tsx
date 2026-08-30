@@ -51,7 +51,7 @@ export default function DashboardPage() {
   return (
     <div>
       <PageHeader
-        title="Fleet overview"
+        title="Wattwatchers overview"
         subtitle="Connectivity at the latest published scan, daily changes, and report cohorts across Wattwatchers devices."
         actions={(
           <Button
@@ -119,24 +119,29 @@ export default function DashboardPage() {
             </Card>
 
             <Card className="!p-5">
-              <p className="text-xs font-extrabold uppercase tracking-[0.08em] text-[var(--text-sub)]">Daily report cohort</p>
-              <div className="mt-4 flex items-end justify-between gap-4">
+              <p className="text-xs font-extrabold uppercase tracking-[0.08em] text-[var(--text-sub)]">24-hour operational cohort</p>
+              <div className="mt-4 flex items-start justify-between gap-4">
                 <div>
                   <p className="text-3xl font-extrabold tracking-[-0.04em] text-[var(--text)]">{formatNumber(summary.reportOffline)}</p>
-                  <p className="mt-1 text-sm text-[var(--text-sub)]">Offline for the report threshold</p>
+                  <p className="mt-1 text-sm font-bold text-[var(--text)]">Offline meters observed</p>
+                  <p className="mt-1 text-xs text-[var(--text-sub)]">No signal for {run.reportOfflineThresholdHours ?? 24}+ hours</p>
                 </div>
                 <span className="rounded-full bg-[var(--red-soft)] px-3 py-1.5 text-xs font-extrabold text-[var(--red)]">
                   {run.reportOfflineThresholdHours ?? 24}+ hours
                 </span>
               </div>
-              <p className="mt-4 border-t border-[var(--border)] pt-4 text-xs leading-5 text-[var(--text-sub)]">
-                This preserves the emailed report definition and is intentionally separate from the live Offline state.
-              </p>
+              <div className="mt-4 flex items-end justify-between gap-4 border-t border-[var(--border)] pt-4">
+                <div>
+                  <p className="text-2xl font-extrabold tracking-[-0.03em] text-[var(--text)]">{formatNumber(summary.maasReportOffline)}</p>
+                  <p className="mt-1 text-sm font-bold text-[var(--text)]">MaaS offline devices</p>
+                </div>
+                <p className="max-w-36 text-right text-xs leading-5 text-[var(--text-sub)]">MaaS members in the same 24-hour cohort</p>
+              </div>
             </Card>
           </section>
 
           <section className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-3" aria-label="Fleet status counts">
-            <StatCard label="Total devices" value={formatNumber(summary.totalDevices)} icon="gauge" />
+            <StatCard label="Total meters" value={formatNumber(summary.totalDevices)} icon="gauge" />
             <StatCard label="Communicating" value={formatNumber(summary.communicating)} icon="wifi" tone="success" />
             <StatCard label="Delayed" value={formatNumber(summary.delayed)} icon="activity" tone="warning" />
             <StatCard label="Offline" value={formatNumber(summary.offline)} icon="wifi-off" tone="danger" />

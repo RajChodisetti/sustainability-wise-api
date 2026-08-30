@@ -38,7 +38,9 @@ export type ScheduleSummary = {
 export type SchedulerInventorySummary = {
   companyMeters: number;
   userMeters: number;
+  installedMeters?: number;
   totalMetersInInventory: number;
+  totalTrackedMeters?: number;
   users: Array<{
     userId: string;
     name: string;

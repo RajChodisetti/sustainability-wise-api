@@ -370,8 +370,14 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(followUpInstallation.siteName, `Field ${runId}`);
     assert.equal(followUpInstallation.siteAddress, '3 Field Street, Sydney NSW 2002, Australia');
     assert.equal(followUpInstallation.serviceType, 'meter_replacement_m3');
-    assert.equal(followUpZones.length, 0);
-    assert.equal(followUpMeters.length, 0);
+    assert.equal(followUpInstallation.electricalMapLayout, null);
+    assert.equal(followUpInstallation.electricalMapLayoutRevision, 0);
+    assert.equal(followUpZones.length, 1);
+    assert.notEqual(followUpZones[0].id, sourceZoneId);
+    assert.equal(followUpZones[0].zoneName, 'Main building');
+    assert.equal(followUpMeters.length, 1);
+    assert.notEqual(followUpMeters[0].id, sourceMeterId);
+    assert.equal(followUpMeters[0].serialNumber, 'KNOWN-METER-001');
     assert.equal(originalMeters.length, 1);
     assert.equal(originalMeters[0].id, sourceMeterId);
     assert.equal(originalMeters[0].serialNumber, 'KNOWN-METER-001');

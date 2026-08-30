@@ -64,6 +64,7 @@ import {
   BUSINESS_COMPANY_KEY,
   upsertClientSiteFromProductRecord,
 } from './clientSiteMemoryService.js';
+import { copyFieldInstallationForJob } from './productJobCopyService.js';
 
 export type ScheduleSourceApp = 'ecoaudit' | 'solarsense' | 'installhub' | 'custom';
 export type ScheduleSourceType = 'audit' | 'site' | 'assessment' | 'installation' | 'custom';
@@ -1834,26 +1835,14 @@ async function createDispatchedProductJob(
   const siteName = dispatchString(job, 'siteName');
   const siteAddress = dispatchString(job, 'siteAddress');
   const structuredAddress = parseSchedulerDispatchAddress(job.address, siteAddress, now);
-  await executor.insert(ihInstallations).values({
-    id: sourceId,
-    serverId: randomUUID(),
-    syncStatus: 'synced',
-    updatedAt: now,
-    deletedAt: null,
-    siteCode: deriveSiteCode(siteName),
-    timezone: optionalDispatchString(job, 'timezone') ?? 'Australia/Sydney',
-    treeSchemaVersion: 2,
-    treeRevision: 1,
-    recordVersionNumber: 0,
+  const fieldPlanning = {
     customerName: optionalDispatchString(
       job,
       'customerName',
       INSTALLATION_METADATA_TEXT_LIMITS.customerName,
     ),
-    clientName,
-    businessSiteId: site.id,
     maas: optionalDispatchBoolean(job, 'maas'),
-    serviceType: optionalDispatchString(
+    workType: optionalDispatchString(
       job,
       job.workType ? 'workType' : 'serviceType',
       INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
@@ -1873,6 +1862,85 @@ async function createDispatchedProductJob(
       'customJobNumber',
       INSTALLATION_METADATA_TEXT_LIMITS.customJobNumber,
     ),
+    jobComments: optionalDispatchString(
+      job,
+      'jobComments',
+      INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
+    ),
+    nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
+  };
+
+  if (site.previousJobId) {
+    const [previousJob] = await executor.select({
+      sourceId: businessJobs.sourceId,
+    }).from(businessJobs).where(and(
+      eq(businessJobs.id, site.previousJobId),
+      eq(businessJobs.siteId, site.id),
+      eq(businessJobs.sourceApp, 'installhub'),
+      eq(businessJobs.sourceType, 'installation'),
+    )).limit(1);
+    if (previousJob?.sourceId) {
+      const copiedSourceId = await copyFieldInstallationForJob(
+        executor,
+        previousJob.sourceId,
+        {
+          businessSiteId: site.id,
+          clientName: site.clientName,
+          siteName,
+          address: siteAddress,
+          siteLocality: site.locality,
+          siteState: site.state,
+          sitePostcode: site.postcode,
+          siteCountryCode: site.countryCode,
+          siteLatitude: site.latitude,
+          siteLongitude: site.longitude,
+          siteGeocodeStatus: site.geocodeStatus,
+          siteGeocodeProvider: site.geocodeProvider,
+          siteGeocodePlaceId: site.geocodePlaceId,
+          siteAddressSource: site.addressSource,
+          siteAddressFingerprint: site.addressFingerprint,
+          siteGeocodedAt: site.geocodedAt,
+          contactName: site.contactName,
+          contactPhone: site.contactPhone,
+          contactEmail: site.contactEmail,
+          accessInformation: site.accessInformation,
+          timezone: site.timezone,
+        },
+        {
+          createdByUserId: actor.fieldUserId,
+          assignedInspectorUserId: assignee?.fieldUserId ?? null,
+          inspectorName,
+          auditDate,
+        },
+        fieldPlanning,
+      );
+      return {
+        sourceId: copiedSourceId,
+        sourceType: 'installation',
+        label: `${clientName} · ${siteName}`,
+      };
+    }
+  }
+
+  await executor.insert(ihInstallations).values({
+    id: sourceId,
+    serverId: randomUUID(),
+    syncStatus: 'synced',
+    updatedAt: now,
+    deletedAt: null,
+    siteCode: deriveSiteCode(siteName),
+    timezone: optionalDispatchString(job, 'timezone') ?? 'Australia/Sydney',
+    treeSchemaVersion: 2,
+    treeRevision: 1,
+    recordVersionNumber: 0,
+    customerName: fieldPlanning.customerName,
+    clientName,
+    businessSiteId: site.id,
+    maas: fieldPlanning.maas,
+    serviceType: fieldPlanning.workType,
+    meteringSolutionType: fieldPlanning.meteringSolutionType,
+    plannedMeterType: fieldPlanning.plannedMeterType,
+    customJobNumber: fieldPlanning.customJobNumber,
     siteName,
     siteAddress,
     ...structuredAddress,
@@ -1901,11 +1969,7 @@ async function createDispatchedProductJob(
       'quoteNumber',
       INSTALLATION_METADATA_TEXT_LIMITS.quoteNumber,
     ),
-    jobComments: optionalDispatchString(
-      job,
-      'jobComments',
-      INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
-    ),
+    jobComments: fieldPlanning.jobComments,
     accessInformation: optionalDispatchString(
       job,
       'accessInformation',
@@ -1941,7 +2005,7 @@ async function createDispatchedProductJob(
     installationId: sourceId,
     name: 'Incoming grid connection',
     isDefault: true,
-    nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
+    nmi: fieldPlanning.nmi,
     createdAt: now,
   });
   return {

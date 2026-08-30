@@ -19,6 +19,7 @@ import {
   fetchGlobalSchedulerInvoice,
   fetchGlobalSchedulerInvoices,
   fetchSchedulerAnalytics,
+  fetchSchedulerAnnualTarget,
   fetchSchedulerAddressSuggestions,
   fetchSchedulerClientAddressSuggestions,
   fetchSchedulerClients,
@@ -51,6 +52,7 @@ import {
   updatePortalUserBillingRate,
   updatePortalUserWorkforceProfile,
   updateSchedulerActorBillingRateOverride,
+  updateSchedulerAnnualTarget,
   updateSchedulerExpense,
   updateSchedulerFinance,
   updateSchedulerInvoice,
@@ -122,6 +124,7 @@ export const schedulerKeys = {
     [...schedulerKeys.finance(), 'invoice-refunds', invoiceId] as const,
   analytics: (filters: SchedulerAnalyticsFilters) =>
     [...schedulerKeys.all, 'analytics', filters] as const,
+  annualTarget: (year: number) => [...schedulerKeys.all, 'annual-target', year] as const,
   addressSuggestions: (query: string, postcode: string) =>
     [...schedulerKeys.all, 'address-suggestions', query, postcode] as const,
   clients: (q: string, clientId: string) =>
@@ -508,6 +511,24 @@ export function useSchedulerAnalytics(
     queryFn: () => fetchSchedulerAnalytics(filters),
     enabled,
     staleTime: 60_000,
+  });
+}
+
+export function useSchedulerAnnualTarget(year: number, enabled = true) {
+  return useQuery({
+    queryKey: schedulerKeys.annualTarget(year),
+    queryFn: () => fetchSchedulerAnnualTarget(year),
+    enabled,
+  });
+}
+
+export function useUpdateSchedulerAnnualTarget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: updateSchedulerAnnualTarget,
+    onSuccess: ({ target }) => {
+      qc.setQueryData(schedulerKeys.annualTarget(target.year), { target });
+    },
   });
 }
 

@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card, Spinner, StatCard, ErrorBanner } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
+import { SchedulerOperationalDashboard } from '@/modules/scheduler/components/SchedulerOperationalDashboard';
 import { SOURCE_APP_LABEL, appChipClass } from '@/modules/scheduler/lib/colors';
 import {
   deadlineRemainingLabel,
@@ -61,6 +62,8 @@ export function SchedulerDashboard({
           icon="clipboard"
         />
       </div>
+
+      {canCreate ? <SchedulerOperationalDashboard /> : null}
 
       <Card className="!p-4 sm:!p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
