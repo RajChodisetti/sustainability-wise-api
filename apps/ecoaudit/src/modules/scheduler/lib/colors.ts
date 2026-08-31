@@ -36,17 +36,17 @@ export function appBarClass(app: ScheduleSourceApp): string {
   }
 }
 
-/** A stable calendar-block background for each source, independent of job status. */
+/** An opaque calendar-block surface with source identity carried by its border. */
 export function appEventSurfaceClass(app: ScheduleSourceApp): string {
   switch (app) {
     case 'ecoaudit':
-      return 'border-sky-500/40 bg-sky-500/15 hover:border-sky-500/65 hover:bg-sky-500/20';
+      return 'border-sky-300 bg-[var(--surface)] hover:border-sky-500 hover:bg-sky-50 dark:border-sky-700 dark:hover:bg-sky-950/40';
     case 'solarsense':
-      return 'border-amber-500/45 bg-amber-500/15 hover:border-amber-500/70 hover:bg-amber-500/20';
+      return 'border-amber-300 bg-[var(--surface)] hover:border-amber-500 hover:bg-amber-50 dark:border-amber-700 dark:hover:bg-amber-950/40';
     case 'installhub':
-      return 'border-teal-500/45 bg-teal-500/15 hover:border-teal-500/70 hover:bg-teal-500/20';
+      return 'border-teal-300 bg-[var(--surface)] hover:border-teal-500 hover:bg-teal-50 dark:border-teal-700 dark:hover:bg-teal-950/40';
     case 'custom':
     default:
-      return 'border-violet-500/40 bg-violet-500/15 hover:border-violet-500/65 hover:bg-violet-500/20';
+      return 'border-violet-300 bg-[var(--surface)] hover:border-violet-500 hover:bg-violet-50 dark:border-violet-700 dark:hover:bg-violet-950/40';
   }
 }

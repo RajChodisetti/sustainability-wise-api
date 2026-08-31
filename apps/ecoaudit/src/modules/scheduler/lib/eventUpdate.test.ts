@@ -117,18 +117,43 @@ test('calendar keeps completed jobs and renders completed and overdue markers', 
   assert.match(blockSource, /disabled: !draggable/);
 });
 
-test('calendar jobs use source backgrounds and expand details after a 1.2 second hover', () => {
+test('calendar jobs use opaque adaptive cards and a solid white green-accented preview', () => {
   const blockSource = readFileSync(
     new URL('../components/ScheduleEventBlock.tsx', import.meta.url),
     'utf8',
   );
 
-  assert.match(blockSource, /DETAILS_HOVER_DELAY_MS = 1_200/);
+  assert.match(blockSource, /DETAILS_HOVER_DELAY_MS = 600/);
   assert.match(blockSource, /setTimeout\(\(\) => \{/);
   assert.match(blockSource, /appEventSurfaceClass\(event\.sourceApp\)/);
-  assert.match(blockSource, /EventDetail label="Assigned to"/);
-  assert.match(blockSource, /EventDetail label="Estimated time"/);
-  assert.match(blockSource, /duration-500 ease-out/);
+  assert.equal(blockSource.match(/appEventSurfaceClass\(event\.sourceApp\)/g)?.length, 1);
+  assert.match(blockSource, /calendarEventContentDensity/);
+  assert.match(blockSource, /calendarEventLaneDensity/);
+  assert.match(blockSource, /preferredAlign: detailsAlign/);
+  assert.match(blockSource, /createPortal/);
+  assert.match(blockSource, /DETAILS_COLLAPSE_DELAY_MS = 120/);
+  assert.match(blockSource, /event\.key !== 'Escape'/);
+  assert.doesNotMatch(blockSource, /triggerRef\.current\?\.focus/);
+  assert.match(blockSource, /pointer-events-auto fixed z-\[100\]/);
+  assert.match(blockSource, /overflow-y-auto/);
+  assert.match(blockSource, /aria-describedby=\{describedBy\}/);
+  assert.match(blockSource, /border-emerald-200 bg-white/);
+  assert.match(blockSource, /rgba\(16,185,129,0\.14\)/);
+  assert.match(blockSource, /Scheduled/);
+  assert.match(blockSource, /In progress/);
+  assert.match(blockSource, /label="Assigned to"/);
+  assert.match(blockSource, /label="Estimated time"/);
+  assert.match(blockSource, /duration-200 ease-out/);
+  assert.doesNotMatch(blockSource, /duration-500 ease-out/);
+});
+
+test('calendar job pool hides raw internal job IDs', () => {
+  const poolSource = readFileSync(
+    new URL('../components/JobsPoolPanel.tsx', import.meta.url),
+    'utf8',
+  );
+
+  assert.doesNotMatch(poolSource, /font-mono[^>]*>\{job\.id\}<\/p>/);
 });
 
 test('new Field App jobs collect planning inputs but omit job comments and installation outcomes', () => {

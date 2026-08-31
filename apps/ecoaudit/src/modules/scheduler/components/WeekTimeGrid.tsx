@@ -4,6 +4,7 @@ import { useDroppable } from '@dnd-kit/core';
 import { useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { ScheduleEventBlock } from '@/modules/scheduler/components/ScheduleEventBlock';
 import {
+  calendarDayMinWidthRem,
   dayKey,
   eventBlockStyle,
   eventLaneLayout,
@@ -63,7 +64,11 @@ export function WeekTimeGrid({
   const activeSlotKey = focusedSlot && dayKeys.some((key) => focusedSlot.startsWith(`${key}:`))
     ? focusedSlot
     : defaultSlotKey;
-  const gridTemplateColumns = `3.75rem ${days.map(() => 'minmax(7rem, 1fr)').join(' ')}`;
+  const dayMinWidths = useMemo(
+    () => days.map((day) => calendarDayMinWidthRem(byDay.get(dayKey(day)) ?? [])),
+    [byDay, days],
+  );
+  const gridTemplateColumns = `3.75rem ${dayMinWidths.map((width) => `minmax(${width}rem, 1fr)`).join(' ')}`;
 
   function moveSlotFocus(event: KeyboardEvent<HTMLButtonElement>, dayIndex: number, hour: number) {
     let nextDay = dayIndex;
@@ -85,11 +90,11 @@ export function WeekTimeGrid({
   }
 
   return (
-    <div className={`min-w-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-xs)] ${className}`}>
+    <div className={`min-w-0 overflow-hidden rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface2)] shadow-[var(--shadow-sm)] ${className}`}>
       <p id="scheduler-calendar-keyboard-hint" className="sr-only">
         Use the arrow keys to move between time slots, then press Enter to schedule a job.
       </p>
-      <div className="subtle-scrollbar overflow-auto" role="region" aria-label="Weekly calendar grid" tabIndex={0}>
+      <div className="subtle-scrollbar overflow-auto bg-[var(--surface2)]/60" role="region" aria-label="Weekly calendar grid" tabIndex={0}>
         <div
           className="grid min-w-[800px] transition-[grid-template-columns] duration-200 ease-out"
           style={{ gridTemplateColumns }}
@@ -103,13 +108,17 @@ export function WeekTimeGrid({
               <div
                 key={key}
                 className={`sticky top-0 z-20 border-b border-l border-[var(--border)] px-1 py-2 text-center transition-colors ${
-                  isToday ? 'bg-[var(--primary-soft)]' : 'bg-[var(--surface)]'
+                  isToday ? 'bg-[var(--green-soft)]' : 'bg-[var(--surface)]'
                 }`}
               >
-                <p className={`text-[10px] font-extrabold uppercase tracking-[0.08em] ${isToday ? 'text-[var(--primary)]' : 'text-[var(--text-sub)]'}`}>
+                <p className={`text-[10px] font-extrabold uppercase tracking-[0.08em] ${isToday ? 'text-[var(--green)]' : 'text-[var(--text-sub)]'}`}>
                   {day.toLocaleDateString('en-AU', { weekday: 'short' })}
                 </p>
-                <p className="mt-0.5 text-base font-extrabold text-[var(--text)]">{day.getDate()}</p>
+                <p className={`mx-auto mt-0.5 flex h-7 w-7 items-center justify-center rounded-full text-base font-extrabold ${
+                  isToday
+                    ? 'bg-white text-emerald-700 shadow-sm ring-1 ring-emerald-200'
+                    : 'text-[var(--text)]'
+                }`}>{day.getDate()}</p>
               </div>
             );
           })}
@@ -136,6 +145,7 @@ export function WeekTimeGrid({
                 day={day}
                 dayIndex={dayIndex}
                 dayKeyStr={key}
+                isToday={key === dayKey(new Date())}
                 hours={hours}
                 events={dayEvents}
                 canDrag={canDrag}
@@ -158,6 +168,7 @@ function DayColumn({
   day,
   dayIndex,
   dayKeyStr,
+  isToday,
   hours,
   events,
   canDrag,
@@ -171,6 +182,7 @@ function DayColumn({
   day: Date;
   dayIndex: number;
   dayKeyStr: string;
+  isToday: boolean;
   hours: number[];
   events: ScheduleEvent[];
   canDrag: boolean;
@@ -184,7 +196,9 @@ function DayColumn({
   const laneLayout = eventLaneLayout(events);
   return (
     <div
-      className="relative border-l border-[var(--border)]"
+      className={`relative border-l border-[var(--border)] ${
+        isToday ? 'bg-[var(--green-soft)]/35' : 'bg-[var(--surface)]'
+      }`}
       style={{ height: gridHeightPx() }}
     >
       {hours.map((h) => (
@@ -202,9 +216,11 @@ function DayColumn({
       ))}
       {showNowLine != null ? (
         <div
-          className="pointer-events-none absolute left-0 right-0 z-30 border-t-2 border-red-500"
+          className="pointer-events-none absolute left-0 right-0 z-30 border-t-2 border-emerald-500"
           style={{ top: showNowLine }}
-        />
+        >
+          <span className="absolute -left-1.5 -top-1.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.14)]" />
+        </div>
       ) : null}
       {events.map((event) => {
         const lane = laneLayout.get(event.id) ?? { leftPercent: 0, widthPercent: 100 };
@@ -222,6 +238,8 @@ function DayColumn({
               width: `calc(${lane.widthPercent}% - 0.5rem)`,
             }}
             canDrag={canDrag}
+            laneWidthPercent={lane.widthPercent}
+            detailsAlign={dayIndex >= 5 ? 'right' : 'left'}
             onClick={() => onEventClick(event)}
           />
         );
@@ -261,8 +279,8 @@ function HourSlot({
   });
 
   const key = slotFocusKey(dayKeyStr, hour);
-  const sharedClassName = `absolute left-0 right-0 w-full border-t border-[var(--border)]/60 ${
-    isOver ? 'bg-[var(--primary-soft)]' : canDrop ? 'hover:bg-[var(--surface2)]/80' : ''
+  const sharedClassName = `absolute left-0 right-0 w-full border-t border-[var(--border)]/55 transition-colors ${
+    isOver ? 'bg-[var(--green-soft)]' : canDrop ? 'hover:bg-[var(--green-soft)]/55' : ''
   }`;
   const style: CSSProperties = {
     top: (hour - GRID_HOUR_START) * HOUR_HEIGHT_PX,

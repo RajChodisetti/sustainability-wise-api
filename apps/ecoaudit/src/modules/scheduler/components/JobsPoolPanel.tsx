@@ -175,7 +175,6 @@ function JobCard({
           })} · View week
         </p>
       ) : null}
-      <p className="mt-1 truncate font-mono text-[9px] text-[var(--muted)]">{job.id}</p>
     </div>
   );
 }

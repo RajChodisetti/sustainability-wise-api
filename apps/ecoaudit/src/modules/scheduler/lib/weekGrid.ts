@@ -17,6 +17,14 @@ export type EventLaneLayout = {
 };
 
 export type CalendarEventVisualState = 'default' | 'completed' | 'overdue';
+export type CalendarEventContentDensity = 'title' | 'meta' | 'full';
+export type CalendarEventLaneDensity = 'tight' | 'compact' | 'full';
+export type CalendarPreviewPosition = {
+  left: number;
+  top: number;
+  maxHeight: number;
+  placement: 'left' | 'right' | 'top' | 'bottom';
+};
 
 export function startOfWeekMonday(date: Date): Date {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -51,6 +59,112 @@ export function calendarEventVisualState(
   const scheduledDay = new Date(scheduledStartAt);
   if (Number.isNaN(scheduledDay.getTime())) return 'default';
   return dayKey(scheduledDay) < dayKey(now) ? 'overdue' : 'default';
+}
+
+/** Keep short and overlapping calendar blocks legible instead of clipping extra rows. */
+export function calendarEventContentDensity(heightPx: number): CalendarEventContentDensity {
+  if (heightPx < 40) return 'title';
+  if (heightPx < 68) return 'meta';
+  return 'full';
+}
+
+/** Reduce card chrome as overlapping events are assigned progressively narrower lanes. */
+export function calendarEventLaneDensity(widthPercent: number): CalendarEventLaneDensity {
+  if (widthPercent < 40) return 'tight';
+  if (widthPercent < 70) return 'compact';
+  return 'full';
+}
+
+/** Keep the expanded event preview inside the visible browser viewport. */
+export function calendarPreviewPosition({
+  triggerLeft,
+  triggerRight,
+  triggerTop,
+  triggerBottom,
+  previewWidth,
+  previewHeight,
+  viewportWidth,
+  viewportHeight,
+  preferredAlign,
+  margin = 12,
+  gap = 8,
+}: {
+  triggerLeft: number;
+  triggerRight: number;
+  triggerTop: number;
+  triggerBottom: number;
+  previewWidth: number;
+  previewHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  preferredAlign: 'left' | 'right';
+  margin?: number;
+  gap?: number;
+}): CalendarPreviewPosition {
+  const fullMaxHeight = Math.max(0, viewportHeight - (margin * 2));
+  const renderedHeight = Math.min(previewHeight, fullMaxHeight);
+  const maxTop = Math.max(margin, viewportHeight - renderedHeight - margin);
+  const sideTop = Math.min(Math.max(triggerTop, margin), maxTop);
+  const roomRight = viewportWidth - triggerRight - margin;
+  const roomLeft = triggerLeft - margin;
+  const rightFits = roomRight >= previewWidth + gap;
+  const leftFits = roomLeft >= previewWidth + gap;
+
+  if (preferredAlign === 'left' && rightFits) {
+    return {
+      left: triggerRight + gap,
+      top: sideTop,
+      maxHeight: fullMaxHeight,
+      placement: 'right',
+    };
+  }
+  if (preferredAlign === 'right' && leftFits) {
+    return {
+      left: triggerLeft - previewWidth - gap,
+      top: sideTop,
+      maxHeight: fullMaxHeight,
+      placement: 'left',
+    };
+  }
+  if (rightFits) {
+    return {
+      left: triggerRight + gap,
+      top: sideTop,
+      maxHeight: fullMaxHeight,
+      placement: 'right',
+    };
+  }
+  if (leftFits) {
+    return {
+      left: triggerLeft - previewWidth - gap,
+      top: sideTop,
+      maxHeight: fullMaxHeight,
+      placement: 'left',
+    };
+  }
+
+  const maxLeft = Math.max(margin, viewportWidth - previewWidth - margin);
+  const preferredLeft = preferredAlign === 'right'
+    ? triggerRight - previewWidth
+    : triggerLeft;
+  const left = Math.min(Math.max(preferredLeft, margin), maxLeft);
+  const roomBelow = Math.max(0, viewportHeight - triggerBottom - gap - margin);
+  const roomAbove = Math.max(0, triggerTop - gap - margin);
+  if (roomBelow >= roomAbove) {
+    return {
+      left,
+      top: triggerBottom + gap,
+      maxHeight: roomBelow,
+      placement: 'bottom',
+    };
+  }
+  const aboveHeight = Math.min(previewHeight, roomAbove);
+  return {
+    left,
+    top: Math.max(margin, triggerTop - gap - aboveHeight),
+    maxHeight: roomAbove,
+    placement: 'top',
+  };
 }
 
 export function hoursInGrid(): number[] {
@@ -149,6 +263,17 @@ export function eventLaneLayout<T extends TimedGridItem>(events: T[]): Map<strin
     }
   }
   return layout;
+}
+
+/** Widen busy days so four or more simultaneous jobs remain usable instead of becoming slivers. */
+export function calendarDayMinWidthRem<T extends TimedGridItem>(events: T[]): number {
+  const layout = eventLaneLayout(events);
+  const narrowestLane = Math.min(
+    100,
+    ...Array.from(layout.values(), ({ widthPercent }) => widthPercent),
+  );
+  const laneCount = Math.max(1, Math.round(100 / narrowestLane));
+  return Math.max(8, laneCount * 3);
 }
 
 export function slotDateTime(day: Date, hour: number, minute = 0): Date {
