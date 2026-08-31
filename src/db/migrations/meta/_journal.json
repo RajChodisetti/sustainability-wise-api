@@ -379,6 +379,13 @@
       "when": 1788065167805,
       "tag": "0053_wattwatchers_maas_installations",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1788154446838,
+      "tag": "0054_meter_register_imports",
+      "breakpoints": true
     }
   ]
 }
