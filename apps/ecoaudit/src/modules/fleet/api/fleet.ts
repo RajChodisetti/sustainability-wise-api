@@ -4,6 +4,7 @@ import type {
   DashboardSummaryResponse,
   DashboardTrendsResponse,
   FleetBusinessClientDetailResponse,
+  FleetBusinessSiteSearchItem,
   FleetBusinessSiteDetailResponse,
   DeviceDetailResponse,
   DevicesResponse,
@@ -90,6 +91,16 @@ export function getBusinessSite(siteId: string) {
   );
 }
 
+export function searchBusinessSites(query = '', limit = 25) {
+  return fleetRequest<{
+    data: FleetBusinessSiteSearchItem[];
+    meta: { query: string; limit: number };
+  }>(
+    'GET',
+    `/v1/wattwatchers/business-sites${searchParams({ q: query.trim(), limit })}`,
+  );
+}
+
 export function saveClientApiKey(clientId: string, apiKey: string) {
   return fleetRequest<{ clientId: string; apiKeyConfigured: true; apiKeyUpdatedAt: string }>(
     'PUT',
@@ -152,6 +163,13 @@ export function getTopologyBetaSite(locationId: string, deviceIds: string[] = []
     `/v1/wattwatchers/topology-beta/sites/${encodeURIComponent(locationId)}/topology${searchParams({
       meters: deviceIds.length ? deviceIds.join('\n') : undefined,
     })}`,
+  );
+}
+
+export function getTopologyBetaByDevices(deviceIds: string[]) {
+  return fleetRequest<TopologyBetaDocument>(
+    'GET',
+    `/v1/wattwatchers/topology-beta/reconstruct${searchParams({ meters: deviceIds.join('\n') })}`,
   );
 }
 

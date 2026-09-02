@@ -370,6 +370,13 @@ export type FleetBusinessSite = FleetBusinessSiteReference & {
   updatedAt?: string | null;
 };
 
+export type FleetBusinessSiteSearchItem = Pick<
+  FleetBusinessSite,
+  'id' | 'name' | 'address' | 'locality' | 'state' | 'postcode' | 'clientId'
+> & {
+  clientName: string;
+};
+
 export type FleetBusinessSiteSummary = FleetBusinessSite & {
   jobCount: number;
   installationCount: number;

@@ -116,6 +116,27 @@ test('topology reconstruction controls are admin-only and preserve the validated
   });
 });
 
+test('topology beta resolves an existing reconstruction from a partial-search site device list', async () => {
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    calls.push(String(input));
+    return new Response(JSON.stringify({ location: { locationId: 'site-1' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  await withApp({ baseUrl: 'http://127.0.0.1:8765', fetchImpl }, async (app) => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/wattwatchers/topology-beta/reconstruct?meters=DDF1%0ADDF2',
+      headers: bearer({ app: 'wattwatchers', role: 'viewer' }),
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], 'http://127.0.0.1:8765/api/reconstruct?meters=DDF1%0ADDF2');
+  });
+});
+
 test('topology beta fails closed when no loopback service is configured', async () => {
   await withApp({ baseUrl: '' }, async (app) => {
     const response = await app.inject({

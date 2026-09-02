@@ -1,27 +1,34 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, StatCard } from '@/components/ui/Card';
 import { Icon } from '@/components/ui/Icon';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import {
-  getTopologyBetaSite,
+  getBusinessSite,
+  getTopologyBetaByDevices,
   getTopologyReconstruction,
   listTopologyBetaSites,
+  searchBusinessSites,
   startTopologyReconstruction,
   stopTopologyReconstruction,
 } from '@/modules/fleet/api/fleet';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import {
+  businessSiteMatchesQuery,
+  businessSiteSearchLabel,
   buildTopologyForest,
   parseTopologyDeviceIds,
-  topologySiteLabel,
   type TopologyTreeItem,
 } from '@/modules/fleet/lib/topologyBeta';
 import { formatDateTime, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
-import type { TopologyBetaDocument, TopologyBetaEdge } from '@/modules/fleet/types/domain';
+import type {
+  FleetBusinessSiteSearchItem,
+  TopologyBetaDocument,
+  TopologyBetaEdge,
+} from '@/modules/fleet/types/domain';
 
 function confidencePercent(value?: number | null) {
   return typeof value === 'number' ? formatPercent(value * 100, 0) : '—';
@@ -151,22 +158,44 @@ export default function TopologyBetaPage() {
   const queryClient = useQueryClient();
   const isAdmin = wwUser?.role === 'admin';
   const [siteSearch, setSiteSearch] = useState('');
+  const [debouncedSiteSearch, setDebouncedSiteSearch] = useState('');
+  const [selectedBusinessSite, setSelectedBusinessSite] = useState<FleetBusinessSiteSearchItem | null>(null);
+  const [siteResultsOpen, setSiteResultsOpen] = useState(false);
   const [deviceText, setDeviceText] = useState('');
   const [activeLocationId, setActiveLocationId] = useState('');
   const [action, setAction] = useState<'start' | 'stop' | 'view' | null>(null);
   const [localError, setLocalError] = useState('');
 
-  const sitesQuery = useQuery({
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSiteSearch(siteSearch.trim()), 250);
+    return () => window.clearTimeout(timer);
+  }, [siteSearch]);
+
+  const topologySitesQuery = useQuery({
     queryKey: ['wattwatchers', 'topology-beta', 'sites'],
     queryFn: listTopologyBetaSites,
     staleTime: 30_000,
     refetchInterval: 60_000,
   });
-  const sites = useMemo(() => sitesQuery.data?.sites ?? [], [sitesQuery.data?.sites]);
-  const selectedSite = useMemo(() => sites.find((site) => (
-    topologySiteLabel(site) === siteSearch.trim()
-    || site.locationId.toLowerCase() === siteSearch.trim().toLowerCase()
-  )), [siteSearch, sites]);
+  const businessSitesQuery = useQuery({
+    queryKey: ['wattwatchers', 'business-sites', 'search', debouncedSiteSearch],
+    queryFn: () => searchBusinessSites(debouncedSiteSearch, 25),
+    staleTime: 30_000,
+  });
+  const businessSiteResults = useMemo(() => (
+    (businessSitesQuery.data?.data ?? []).filter((site) => (
+      businessSiteMatchesQuery(site, debouncedSiteSearch)
+    ))
+  ), [businessSitesQuery.data?.data, debouncedSiteSearch]);
+  const selectedBusinessSiteQuery = useQuery({
+    queryKey: ['wattwatchers', 'business-sites', selectedBusinessSite?.id],
+    queryFn: () => getBusinessSite(selectedBusinessSite!.id),
+    enabled: Boolean(selectedBusinessSite),
+    staleTime: 30_000,
+  });
+  const selectedSiteDeviceIds = useMemo(() => (
+    selectedBusinessSiteQuery.data?.devices.map((device) => device.deviceId) ?? []
+  ), [selectedBusinessSiteQuery.data?.devices]);
   const topologyQuery = useQuery({
     queryKey: ['wattwatchers', 'topology-beta', 'reconstruction', activeLocationId],
     queryFn: () => getTopologyReconstruction(activeLocationId),
@@ -177,20 +206,31 @@ export default function TopologyBetaPage() {
   });
   const document = topologyQuery.data;
   const deviceIds = useMemo(() => parseTopologyDeviceIds(deviceText), [deviceText]);
-  const requestError = topologyQuery.error ?? sitesQuery.error;
+  const reconstructionDeviceIds = useMemo(() => (
+    [...new Set([...selectedSiteDeviceIds, ...deviceIds])]
+  ), [deviceIds, selectedSiteDeviceIds]);
+  const requestError = topologyQuery.error
+    ?? topologySitesQuery.error
+    ?? businessSitesQuery.error
+    ?? selectedBusinessSiteQuery.error;
 
   async function viewLatest() {
     setLocalError('');
-    if (!selectedSite) {
-      setLocalError('Choose an exact registered site from the searchable list.');
+    if (!selectedBusinessSite) {
+      setLocalError('Choose a site from the global search results.');
+      return;
+    }
+    if (reconstructionDeviceIds.length < 2) {
+      setLocalError('This site needs at least two linked Fleet devices before a topology can be reconstructed.');
       return;
     }
     setAction('view');
     try {
-      const result = await getTopologyBetaSite(selectedSite.locationId, deviceIds);
-      setActiveLocationId(selectedSite.locationId);
+      const result = await getTopologyBetaByDevices(reconstructionDeviceIds);
+      const locationId = result.location.locationId;
+      setActiveLocationId(locationId);
       queryClient.setQueryData(
-        ['wattwatchers', 'topology-beta', 'reconstruction', selectedSite.locationId],
+        ['wattwatchers', 'topology-beta', 'reconstruction', locationId],
         result,
       );
     } catch (error) {
@@ -202,19 +242,21 @@ export default function TopologyBetaPage() {
 
   async function start() {
     setLocalError('');
-    if (siteSearch.trim() && !selectedSite) {
-      setLocalError('Choose an exact registered site, or clear the site field and paste device IDs.');
+    if (siteSearch.trim() && !selectedBusinessSite) {
+      setLocalError('Choose a site from the partial search results, or clear the site field and paste device IDs.');
       return;
     }
-    if (!selectedSite && deviceIds.length < 2) {
-      setLocalError('Paste at least two device IDs when starting a new site reconstruction.');
+    if (reconstructionDeviceIds.length < 2) {
+      setLocalError(selectedBusinessSite
+        ? 'This site needs at least two linked Fleet devices. You can add exact device IDs below.'
+        : 'Paste at least two device IDs when starting a new site reconstruction.');
       return;
     }
     setAction('start');
     try {
       const result = await startTopologyReconstruction({
-        locationId: selectedSite?.locationId ?? null,
-        deviceIds,
+        locationId: null,
+        deviceIds: reconstructionDeviceIds,
       });
       const locationId = result.location.locationId;
       setActiveLocationId(locationId);
@@ -222,7 +264,7 @@ export default function TopologyBetaPage() {
         ['wattwatchers', 'topology-beta', 'reconstruction', locationId],
         result,
       );
-      await sitesQuery.refetch();
+      await topologySitesQuery.refetch();
     } catch (error) {
       setLocalError(fleetConnectionErrorMessage(error));
     } finally {
@@ -254,14 +296,15 @@ export default function TopologyBetaPage() {
             <span className="rounded-full bg-cyan-100 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.1em] text-cyan-900">Beta</span>
             <Button
               variant="secondary"
-              disabled={sitesQuery.isFetching || topologyQuery.isFetching}
+              disabled={businessSitesQuery.isFetching || topologyQuery.isFetching}
               onClick={() => {
-                void sitesQuery.refetch();
+                void businessSitesQuery.refetch();
+                void topologySitesQuery.refetch();
                 if (activeLocationId) void topologyQuery.refetch();
               }}
             >
               <Icon name="refresh" size={17} />
-              {topologyQuery.isFetching ? 'Refreshing…' : 'Refresh'}
+              {businessSitesQuery.isFetching || topologyQuery.isFetching ? 'Refreshing…' : 'Refresh'}
             </Button>
           </div>
         )}
@@ -283,28 +326,94 @@ export default function TopologyBetaPage() {
             <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]"><Icon name="zap" size={21} /></span>
             <div>
               <h2 className="font-extrabold text-[var(--text)]">Choose meters to analyse</h2>
-              <p className="text-xs text-[var(--text-sub)]">Select a saved topology site or paste exact device numbers.</p>
+              <p className="text-xs text-[var(--text-sub)]">Search every existing Fleet site or paste exact device numbers.</p>
             </div>
           </div>
 
-          <label htmlFor="topology-site" className="mt-6 block text-sm font-bold text-[var(--text)]">Search registered sites</label>
-          <input
-            id="topology-site"
-            type="search"
-            list="topology-site-options"
-            value={siteSearch}
-            onChange={(event) => setSiteSearch(event.target.value)}
-            placeholder={sitesQuery.isLoading ? 'Loading sites…' : 'Search site name or client…'}
-            className="mt-2 min-h-11 w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
-          />
-          <datalist id="topology-site-options">
-            {sites.map((site) => <option key={site.locationId} value={topologySiteLabel(site)} />)}
-          </datalist>
-          <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
-            {sites.length
-              ? `${formatNumber(sites.length)} registered ${sites.length === 1 ? 'site' : 'sites'} available.`
-              : 'No site is registered yet. Paste device IDs below to create the first reconstruction.'}
-          </p>
+          <label htmlFor="topology-site" className="mt-6 block text-sm font-bold text-[var(--text)]">Search all existing sites</label>
+          <div className="relative mt-2">
+            <input
+              id="topology-site"
+              type="search"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-controls="topology-site-results"
+              aria-expanded={siteResultsOpen && !selectedBusinessSite}
+              value={siteSearch}
+              onFocus={() => setSiteResultsOpen(true)}
+              onBlur={() => setSiteResultsOpen(false)}
+              onChange={(event) => {
+                setSiteSearch(event.target.value);
+                setSelectedBusinessSite(null);
+                setSiteResultsOpen(true);
+              }}
+              placeholder={businessSitesQuery.isLoading ? 'Loading sites…' : 'Type any part of site, client, address or postcode…'}
+              className="min-h-11 w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+            />
+            {siteResultsOpen && !selectedBusinessSite ? (
+              <div
+                id="topology-site-results"
+                role="listbox"
+                aria-label="Matching Fleet sites"
+                className="absolute z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] p-1.5 shadow-[var(--shadow-md)]"
+              >
+                {businessSitesQuery.isFetching ? (
+                  <p className="px-3 py-3 text-sm text-[var(--text-sub)]">Searching all sites…</p>
+                ) : businessSiteResults.length ? businessSiteResults.map((site) => (
+                  <button
+                    key={site.id}
+                    type="button"
+                    role="option"
+                    aria-selected="false"
+                    className="block w-full rounded-lg px-3 py-2.5 text-left hover:bg-[var(--surface2)] focus:bg-[var(--surface2)] focus:outline-none"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => {
+                      setSelectedBusinessSite(site);
+                      setSiteSearch(businessSiteSearchLabel(site));
+                      setSiteResultsOpen(false);
+                      setLocalError('');
+                    }}
+                  >
+                    <span className="block font-bold text-[var(--text)]">{site.name}</span>
+                    <span className="mt-0.5 block text-xs text-[var(--text-sub)]">{site.clientName}</span>
+                    <span className="mt-0.5 block text-xs text-[var(--muted)]">{site.address}</span>
+                  </button>
+                )) : (
+                  <p className="px-3 py-3 text-sm text-[var(--text-sub)]">No existing Fleet sites match this partial search.</p>
+                )}
+              </div>
+            ) : null}
+          </div>
+          {selectedBusinessSite ? (
+            <div className="mt-3 rounded-[var(--radius-sm)] border border-[var(--primary)]/30 bg-[var(--primary-soft)] px-3 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="font-bold text-[var(--text)]">{selectedBusinessSite.name}</p>
+                  <p className="mt-0.5 text-xs text-[var(--text-sub)]">{selectedBusinessSite.clientName} · {selectedBusinessSite.address}</p>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs font-bold text-[var(--primary)] hover:underline"
+                  onClick={() => {
+                    setSelectedBusinessSite(null);
+                    setSiteSearch('');
+                    setSiteResultsOpen(true);
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+              <p className="mt-2 text-xs font-semibold text-[var(--text-sub)]">
+                {selectedBusinessSiteQuery.isFetching
+                  ? 'Loading linked devices…'
+                  : `${formatNumber(selectedSiteDeviceIds.length)} linked Fleet ${selectedSiteDeviceIds.length === 1 ? 'device' : 'devices'} selected.`}
+              </p>
+            </div>
+          ) : (
+            <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
+              Results search globally across site name, customer, street address, suburb, state and postcode.
+            </p>
+          )}
 
           <div className="my-5 flex items-center gap-3 text-xs font-bold uppercase tracking-[0.1em] text-[var(--muted)]">
             <span className="h-px flex-1 bg-[var(--border)]" />Or<span className="h-px flex-1 bg-[var(--border)]" />
@@ -320,14 +429,25 @@ export default function TopologyBetaPage() {
             className="mt-2 w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2.5 font-mono text-sm text-[var(--text)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
           />
           <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
-            {deviceIds.length ? `${formatNumber(deviceIds.length)} unique device IDs selected.` : 'One device number per line. New lists are securely discovered under configured Fleet accounts.'}
+            {selectedBusinessSite
+              ? `${formatNumber(reconstructionDeviceIds.length)} total unique device IDs will be analysed, including site-linked devices.`
+              : deviceIds.length
+                ? `${formatNumber(deviceIds.length)} unique device IDs selected.`
+                : 'One device number per line. New lists are securely discovered under configured Fleet accounts.'}
           </p>
 
           <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-            <Button variant="secondary" disabled={!selectedSite || action !== null} onClick={() => void viewLatest()}>
+            <Button
+              variant="secondary"
+              disabled={!selectedBusinessSite || selectedBusinessSiteQuery.isFetching || reconstructionDeviceIds.length < 2 || action !== null}
+              onClick={() => void viewLatest()}
+            >
               <Icon name="eye" size={17} />{action === 'view' ? 'Loading…' : 'View latest'}
             </Button>
-            <Button disabled={!isAdmin || action !== null} onClick={() => void start()}>
+            <Button
+              disabled={!isAdmin || selectedBusinessSiteQuery.isFetching || action !== null}
+              onClick={() => void start()}
+            >
               <Icon name="activity" size={17} />{action === 'start' ? 'Starting…' : 'Start reconstruction'}
             </Button>
             <Button

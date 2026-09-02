@@ -3,6 +3,7 @@ import type {
   TopologyBetaEdge,
   TopologyBetaNode,
   TopologyBetaSite,
+  FleetBusinessSiteSearchItem,
 } from '@/modules/fleet/types/domain';
 
 export type TopologyTreeItem = {
@@ -22,6 +23,26 @@ export function parseTopologyDeviceIds(value: string): string[] {
 
 export function topologySiteLabel(site: TopologyBetaSite): string {
   return `${site.name} — ${site.clientCode} · ${site.meterCount} meter${site.meterCount === 1 ? '' : 's'}`;
+}
+
+export function businessSiteSearchLabel(site: FleetBusinessSiteSearchItem): string {
+  return `${site.name} — ${site.clientName}`;
+}
+
+export function businessSiteMatchesQuery(
+  site: FleetBusinessSiteSearchItem,
+  query: string,
+): boolean {
+  const partial = query.trim().toLocaleLowerCase();
+  if (!partial) return true;
+  return [
+    site.name,
+    site.clientName,
+    site.address,
+    site.locality,
+    site.state,
+    site.postcode,
+  ].some((value) => value?.toLocaleLowerCase().includes(partial));
 }
 
 export function buildTopologyForest(document: TopologyBetaDocument): TopologyTreeItem[] {

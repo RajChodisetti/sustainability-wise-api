@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { TopologyBetaDocument } from '@/modules/fleet/types/domain';
 import {
+  businessSiteMatchesQuery,
+  businessSiteSearchLabel,
   buildTopologyForest,
   parseTopologyDeviceIds,
   topologySiteLabel,
@@ -69,4 +71,23 @@ test('topology beta labels registered sites for the searchable input', () => {
       meterCount: 5,
       latestDecision: 'COLLECT_MORE',
     }), 'Essendon — subaru · 5 meters');
+});
+
+test('business site search matches partial site, client, address and postcode text', () => {
+  const site = {
+    id: 'site-1',
+    name: 'Subaru Essendon Fields',
+    address: '1 Wirraway Road, Essendon Fields VIC 3041',
+    locality: 'Essendon Fields',
+    state: 'VIC',
+    postcode: '3041',
+    clientId: 'client-1',
+    clientName: 'Inchcape Australia',
+  };
+  assert.equal(businessSiteSearchLabel(site), 'Subaru Essendon Fields — Inchcape Australia');
+  assert.equal(businessSiteMatchesQuery(site, 'essen'), true);
+  assert.equal(businessSiteMatchesQuery(site, 'INCH'), true);
+  assert.equal(businessSiteMatchesQuery(site, 'wirraway'), true);
+  assert.equal(businessSiteMatchesQuery(site, '304'), true);
+  assert.equal(businessSiteMatchesQuery(site, 'altona'), false);
 });

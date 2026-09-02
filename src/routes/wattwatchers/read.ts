@@ -23,6 +23,7 @@ import {
   loadFleetAccountsByDevice,
   loadPlacementsByDevice,
   placementSummary,
+  searchBusinessSites,
   type FleetDeviceReference,
 } from './readRelations.js';
 import { summarizeDeviceStatuses } from './readModels.js';
@@ -807,6 +808,28 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
       installations: graph.installations,
       devices,
     });
+  });
+
+  app.get('/business-sites', {
+    schema: {
+      tags: ['Wattwatchers Sites'],
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          q: { type: 'string', maxLength: 300 },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+      },
+    },
+    preHandler: readGuards,
+  }, async (request, reply) => {
+    const query = request.query as { q?: string; limit?: number };
+    const q = query.q?.trim() ?? '';
+    const limit = boundedInt(query.limit, 25, 1, 100);
+    const data = await searchBusinessSites(q, limit);
+    return reply.send({ data, meta: { query: q, limit } });
   });
 
   app.get('/business-sites/:businessSiteId', {

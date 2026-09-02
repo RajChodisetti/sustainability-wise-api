@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ilike, inArray, isNull, or, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
 import {
@@ -576,6 +576,41 @@ export async function loadBusinessClientGraph(clientId: string) {
     deviceReferencesForScope({ clientId }),
   ]);
   return { client, sites, jobs, installations, devices };
+}
+
+export async function searchBusinessSites(query: string, limit: number) {
+  const partial = query.trim();
+  const pattern = `%${partial}%`;
+  return db.select({
+    id: businessSites.id,
+    name: businessSites.name,
+    address: businessSites.address,
+    locality: businessSites.locality,
+    state: businessSites.state,
+    postcode: businessSites.postcode,
+    clientId: businessClients.id,
+    clientName: businessClients.name,
+  }).from(businessSites)
+    .innerJoin(businessClients, eq(businessClients.id, businessSites.clientId))
+    .where(and(
+      eq(businessClients.companyKey, config.businessDirectory.companyKey),
+      isNull(businessClients.mergedIntoClientId),
+      partial ? or(
+        ilike(businessSites.name, pattern),
+        ilike(businessSites.address, pattern),
+        ilike(businessSites.locality, pattern),
+        ilike(businessSites.state, pattern),
+        ilike(businessSites.postcode, pattern),
+        ilike(businessClients.name, pattern),
+      ) : undefined,
+    ))
+    .orderBy(
+      asc(businessSites.name),
+      asc(businessClients.name),
+      asc(businessSites.address),
+      asc(businessSites.id),
+    )
+    .limit(limit);
 }
 
 export async function loadBusinessSiteGraph(siteId: string) {

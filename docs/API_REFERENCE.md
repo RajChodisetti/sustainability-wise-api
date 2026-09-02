@@ -867,10 +867,12 @@ than falling back to mutable `updatedAt`.
 | GET | `/v1/wattwatchers/reports[/:reportId]` | viewer+ | Archived reports |
 | GET | `/v1/wattwatchers/reports/:reportId.csv` | viewer+ | Report CSV export |
 | GET | `/v1/wattwatchers/outages` | viewer+ | Outage history |
+| GET | `/v1/wattwatchers/business-sites?q=...` | viewer+ | Partial global site/client/address search |
 | POST/PUT | `/v1/wattwatchers/ingest/*` | service account | Idempotent collector ingestion |
 | CRUD | `/v1/wattwatchers/users/*` | admin, self exceptions | Fleet users |
 | GET | `/v1/wattwatchers/topology-beta/sites` | viewer+ | Registered topology beta sites |
 | GET | `/v1/wattwatchers/topology-beta/sites/:locationId/topology` | viewer+ | Latest green/yellow beta review map |
+| GET | `/v1/wattwatchers/topology-beta/reconstruct?meters=...` | viewer+ | Find the latest registered reconstruction for a device list |
 | GET | `/v1/wattwatchers/topology-beta/reconstructions/:locationId` | viewer+ | Reconstruction status and latest map |
 | POST | `/v1/wattwatchers/topology-beta/reconstructions/start` | admin | Start continuous reconstruction |
 | POST | `/v1/wattwatchers/topology-beta/reconstructions/stop` | admin | Stop after the in-flight cycle completes safely |
@@ -973,3 +975,9 @@ for example `http://127.0.0.1:8765`; a public or remote hostname is rejected at
 startup. Viewer credentials can read saved sites and maps. Only a Fleet admin
 can start or stop reconstruction. Yellow relations remain beta-only review
 candidates and are not published wiring claims.
+
+The site chooser searches the canonical company-wide business-site directory,
+not only sites already registered with the topology worker. Matching is partial
+and case-insensitive across site name, customer, address, locality, state and
+postcode. After selection, the portal resolves the site's linked Fleet devices;
+an admin may then register or resume the corresponding reconstruction.

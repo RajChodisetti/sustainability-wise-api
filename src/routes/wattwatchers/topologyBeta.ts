@@ -125,6 +125,26 @@ export async function wattwatchersTopologyBetaRoutes(
     );
   });
 
+  app.get('/reconstruct', {
+    schema: {
+      tags: ['Wattwatchers Topology Beta'],
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        required: ['meters'],
+        additionalProperties: false,
+        properties: { meters: { type: 'string', minLength: 1, maxLength: 20_000 } },
+      },
+    },
+    preHandler: viewerGuards,
+  }, async (request, reply) => {
+    const { meters } = request.query as { meters: string };
+    return send(
+      reply,
+      await proxyJson('GET', `/api/reconstruct?${new URLSearchParams({ meters }).toString()}`),
+    );
+  });
+
   app.get('/reconstructions/:locationId', {
     schema: {
       tags: ['Wattwatchers Topology Beta'],
