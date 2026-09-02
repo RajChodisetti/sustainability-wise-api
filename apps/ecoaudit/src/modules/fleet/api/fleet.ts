@@ -3,6 +3,8 @@ import type {
   ClientsResponse,
   DashboardSummaryResponse,
   DashboardTrendsResponse,
+  FleetBusinessClientDetailResponse,
+  FleetBusinessSiteDetailResponse,
   DeviceDetailResponse,
   DevicesResponse,
   FleetQueryFilters,
@@ -11,6 +13,9 @@ import type {
   FleetRun,
   ReportDetailResponse,
   RunDetailResponse,
+  TopologyBetaDocument,
+  TopologyBetaSite,
+  TopologyReconstructionStatus,
 } from '@/modules/fleet/types/domain';
 
 function searchParams(input: Record<string, string | number | boolean | null | undefined>): string {
@@ -71,6 +76,20 @@ export function listClients(runId?: string) {
   );
 }
 
+export function getBusinessClient(clientId: string) {
+  return fleetRequest<FleetBusinessClientDetailResponse>(
+    'GET',
+    `/v1/wattwatchers/business-clients/${encodeURIComponent(clientId)}`,
+  );
+}
+
+export function getBusinessSite(siteId: string) {
+  return fleetRequest<FleetBusinessSiteDetailResponse>(
+    'GET',
+    `/v1/wattwatchers/business-sites/${encodeURIComponent(siteId)}`,
+  );
+}
+
 export function saveClientApiKey(clientId: string, apiKey: string) {
   return fleetRequest<{ clientId: string; apiKeyConfigured: true; apiKeyUpdatedAt: string }>(
     'PUT',
@@ -117,5 +136,47 @@ export function getReport(reportId: string) {
 export function downloadReportCsv(reportId: string, filters: FleetQueryFilters = {}) {
   return fleetRequestBlob(
     `/v1/wattwatchers/reports/${encodeURIComponent(reportId)}.csv${searchParams(filters)}`,
+  );
+}
+
+export function listTopologyBetaSites() {
+  return fleetRequest<{ sites: TopologyBetaSite[] }>(
+    'GET',
+    '/v1/wattwatchers/topology-beta/sites',
+  );
+}
+
+export function getTopologyBetaSite(locationId: string, deviceIds: string[] = []) {
+  return fleetRequest<TopologyBetaDocument>(
+    'GET',
+    `/v1/wattwatchers/topology-beta/sites/${encodeURIComponent(locationId)}/topology${searchParams({
+      meters: deviceIds.length ? deviceIds.join('\n') : undefined,
+    })}`,
+  );
+}
+
+export function getTopologyReconstruction(locationId: string) {
+  return fleetRequest<TopologyBetaDocument>(
+    'GET',
+    `/v1/wattwatchers/topology-beta/reconstructions/${encodeURIComponent(locationId)}`,
+  );
+}
+
+export function startTopologyReconstruction(input: {
+  locationId: string | null;
+  deviceIds: string[];
+}) {
+  return fleetRequest<TopologyBetaDocument>(
+    'POST',
+    '/v1/wattwatchers/topology-beta/reconstructions/start',
+    input,
+  );
+}
+
+export function stopTopologyReconstruction(locationId: string) {
+  return fleetRequest<{ reconstruction: TopologyReconstructionStatus }>(
+    'POST',
+    '/v1/wattwatchers/topology-beta/reconstructions/stop',
+    { locationId },
   );
 }

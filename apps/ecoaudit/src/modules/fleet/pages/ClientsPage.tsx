@@ -64,8 +64,8 @@ export default function ClientsPage() {
   return (
     <div>
       <PageHeader
-        title="Clients"
-        subtitle="Compare client and MaaS fleets using the same latest published snapshot."
+        title="Fleet accounts"
+        subtitle="Compare Wattwatchers API-key owners and MaaS collection fleets. End-customer clients and their sites are shown from device placement records."
         actions={(
           <Button variant="secondary" disabled={query.isFetching} onClick={() => void query.refetch()}>
             <Icon name="activity" size={17} />
@@ -77,21 +77,21 @@ export default function ClientsPage() {
       {query.error ? <ErrorBanner message={fleetConnectionErrorMessage(query.error)} /> : null}
 
       {!query.error && clients.length === 0 ? (
-        <EmptyState icon="users" title="No fleet clients yet" description="Client results will appear after a complete collection run is published." />
+        <EmptyState icon="users" title="No Fleet accounts yet" description="Fleet-account results will appear after a complete collection run is published." />
       ) : clients.length > 0 ? (
         <>
           <div className="mb-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            <StatCard label="Clients" value={formatNumber(clients.length)} icon="users" />
-            <StatCard label="Client memberships" value={formatNumber(totals.devices)} icon="gauge" />
+            <StatCard label="Fleet accounts" value={formatNumber(clients.length)} icon="users" />
+            <StatCard label="Account memberships" value={formatNumber(totals.devices)} icon="gauge" />
             <StatCard label="Offline memberships" value={formatNumber(totals.offline)} icon="wifi-off" tone="danger" />
             <StatCard label="Collection issues" value={formatNumber(totals.collectionIssues)} icon="activity" tone={totals.collectionIssues > 0 ? 'danger' : 'success'} />
           </div>
 
           <Card className="mb-5 !p-4 sm:!p-5">
             <fieldset className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              <legend className="sr-only">Client filters</legend>
+              <legend className="sr-only">Fleet account filters</legend>
               <label className="block text-xs font-bold text-[var(--text-sub)]">
-                Search client
+                Search Fleet account
                 <div className="relative mt-1.5">
                   <Icon name="search" size={17} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
                   <Input className="pl-10" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Name or code" />
@@ -100,7 +100,7 @@ export default function ClientsPage() {
               <label className="block text-xs font-bold text-[var(--text-sub)]">
                 API key
                 <Select className="mt-1.5" value={apiKeyFilter} onChange={(event) => setApiKeyFilter(event.target.value as typeof apiKeyFilter)}>
-                  <option value="all">All clients</option>
+                  <option value="all">All Fleet accounts</option>
                   <option value="missing">API key not added</option>
                   <option value="configured">API key configured</option>
                 </Select>
@@ -108,9 +108,9 @@ export default function ClientsPage() {
               <label className="block text-xs font-bold text-[var(--text-sub)]">
                 MaaS classification
                 <Select className="mt-1.5" value={maas} onChange={(event) => setMaas(event.target.value as typeof maas)}>
-                  <option value="all">All clients</option>
-                  <option value="true">MaaS clients</option>
-                  <option value="false">Non-MaaS clients</option>
+                  <option value="all">All Fleet accounts</option>
+                  <option value="true">MaaS accounts</option>
+                  <option value="false">Non-MaaS accounts</option>
                 </Select>
               </label>
               <label className="block text-xs font-bold text-[var(--text-sub)]">
@@ -125,20 +125,20 @@ export default function ClientsPage() {
           </Card>
 
           <div className="mb-4 flex flex-col gap-1 text-sm text-[var(--text-sub)] sm:flex-row sm:items-center sm:justify-between">
-            <p aria-live="polite"><span className="font-bold text-[var(--text)]">{formatNumber(filtered.length)}</span> clients shown</p>
+            <p aria-live="polite"><span className="font-bold text-[var(--text)]">{formatNumber(filtered.length)}</span> Fleet accounts shown</p>
             {run ? <p>Snapshot {formatDate(run.reportingDate)}</p> : null}
           </div>
 
           {filtered.length === 0 ? (
-            <EmptyState icon="search" title="No clients match these filters" description="Change the search, MaaS, or collection-quality filter." />
+            <EmptyState icon="search" title="No Fleet accounts match these filters" description="Change the search, MaaS, API-key, or collection-quality filter." />
           ) : (
             <Card className="min-w-0 !p-0">
               <div className="overflow-x-auto">
                 <table className={tableClass}>
-                  <caption className="sr-only">Fleet connectivity and collection quality by client</caption>
+                  <caption className="sr-only">Fleet connectivity, collection quality and API-key state by Wattwatchers Fleet account</caption>
                   <thead>
                     <tr>
-                      <th className={tableHeadClass} scope="col">Client</th>
+                      <th className={tableHeadClass} scope="col">Fleet account</th>
                       <th className={`${tableHeadClass} text-right`} scope="col">Devices</th>
                       <th className={`${tableHeadClass} text-right`} scope="col">Availability at scan</th>
                       <th className={`${tableHeadClass} text-right`} scope="col">Communicating</th>

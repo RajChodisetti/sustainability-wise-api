@@ -16,6 +16,16 @@ import {
 } from '../../db/schema/wattwatchers.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { badRequest, notFound } from '../../utils/errors.js';
+import {
+  loadBusinessClientGraph,
+  loadBusinessSiteGraph,
+  loadDeviceAssociations,
+  loadFleetAccountsByDevice,
+  loadPlacementsByDevice,
+  placementSummary,
+  type FleetDeviceReference,
+} from './readRelations.js';
+import { summarizeDeviceStatuses } from './readModels.js';
 import { availabilityPercent, type FleetStatus } from './status.js';
 
 type FleetFilters = { clientId?: string; maas?: string };
@@ -255,6 +265,47 @@ async function selectedRun(runId?: string) {
   return run ?? null;
 }
 
+async function relatedDeviceRows(devices: FleetDeviceReference[]) {
+  if (devices.length === 0) return [];
+  const run = await selectedRun();
+  const [observations, attributions, accountMap, placementMap] = await Promise.all([
+    run ? loadObservations([run.id]) : [],
+    run ? loadAttributions([run.id]) : [],
+    loadFleetAccountsByDevice(devices.map((device) => device.internalDeviceId)),
+    loadPlacementsByDevice(devices),
+  ]);
+  const attributionMap = attributionsByObservation(attributions);
+  const observationByDevice = new Map(
+    observations.map((observation) => [observation.internalDeviceId, observation]),
+  );
+  return devices.map((device) => {
+    const observation = observationByDevice.get(device.internalDeviceId);
+    const base = observation
+      ? mapObservation(
+          observation,
+          attributionMap.get(observation.observationId) ?? [],
+          observation.primaryClientId ?? undefined,
+        )
+      : {
+          deviceId: device.deviceId,
+          label: device.label,
+          model: device.model,
+          status: 'unknown' as const,
+          reportOffline: false,
+          lastHeardAt: null,
+          observedAt: null,
+          fetchStatus: 'not_collected',
+        };
+    const placements = placementMap.get(device.internalDeviceId) ?? [];
+    return {
+      ...base,
+      status: base.status as FleetStatus,
+      fleetAccounts: accountMap.get(device.internalDeviceId) ?? [],
+      ...placementSummary(placements),
+    };
+  });
+}
+
 function summaryFor(
   observations: SafeObservation[],
   attributionMap: Map<string, Attribution[]>,
@@ -434,6 +485,19 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         clientIsMaas: wwClients.isMaas,
       }).from(wwDevices).leftJoin(wwClients, eq(wwClients.id, wwDevices.primaryClientId)),
     ]);
+    const deviceReferences: FleetDeviceReference[] = registeredDevices.map((device) => ({
+      internalDeviceId: device.internalDeviceId,
+      deviceId: device.deviceId,
+      label: device.label,
+      model: device.model,
+    }));
+    const [fleetAccountMap, placementMap] = await Promise.all([
+      loadFleetAccountsByDevice(deviceReferences.map((device) => device.internalDeviceId)),
+      loadPlacementsByDevice(deviceReferences),
+    ]);
+    const referenceByDeviceId = new Map(
+      deviceReferences.map((device) => [device.deviceId, device]),
+    );
     const attributionMap = attributionsByObservation(attributions);
     let filtered = filterObservations(observations, attributionMap, query);
     if (query.status) filtered = filtered.filter((row) => row.status === query.status);
@@ -442,15 +506,6 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
       filtered = filtered.filter((row) => row.reportOffline === reportOffline);
     }
     if (query.model) filtered = filtered.filter((row) => (row.modelSnapshot ?? row.deviceModel) === query.model);
-    if (query.q) {
-      const search = query.q.toLowerCase().trim();
-      filtered = filtered.filter((row) => {
-        const clients = attributionMap.get(row.observationId) ?? [];
-        return [row.externalDeviceId, row.labelSnapshot, row.deviceLabel, row.modelSnapshot, row.deviceModel]
-          .some((value) => value?.toLowerCase().includes(search))
-          || clients.some((client) => client.name.toLowerCase().includes(search));
-      });
-    }
     const observedInternalIds = new Set(observations.map((row) => row.internalDeviceId));
     const attributedDeviceClientPairs = new Set(attributions.map((row) => `${row.internalDeviceId}:${row.clientId}`));
     const projected = registeredDevices.filter((row) => {
@@ -466,11 +521,6 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         if (reportOffline === true) return false;
       }
       if (query.model && row.model !== query.model) return false;
-      if (query.q) {
-        const search = query.q.toLowerCase().trim();
-        if (![row.deviceId, row.label, row.model, row.clientName]
-          .some((value) => value?.toLowerCase().includes(search))) return false;
-      }
       return true;
     }).map((row) => ({
       deviceId: row.deviceId,
@@ -513,10 +563,37 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
       const bValue = query.sort === 'lastHeardAt' ? b.lastHeardAt?.getTime() : b.communicationAgeSeconds;
       return ((aValue ?? -1) - (bValue ?? -1)) * direction;
     });
+    let enrichedData = data.map((row) => {
+      const reference = referenceByDeviceId.get(row.deviceId);
+      const placements = reference
+        ? placementMap.get(reference.internalDeviceId) ?? []
+        : [];
+      return {
+        ...row,
+        fleetAccounts: reference
+          ? fleetAccountMap.get(reference.internalDeviceId) ?? []
+          : [],
+        ...placementSummary(placements),
+      };
+    });
+    if (query.q) {
+      const search = query.q.toLowerCase().trim();
+      enrichedData = enrichedData.filter((row) => [
+        row.deviceId,
+        row.label,
+        row.model,
+        row.client?.name,
+        row.currentPlacement?.businessClient.name,
+        row.currentPlacement?.site?.id,
+        row.currentPlacement?.site?.name,
+        row.currentPlacement?.site?.address,
+        ...row.fleetAccounts.flatMap((account) => [account.name, account.code]),
+      ].some((value) => value?.toLowerCase().includes(search)));
+    }
     return reply.send({
       run: runReference(run),
-      data: data.slice(offset, offset + limit),
-      meta: { total: data.length, limit, offset },
+      data: enrichedData.slice(offset, offset + limit),
+      meta: { total: enrichedData.length, limit, offset },
     });
   });
 
@@ -559,6 +636,18 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
     }));
     const outages = await db.select().from(wwOutages).where(eq(wwOutages.deviceId, device.id))
       .orderBy(desc(wwOutages.firstDetectedAt)).limit(historyLimit);
+    const deviceReference: FleetDeviceReference = {
+      internalDeviceId: device.id,
+      deviceId: device.deviceId,
+      label: device.label,
+      model: device.model,
+    };
+    const [fleetAccountMap, placementMap, associations] = await Promise.all([
+      loadFleetAccountsByDevice([device.id]),
+      loadPlacementsByDevice([deviceReference]),
+      loadDeviceAssociations(deviceReference),
+    ]);
+    const placements = placementMap.get(device.id) ?? [];
     return reply.send({
       device: {
         deviceId: device.deviceId,
@@ -571,10 +660,13 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         lastDiscoveredAt: device.lastDiscoveredAt,
         memberships,
       },
+      fleetAccounts: fleetAccountMap.get(device.id) ?? [],
+      ...placementSummary(placements),
       current: currentRow ? mapObservation(
         currentRow, attributionMap.get(currentRow.observationId) ?? [], device.primaryClientId ?? undefined,
       ) : null,
       history,
+      placements,
       outages: outages.map((outage) => ({
         id: outage.id,
         openedAt: outage.firstDetectedAt,
@@ -584,6 +676,7 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         closeReason: outage.closeReason,
         open: outage.closedRunId === null,
       })),
+      ...associations,
     });
   });
 
@@ -651,6 +744,110 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
       };
     });
     return reply.send({ run: run ? runReference(run) : null, data });
+  });
+
+  app.get('/business-clients/:businessClientId', {
+    schema: { tags: ['Wattwatchers Clients'], security: [{ bearerAuth: [] }] },
+    preHandler: readGuards,
+  }, async (request, reply) => {
+    const { businessClientId } = request.params as { businessClientId: string };
+    const graph = await loadBusinessClientGraph(businessClientId);
+    if (!graph) throw notFound('Business client');
+    const relatedDevices = await relatedDeviceRows(graph.devices);
+    const devices = relatedDevices.filter(
+      (device) => device.currentPlacement?.businessClient.id === businessClientId,
+    );
+    const jobsBySite = new Map<string, number>();
+    const installationsBySite = new Map<string, number>();
+    for (const job of graph.jobs) {
+      if (job.siteId) jobsBySite.set(job.siteId, (jobsBySite.get(job.siteId) ?? 0) + 1);
+    }
+    for (const installation of graph.installations) {
+      if (installation.siteId) {
+        installationsBySite.set(
+          installation.siteId,
+          (installationsBySite.get(installation.siteId) ?? 0) + 1,
+        );
+      }
+    }
+    const sites = graph.sites.map((site) => {
+      const siteDevices = devices.filter(
+        (device) => device.currentPlacement?.site?.id === site.id,
+      );
+      return {
+        id: site.id,
+        clientId: site.clientId,
+        name: site.name,
+        address: site.address,
+        locality: site.locality,
+        state: site.state,
+        postcode: site.postcode,
+        countryCode: site.countryCode,
+        timezone: site.timezone,
+        contactName: site.contactName,
+        contactPhone: site.contactPhone,
+        contactEmail: site.contactEmail,
+        accessInformation: site.accessInformation,
+        updatedAt: site.updatedAt,
+        jobCount: jobsBySite.get(site.id) ?? 0,
+        installationCount: installationsBySite.get(site.id) ?? 0,
+        status: summarizeDeviceStatuses(siteDevices),
+      };
+    });
+    return reply.send({
+      client: graph.client,
+      summary: {
+        ...summarizeDeviceStatuses(devices),
+        siteCount: sites.length,
+        jobCount: graph.jobs.length,
+        installationCount: graph.installations.length,
+      },
+      sites,
+      jobs: graph.jobs,
+      installations: graph.installations,
+      devices,
+    });
+  });
+
+  app.get('/business-sites/:businessSiteId', {
+    schema: { tags: ['Wattwatchers Sites'], security: [{ bearerAuth: [] }] },
+    preHandler: readGuards,
+  }, async (request, reply) => {
+    const { businessSiteId } = request.params as { businessSiteId: string };
+    const graph = await loadBusinessSiteGraph(businessSiteId);
+    if (!graph) throw notFound('Business site');
+    const relatedDevices = await relatedDeviceRows(graph.devices);
+    const devices = relatedDevices.filter(
+      (device) => device.currentPlacement?.site?.id === businessSiteId,
+    );
+    const site = graph.site;
+    return reply.send({
+      site: {
+        id: site.id,
+        clientId: site.clientId,
+        name: site.name,
+        address: site.address,
+        locality: site.locality,
+        state: site.state,
+        postcode: site.postcode,
+        countryCode: site.countryCode,
+        timezone: site.timezone,
+        contactName: site.contactName,
+        contactPhone: site.contactPhone,
+        contactEmail: site.contactEmail,
+        accessInformation: site.accessInformation,
+        updatedAt: site.updatedAt,
+      },
+      client: graph.client,
+      summary: {
+        ...summarizeDeviceStatuses(devices),
+        jobCount: graph.jobs.length,
+        installationCount: graph.installations.length,
+      },
+      jobs: graph.jobs,
+      installations: graph.installations,
+      devices,
+    });
   });
 
   app.get('/runs', {

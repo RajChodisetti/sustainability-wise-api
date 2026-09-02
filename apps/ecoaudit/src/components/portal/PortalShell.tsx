@@ -616,8 +616,9 @@ export function PortalShell({ children }: { children: ReactNode }) {
   ];
   const fleetChildren: ChildNavItem[] = [
     { href: '/fleet/dashboard', label: 'Overview', icon: 'grid', exact: true },
+    { href: '/fleet/electrical-map', label: 'Electrical Map · Beta', icon: 'zap' },
     { href: '/fleet/devices', label: 'Devices', icon: 'wifi' },
-    { href: '/fleet/clients', label: 'Clients', icon: 'users' },
+    { href: '/fleet/clients', label: 'Fleet accounts', icon: 'users' },
     { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
     { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },
   ];

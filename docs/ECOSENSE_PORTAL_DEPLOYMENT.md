@@ -106,6 +106,9 @@ Configure these values:
 - When registration is enabled, `ECOAUDIT_REGISTRATION_SECRET` and/or
   `SOLARSENSE_REGISTRATION_SECRET` must match the corresponding API secret.
   They are server-only credentials and must never use a `NEXT_PUBLIC_` prefix.
+- On QA only, `WATTWATCHERS_TOPOLOGY_BETA_URL=http://127.0.0.1:8765` lets the
+  authenticated Fleet API bridge reach the loopback-only Electrical Map beta.
+  Do not expose port `8765` through Caddy and do not use a `NEXT_PUBLIC_` value.
 
 Do not configure any `NEXT_PUBLIC_*REGISTRATION_SECRET`. A `NEXT_PUBLIC_` value is
 included in browser JavaScript. The portal should call same-origin routes, and

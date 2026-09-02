@@ -2,6 +2,8 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   getDashboardSummary,
   getDashboardTrends,
+  getBusinessClient,
+  getBusinessSite,
   getDevice,
   getReport,
   getRun,
@@ -56,6 +58,24 @@ export function useFleetClients(runId?: string) {
   return useQuery({
     queryKey: ['wattwatchers', 'clients', runId ?? 'latest'],
     queryFn: () => listClients(runId),
+    staleTime: 2 * 60_000,
+  });
+}
+
+export function useFleetBusinessClient(clientId: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'business-clients', clientId],
+    queryFn: () => getBusinessClient(clientId),
+    enabled: Boolean(clientId),
+    staleTime: 2 * 60_000,
+  });
+}
+
+export function useFleetBusinessSite(siteId: string) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'business-sites', siteId],
+    queryFn: () => getBusinessSite(siteId),
+    enabled: Boolean(siteId),
     staleTime: 2 * 60_000,
   });
 }

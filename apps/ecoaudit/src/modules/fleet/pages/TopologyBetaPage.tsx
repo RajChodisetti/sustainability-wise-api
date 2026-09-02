@@ -1,0 +1,371 @@
+'use client';
+
+import { useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Button } from '@/components/ui/Button';
+import { Card, EmptyState, ErrorBanner, PageHeader, StatCard } from '@/components/ui/Card';
+import { Icon } from '@/components/ui/Icon';
+import { usePortalAuth } from '@/contexts/PortalAuthContext';
+import {
+  getTopologyBetaSite,
+  getTopologyReconstruction,
+  listTopologyBetaSites,
+  startTopologyReconstruction,
+  stopTopologyReconstruction,
+} from '@/modules/fleet/api/fleet';
+import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
+import {
+  buildTopologyForest,
+  parseTopologyDeviceIds,
+  topologySiteLabel,
+  type TopologyTreeItem,
+} from '@/modules/fleet/lib/topologyBeta';
+import { formatDateTime, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
+import type { TopologyBetaDocument, TopologyBetaEdge } from '@/modules/fleet/types/domain';
+
+function confidencePercent(value?: number | null) {
+  return typeof value === 'number' ? formatPercent(value * 100, 0) : '—';
+}
+
+function relationTone(edge: TopologyBetaEdge) {
+  return edge.state === 'CONFIDENT'
+    ? {
+        border: 'border-[var(--green)]',
+        badge: 'bg-[var(--green-soft)] text-[var(--green)]',
+        label: 'Confident',
+      }
+    : {
+        border: 'border-[var(--amber)]',
+        badge: 'bg-[var(--amber-soft)] text-[var(--amber)]',
+        label: 'Needs review',
+      };
+}
+
+function TreeBranch({ item, root = false }: { item: TopologyTreeItem; root?: boolean }) {
+  const edge = item.incomingEdge;
+  const tone = edge ? relationTone(edge) : null;
+  const nodeTone = item.node.state === 'CONFIDENT'
+    ? 'border-[var(--green)]/50 bg-[var(--green-soft)]/45'
+    : item.node.state === 'REVIEW'
+      ? 'border-[var(--amber)]/55 bg-[var(--amber-soft)]/45'
+      : 'border-[var(--border-strong)] bg-[var(--surface2)]';
+  return (
+    <li className={root ? '' : `border-l-2 pl-4 sm:pl-6 ${tone?.border ?? 'border-[var(--border)]'}`}>
+      {edge && tone ? (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className={`rounded-full px-2.5 py-1 font-extrabold ${tone.badge}`}>
+            {tone.label}
+          </span>
+          <span className="font-semibold text-[var(--text-sub)]">
+            Top-K {confidencePercent(edge.topKInclusionWeight)} · Bootstrap {confidencePercent(edge.bootstrapStability)}
+          </span>
+          {typeof edge.overlapSampleCount === 'number' ? (
+            <span className="text-[var(--muted)]">{formatNumber(edge.overlapSampleCount)} samples</span>
+          ) : null}
+        </div>
+      ) : null}
+      <div className={`max-w-xl rounded-[var(--radius-sm)] border px-4 py-3.5 shadow-[var(--shadow-xs)] ${nodeTone}`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="truncate font-extrabold text-[var(--text)]">{item.node.label || item.node.meterId}</p>
+            <p className="mt-0.5 break-all font-mono text-xs text-[var(--text-sub)]">{item.node.deviceId}</p>
+          </div>
+          <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-bold text-[var(--text-sub)]">
+            {item.node.telemetryStatus || 'WAITING'}
+          </span>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-sub)]">
+          <span>Meter {item.node.meterId}</span>
+          {item.node.role ? <span>Role {item.node.role}</span> : null}
+          {typeof item.node.validSampleCount === 'number' ? (
+            <span>{formatNumber(item.node.validSampleCount)} valid samples</span>
+          ) : null}
+        </div>
+      </div>
+      {item.children.length > 0 ? (
+        <ul className="mt-4 space-y-4" role="group">
+          {item.children.map((child) => (
+            <TreeBranch key={child.node.meterId} item={child} />
+          ))}
+        </ul>
+      ) : null}
+    </li>
+  );
+}
+
+function TopologyMap({ document }: { document: TopologyBetaDocument }) {
+  const forest = buildTopologyForest(document);
+  return (
+    <Card className="min-w-0 !p-0">
+      <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+        <div>
+          <p className="text-xs font-extrabold uppercase tracking-[0.1em] text-[var(--primary)]">Latest reconstruction</p>
+          <h2 className="mt-1 text-xl font-extrabold tracking-[-0.025em] text-[var(--text)]">
+            {document.location.name || document.location.locationId}
+          </h2>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">
+            {document.location.clientCode} · generated {formatDateTime(document.generatedAt)}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className="rounded-full bg-[var(--primary-soft)] px-3 py-1.5 text-xs font-extrabold text-[var(--primary)]">
+            {document.decision.replaceAll('_', ' ')}
+          </span>
+          <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-3 py-1.5 text-xs font-bold text-[var(--text-sub)]">
+            {document.reconstruction?.state || 'IDLE'}
+          </span>
+        </div>
+      </div>
+
+      <div className="border-b border-[var(--border)] bg-[var(--surface2)] px-5 py-3 sm:px-6">
+        <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold">
+          <span className="inline-flex items-center gap-2 text-[var(--green)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--green)]" />Confident relation</span>
+          <span className="inline-flex items-center gap-2 text-[var(--amber)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--amber)]" />Review or more data</span>
+          <span className="inline-flex items-center gap-2 text-[var(--text-sub)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--muted)]" />Waiting for evidence</span>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto p-5 sm:p-6">
+        {forest.length ? (
+          <ul className="min-w-[540px] space-y-5" role="tree" aria-label="Observed electrical meter hierarchy">
+            {forest.map((item) => <TreeBranch key={item.node.meterId} item={item} root />)}
+          </ul>
+        ) : (
+          <EmptyState
+            icon="zap"
+            title="Waiting for a usable relationship"
+            description="The meters remain visible only after the algorithm has enough evidence for at least the low-confidence review floor."
+          />
+        )}
+      </div>
+
+      <div className="border-t border-[var(--border)] px-5 py-4 text-xs leading-5 text-[var(--text-sub)] sm:px-6">
+        {document.disclaimer}
+      </div>
+    </Card>
+  );
+}
+
+export default function TopologyBetaPage() {
+  const { wwUser } = usePortalAuth();
+  const queryClient = useQueryClient();
+  const isAdmin = wwUser?.role === 'admin';
+  const [siteSearch, setSiteSearch] = useState('');
+  const [deviceText, setDeviceText] = useState('');
+  const [activeLocationId, setActiveLocationId] = useState('');
+  const [action, setAction] = useState<'start' | 'stop' | 'view' | null>(null);
+  const [localError, setLocalError] = useState('');
+
+  const sitesQuery = useQuery({
+    queryKey: ['wattwatchers', 'topology-beta', 'sites'],
+    queryFn: listTopologyBetaSites,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+  const sites = useMemo(() => sitesQuery.data?.sites ?? [], [sitesQuery.data?.sites]);
+  const selectedSite = useMemo(() => sites.find((site) => (
+    topologySiteLabel(site) === siteSearch.trim()
+    || site.locationId.toLowerCase() === siteSearch.trim().toLowerCase()
+  )), [siteSearch, sites]);
+  const topologyQuery = useQuery({
+    queryKey: ['wattwatchers', 'topology-beta', 'reconstruction', activeLocationId],
+    queryFn: () => getTopologyReconstruction(activeLocationId),
+    enabled: Boolean(activeLocationId),
+    refetchInterval: (query) => (
+      query.state.data?.reconstruction?.state === 'RUNNING' ? 15_000 : false
+    ),
+  });
+  const document = topologyQuery.data;
+  const deviceIds = useMemo(() => parseTopologyDeviceIds(deviceText), [deviceText]);
+  const requestError = topologyQuery.error ?? sitesQuery.error;
+
+  async function viewLatest() {
+    setLocalError('');
+    if (!selectedSite) {
+      setLocalError('Choose an exact registered site from the searchable list.');
+      return;
+    }
+    setAction('view');
+    try {
+      const result = await getTopologyBetaSite(selectedSite.locationId, deviceIds);
+      setActiveLocationId(selectedSite.locationId);
+      queryClient.setQueryData(
+        ['wattwatchers', 'topology-beta', 'reconstruction', selectedSite.locationId],
+        result,
+      );
+    } catch (error) {
+      setLocalError(fleetConnectionErrorMessage(error));
+    } finally {
+      setAction(null);
+    }
+  }
+
+  async function start() {
+    setLocalError('');
+    if (siteSearch.trim() && !selectedSite) {
+      setLocalError('Choose an exact registered site, or clear the site field and paste device IDs.');
+      return;
+    }
+    if (!selectedSite && deviceIds.length < 2) {
+      setLocalError('Paste at least two device IDs when starting a new site reconstruction.');
+      return;
+    }
+    setAction('start');
+    try {
+      const result = await startTopologyReconstruction({
+        locationId: selectedSite?.locationId ?? null,
+        deviceIds,
+      });
+      const locationId = result.location.locationId;
+      setActiveLocationId(locationId);
+      queryClient.setQueryData(
+        ['wattwatchers', 'topology-beta', 'reconstruction', locationId],
+        result,
+      );
+      await sitesQuery.refetch();
+    } catch (error) {
+      setLocalError(fleetConnectionErrorMessage(error));
+    } finally {
+      setAction(null);
+    }
+  }
+
+  async function stop() {
+    if (!activeLocationId) return;
+    setLocalError('');
+    setAction('stop');
+    try {
+      await stopTopologyReconstruction(activeLocationId);
+      await topologyQuery.refetch();
+    } catch (error) {
+      setLocalError(fleetConnectionErrorMessage(error));
+    } finally {
+      setAction(null);
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader
+        title="Electrical Map"
+        subtitle="Continuously reconstruct an observed-meter hierarchy. Confident relations appear green; possible relations remain yellow until review or stronger telemetry."
+        actions={(
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full bg-cyan-100 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.1em] text-cyan-900">Beta</span>
+            <Button
+              variant="secondary"
+              disabled={sitesQuery.isFetching || topologyQuery.isFetching}
+              onClick={() => {
+                void sitesQuery.refetch();
+                if (activeLocationId) void topologyQuery.refetch();
+              }}
+            >
+              <Icon name="refresh" size={17} />
+              {topologyQuery.isFetching ? 'Refreshing…' : 'Refresh'}
+            </Button>
+          </div>
+        )}
+      />
+
+      {localError || requestError ? (
+        <div className="mb-5">
+          <ErrorBanner message={localError || fleetConnectionErrorMessage(requestError)} />
+        </div>
+      ) : null}
+
+      <div className="mb-5 rounded-[var(--radius-sm)] border border-cyan-300/60 bg-cyan-50 px-4 py-3.5 text-sm leading-6 text-cyan-950">
+        <strong>Beta review surface.</strong> Yellow links are possible relationships, not published wiring claims. The reconstruction keeps collecting while running and updates this map automatically.
+      </div>
+
+      <section className="mb-5 grid gap-5 xl:grid-cols-[minmax(320px,0.72fr)_minmax(0,1.28fr)]">
+        <Card className="h-fit">
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--primary-soft)] text-[var(--primary)]"><Icon name="zap" size={21} /></span>
+            <div>
+              <h2 className="font-extrabold text-[var(--text)]">Choose meters to analyse</h2>
+              <p className="text-xs text-[var(--text-sub)]">Select a saved topology site or paste exact device numbers.</p>
+            </div>
+          </div>
+
+          <label htmlFor="topology-site" className="mt-6 block text-sm font-bold text-[var(--text)]">Search registered sites</label>
+          <input
+            id="topology-site"
+            type="search"
+            list="topology-site-options"
+            value={siteSearch}
+            onChange={(event) => setSiteSearch(event.target.value)}
+            placeholder={sitesQuery.isLoading ? 'Loading sites…' : 'Search site name or client…'}
+            className="mt-2 min-h-11 w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 text-sm text-[var(--text)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+          />
+          <datalist id="topology-site-options">
+            {sites.map((site) => <option key={site.locationId} value={topologySiteLabel(site)} />)}
+          </datalist>
+          <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
+            {sites.length
+              ? `${formatNumber(sites.length)} registered ${sites.length === 1 ? 'site' : 'sites'} available.`
+              : 'No site is registered yet. Paste device IDs below to create the first reconstruction.'}
+          </p>
+
+          <div className="my-5 flex items-center gap-3 text-xs font-bold uppercase tracking-[0.1em] text-[var(--muted)]">
+            <span className="h-px flex-1 bg-[var(--border)]" />Or<span className="h-px flex-1 bg-[var(--border)]" />
+          </div>
+
+          <label htmlFor="topology-devices" className="block text-sm font-bold text-[var(--text)]">Device numbers</label>
+          <textarea
+            id="topology-devices"
+            rows={7}
+            value={deviceText}
+            onChange={(event) => setDeviceText(event.target.value)}
+            placeholder={'DDF3710…\nDD43710…\nDDF3710…'}
+            className="mt-2 w-full rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2.5 font-mono text-sm text-[var(--text)] outline-none focus:border-[var(--primary)] focus:ring-2 focus:ring-[var(--primary)]/20"
+          />
+          <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">
+            {deviceIds.length ? `${formatNumber(deviceIds.length)} unique device IDs selected.` : 'One device number per line. New lists are securely discovered under configured Fleet accounts.'}
+          </p>
+
+          <div className="mt-5 grid gap-2 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+            <Button variant="secondary" disabled={!selectedSite || action !== null} onClick={() => void viewLatest()}>
+              <Icon name="eye" size={17} />{action === 'view' ? 'Loading…' : 'View latest'}
+            </Button>
+            <Button disabled={!isAdmin || action !== null} onClick={() => void start()}>
+              <Icon name="activity" size={17} />{action === 'start' ? 'Starting…' : 'Start reconstruction'}
+            </Button>
+            <Button
+              variant="danger"
+              className="sm:col-span-2 xl:col-span-1 2xl:col-span-2"
+              disabled={!isAdmin || !activeLocationId || action !== null || document?.reconstruction?.state !== 'RUNNING'}
+              onClick={() => void stop()}
+            >
+              <Icon name="close" size={17} />{action === 'stop' ? 'Stopping…' : 'Stop reconstruction'}
+            </Button>
+          </div>
+          {!isAdmin ? (
+            <p className="mt-4 rounded-lg bg-[var(--surface2)] px-3 py-2.5 text-xs leading-5 text-[var(--text-sub)]">
+              Viewer access can inspect maps. A Fleet administrator must start or stop data collection.
+            </p>
+          ) : null}
+        </Card>
+
+        <div className="min-w-0">
+          {document ? (
+            <>
+              <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Topology confidence summary">
+                <StatCard label="Selected meters" value={formatNumber(document.summary.selectedMeterCount)} icon="gauge" />
+                <StatCard label="Confident links" value={formatNumber(document.summary.confidentRelationCount)} icon="check" tone="success" />
+                <StatCard label="Needs review" value={formatNumber(document.summary.reviewRelationCount)} icon="activity" tone="warning" />
+                <StatCard label="Waiting" value={formatNumber(document.summary.unresolvedMeterCount)} icon="cloud" />
+              </section>
+              <TopologyMap document={document} />
+            </>
+          ) : (
+            <EmptyState
+              icon="zap"
+              title="Select a site or device list"
+              description="View an existing site, or start a continuous reconstruction. Confident relationships appear first and review candidates join only after reaching the minimum evidence floor."
+            />
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}

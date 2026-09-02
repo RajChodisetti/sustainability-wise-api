@@ -80,6 +80,45 @@ export type FleetClientReference = {
   isMaas: boolean;
 };
 
+/**
+ * A Wattwatchers API account / collection owner. This is deliberately
+ * distinct from the end-customer business client shown in placement views.
+ */
+export type FleetAccountReference = FleetClientReference & {
+  apiKeyConfigured: boolean;
+  apiKeyUpdatedAt: string | null;
+};
+
+export type FleetBusinessClientReference = {
+  id: string;
+  name: string;
+};
+
+export type FleetBusinessSiteReference = {
+  id: string;
+  name: string;
+  address: string;
+};
+
+export type FleetDevicePlacement = {
+  source: 'field_installation' | 'maas_assignment';
+  effectiveDate: string | null;
+  businessClient: FleetBusinessClientReference;
+  site: FleetBusinessSiteReference | null;
+};
+
+export type FleetPlacementProvenance = {
+  assignmentId: string;
+  sourceWorkbook: string;
+  sourceSheet: string;
+  sourceRow: number;
+};
+
+export type FleetDevicePlacementRecord = FleetDevicePlacement & {
+  deviceRole: 'current' | 'existing' | 'new';
+  provenance?: FleetPlacementProvenance | null;
+};
+
 export type DeviceObservation = {
   deviceId: string;
   label?: string | null;
@@ -103,6 +142,11 @@ export type DeviceObservation = {
   signalQualityDbm?: number | null;
   cellQuality?: number | string | null;
   metrics?: Record<string, unknown> | null;
+  /** Retained compatibility alias for the primary Fleet account. */
+  fleetAccounts?: FleetAccountReference[];
+  /** Actual customer/site placement, when an exact relationship is known. */
+  currentPlacement?: FleetDevicePlacement | null;
+  placementConflict?: boolean;
 };
 
 export type PaginatedResponse<T> = {
@@ -135,6 +179,120 @@ export type FleetOutage = {
   open: boolean;
 };
 
+export type FleetInstallationPaths = {
+  overview: string;
+  electricalMap: string;
+  report: string;
+  clientReport: string;
+  cloud?: string;
+  meter?: string | null;
+};
+
+export type FleetRelatedInstallation = {
+  id: string;
+  jobId?: string | null;
+  siteId?: string | null;
+  siteCode?: string | null;
+  siteName: string;
+  status: string;
+  completedAt?: string | null;
+  electricalMapLayoutConfigured?: boolean;
+  paths: FleetInstallationPaths;
+};
+
+export type FleetRelatedJob = {
+  id: string;
+  siteId: string;
+  jobType: string;
+  title: string;
+  status: string;
+  sourceApp: string;
+  sourceType: string;
+  sourceId: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
+export type FleetFieldMeter = {
+  id: string;
+  installationId: string;
+  installedOnBoardId: string;
+  zoneId?: string | null;
+  zoneName?: string | null;
+  boardName?: string | null;
+  customName: string;
+  deviceFamily: string;
+  deviceModel: string;
+  deviceNumber?: string | null;
+  serialNumber: string;
+  displayCode?: string | null;
+};
+
+export type FleetFieldFormReference = {
+  id: string;
+  formType: string;
+  status: string;
+  completedAt?: string | null;
+  path: string;
+};
+
+export type FleetMeterHistoryEvent = {
+  id: string;
+  operation: string;
+  fromRecordVersionNumber?: number | null;
+  toRecordVersionNumber?: number | null;
+  restoredFromRecordVersionNumber?: number | null;
+  createdAt: string;
+};
+
+export type FleetInventoryMovement = {
+  id: string;
+  action: string;
+  fromStatus?: string | null;
+  toStatus: string;
+  installationId?: string | null;
+  meterId?: string | null;
+  occurredAt: string;
+};
+
+export type FleetInventoryRecord = {
+  id: string;
+  deviceId: string;
+  deviceModel: string;
+  customManufacturerName?: string | null;
+  customModelName?: string | null;
+  status: string;
+  installedInstallationId?: string | null;
+  installedMeterId?: string | null;
+  businessClientId?: string | null;
+  businessSiteId?: string | null;
+  businessJobId?: string | null;
+  revision?: number;
+  movements?: FleetInventoryMovement[];
+};
+
+export type FleetRegisterEvidence = {
+  id: string;
+  sourceKey?: string | null;
+  sourceWorkbook?: string | null;
+  sourceSheet?: string | null;
+  sourceRow?: number | null;
+  status?: string | null;
+  customerName?: string | null;
+  fleetAccountName?: string | null;
+  siteAddress?: string | null;
+  jobNumber?: string | null;
+  jobCompletionDate?: string | null;
+  jobCompletedBy?: string | null;
+  matchedRoles?: Array<'current' | 'existing' | 'new'>;
+  existingDeviceIdentifier?: string | null;
+  newDeviceIdentifier?: string | null;
+  currentDeviceIdentifier?: string | null;
+  maas?: boolean | null;
+  dataEnabled?: boolean | null;
+  productName?: string | null;
+};
+
 export type DeviceDetailResponse = {
   device: {
     deviceId: string;
@@ -150,6 +308,16 @@ export type DeviceDetailResponse = {
   current: DeviceObservation | null;
   history: DeviceHistoryPoint[];
   outages: FleetOutage[];
+  fleetAccounts?: FleetAccountReference[];
+  currentPlacement?: FleetDevicePlacement | null;
+  placementConflict?: boolean;
+  placements?: FleetDevicePlacementRecord[];
+  inventory?: FleetInventoryRecord | null;
+  fieldMeter?: FleetFieldMeter | null;
+  fieldInstallation?: FleetRelatedInstallation | null;
+  registerEvidence?: FleetRegisterEvidence[];
+  fieldForms?: FleetFieldFormReference[];
+  meterHistory?: FleetMeterHistoryEvent[];
 };
 
 export type FleetClient = FleetClientReference & {
@@ -169,6 +337,82 @@ export type FleetClient = FleetClientReference & {
 };
 
 export type ClientsResponse = { run: FleetRunReference | null; data: FleetClient[] };
+
+export type FleetDeviceStatusSummary = {
+  totalDevices: number;
+  communicating: number;
+  delayed: number;
+  offline: number;
+  inactive: number;
+  unknown: number;
+  notCollected: number;
+  reportOffline: number;
+};
+
+export type FleetBusinessClient = FleetBusinessClientReference & {
+  contactName?: string | null;
+  contactPhone?: string | null;
+  contactEmail?: string | null;
+  updatedAt?: string | null;
+};
+
+export type FleetBusinessSite = FleetBusinessSiteReference & {
+  clientId: string;
+  locality?: string | null;
+  state?: string | null;
+  postcode?: string | null;
+  countryCode?: string | null;
+  timezone?: string | null;
+  contactName?: string | null;
+  contactPhone?: string | null;
+  contactEmail?: string | null;
+  accessInformation?: string | null;
+  updatedAt?: string | null;
+};
+
+export type FleetBusinessSiteSummary = FleetBusinessSite & {
+  jobCount: number;
+  installationCount: number;
+  status: FleetDeviceStatusSummary;
+};
+
+export type FleetRelatedDevice = Pick<
+  DeviceObservation,
+  | 'deviceId'
+  | 'label'
+  | 'model'
+  | 'status'
+  | 'fetchStatus'
+  | 'reportOffline'
+  | 'lastHeardAt'
+  | 'currentPlacement'
+  | 'placementConflict'
+>;
+
+export type FleetBusinessClientDetailResponse = {
+  client: FleetBusinessClient;
+  summary: FleetDeviceStatusSummary & {
+    siteCount: number;
+    jobCount: number;
+    installationCount: number;
+  };
+  sites: FleetBusinessSiteSummary[];
+  jobs: FleetRelatedJob[];
+  installations: FleetRelatedInstallation[];
+  devices: FleetRelatedDevice[];
+};
+
+export type FleetBusinessSiteDetailResponse = {
+  site: FleetBusinessSite;
+  client: FleetBusinessClientReference;
+  summary: FleetDeviceStatusSummary & {
+    jobCount: number;
+    installationCount: number;
+  };
+  jobs: FleetRelatedJob[];
+  installations: FleetRelatedInstallation[];
+  devices: FleetRelatedDevice[];
+};
 
 export type FleetRun = {
   id: string;
@@ -286,4 +530,99 @@ export type ReportDetailResponse = {
 export type FleetQueryFilters = {
   clientId?: string;
   maas?: '' | 'true' | 'false';
+};
+
+export type TopologyBetaSite = {
+  locationId: string;
+  name: string;
+  clientCode: string;
+  mappingRevision: number;
+  meterCount: number;
+  latestDecision: string;
+  latestRunId?: string | null;
+};
+
+export type TopologyBetaNodeState = 'CONFIDENT' | 'REVIEW' | 'WAITING';
+
+export type TopologyBetaNode = {
+  meterId: string;
+  deviceId: string;
+  label: string;
+  deviceLabel?: string | null;
+  role?: string | null;
+  phase?: string | null;
+  telemetryStatus?: string | null;
+  validSampleCount?: number | null;
+  validFraction?: number | null;
+  state: TopologyBetaNodeState;
+};
+
+export type TopologyBetaEdge = {
+  parent: string;
+  child: string;
+  state: 'CONFIDENT' | 'REVIEW';
+  confidenceLabel: string;
+  confidenceValue?: number | null;
+  topKInclusionWeight?: number | null;
+  bootstrapStability?: number | null;
+  overlapSampleCount?: number | null;
+  provenance?: string | null;
+};
+
+export type TopologyReconstructionStatus = {
+  locationId: string;
+  state: 'RUNNING' | 'STOPPING' | 'PAUSED' | 'IDLE' | string;
+  startedAt?: number | null;
+  stoppedAt?: number | null;
+  completedCycleCount?: number;
+  lastRunId?: string | null;
+  lastDecision?: string | null;
+  lastErrorCode?: string | null;
+  cadenceSeconds?: number;
+  job?: {
+    desiredState?: string;
+    phase?: string;
+    activeRunId?: string | null;
+    nextRunAt?: number | null;
+    lastErrorCode?: string | null;
+    consecutiveFailures?: number;
+  };
+};
+
+export type TopologyBetaDocument = {
+  schemaVersion: number;
+  surface: 'BETA_REVIEW_ONLY';
+  location: {
+    locationId: string;
+    name?: string;
+    clientCode: string;
+    rootMeterId?: string | null;
+    mappingRevision?: number;
+  };
+  runId?: string | null;
+  generatedAt?: string | null;
+  decision: string;
+  continueCollecting?: boolean | null;
+  publicationStatus: string;
+  publicHierarchyAvailable: boolean;
+  nodes: TopologyBetaNode[];
+  edges: TopologyBetaEdge[];
+  unresolvedMeterIds: string[];
+  unknownRequestedMeters: string[];
+  summary: {
+    selectedMeterCount: number;
+    confidentRelationCount: number;
+    reviewRelationCount: number;
+    unresolvedMeterCount: number;
+    withheldCandidateCount: number;
+  };
+  thresholds: {
+    minimumTopKInclusion: number;
+    minimumBootstrapStability: number;
+    minimumLowTopKInclusion: number;
+    minimumLowBootstrapStability: number;
+    minimumLowOverlapSamples: number;
+  };
+  disclaimer: string;
+  reconstruction?: TopologyReconstructionStatus;
 };

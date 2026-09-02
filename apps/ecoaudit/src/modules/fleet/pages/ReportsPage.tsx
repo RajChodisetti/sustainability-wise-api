@@ -110,12 +110,12 @@ export default function ReportsPage() {
         </div>
         {comparisonRows.length === 0 ? (
           <div className="p-5">
-            <EmptyState icon="file-text" title="No daily comparison yet" description="Published daily runs will appear here for the selected client and MaaS scope." />
+            <EmptyState icon="file-text" title="No daily comparison yet" description="Published daily runs will appear here for the selected Fleet account and MaaS scope." />
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className={tableClass}>
-              <caption className="sr-only">Daily fleet comparison for the selected client and MaaS scope</caption>
+              <caption className="sr-only">Daily fleet comparison for the selected Fleet account and MaaS scope</caption>
               <thead>
                 <tr>
                   <th className={tableHeadClass} scope="col">Date</th>
@@ -151,7 +151,7 @@ export default function ReportsPage() {
         <div className="border-b border-[var(--border)] px-5 py-5 sm:px-6">
           <h2 className="text-lg font-extrabold tracking-[-0.025em] text-[var(--text)]">Email report archive</h2>
           <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-            This archive records the global email exactly as sent. The client and MaaS scope above applies to the daily comparison and each CSV export.
+            This archive records the global email exactly as sent. The Fleet account and MaaS scope above applies to the daily comparison and each CSV export.
           </p>
         </div>
         {reportsQuery.error ? (

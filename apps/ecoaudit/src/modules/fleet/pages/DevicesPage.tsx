@@ -11,7 +11,7 @@ import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { FleetStatusBadge, ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
 import { useFleetClients, useFleetDevices } from '@/modules/fleet/hooks/useFleet';
-import { formatDate, formatNumber } from '@/modules/fleet/lib/format';
+import { formatDate, formatDateTime, formatNumber } from '@/modules/fleet/lib/format';
 import { FLEET_STATUSES, type FleetStatus } from '@/modules/fleet/types/domain';
 
 const pageSize = 50;
@@ -107,9 +107,9 @@ export default function DevicesPage() {
             </Select>
           </label>
           <label className="block text-xs font-bold text-[var(--text-sub)]">
-            Client
+            Fleet account
             <Select className="mt-1.5" value={clientId} onChange={(event) => { setClientId(event.target.value); resetPage(); }}>
-              <option value="">All clients</option>
+              <option value="">All Fleet accounts</option>
               {clients.map((client) => (
                 <option key={client.id} value={client.id}>{client.name}{client.isMaas ? ' · MaaS' : ''}</option>
               ))}
@@ -156,17 +156,24 @@ export default function DevicesPage() {
         <Card className="min-w-0 !p-0">
           <div className="overflow-x-auto">
             <table className={tableClass}>
-              <caption className="sr-only">Registered Wattwatchers devices with their model and latest published condition</caption>
+              <caption className="sr-only">Registered Wattwatchers devices with customer, site, Fleet account, model and latest published condition</caption>
               <thead>
                 <tr>
                   <th className={tableHeadClass} scope="col">Device</th>
+                  <th className={tableHeadClass} scope="col">Client</th>
+                  <th className={tableHeadClass} scope="col">Site ID</th>
+                  <th className={tableHeadClass} scope="col">Site address</th>
+                  <th className={tableHeadClass} scope="col">Fleet account / API key</th>
                   <th className={tableHeadClass} scope="col">Model</th>
-                  <th className={tableHeadClass} scope="col">Condition</th>
+                  <th className={tableHeadClass} scope="col">Condition at last scan</th>
                 </tr>
               </thead>
               <tbody>
-                {devices.map((device) => (
-                  <tr key={`${device.deviceId}-${device.client?.id ?? 'none'}`} className="hover:bg-[var(--surface2)]/70">
+                {devices.map((device) => {
+                  const placement = device.currentPlacement;
+                  const accounts = device.fleetAccounts ?? [];
+                  return (
+                  <tr key={device.deviceId} className="hover:bg-[var(--surface2)]/70">
                     <td className={tableCellClass}>
                       <Link
                         href={`/fleet/devices/${encodeURIComponent(device.deviceId)}`}
@@ -176,6 +183,52 @@ export default function DevicesPage() {
                       </Link>
                       {device.label ? <p className="mt-1 max-w-52 break-all text-xs text-[var(--muted)]">{device.deviceId}</p> : null}
                     </td>
+                    <td className={`${tableCellClass} min-w-44`}>
+                      {placement ? (
+                        <Link
+                          href={`/fleet/clients/${encodeURIComponent(placement.businessClient.id)}`}
+                          className="font-bold text-[var(--primary)] hover:underline"
+                        >
+                          {placement.businessClient.name}
+                        </Link>
+                      ) : (
+                        <span className="text-[var(--text-sub)]">Not linked</span>
+                      )}
+                      {device.placementConflict ? (
+                        <p className="mt-1 text-xs font-bold text-[var(--amber)]">Placement conflict</p>
+                      ) : null}
+                    </td>
+                    <td className={`${tableCellClass} min-w-40`}>
+                      {placement?.site ? (
+                        <Link
+                          href={`/fleet/sites/${encodeURIComponent(placement.site.id)}`}
+                          className="break-all font-bold text-[var(--primary)] hover:underline"
+                        >
+                          {placement.site.id}
+                        </Link>
+                      ) : <span className="text-[var(--text-sub)]">—</span>}
+                    </td>
+                    <td className={`${tableCellClass} min-w-64 max-w-80 whitespace-normal`}>
+                      {placement?.site?.address || 'Not recorded'}
+                    </td>
+                    <td className={`${tableCellClass} min-w-56`}>
+                      {accounts.length ? (
+                        <ul className="space-y-2">
+                          {accounts.map((account) => (
+                            <li key={account.id}>
+                              <span className="block font-semibold text-[var(--text)]">{account.name}</span>
+                              <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-bold ${
+                                account.apiKeyConfigured
+                                  ? 'bg-[var(--green-soft)] text-[var(--green)]'
+                                  : 'bg-[var(--amber-soft)] text-[var(--amber)]'
+                              }`}>
+                                {account.apiKeyConfigured ? 'API key configured' : 'API key not added'}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : <span className="text-[var(--text-sub)]">No Fleet account</span>}
+                    </td>
                     <td className={`${tableCellClass} font-semibold`}>{device.model || 'N/A'}</td>
                     <td className={`${tableCellClass} min-w-44`}>
                       {device.fetchStatus === 'not_collected' ? (
@@ -183,10 +236,18 @@ export default function DevicesPage() {
                           <ProcessStatusBadge status="Not collected" />
                           <p className="mt-1 text-xs text-[var(--text-sub)]">Awaiting a published collection</p>
                         </>
-                      ) : <FleetStatusBadge status={device.status as FleetStatus} />}
+                      ) : (
+                        <>
+                          <FleetStatusBadge status={device.status as FleetStatus} />
+                          <p className="mt-1 whitespace-nowrap text-xs text-[var(--text-sub)]">
+                            Observed {formatDateTime(device.observedAt)}
+                          </p>
+                        </>
+                      )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

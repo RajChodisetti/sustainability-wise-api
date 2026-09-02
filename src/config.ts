@@ -49,6 +49,37 @@ export function normalizeSchedulerMapProviderUrl(
   return parsed.toString().replace(/\/$/u, '');
 }
 
+export function normalizeLoopbackServiceUrl(
+  name: string,
+  value: string | undefined,
+): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return '';
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${name} must be a valid loopback http URL when configured`);
+  }
+  if (
+    parsed.protocol !== 'http:'
+    || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)
+    || parsed.username
+    || parsed.password
+    || parsed.search
+    || parsed.hash
+  ) {
+    throw new Error(`${name} must be a credential-free loopback http URL`);
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/u, '');
+  return parsed.toString().replace(/\/$/u, '');
+}
+
+export function parseLoopbackServiceTimeoutMs(value: string | undefined): number {
+  return Math.min(120_000, Math.max(1_000, optionalIntValue(value, 60_000)));
+}
+
 export function parseSchedulerMapRequestTimeoutMs(value: string | undefined): number {
   return Math.min(20_000, Math.max(500, optionalIntValue(value, 5_000)));
 }
@@ -527,6 +558,15 @@ export const config = {
   },
   wattwatchersClientCredentials: {
     encryptionSecret: optional('WATTWATCHERS_CLIENT_KEY_ENCRYPTION_SECRET'),
+  },
+  wattwatchersTopologyBeta: {
+    baseUrl: normalizeLoopbackServiceUrl(
+      'WATTWATCHERS_TOPOLOGY_BETA_URL',
+      process.env.WATTWATCHERS_TOPOLOGY_BETA_URL,
+    ),
+    requestTimeoutMs: parseLoopbackServiceTimeoutMs(
+      process.env.WATTWATCHERS_TOPOLOGY_BETA_TIMEOUT_MS,
+    ),
   },
   databaseUrl: required('DATABASE_URL'),
   jwtSecret,

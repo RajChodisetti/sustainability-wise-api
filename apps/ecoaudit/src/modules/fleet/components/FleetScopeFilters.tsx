@@ -22,13 +22,13 @@ export function FleetScopeFilters({
     >
       <legend className="sr-only">Fleet scope filters</legend>
       <label className="block text-xs font-bold uppercase tracking-[0.07em] text-[var(--text-sub)]">
-        Client
+        Fleet account
         <Select
           className="mt-1.5 normal-case tracking-normal"
           value={clientId}
           onChange={(event) => onClientChange(event.target.value)}
         >
-          <option value="">All clients</option>
+          <option value="">All Fleet accounts</option>
           {clients.map((client) => (
             <option key={client.id} value={client.id}>
               {client.name}{client.isMaas ? ' · MaaS' : ''}

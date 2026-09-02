@@ -869,6 +869,11 @@ than falling back to mutable `updatedAt`.
 | GET | `/v1/wattwatchers/outages` | viewer+ | Outage history |
 | POST/PUT | `/v1/wattwatchers/ingest/*` | service account | Idempotent collector ingestion |
 | CRUD | `/v1/wattwatchers/users/*` | admin, self exceptions | Fleet users |
+| GET | `/v1/wattwatchers/topology-beta/sites` | viewer+ | Registered topology beta sites |
+| GET | `/v1/wattwatchers/topology-beta/sites/:locationId/topology` | viewer+ | Latest green/yellow beta review map |
+| GET | `/v1/wattwatchers/topology-beta/reconstructions/:locationId` | viewer+ | Reconstruction status and latest map |
+| POST | `/v1/wattwatchers/topology-beta/reconstructions/start` | admin | Start continuous reconstruction |
+| POST | `/v1/wattwatchers/topology-beta/reconstructions/stop` | admin | Stop after the in-flight cycle completes safely |
 
 ---
 
@@ -957,3 +962,14 @@ for collection. During migration from environment-backed configuration, that
 service account may call `POST /v1/wattwatchers/clients/collector/bootstrap`.
 The bootstrap creates missing client rows and encrypted credential rows only;
 it never replaces a credential already stored in the database.
+
+## Wattwatchers topology beta portal bridge
+
+The Fleet portal exposes **Electrical Map · Beta** at `/fleet/electrical-map`.
+Browsers use the normal Wattwatchers bearer token and never connect to the
+Python reconstruction service directly. The API bridge requires
+`WATTWATCHERS_TOPOLOGY_BETA_URL` to be a credential-free loopback HTTP URL,
+for example `http://127.0.0.1:8765`; a public or remote hostname is rejected at
+startup. Viewer credentials can read saved sites and maps. Only a Fleet admin
+can start or stop reconstruction. Yellow relations remain beta-only review
+candidates and are not published wiring claims.
