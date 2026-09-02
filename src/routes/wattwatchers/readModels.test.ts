@@ -33,6 +33,63 @@ test('Field placement wins while a competing imported current site is reported',
   assert.equal(result.placementConflict, true);
 });
 
+test('MaaS assignment wins over the editable Meter Register fallback', () => {
+  const result = resolveDevicePlacement([
+    placement({
+      source: 'meter_register',
+      effectiveDate: '2026-09-01',
+      site: { id: 'site-register', name: 'Register', address: '3 Test St' },
+    }),
+    placement({
+      source: 'maas_assignment',
+      effectiveDate: '2026-08-01',
+      site: { id: 'site-maas', name: 'MaaS', address: '2 Test St' },
+    }),
+  ]);
+  assert.equal(result.currentPlacement?.source, 'maas_assignment');
+  assert.equal(result.currentPlacement?.site?.id, 'site-maas');
+  assert.equal(result.placementConflict, true);
+});
+
+test('a complete Meter Register record fills an incomplete MaaS placement', () => {
+  const result = resolveDevicePlacement([
+    placement({ source: 'maas_assignment', site: null }),
+    placement({
+      source: 'meter_register',
+      site: { id: 'site-register', name: 'Register', address: 'NA' },
+    }),
+  ]);
+  assert.equal(result.currentPlacement?.source, 'meter_register');
+  assert.equal(result.currentPlacement?.site?.id, 'site-register');
+  assert.equal(result.placementConflict, true);
+});
+
+test('duplicate Meter Register rows prefer manual correction, then complete site evidence', () => {
+  const complete = placement({
+    source: 'meter_register',
+    effectiveDate: '2026-08-01',
+    site: { id: 'site-complete', name: 'Complete', address: '1 Test St' },
+    provenance: {
+      assignmentId: 'complete', sourceWorkbook: 'w', sourceSheet: 's', sourceRow: 1,
+    },
+  });
+  const placeholder = placement({
+    source: 'meter_register',
+    effectiveDate: '2026-09-01',
+    site: { id: 'site-placeholder', name: 'Unknown', address: 'NA' },
+    provenance: {
+      assignmentId: 'placeholder', sourceWorkbook: 'w', sourceSheet: 's', sourceRow: 2,
+    },
+  });
+  assert.equal(resolveDevicePlacement([placeholder, complete]).currentPlacement?.site?.id, 'site-complete');
+
+  const corrected = {
+    ...placeholder,
+    provenance: { ...placeholder.provenance!, manualCorrection: true },
+  };
+  assert.equal(resolveDevicePlacement([complete, corrected]).currentPlacement?.site?.id, 'site-placeholder');
+});
+
 test('duplicate placement evidence at one site is not a conflict', () => {
   const result = resolveDevicePlacement([
     placement({ source: 'field_installation' }),

@@ -21,7 +21,7 @@ import {
   fieldAppJobDetails,
   solarsenseJobDetails,
 } from '../db/schema/shared.js';
-import { wwClients } from '../db/schema/wattwatchers.js';
+import { wwClients, wwMeterRegisterRecords } from '../db/schema/wattwatchers.js';
 import { AppError, badRequest, conflict, notFound } from '../utils/errors.js';
 import {
   ADDRESS_SOURCES,
@@ -853,6 +853,14 @@ export async function mergeBusinessClients(input: {
       clientId: target.id,
       updatedAt: now,
     }).where(eq(businessSites.clientId, source.id));
+    // Meter Register records duplicate the owning client for fast Fleet reads.
+    // Keep that projection aligned after its referenced sites move to the target.
+    await tx.update(wwMeterRegisterRecords).set({
+      businessClientId: target.id,
+      revision: sql`${wwMeterRegisterRecords.revision} + 1`,
+      updatedByUserId: input.mergedByUserId,
+      updatedAt: now,
+    }).where(eq(wwMeterRegisterRecords.businessClientId, source.id));
     await tx.update(ihInventoryMeters).set({
       businessClientId: target.id,
       updatedAt: now,

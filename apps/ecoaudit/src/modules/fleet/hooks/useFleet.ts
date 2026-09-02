@@ -9,13 +9,19 @@ import {
   getRun,
   listClients,
   listDevices,
+  listMeterRegisterEntries,
   listReports,
   listRuns,
   removeClientApiKey,
   saveClientApiKey,
+  updateMeterRegisterEntry,
   type DeviceListParams,
+  type MeterRegisterListParams,
 } from '@/modules/fleet/api/fleet';
-import type { FleetQueryFilters } from '@/modules/fleet/types/domain';
+import type {
+  FleetMeterRegisterUpdateInput,
+  FleetQueryFilters,
+} from '@/modules/fleet/types/domain';
 
 export function useFleetSummary(filters: FleetQueryFilters & { runId?: string } = {}) {
   return useQuery({
@@ -51,6 +57,69 @@ export function useFleetDevice(deviceId: string) {
     queryFn: () => getDevice(deviceId),
     enabled: Boolean(deviceId),
     staleTime: 60_000,
+  });
+}
+
+export function useFleetMeterRegisterEntries(
+  filters: MeterRegisterListParams = {},
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['wattwatchers', 'meter-register', 'entries', filters],
+    queryFn: () => listMeterRegisterEntries(filters),
+    enabled,
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
+}
+
+export function useUpdateFleetMeterRegisterEntry(deviceId?: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ entryId, input }: {
+      entryId: string;
+      input: FleetMeterRegisterUpdateInput;
+      previousBusinessClientId?: string | null;
+      previousBusinessSiteId?: string | null;
+    }) => updateMeterRegisterEntry(entryId, input),
+    onSuccess: async (record, variables) => {
+      const clientIds = new Set([
+        variables.previousBusinessClientId,
+        record.businessClientId,
+      ].filter((value): value is string => Boolean(value)));
+      const siteIds = new Set([
+        variables.previousBusinessSiteId,
+        record.businessSiteId,
+      ].filter((value): value is string => Boolean(value)));
+      const invalidations = [
+        queryClient.invalidateQueries({
+          queryKey: ['wattwatchers', 'meter-register', 'entries'],
+        }),
+        queryClient.invalidateQueries({
+          predicate: (query) => {
+            const key = query.queryKey;
+            return key[0] === 'wattwatchers'
+              && key[1] === 'devices'
+              && typeof key[2] === 'object';
+          },
+        }),
+        ...[...clientIds].map((clientId) => queryClient.invalidateQueries({
+          queryKey: ['wattwatchers', 'business-clients', clientId],
+          exact: true,
+        })),
+        ...[...siteIds].map((siteId) => queryClient.invalidateQueries({
+          queryKey: ['wattwatchers', 'business-sites', siteId],
+          exact: true,
+        })),
+      ];
+      if (deviceId) {
+        invalidations.push(queryClient.invalidateQueries({
+          queryKey: ['wattwatchers', 'devices', deviceId],
+          exact: true,
+        }));
+      }
+      await Promise.all(invalidations);
+    },
   });
 }
 

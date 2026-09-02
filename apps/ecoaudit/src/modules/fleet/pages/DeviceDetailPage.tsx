@@ -1,16 +1,19 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { LinkButton } from '@/components/ui/Button';
+import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { FleetStatusBadge, ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
+import { MeterRegisterEditDialog } from '@/modules/fleet/components/MeterRegisterEditDialog';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
 import { useFleetDevice } from '@/modules/fleet/hooks/useFleet';
 import { installHubDrilldownHref, placementSourceLabel } from '@/modules/fleet/lib/drilldowns';
 import { formatDate, formatDateTime, formatDuration, humanize } from '@/modules/fleet/lib/format';
+import type { FleetRegisterEvidence } from '@/modules/fleet/types/domain';
 
 const sensitiveMetricPattern = /ssid|imsi|^sim$|sim.?id|mac|^ip$|ip.?address|gateway|subnet|apn|token|secret|api.?key|credential/i;
 
@@ -84,7 +87,8 @@ export default function DeviceDetailPage() {
   const params = useParams<{ deviceId: string }>();
   const deviceId = params.deviceId;
   const query = useFleetDevice(deviceId);
-  const { isInstallHubAuthenticated, isInstallHubLoading } = usePortalAuth();
+  const { isInstallHubAuthenticated, isInstallHubLoading, wwUser } = usePortalAuth();
+  const [editingRegisterEvidence, setEditingRegisterEvidence] = useState<FleetRegisterEvidence | null>(null);
 
   if (query.isLoading) return <Spinner label="Loading device history…" />;
   if (query.error) return <ErrorBanner message={fleetConnectionErrorMessage(query.error)} />;
@@ -588,7 +592,7 @@ export default function DeviceDetailPage() {
       <Card className="mb-5 min-w-0 !p-0">
         <div className="border-b border-[var(--border)] px-5 py-5 sm:px-6">
           <h2 className="text-lg font-extrabold tracking-[-0.02em] text-[var(--text)]">Meter Register evidence</h2>
-          <p className="mt-1 text-sm text-[var(--text-sub)]">Imported source snapshots joined by exact Wattwatchers device identity; they do not create canonical client or site links.</p>
+          <p className="mt-1 text-sm text-[var(--text-sub)]">Immutable imported source snapshots and their editable mapped records, joined by exact Wattwatchers device identity.</p>
         </div>
         {registerEvidence.length === 0 ? (
           <p className="p-5 text-sm text-[var(--text-sub)]">No Master Register evidence is linked to this device.</p>
@@ -596,7 +600,7 @@ export default function DeviceDetailPage() {
           <div className="overflow-x-auto">
             <table className={tableClass}>
               <caption className="sr-only">Imported Meter Register evidence for this device</caption>
-              <thead><tr><th className={tableHeadClass} scope="col">Source row / role</th><th className={tableHeadClass} scope="col">Customer</th><th className={tableHeadClass} scope="col">Site address</th><th className={tableHeadClass} scope="col">Job</th><th className={tableHeadClass} scope="col">MaaS / data</th><th className={tableHeadClass} scope="col">Device identifiers</th></tr></thead>
+              <thead><tr><th className={tableHeadClass} scope="col">Source row / role</th><th className={tableHeadClass} scope="col">Source customer / client</th><th className={tableHeadClass} scope="col">Source site address</th><th className={tableHeadClass} scope="col">Job</th><th className={tableHeadClass} scope="col">MaaS / data</th><th className={tableHeadClass} scope="col">Device identifiers</th>{wwUser?.role === 'admin' ? <th className={tableHeadClass} scope="col">Mapped record</th> : null}</tr></thead>
               <tbody>
                 {registerEvidence.map((evidence) => (
                   <tr key={evidence.id}>
@@ -609,7 +613,11 @@ export default function DeviceDetailPage() {
                     </td>
                     <td className={`${tableCellClass} min-w-44`}>
                       <p className="font-semibold">{evidence.customerName || 'Not recorded'}</p>
-                      {evidence.fleetAccountName ? <p className="mt-1 text-xs text-[var(--text-sub)]">Fleet account: {evidence.fleetAccountName}</p> : null}
+                      {evidence.clientName || evidence.fleetAccountName ? (
+                        <p className="mt-1 text-xs text-[var(--text-sub)]">
+                          Source client: {evidence.clientName || evidence.fleetAccountName}
+                        </p>
+                      ) : null}
                     </td>
                     <td className={`${tableCellClass} min-w-64 whitespace-normal`}>{evidence.siteAddress || 'Not recorded'}</td>
                     <td className={`${tableCellClass} min-w-44`}>
@@ -625,6 +633,21 @@ export default function DeviceDetailPage() {
                       New: {evidence.newDeviceIdentifier || '—'}<br />
                       Current: {evidence.currentDeviceIdentifier || '—'}
                     </td>
+                    {wwUser?.role === 'admin' ? (
+                      <td className={`${tableCellClass} min-w-40`}>
+                        <p className="text-xs text-[var(--text-sub)]">
+                          {evidence.record ? `Revision ${evidence.record.revision}` : 'Not mapped'}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          className="mt-2 !min-h-9 !px-3 !py-1.5 !text-xs"
+                          onClick={() => setEditingRegisterEvidence(evidence)}
+                        >
+                          {evidence.record ? 'Edit details' : 'Complete details'}
+                        </Button>
+                      </td>
+                    ) : null}
                   </tr>
                 ))}
               </tbody>
@@ -688,6 +711,15 @@ export default function DeviceDetailPage() {
           </div>
         )}
       </Card>
+
+      {editingRegisterEvidence ? (
+        <MeterRegisterEditDialog
+          key={editingRegisterEvidence.id}
+          deviceId={deviceId}
+          evidence={editingRegisterEvidence}
+          onClose={() => setEditingRegisterEvidence(null)}
+        />
+      ) : null}
     </div>
   );
 }

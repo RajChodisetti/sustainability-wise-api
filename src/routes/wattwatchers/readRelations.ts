@@ -20,6 +20,7 @@ import {
   wwDevices,
   wwMeterRegisterEntries,
   wwMeterRegisterImports,
+  wwMeterRegisterRecords,
 } from '../../db/schema/wattwatchers.js';
 import {
   matchedRegisterRoles,
@@ -108,6 +109,7 @@ export async function loadPlacementsByDevice(
   const result = new Map<string, DevicePlacement[]>();
   if (devices.length === 0) return result;
   const internalIds = devices.map((device) => device.internalDeviceId);
+  const internalIdSet = new Set(internalIds);
 
   const assignments = await db.select({
     assignmentId: wwDeviceInstallationAssignments.id,
@@ -154,7 +156,7 @@ export async function loadPlacementsByDevice(
       { id: row.newDeviceId, role: 'new' },
     ];
     for (const role of roles) {
-      if (!role.id || !internalIds.includes(role.id)) continue;
+      if (!role.id || !internalIdSet.has(role.id)) continue;
       const list = result.get(role.id) ?? [];
       list.push({
         source: 'maas_assignment',
@@ -169,6 +171,73 @@ export async function loadPlacementsByDevice(
           sourceWorkbook: row.sourceWorkbook,
           sourceSheet: row.sourceSheet,
           sourceRow: row.sourceRow,
+        },
+      });
+      result.set(role.id, list);
+    }
+  }
+
+  const registerPlacements = await db.select({
+    entryId: wwMeterRegisterEntries.id,
+    sourceWorkbook: wwMeterRegisterImports.sourceWorkbook,
+    sourceSheet: wwMeterRegisterImports.sourceSheet,
+    sourceRow: wwMeterRegisterEntries.sourceRow,
+    effectiveDate: wwMeterRegisterEntries.jobCompletionDate,
+    manuallyCorrectedAt: wwMeterRegisterRecords.manuallyCorrectedAt,
+    existingDeviceId: wwMeterRegisterEntries.existingWattwatchersDeviceId,
+    newDeviceId: wwMeterRegisterEntries.newWattwatchersDeviceId,
+    currentDeviceId: wwMeterRegisterEntries.currentWattwatchersDeviceId,
+    businessClientId: businessClients.id,
+    businessClientName: businessClients.name,
+    siteId: businessSites.id,
+    siteName: businessSites.name,
+    siteAddress: businessSites.address,
+  }).from(wwMeterRegisterRecords)
+    .innerJoin(wwMeterRegisterEntries, eq(wwMeterRegisterEntries.id, wwMeterRegisterRecords.entryId))
+    .innerJoin(wwMeterRegisterImports, eq(wwMeterRegisterImports.id, wwMeterRegisterEntries.importId))
+    .innerJoin(businessClients, eq(businessClients.id, wwMeterRegisterRecords.businessClientId))
+    .innerJoin(businessSites, and(
+      eq(businessSites.id, wwMeterRegisterRecords.businessSiteId),
+      eq(businessSites.clientId, businessClients.id),
+    ))
+    .where(and(
+      or(
+        inArray(wwMeterRegisterEntries.currentWattwatchersDeviceId, internalIds),
+        inArray(wwMeterRegisterEntries.existingWattwatchersDeviceId, internalIds),
+        inArray(wwMeterRegisterEntries.newWattwatchersDeviceId, internalIds),
+      ),
+      eq(businessClients.companyKey, config.businessDirectory.companyKey),
+      isNull(businessClients.mergedIntoClientId),
+    ))
+    .orderBy(
+      desc(wwMeterRegisterEntries.jobCompletionDate),
+      desc(wwMeterRegisterEntries.sourceRow),
+      asc(wwMeterRegisterEntries.id),
+    );
+
+  for (const row of registerPlacements) {
+    const roles: Array<{ id: string | null; role: DevicePlacement['deviceRole'] }> = [
+      { id: row.currentDeviceId, role: 'current' },
+      { id: row.existingDeviceId, role: 'existing' },
+      { id: row.newDeviceId, role: 'new' },
+    ];
+    for (const role of roles) {
+      if (!role.id || !internalIdSet.has(role.id)) continue;
+      const list = result.get(role.id) ?? [];
+      list.push({
+        source: 'meter_register',
+        effectiveDate: row.manuallyCorrectedAt
+          ? dateValue(row.manuallyCorrectedAt)
+          : row.effectiveDate,
+        businessClient: { id: row.businessClientId, name: row.businessClientName },
+        site: { id: row.siteId, name: row.siteName, address: row.siteAddress },
+        deviceRole: role.role,
+        provenance: {
+          assignmentId: row.entryId,
+          sourceWorkbook: row.sourceWorkbook,
+          sourceSheet: row.sourceSheet,
+          sourceRow: row.sourceRow,
+          manualCorrection: row.manuallyCorrectedAt !== null,
         },
       });
       result.set(role.id, list);
@@ -226,7 +295,10 @@ export function placementSummary(placements: DevicePlacement[]) {
   return resolveDevicePlacement(placements);
 }
 
-export async function loadDeviceAssociations(device: FleetDeviceReference) {
+export async function loadDeviceAssociations(
+  device: FleetDeviceReference,
+  options: { includeSensitiveMeterRegisterFields?: boolean } = {},
+) {
   const [inventoryRow] = await db.select({
     inventoryId: ihInventoryMeters.id,
     inventoryDeviceId: ihInventoryMeters.deviceId,
@@ -321,11 +393,19 @@ export async function loadDeviceAssociations(device: FleetDeviceReference) {
     sourceWorkbook: wwMeterRegisterImports.sourceWorkbook,
     sourceSheet: wwMeterRegisterImports.sourceSheet,
     sourceRow: wwMeterRegisterEntries.sourceRow,
+    sourcePayload: wwMeterRegisterEntries.sourcePayload,
     status: wwMeterRegisterEntries.statusSnapshot,
     customerName: wwMeterRegisterEntries.customerNameSnapshot,
+    clientName: wwMeterRegisterEntries.clientNameSnapshot,
     fleetAccountName: wwMeterRegisterEntries.clientNameSnapshot,
     siteAddress: wwMeterRegisterEntries.siteAddressSnapshot,
+    siteState: wwMeterRegisterEntries.siteStateSnapshot,
+    serviceType: wwMeterRegisterEntries.serviceTypeSnapshot,
+    meteringSolutionType: wwMeterRegisterEntries.meteringSolutionTypeSnapshot,
+    meterType: wwMeterRegisterEntries.meterTypeSnapshot,
     jobNumber: wwMeterRegisterEntries.fergusJobNumberSnapshot,
+    quoteNumber: wwMeterRegisterEntries.quoteNumberSnapshot,
+    purchaseOrderNumber: wwMeterRegisterEntries.purchaseOrderNumberSnapshot,
     jobCompletionDate: wwMeterRegisterEntries.jobCompletionDate,
     jobCompletedBy: wwMeterRegisterEntries.jobCompletedBySnapshot,
     existingDeviceIdentifier: wwMeterRegisterEntries.existingDeviceIdentifier,
@@ -334,11 +414,45 @@ export async function loadDeviceAssociations(device: FleetDeviceReference) {
     existingWattwatchersDeviceId: wwMeterRegisterEntries.existingWattwatchersDeviceId,
     newWattwatchersDeviceId: wwMeterRegisterEntries.newWattwatchersDeviceId,
     currentWattwatchersDeviceId: wwMeterRegisterEntries.currentWattwatchersDeviceId,
+    hardwareInstalled: wwMeterRegisterEntries.hardwareInstalledSnapshot,
     maas: wwMeterRegisterEntries.maas,
+    maasStartDate: wwMeterRegisterEntries.maasStartDate,
+    maasTerm: wwMeterRegisterEntries.maasTermSnapshot,
+    maasReportingRequired: wwMeterRegisterEntries.maasReportingRequired,
     dataEnabled: wwMeterRegisterEntries.dataEnabled,
     productName: wwMeterRegisterEntries.productNameSnapshot,
+    xeroInvoiceNumber: wwMeterRegisterEntries.xeroInvoiceNumberSnapshot,
+    meterCostExGstCents: wwMeterRegisterEntries.meterCostExGstCents,
+    meteringRecurringFeeExGstCents: wwMeterRegisterEntries.meteringRecurringFeeExGstCents,
+    otherInvoiceCostsExGstCents: wwMeterRegisterEntries.otherInvoiceCostsExGstCents,
+    invoiceAmountExGstCents: wwMeterRegisterEntries.invoiceAmountExGstCents,
+    recurringFeePo: wwMeterRegisterEntries.recurringFeePoSnapshot,
+    invoicingClientContact: wwMeterRegisterEntries.invoicingClientContactSnapshot,
+    comments: wwMeterRegisterEntries.commentsSnapshot,
+    recurringStartDate: wwMeterRegisterEntries.recurringStartDate,
+    recurringFrequency: wwMeterRegisterEntries.recurringFrequencySnapshot,
+    recurringNextInvoiceIssueDate: wwMeterRegisterEntries.recurringNextInvoiceIssueDate,
+    invoiceIssuedDate: wwMeterRegisterEntries.invoiceIssuedDate,
+    billingPeriod: wwMeterRegisterEntries.billingPeriodSnapshot,
+    issuedPeriodNextInvoiceIssueDate: wwMeterRegisterEntries.issuedPeriodNextInvoiceIssueDate,
+    recordEntryId: wwMeterRegisterRecords.entryId,
+    recordBusinessClientId: wwMeterRegisterRecords.businessClientId,
+    recordBusinessSiteId: wwMeterRegisterRecords.businessSiteId,
+    recordCustomerName: wwMeterRegisterRecords.customerName,
+    recordDetails: wwMeterRegisterRecords.details,
+    recordRevision: wwMeterRegisterRecords.revision,
+    recordClientName: businessClients.name,
+    recordSiteName: businessSites.name,
+    recordSiteAddress: businessSites.address,
+    recordSiteState: businessSites.state,
   }).from(wwMeterRegisterEntries)
     .innerJoin(wwMeterRegisterImports, eq(wwMeterRegisterImports.id, wwMeterRegisterEntries.importId))
+    .leftJoin(wwMeterRegisterRecords, eq(wwMeterRegisterRecords.entryId, wwMeterRegisterEntries.id))
+    .leftJoin(businessClients, eq(businessClients.id, wwMeterRegisterRecords.businessClientId))
+    .leftJoin(businessSites, and(
+      eq(businessSites.id, wwMeterRegisterRecords.businessSiteId),
+      eq(businessSites.clientId, wwMeterRegisterRecords.businessClientId),
+    ))
     .where(or(
       eq(wwMeterRegisterEntries.existingWattwatchersDeviceId, device.internalDeviceId),
       eq(wwMeterRegisterEntries.newWattwatchersDeviceId, device.internalDeviceId),
@@ -425,27 +539,77 @@ export async function loadDeviceAssociations(device: FleetDeviceReference) {
           }),
         }
       : null,
-    registerEvidence: registerRows.map((row) => ({
-      id: row.id,
-      sourceKey: row.sourceKey,
-      sourceWorkbook: row.sourceWorkbook,
-      sourceSheet: row.sourceSheet,
-      sourceRow: row.sourceRow,
-      status: row.status,
-      customerName: row.customerName,
-      fleetAccountName: row.fleetAccountName,
-      siteAddress: row.siteAddress,
-      jobNumber: row.jobNumber,
-      jobCompletionDate: row.jobCompletionDate,
-      jobCompletedBy: row.jobCompletedBy,
-      existingDeviceIdentifier: row.existingDeviceIdentifier,
-      newDeviceIdentifier: row.newDeviceIdentifier,
-      currentDeviceIdentifier: row.currentDeviceIdentifier,
-      maas: row.maas,
-      dataEnabled: row.dataEnabled,
-      productName: row.productName,
-      matchedRoles: matchedRegisterRoles(row, device.internalDeviceId),
-    })),
+    registerEvidence: registerRows.map((row) => {
+      const basicEvidence = {
+        id: row.id,
+        sourceKey: row.sourceKey,
+        sourceWorkbook: row.sourceWorkbook,
+        sourceSheet: row.sourceSheet,
+        sourceRow: row.sourceRow,
+        status: row.status,
+        customerName: row.customerName,
+        clientName: row.clientName,
+        fleetAccountName: row.fleetAccountName,
+        siteAddress: row.siteAddress,
+        jobNumber: row.jobNumber,
+        jobCompletionDate: row.jobCompletionDate,
+        jobCompletedBy: row.jobCompletedBy,
+        existingDeviceIdentifier: row.existingDeviceIdentifier,
+        newDeviceIdentifier: row.newDeviceIdentifier,
+        currentDeviceIdentifier: row.currentDeviceIdentifier,
+        maas: row.maas,
+        dataEnabled: row.dataEnabled,
+        productName: row.productName,
+        matchedRoles: matchedRegisterRoles(row, device.internalDeviceId),
+      };
+      if (!options.includeSensitiveMeterRegisterFields) {
+        return { ...basicEvidence, record: null };
+      }
+      return {
+        ...basicEvidence,
+        sourcePayload: row.sourcePayload,
+        siteState: row.siteState,
+        serviceType: row.serviceType,
+        meteringSolutionType: row.meteringSolutionType,
+        meterType: row.meterType,
+        quoteNumber: row.quoteNumber,
+        purchaseOrderNumber: row.purchaseOrderNumber,
+        hardwareInstalled: row.hardwareInstalled,
+        maasStartDate: row.maasStartDate,
+        maasTerm: row.maasTerm,
+        maasReportingRequired: row.maasReportingRequired,
+        xeroInvoiceNumber: row.xeroInvoiceNumber,
+        meterCostExGstCents: row.meterCostExGstCents,
+        meteringRecurringFeeExGstCents: row.meteringRecurringFeeExGstCents,
+        otherInvoiceCostsExGstCents: row.otherInvoiceCostsExGstCents,
+        invoiceAmountExGstCents: row.invoiceAmountExGstCents,
+        recurringFeePo: row.recurringFeePo,
+        invoicingClientContact: row.invoicingClientContact,
+        comments: row.comments,
+        recurringStartDate: row.recurringStartDate,
+        recurringFrequency: row.recurringFrequency,
+        recurringNextInvoiceIssueDate: row.recurringNextInvoiceIssueDate,
+        invoiceIssuedDate: row.invoiceIssuedDate,
+        billingPeriod: row.billingPeriod,
+        issuedPeriodNextInvoiceIssueDate: row.issuedPeriodNextInvoiceIssueDate,
+        record: row.recordEntryId && row.recordBusinessClientId && row.recordBusinessSiteId
+          && row.recordCustomerName && row.recordDetails && row.recordRevision
+          && row.recordClientName && row.recordSiteName && row.recordSiteAddress
+          ? {
+              entryId: row.recordEntryId,
+              businessClientId: row.recordBusinessClientId,
+              businessSiteId: row.recordBusinessSiteId,
+              clientName: row.recordClientName,
+              customerName: row.recordCustomerName,
+              siteName: row.recordSiteName,
+              siteAddress: row.recordSiteAddress,
+              siteState: row.recordSiteState,
+              details: row.recordDetails,
+              revision: row.recordRevision,
+            }
+          : null,
+      };
+    }),
     fieldForms: fieldForms.map((form) => ({
       ...form,
       path: fieldFormPath(inventoryRow!.meterInstallationId!, form.id),
@@ -461,7 +625,10 @@ async function deviceReferencesForScope(input: { clientId?: string; siteId?: str
   const inventoryConditions = input.siteId
     ? eq(ihInventoryMeters.businessSiteId, input.siteId)
     : eq(ihInventoryMeters.businessClientId, input.clientId!);
-  const [assigned, installed] = await Promise.all([
+  const registerConditions = input.siteId
+    ? eq(wwMeterRegisterRecords.businessSiteId, input.siteId)
+    : eq(wwMeterRegisterRecords.businessClientId, input.clientId!);
+  const [assigned, installed, registered] = await Promise.all([
     db.select({
       internalDeviceId: wwDevices.id,
       deviceId: wwDevices.deviceId,
@@ -482,8 +649,21 @@ async function deviceReferencesForScope(input: { clientId?: string; siteId?: str
         eq(ihInventoryMeters.status, 'installed'),
         isNull(ihInventoryMeters.deletedAt),
       )),
+    db.select({
+      internalDeviceId: wwDevices.id,
+      deviceId: wwDevices.deviceId,
+      label: wwDevices.label,
+      model: wwDevices.model,
+    }).from(wwMeterRegisterRecords)
+      .innerJoin(wwMeterRegisterEntries, eq(wwMeterRegisterEntries.id, wwMeterRegisterRecords.entryId))
+      .innerJoin(wwDevices, eq(wwDevices.id, wwMeterRegisterEntries.currentWattwatchersDeviceId))
+      .where(registerConditions),
   ]);
-  return [...new Map([...assigned, ...installed].map((row) => [row.internalDeviceId, row])).values()];
+  return [
+    ...new Map(
+      [...assigned, ...installed, ...registered].map((row) => [row.internalDeviceId, row]),
+    ).values(),
+  ];
 }
 
 async function jobsForSites(siteIds: string[]) {

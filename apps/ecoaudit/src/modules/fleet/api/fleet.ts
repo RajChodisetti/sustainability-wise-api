@@ -6,6 +6,9 @@ import type {
   FleetBusinessClientDetailResponse,
   FleetBusinessSiteSearchItem,
   FleetBusinessSiteDetailResponse,
+  FleetMeterRegisterRecord,
+  FleetMeterRegisterEntriesResponse,
+  FleetMeterRegisterUpdateInput,
   DeviceDetailResponse,
   DevicesResponse,
   FleetQueryFilters,
@@ -67,6 +70,30 @@ export function getDevice(deviceId: string, historyLimit = 90) {
   return fleetRequest<DeviceDetailResponse>(
     'GET',
     `/v1/wattwatchers/devices/${encodeURIComponent(deviceId)}${searchParams({ historyLimit })}`,
+  );
+}
+
+export type MeterRegisterListParams = {
+  search?: string;
+  limit?: number;
+  offset?: number;
+};
+
+export function listMeterRegisterEntries(filters: MeterRegisterListParams = {}) {
+  return fleetRequest<FleetMeterRegisterEntriesResponse>(
+    'GET',
+    `/v1/wattwatchers/meter-register/entries${searchParams(filters)}`,
+  );
+}
+
+export function updateMeterRegisterEntry(
+  entryId: string,
+  input: FleetMeterRegisterUpdateInput,
+) {
+  return fleetRequest<FleetMeterRegisterRecord>(
+    'PATCH',
+    `/v1/wattwatchers/meter-register/entries/${encodeURIComponent(entryId)}`,
+    input,
   );
 }
 

@@ -6,7 +6,9 @@ import {
 import type { FleetDevicePlacement } from '@/modules/fleet/types/domain';
 
 export function placementSourceLabel(source: FleetDevicePlacement['source']): string {
-  return source === 'field_installation' ? 'Field installation' : 'MaaS assignment';
+  if (source === 'field_installation') return 'Field installation';
+  if (source === 'maas_assignment') return 'MaaS assignment';
+  return 'Meter Register';
 }
 
 export function safeInstallHubPath(path: string | null | undefined): string | null {

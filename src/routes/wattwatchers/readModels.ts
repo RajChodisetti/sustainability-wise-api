@@ -19,7 +19,7 @@ export type BusinessSiteReference = {
 };
 
 export type DevicePlacementReference = {
-  source: 'field_installation' | 'maas_assignment';
+  source: 'field_installation' | 'maas_assignment' | 'meter_register';
   effectiveDate: string | null;
   businessClient: BusinessClientReference;
   site: BusinessSiteReference | null;
@@ -32,6 +32,7 @@ export type DevicePlacement = DevicePlacementReference & {
     sourceWorkbook: string;
     sourceSheet: string;
     sourceRow: number;
+    manualCorrection?: boolean;
   } | null;
 };
 
@@ -66,6 +67,17 @@ function placementIdentity(placement: DevicePlacementReference): string {
 }
 
 function assignmentOrder(left: DevicePlacement, right: DevicePlacement): number {
+  if (left.source === 'meter_register' && right.source === 'meter_register') {
+    const correctionOrder = Number(right.provenance?.manualCorrection === true)
+      - Number(left.provenance?.manualCorrection === true);
+    if (correctionOrder !== 0) return correctionOrder;
+    const hasMeaningfulSite = (placement: DevicePlacement) => {
+      const address = placement.site?.address.trim().toLocaleUpperCase('en-AU') ?? '';
+      return address !== '' && address !== '0' && address !== 'NA' && address !== 'N/A';
+    };
+    const completenessOrder = Number(hasMeaningfulSite(right)) - Number(hasMeaningfulSite(left));
+    if (completenessOrder !== 0) return completenessOrder;
+  }
   const dateOrder = (right.effectiveDate ?? '').localeCompare(left.effectiveDate ?? '');
   if (dateOrder !== 0) return dateOrder;
   const rowOrder = (right.provenance?.sourceRow ?? -1) - (left.provenance?.sourceRow ?? -1);
@@ -78,21 +90,33 @@ function assignmentOrder(left: DevicePlacement, right: DevicePlacement): number 
 }
 
 export function sortDevicePlacements(placements: DevicePlacement[]): DevicePlacement[] {
+  const sourcePriority: Record<DevicePlacement['source'], number> = {
+    field_installation: 0,
+    maas_assignment: 1,
+    meter_register: 2,
+  };
   return [...placements].sort((left, right) => {
-    if (left.source !== right.source) return left.source === 'field_installation' ? -1 : 1;
+    if (left.source !== right.source) {
+      return sourcePriority[left.source] - sourcePriority[right.source];
+    }
     return assignmentOrder(left, right);
   });
 }
 
-/** Field completion is authoritative. Imported current assignments are the fallback. */
+/** Prefer the most authoritative complete placement; incomplete evidence remains visible. */
 export function resolveDevicePlacement(
   placements: DevicePlacement[],
 ): DevicePlacementResolution {
   const currentCandidates = sortDevicePlacements(
     placements.filter((placement) => placement.deviceRole === 'current'),
   );
-  const field = currentCandidates.find((placement) => placement.source === 'field_installation');
-  const selected = field ?? currentCandidates[0] ?? null;
+  const completeField = currentCandidates.find((placement) => (
+    placement.source === 'field_installation' && placement.site !== null
+  ));
+  const selected = completeField
+    ?? currentCandidates.find((placement) => placement.site !== null)
+    ?? currentCandidates[0]
+    ?? null;
   return {
     currentPlacement: selected ? {
       source: selected.source,

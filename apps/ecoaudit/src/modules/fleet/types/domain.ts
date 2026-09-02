@@ -101,7 +101,7 @@ export type FleetBusinessSiteReference = {
 };
 
 export type FleetDevicePlacement = {
-  source: 'field_installation' | 'maas_assignment';
+  source: 'field_installation' | 'maas_assignment' | 'meter_register';
   effectiveDate: string | null;
   businessClient: FleetBusinessClientReference;
   site: FleetBusinessSiteReference | null;
@@ -271,27 +271,137 @@ export type FleetInventoryRecord = {
   movements?: FleetInventoryMovement[];
 };
 
+export const FLEET_AU_STATES = [
+  'ACT',
+  'NSW',
+  'NT',
+  'QLD',
+  'SA',
+  'TAS',
+  'VIC',
+  'WA',
+] as const;
+
+export type FleetAuState = (typeof FLEET_AU_STATES)[number];
+
+export type FleetMeterRegisterIdentifierClassification =
+  | 'absent'
+  | 'confirmed_wattwatchers'
+  | 'candidate_wattwatchers'
+  | 'other_hardware';
+
+export type FleetMeterRegisterDetails = {
+  status: string | null;
+  serviceType: string | null;
+  meteringSolutionType: string | null;
+  installationDetail: string | null;
+  meterType: string | null;
+  fergusJobNumber: string | null;
+  quoteNumber: string | null;
+  purchaseOrderNumber: string | null;
+  jobCompletionDate: string | null;
+  jobCompletedBy: string | null;
+  hardwareInstalled: string | null;
+  maas: boolean | null;
+  maasStartDate: string | null;
+  maasTerm: string | null;
+  maasReportingRequired: boolean | null;
+  dataEnabled: boolean | null;
+  productName: string | null;
+  xeroInvoiceNumber: string | null;
+  meterCostExGstCents: number | null;
+  meteringRecurringFeeExGstCents: number | null;
+  otherInvoiceCostsExGstCents: number | null;
+  invoiceAmountExGstCents: number | null;
+  recurringFeePo: string | null;
+  invoicingClientContact: string | null;
+  comments: string | null;
+  recurringStartDate: string | null;
+  recurringFrequency: string | null;
+  recurringNextInvoiceIssueDate: string | null;
+  invoiceIssuedDate: string | null;
+  billingPeriod: string | null;
+  issuedPeriodNextInvoiceIssueDate: string | null;
+};
+
+export type FleetMeterRegisterRecord = {
+  entryId: string;
+  businessClientId: string;
+  businessSiteId: string;
+  clientName: string;
+  customerName: string;
+  siteName: string;
+  siteAddress: string;
+  siteState: FleetAuState | null;
+  revision: number;
+  details: FleetMeterRegisterDetails;
+};
+
+export type FleetMeterRegisterUpdateInput = Pick<
+  FleetMeterRegisterRecord,
+  'clientName' | 'customerName' | 'siteName' | 'siteAddress' | 'siteState'
+> & {
+  revision: number | null;
+  details: FleetMeterRegisterDetails;
+};
+
 export type FleetRegisterEvidence = {
   id: string;
   sourceKey?: string | null;
   sourceWorkbook?: string | null;
   sourceSheet?: string | null;
   sourceRow?: number | null;
+  sourcePayload?: Record<string, unknown> | null;
   status?: string | null;
   customerName?: string | null;
+  clientName?: string | null;
+  /** Legacy wire name for the raw workbook Client Name value. */
   fleetAccountName?: string | null;
   siteAddress?: string | null;
+  siteState?: string | null;
+  serviceType?: string | null;
+  meteringSolutionType?: string | null;
+  meterType?: string | null;
   jobNumber?: string | null;
+  quoteNumber?: string | null;
+  purchaseOrderNumber?: string | null;
   jobCompletionDate?: string | null;
   jobCompletedBy?: string | null;
   matchedRoles?: Array<'current' | 'existing' | 'new'>;
   existingDeviceIdentifier?: string | null;
+  existingDeviceClassification?: FleetMeterRegisterIdentifierClassification;
   newDeviceIdentifier?: string | null;
+  newDeviceClassification?: FleetMeterRegisterIdentifierClassification;
   currentDeviceIdentifier?: string | null;
+  currentDeviceClassification?: Exclude<
+    FleetMeterRegisterIdentifierClassification,
+    'absent'
+  >;
+  hardwareInstalled?: string | null;
   maas?: boolean | null;
+  maasStartDate?: string | null;
+  maasTerm?: string | null;
+  maasReportingRequired?: boolean | null;
   dataEnabled?: boolean | null;
   productName?: string | null;
+  xeroInvoiceNumber?: string | null;
+  meterCostExGstCents?: number | null;
+  meteringRecurringFeeExGstCents?: number | null;
+  otherInvoiceCostsExGstCents?: number | null;
+  invoiceAmountExGstCents?: number | null;
+  recurringFeePo?: string | null;
+  invoicingClientContact?: string | null;
+  comments?: string | null;
+  recurringStartDate?: string | null;
+  recurringFrequency?: string | null;
+  recurringNextInvoiceIssueDate?: string | null;
+  invoiceIssuedDate?: string | null;
+  billingPeriod?: string | null;
+  issuedPeriodNextInvoiceIssueDate?: string | null;
+  record: FleetMeterRegisterRecord | null;
 };
+
+export type FleetMeterRegisterEntriesResponse = PaginatedResponse<FleetRegisterEvidence>;
 
 export type DeviceDetailResponse = {
   device: {

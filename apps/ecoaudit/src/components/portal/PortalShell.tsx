@@ -509,6 +509,7 @@ export function PortalShell({ children }: { children: ReactNode }) {
   const eaAdmin = eaUser?.role === 'admin';
   const ssAdmin = ssUser?.role === 'admin';
   const ihAdmin = ihUser?.role === 'admin';
+  const wwAdmin = wwUser?.role === 'admin';
   const schedulerAdmin = Boolean(eaAdmin || ssAdmin || ihAdmin);
   const navigationScope = portalNavigationScopeForPath(pathname);
   const [appsChoice, setAppsChoice] = useState<{ scope: string; value: boolean } | null>(null);
@@ -618,6 +619,9 @@ export function PortalShell({ children }: { children: ReactNode }) {
     { href: '/fleet/dashboard', label: 'Overview', icon: 'grid', exact: true },
     { href: '/fleet/electrical-map', label: 'Electrical Map · Beta', icon: 'zap' },
     { href: '/fleet/devices', label: 'Devices', icon: 'wifi' },
+    ...(wwAdmin
+      ? [{ href: '/fleet/meter-register', label: 'Meter Register', icon: 'clipboard' as IconName }]
+      : []),
     { href: '/fleet/clients', label: 'Fleet accounts', icon: 'users' },
     { href: '/fleet/reports', label: 'Daily reports', icon: 'file-text' },
     { href: '/fleet/collection', label: 'Collection health', icon: 'activity' },

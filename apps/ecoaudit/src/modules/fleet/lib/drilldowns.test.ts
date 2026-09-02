@@ -36,4 +36,5 @@ test('Field form references use the same protected deep-link boundary', () => {
 test('placement labels keep source provenance explicit', () => {
   assert.equal(placementSourceLabel('field_installation'), 'Field installation');
   assert.equal(placementSourceLabel('maas_assignment'), 'MaaS assignment');
+  assert.equal(placementSourceLabel('meter_register'), 'Meter Register');
 });

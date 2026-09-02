@@ -2,9 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   collectProjectedMeterRegisterIdentifiers,
+  interpretMeterRegisterCustomerName,
+  meaningfulMeterRegisterOperationalText,
+  meterRegisterOperationalNameKey,
+  meterRegisterPlaceholderSiteId,
   meterRegisterYesNo,
   normalizeWattwatchersMeterRegister,
   normalizeWattwatchersMeterRegisterRow,
+  projectMeterRegisterOperationalRecord,
   summarizeWattwatchersMeterRegister,
   WATTWATCHERS_METER_REGISTER_SHEET,
   WATTWATCHERS_METER_REGISTER_WORKBOOK,
@@ -235,5 +240,284 @@ test('rejects duplicate source rows while continuing to allow duplicate identifi
   assert.throws(
     () => normalizeWattwatchersMeterRegisterRow(row(1), options()),
     /integer of at least 2/u,
+  );
+});
+
+test('projects Master Register client, customer and site fallbacks without changing evidence', () => {
+  const normalized = normalizeWattwatchersMeterRegisterRow(row(19, {
+    'Customer Name': '  Example Customer  ',
+    'Client Name': ' N/A ',
+    'Site Address': ' 0 ',
+    State: ' vic ',
+    'Existing Device ID': CONFIRMED_ID,
+  }), options());
+  const projected = projectMeterRegisterOperationalRecord(normalized);
+
+  assert.equal(projected.businessClientName, 'Example Customer');
+  assert.equal(projected.businessClientNormalizedKey, 'example customer');
+  assert.equal(projected.customerName, 'Example Customer');
+  assert.equal(projected.siteName, 'Example Customer');
+  assert.equal(projected.siteNameNormalizedKey, 'example customer');
+  assert.equal(projected.siteAddress, 'NA');
+  assert.equal(projected.siteState, 'VIC');
+  assert.equal(normalized.clientNameSnapshot, 'N/A');
+  assert.equal(normalized.siteAddressSnapshot, '0');
+
+  const unknown = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(20, {
+      'Customer Name': '',
+      'Client Name': ' NA ',
+      'Site Address': ' 12 Example Road, Testville ',
+      State: 'Victoria',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(unknown.businessClientName, 'NA');
+  assert.equal(unknown.customerName, 'NA');
+  assert.equal(unknown.siteName, '12 Example Road, Testville');
+  assert.equal(unknown.siteNameNormalizedKey, '12 example road, testville');
+  assert.equal(unknown.siteAddress, '12 Example Road, Testville');
+  assert.equal(unknown.siteState, null);
+});
+
+test('maps confirmed Inchcape customer-held clients and separates installation detail', () => {
+  const normalized = normalizeWattwatchersMeterRegisterRow(row(21, {
+    'Customer Name': 'Subaru - Essendon Fields (DB Showroom & DB Workshop)',
+    'Client Name': 'InchCape',
+    'Site Address': '',
+    State: 'VIC',
+    'Existing Device ID': CONFIRMED_ID,
+  }), options());
+  const projected = projectMeterRegisterOperationalRecord(normalized);
+
+  assert.equal(projected.businessClientName, 'Subaru Essendon');
+  assert.equal(projected.customerName, 'Subaru Essendon');
+  assert.equal(projected.siteName, 'Subaru Essendon');
+  assert.equal(projected.siteAddress, '344 Wirraway Road, Essendon Fields VIC 3041');
+  assert.equal(projected.siteState, 'VIC');
+  assert.equal(projected.details.installationDetail, 'DB Showroom & DB Workshop');
+  assert.equal(
+    normalized.customerNameSnapshot,
+    'Subaru - Essendon Fields (DB Showroom & DB Workshop)',
+  );
+  assert.equal(normalized.clientNameSnapshot, 'InchCape');
+
+  const plainAlias = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(22, {
+      'Customer Name': 'Subaru Essendon',
+      'Client Name': 'Inchcape',
+      'Site Address': '344 Wirraway Road, Essendon Fields, AU, 3041',
+      State: 'VIC',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(plainAlias.businessClientName, 'Subaru Essendon');
+  assert.equal(plainAlias.customerName, 'Subaru Essendon');
+  assert.equal(plainAlias.siteName, 'Subaru Essendon');
+  assert.equal(plainAlias.details.installationDetail, null);
+});
+
+test('separates only clearly electrical customer suffixes and preserves other parentheses', () => {
+  assert.deepEqual(
+    interpretMeterRegisterCustomerName('AutoNexus - Altona (HVAC Units)'),
+    { customerName: 'AutoNexus - Altona', installationDetail: 'HVAC Units' },
+  );
+  assert.deepEqual(
+    interpretMeterRegisterCustomerName('Trivett - Parramatta (Subaru) (A/C Units)'),
+    {
+      customerName: 'Trivett - Parramatta (Subaru)',
+      installationDetail: 'A/C Units',
+    },
+  );
+  assert.deepEqual(
+    interpretMeterRegisterCustomerName('Wangara (WA)'),
+    { customerName: 'Wangara (WA)', installationDetail: null },
+  );
+  assert.deepEqual(
+    interpretMeterRegisterCustomerName('Estia Health (Operational)'),
+    { customerName: 'Estia Health (Operational)', installationDetail: null },
+  );
+  assert.deepEqual(
+    interpretMeterRegisterCustomerName('Richmond Dairy (No installation required)'),
+    {
+      customerName: 'Richmond Dairy (No installation required)',
+      installationDetail: null,
+    },
+  );
+
+  const nationalStorage = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(23, {
+      'Customer Name': 'Moonah Central (TAS) - Solar 1 (DB-A)',
+      'Client Name': 'National Storage',
+      'Site Address': '1 Example Road',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(nationalStorage.businessClientName, 'National Storage');
+  assert.equal(nationalStorage.customerName, 'Moonah Central (TAS) - Solar 1');
+  assert.equal(nationalStorage.siteName, 'Moonah Central (TAS) - Solar 1');
+  assert.equal(nationalStorage.details.installationDetail, 'DB-A');
+
+  const labelInSiteColumn = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(24, {
+      'Customer Name': '',
+      'Client Name': 'SUMS Fleet | Sustainability Wise',
+      'Site Address': 'Subaru - Narellan (EV Charging)',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(labelInSiteColumn.businessClientName, 'SUMS Fleet | Sustainability Wise');
+  assert.equal(labelInSiteColumn.customerName, 'NA');
+  assert.equal(labelInSiteColumn.siteName, 'Subaru - Narellan');
+  assert.equal(labelInSiteColumn.siteAddress, 'NA');
+  assert.equal(labelInSiteColumn.details.installationDetail, 'EV Charging');
+});
+
+test('separates reviewed placement details only when workbook context makes them unambiguous', () => {
+  const fixtures = [
+    ['Aroona - 19 Wyralla Rd Yowie Bay - HDB-4 (Pool)', 'SUMS', 'Pool'],
+    ['Fremantle (WA) - Grid (A Block)', 'National Storage', 'A Block'],
+    ['Box Hill #55 (VIC) - Solar 2 (front office)', 'National Storage', 'front office'],
+    ['Bunbury (WA) - Grid (A, Office)', 'National Storage', 'A, Office'],
+    ['Fremantle (WA) - Grid (D Block)', 'National Storage', 'D Block'],
+    ['Fremantle (WA) - Grid (B&C Block)', 'National Storage', 'B&C Block'],
+    ['Marcoola (Qld) - Solar #1 (house)', 'National Storage', 'house'],
+    ['Marcoola (Qld) - Solar #2 (left shed)', 'National Storage', 'left shed'],
+    ['Yatala (QLD) #2 (rear)', 'National Storage', 'rear'],
+    ['Yatala (QLD) #1 (front)', 'National Storage', 'front'],
+    ['Hope Island (QLD) - Solar (Office)', 'National Storage', 'Office'],
+    ['Hope Island (QLD) - Solar (Shed)', 'National Storage', 'Shed'],
+    ['Osborne Park (WA) - Solar (F Block)', 'National Storage', 'F Block'],
+  ] as const;
+
+  for (const [customer, client, installationDetail] of fixtures) {
+    const projected = projectMeterRegisterOperationalRecord(
+      normalizeWattwatchersMeterRegisterRow(row(26, {
+        'Customer Name': customer,
+        'Client Name': client,
+        'Site Address': '',
+        'Existing Device ID': CONFIRMED_ID,
+      }), options()),
+    );
+    assert.equal(projected.customerName, customer.slice(0, customer.lastIndexOf(' (')));
+    assert.equal(projected.details.installationDetail, installationDetail);
+  }
+
+  const ambiguousClient = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(27, {
+      'Customer Name': 'Example Customer (Office)',
+      'Client Name': 'Example Client',
+      'Site Address': '',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(ambiguousClient.customerName, 'Example Customer (Office)');
+  assert.equal(ambiguousClient.details.installationDetail, null);
+
+  const physicalAddressPresent = projectMeterRegisterOperationalRecord(
+    normalizeWattwatchersMeterRegisterRow(row(28, {
+      'Customer Name': 'Hope Island (QLD) - Solar (Office)',
+      'Client Name': 'National Storage',
+      'Site Address': '1 Example Road',
+      'Existing Device ID': CONFIRMED_ID,
+    }), options()),
+  );
+  assert.equal(physicalAddressPresent.customerName, 'Hope Island (QLD) - Solar (Office)');
+  assert.equal(physicalAddressPresent.details.installationDetail, null);
+});
+
+test('projects every non-identity Meter Register field into typed operational details', () => {
+  const normalized = normalizeWattwatchersMeterRegisterRow(row(25, {
+    Status: 'Complete',
+    'Customer Name': 'Customer',
+    'Client Name': 'Client',
+    'Site Address': '1 Test Street',
+    State: 'NSW',
+    'Service Type': 'Install',
+    'Metering Solution Type': 'Submetering',
+    'Meter Type': 'A6M',
+    'Fergus Job #': 'JOB-1',
+    'Quote #': 'QUOTE-1',
+    'PO Number': 'PO-1',
+    'Job Completion Date': '2026-08-31',
+    'Job Completed By': 'Technician',
+    'Existing Device ID': CONFIRMED_ID,
+    'Hardware Installed': 'Meter and CTs',
+    'MaaS (Yes/No)': 'Yes',
+    'MaaS Start Date': '2026-09-01',
+    'MaaS Term': '36 months',
+    'MaaS reporting required (Y/N)': 'N',
+    'Data (Yes/No)': 'Y',
+    'Product name (WW)': 'Wattwatchers',
+    'Xero Invoice #': 'INV-1',
+    'Meter Cost (EXC.GST)': 100,
+    'Metering Recurring Fee (EXC. GST)': 10,
+    'Other costs in invoice (if any)': 5,
+    'Invoice Amount (EXC.GST)': 115,
+    'Recurring fee PO (if any)': 'RPO-1',
+    'Invoicing Client Contact': 'Accounts',
+    Comments: 'Imported note',
+    'Recurring Start Date': '2026-09-01',
+    'Recurring Frequency': 'Monthly',
+    'Next Invoice Issue Date': '2026-10-01',
+    'Inv issued date': '2026-09-02',
+    Period: 'September 2026',
+    'Next Invoice Issue Date__2': '2026-11-01',
+  }), options());
+  const projected = projectMeterRegisterOperationalRecord(normalized);
+
+  assert.deepEqual(projected.details, {
+    status: 'Complete',
+    serviceType: 'Install',
+    meteringSolutionType: 'Submetering',
+    installationDetail: null,
+    meterType: 'A6M',
+    fergusJobNumber: 'JOB-1',
+    quoteNumber: 'QUOTE-1',
+    purchaseOrderNumber: 'PO-1',
+    jobCompletionDate: '2026-08-31',
+    jobCompletedBy: 'Technician',
+    hardwareInstalled: 'Meter and CTs',
+    maas: true,
+    maasStartDate: '2026-09-01',
+    maasTerm: '36 months',
+    maasReportingRequired: false,
+    dataEnabled: true,
+    productName: 'Wattwatchers',
+    xeroInvoiceNumber: 'INV-1',
+    meterCostExGstCents: 10_000,
+    meteringRecurringFeeExGstCents: 1_000,
+    otherInvoiceCostsExGstCents: 500,
+    invoiceAmountExGstCents: 11_500,
+    recurringFeePo: 'RPO-1',
+    invoicingClientContact: 'Accounts',
+    comments: 'Imported note',
+    recurringStartDate: '2026-09-01',
+    recurringFrequency: 'Monthly',
+    recurringNextInvoiceIssueDate: '2026-10-01',
+    invoiceIssuedDate: '2026-09-02',
+    billingPeriod: 'September 2026',
+    issuedPeriodNextInvoiceIssueDate: '2026-11-01',
+  });
+  assert.equal(meaningfulMeterRegisterOperationalText(' n/a '), null);
+  assert.equal(meaningfulMeterRegisterOperationalText('  Client  Name '), 'Client Name');
+  assert.equal(meterRegisterOperationalNameKey('  Ｅxample  Site '), 'example site');
+  assert.throws(() => meterRegisterOperationalNameKey('  '), /operational name is required/u);
+  assert.match(
+    meterRegisterPlaceholderSiteId('wwmre_example', 'client-1'),
+    /^bs_wwmr_[a-f0-9]{32}$/u,
+  );
+  assert.notEqual(
+    meterRegisterPlaceholderSiteId('wwmre_example', 'client-1'),
+    meterRegisterPlaceholderSiteId('wwmre_another', 'client-1'),
+  );
+  assert.notEqual(
+    meterRegisterPlaceholderSiteId('wwmre_example', 'client-1'),
+    meterRegisterPlaceholderSiteId('wwmre_example', 'client-2'),
+  );
+  assert.throws(() => meterRegisterPlaceholderSiteId('  ', 'client-1'), /entryId is required/u);
+  assert.throws(
+    () => meterRegisterPlaceholderSiteId('wwmre_example', ' '),
+    /businessClientId is required/u,
   );
 });

@@ -51,7 +51,7 @@ const EXPECTED: WattwatchersMeterRegisterExpectedSummary = {
   otherHardwareIdentifierCount: 0,
 };
 
-test('builds an append-only transactional dry-run without mutating canonical product records', () => {
+test('builds an append-only dry-run that materializes editable Meter Register records transactionally', () => {
   const built = buildWattwatchersMeterRegisterImportSql({
     rows: fixtureRows(),
     mode: 'dry-run',
@@ -63,6 +63,18 @@ test('builds an append-only transactional dry-run without mutating canonical pro
   assert.match(built.sql, /pg_advisory_xact_lock/u);
   assert.match(built.sql, /INSERT INTO ww_meter_register_imports/u);
   assert.match(built.sql, /INSERT INTO ww_meter_register_entries/u);
+  assert.match(built.sql, /CREATE TEMP TABLE ww_meter_register_operational_stage/u);
+  assert.match(built.sql, /INSERT INTO business_clients/u);
+  assert.match(built.sql, /INSERT INTO business_sites/u);
+  assert.match(built.sql, /INSERT INTO ww_meter_register_records/u);
+  assert.match(built.sql, /ON CONFLICT \(entry_id\) DO NOTHING/u);
+  assert.match(built.sql, /Every imported Meter Register current identifier must have an operational record/u);
+  assert.match(built.sql, /sustainability-wise:meter-register-entry:/u);
+  assert.match(built.sql, /sustainability-wise:client:/u);
+  assert.match(built.sql, /sustainability-wise:site:/u);
+  assert.match(built.sql, /\(client\.merged_into_client_id IS NULL\) DESC/u);
+  assert.match(built.sql, /site_name_normalized_key/u);
+  assert.match(built.sql, /operational_details jsonb NOT NULL/u);
   assert.match(built.sql, /ON CONFLICT \(source_key\) DO NOTHING/u);
   assert.match(built.sql, /existing_device_classification = 'confirmed_wattwatchers'/u);
   assert.match(built.sql, /IS DISTINCT FROM ROW\(/u);
@@ -73,6 +85,7 @@ test('builds an append-only transactional dry-run without mutating canonical pro
 
   assert.doesNotMatch(built.sql, /INSERT INTO (?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
   assert.doesNotMatch(built.sql, /UPDATE\s+(?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
+  assert.doesNotMatch(built.sql, /UPDATE\s+ww_meter_register_entries/u);
   assert.doesNotMatch(built.sql, /DELETE FROM|TRUNCATE|DROP TABLE/u);
 });
 
@@ -105,6 +118,53 @@ test('uses a stable import identity for the same workbook bytes and sheet across
     renamed.map((row) => row.sourceKey),
   );
   assert.match(left.sql, /COMMIT;\n$/u);
+});
+
+test('emits split installation labels while retaining their exact source evidence', () => {
+  const rows = normalizeWattwatchersMeterRegister([
+    {
+      sourceRow: 2,
+      values: {
+        'Customer Name': 'Subaru - Essendon Fields (DB Showroom & DB Workshop)',
+        'Client Name': 'InchCape',
+        'Existing Device ID': CONFIRMED_ID,
+      },
+    },
+    {
+      sourceRow: 3,
+      values: {
+        'Client Name': 'SUMS Fleet | Sustainability Wise',
+        'Site Address': 'Subaru - Narellan (EV Charging)',
+        'Existing Device ID': CANDIDATE_ID,
+      },
+    },
+  ], {
+    sourceWorkbook: 'Register.xlsx',
+    sourceWorkbookSha256: SOURCE_SHA,
+    sourceSheet: 'Meters',
+    authoritativeWattwatchersIds: [CONFIRMED_ID],
+  });
+  const built = buildWattwatchersMeterRegisterImportSql({
+    rows,
+    mode: 'dry-run',
+    expected: {
+      sourceRowCount: 2,
+      rowsWithoutCurrentIdentifier: 0,
+      deviceValueCount: 2,
+      uniqueIdentifierCount: 2,
+      duplicateDeviceValueCount: 0,
+      confirmedWattwatchersIdentifierCount: 1,
+      candidateWattwatchersIdentifierCount: 1,
+      otherHardwareIdentifierCount: 0,
+    },
+  });
+
+  assert.match(built.sql, /Subaru - Essendon Fields \(DB Showroom & DB Workshop\)/u);
+  assert.match(built.sql, /Subaru Essendon/u);
+  assert.match(built.sql, /344 Wirraway Road, Essendon Fields VIC 3041/u);
+  assert.match(built.sql, /"installationDetail":"DB Showroom & DB Workshop"/u);
+  assert.match(built.sql, /Subaru - Narellan \(EV Charging\)/u);
+  assert.match(built.sql, /"installationDetail":"EV Charging"/u);
 });
 
 test('fails before SQL generation when a checksum-bound source invariant changes', () => {

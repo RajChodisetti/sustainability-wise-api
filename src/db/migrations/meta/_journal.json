@@ -386,6 +386,13 @@
       "when": 1788154446838,
       "tag": "0054_meter_register_imports",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1788325143019,
+      "tag": "0055_wattwatchers_meter_register_records",
+      "breakpoints": true
     }
   ]
 }

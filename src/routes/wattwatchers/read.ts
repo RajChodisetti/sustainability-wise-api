@@ -646,7 +646,9 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
     const [fleetAccountMap, placementMap, associations] = await Promise.all([
       loadFleetAccountsByDevice([device.id]),
       loadPlacementsByDevice([deviceReference]),
-      loadDeviceAssociations(deviceReference),
+      loadDeviceAssociations(deviceReference, {
+        includeSensitiveMeterRegisterFields: request.user.role === 'admin',
+      }),
     ]);
     const placements = placementMap.get(device.id) ?? [];
     return reply.send({

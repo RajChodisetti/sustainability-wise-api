@@ -129,6 +129,56 @@ export type NormalizedMeterRegisterRow = {
   issuedPeriodNextInvoiceIssueDate: string | null;
 };
 
+/**
+ * Editable operational fields projected from the immutable Meter Register
+ * evidence. Customer, client, site and device identity remain first-class
+ * columns/relations rather than being duplicated in this JSON document.
+ */
+export type MeterRegisterOperationalDetails = {
+  status: string | null;
+  serviceType: string | null;
+  meteringSolutionType: string | null;
+  installationDetail: string | null;
+  meterType: string | null;
+  fergusJobNumber: string | null;
+  quoteNumber: string | null;
+  purchaseOrderNumber: string | null;
+  jobCompletionDate: string | null;
+  jobCompletedBy: string | null;
+  hardwareInstalled: string | null;
+  maas: boolean | null;
+  maasStartDate: string | null;
+  maasTerm: string | null;
+  maasReportingRequired: boolean | null;
+  dataEnabled: boolean | null;
+  productName: string | null;
+  xeroInvoiceNumber: string | null;
+  meterCostExGstCents: number | null;
+  meteringRecurringFeeExGstCents: number | null;
+  otherInvoiceCostsExGstCents: number | null;
+  invoiceAmountExGstCents: number | null;
+  recurringFeePo: string | null;
+  invoicingClientContact: string | null;
+  comments: string | null;
+  recurringStartDate: string | null;
+  recurringFrequency: string | null;
+  recurringNextInvoiceIssueDate: string | null;
+  invoiceIssuedDate: string | null;
+  billingPeriod: string | null;
+  issuedPeriodNextInvoiceIssueDate: string | null;
+};
+
+export type MeterRegisterOperationalProjection = {
+  businessClientName: string;
+  businessClientNormalizedKey: string;
+  customerName: string;
+  siteName: string;
+  siteNameNormalizedKey: string;
+  siteAddress: string;
+  siteState: 'ACT' | 'NSW' | 'NT' | 'QLD' | 'SA' | 'TAS' | 'VIC' | 'WA' | null;
+  details: MeterRegisterOperationalDetails;
+};
+
 export type ProjectedMeterRegisterIdentifierOccurrence = {
   sourceKey: string;
   sourceRow: number;
@@ -181,6 +231,243 @@ function compactString(value: unknown): string | null {
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   if (typeof value === 'boolean') return String(value);
   return null;
+}
+
+const MISSING_OPERATIONAL_TEXT = new Set(['0', 'NA', 'N/A']);
+const SUBARU_ESSENDON_SOURCE_CLIENT_KEY = 'inchcape';
+const SUBARU_ESSENDON_ADDRESS = '344 Wirraway Road, Essendon Fields VIC 3041';
+const SUBARU_ESSENDON_CUSTOMER_KEYS = new Set([
+  'subaru - essendon fields',
+  'subaru essendon',
+]);
+const CONTEXTUAL_INSTALLATION_DETAIL_CLIENT_KEYS = new Set([
+  'national storage',
+  'sums',
+]);
+const TRAILING_CUSTOMER_DETAIL = /^(.*?)\s*(?:-\s*)?\(([^()]*)\)\s*$/u;
+const INSTALLATION_DETAIL_HINTS = [
+  /\b(?:hvac|pac|mssb|msb|hdb|evdb|pvdb|solar|grid|supply|lighting|power|electric vehicle|hws|pool heater|switchboard|distribution board|office board|mains|circuits?|escalators?|travelators?|lifts?|inverter|generation|chargers?)\b/iu,
+  /\ba\s*\/?\s*c\b/iu,
+  /\be\s*\/?\s*v\s+charg(?:er|ers|ing)\b/iu,
+  /\bev\s+charg(?:er|ers|ing)\b/iu,
+  /\bdb(?:[._ -]?[a-z0-9]+)?\b/iu,
+  /\bfcu(?:s|\s*\d+)?\b/iu,
+  /\bcu\s*\d+\b/iu,
+  /\bpv\d*\b/iu,
+] as const;
+const CONTEXTUAL_INSTALLATION_PLACEMENT_HINTS = [
+  /^(?:pool|house|rear|front|office|shed)$/iu,
+  /^(?:front\s+office|left\s+shed)$/iu,
+  /^[a-z](?:\s*&\s*[a-z])?\s+block$/iu,
+  /^[a-z],\s*office$/iu,
+] as const;
+const AUSTRALIAN_STATE_ABBREVIATIONS = new Set([
+  'ACT',
+  'NSW',
+  'NT',
+  'QLD',
+  'SA',
+  'TAS',
+  'VIC',
+  'WA',
+] as const);
+
+/** Master Register-specific missing-value handling for editable identity fields. */
+export function meaningfulMeterRegisterOperationalText(value: string | null): string | null {
+  const normalized = compactString(value);
+  if (!normalized || MISSING_OPERATIONAL_TEXT.has(normalized.toLocaleUpperCase('en-AU'))) {
+    return null;
+  }
+  return normalized;
+}
+
+/** NFKC, whitespace-collapsed, case-insensitive identity key used by client/site resolvers. */
+export function meterRegisterOperationalNameKey(value: string): string {
+  const normalized = compactString(value);
+  if (!normalized) throw new Error('Meter Register operational name is required');
+  return normalized.toLocaleLowerCase('en-AU');
+}
+
+export type MeterRegisterCustomerInterpretation = {
+  customerName: string;
+  installationDetail: string | null;
+};
+
+type MeterRegisterCustomerInterpretationOptions = {
+  allowContextualPlacementDetail?: boolean;
+};
+
+function canonicalMeterRegisterCustomerName(value: string): string {
+  return SUBARU_ESSENDON_CUSTOMER_KEYS.has(meterRegisterOperationalNameKey(value))
+    ? 'Subaru Essendon'
+    : value;
+}
+
+/**
+ * Separates only a final bracketed value that clearly describes electrical
+ * equipment or installation scope. Legal/client qualifiers and state suffixes
+ * remain part of the customer name.
+ */
+export function interpretMeterRegisterCustomerName(
+  value: string | null,
+  options: MeterRegisterCustomerInterpretationOptions = {},
+): MeterRegisterCustomerInterpretation | null {
+  const customerName = meaningfulMeterRegisterOperationalText(value);
+  if (!customerName) return null;
+  const match = TRAILING_CUSTOMER_DETAIL.exec(customerName);
+  if (!match) {
+    return {
+      customerName: canonicalMeterRegisterCustomerName(customerName),
+      installationDetail: null,
+    };
+  }
+  const baseName = meaningfulMeterRegisterOperationalText(match[1] ?? null);
+  const installationDetail = meaningfulMeterRegisterOperationalText(match[2] ?? null);
+  if (
+    !baseName
+    || !installationDetail
+    || !(
+      INSTALLATION_DETAIL_HINTS.some((pattern) => pattern.test(installationDetail))
+      || (
+        options.allowContextualPlacementDetail === true
+        && CONTEXTUAL_INSTALLATION_PLACEMENT_HINTS.some(
+          (pattern) => pattern.test(installationDetail),
+        )
+      )
+    )
+  ) {
+    return {
+      customerName: canonicalMeterRegisterCustomerName(customerName),
+      installationDetail: null,
+    };
+  }
+  return {
+    customerName: canonicalMeterRegisterCustomerName(baseName),
+    installationDetail,
+  };
+}
+
+function combinedInstallationDetail(
+  customerDetail: string | null | undefined,
+  siteDetail: string | null | undefined,
+): string | null {
+  if (!customerDetail) return siteDetail ?? null;
+  if (!siteDetail) return customerDetail;
+  if (meterRegisterOperationalNameKey(customerDetail) === meterRegisterOperationalNameKey(siteDetail)) {
+    return customerDetail;
+  }
+  return `Customer: ${customerDetail} | Site: ${siteDetail}`.slice(0, 300).trim();
+}
+
+/** Deterministic per-entry site identity while an imported address is unavailable. */
+export function meterRegisterPlaceholderSiteId(
+  entryId: string,
+  businessClientId: string,
+): string {
+  const normalizedEntryId = compactString(entryId);
+  const normalizedBusinessClientId = compactString(businessClientId);
+  if (!normalizedEntryId) throw new Error('Meter Register placeholder site entryId is required');
+  if (!normalizedBusinessClientId) {
+    throw new Error('Meter Register placeholder site businessClientId is required');
+  }
+  const identity = `${normalizedBusinessClientId}\u001fentry:${normalizedEntryId}`;
+  return `bs_wwmr_${createHash('md5').update(identity, 'utf8').digest('hex')}`;
+}
+
+function meterRegisterOperationalState(
+  value: string | null,
+): MeterRegisterOperationalProjection['siteState'] {
+  const normalized = meaningfulMeterRegisterOperationalText(value)?.toLocaleUpperCase('en-AU');
+  if (!normalized || !AUSTRALIAN_STATE_ABBREVIATIONS.has(
+    normalized as Exclude<MeterRegisterOperationalProjection['siteState'], null>,
+  )) {
+    return null;
+  }
+  return normalized as Exclude<MeterRegisterOperationalProjection['siteState'], null>;
+}
+
+/**
+ * Applies only to Master Register operational records. It deliberately does
+ * not change the immutable snapshots or reuse the distinct SW Works MaaS
+ * account-owner mapping.
+ */
+export function projectMeterRegisterOperationalRecord(
+  row: NormalizedMeterRegisterRow,
+): MeterRegisterOperationalProjection {
+  const sourceClient = meaningfulMeterRegisterOperationalText(row.clientNameSnapshot);
+  const sourceCustomer = meaningfulMeterRegisterOperationalText(row.customerNameSnapshot);
+  const sourceSiteAddress = meaningfulMeterRegisterOperationalText(row.siteAddressSnapshot);
+  const allowContextualPlacementDetail = sourceSiteAddress === null
+    && sourceClient !== null
+    && CONTEXTUAL_INSTALLATION_DETAIL_CLIENT_KEYS.has(
+      meterRegisterOperationalNameKey(sourceClient),
+    );
+  const interpretedCustomer = interpretMeterRegisterCustomerName(sourceCustomer, {
+    allowContextualPlacementDetail,
+  });
+  const interpretedSiteValue = interpretMeterRegisterCustomerName(sourceSiteAddress);
+  const customerName = interpretedCustomer?.customerName ?? 'NA';
+  const isSubaruEssendon = interpretedCustomer?.customerName === 'Subaru Essendon'
+    && sourceClient !== null
+    && meterRegisterOperationalNameKey(sourceClient) === SUBARU_ESSENDON_SOURCE_CLIENT_KEY;
+  const businessClientName = isSubaruEssendon
+    ? 'Subaru Essendon'
+    : sourceClient ?? interpretedCustomer?.customerName ?? 'NA';
+  const siteValueIsLabel = Boolean(interpretedSiteValue?.installationDetail);
+  const siteName = siteValueIsLabel && interpretedSiteValue
+    ? interpretedSiteValue.customerName
+    : interpretedCustomer?.customerName ?? sourceSiteAddress ?? 'NA';
+  const siteAddress = isSubaruEssendon
+    ? SUBARU_ESSENDON_ADDRESS
+    : siteValueIsLabel ? 'NA' : sourceSiteAddress ?? 'NA';
+  const installationDetail = combinedInstallationDetail(
+    interpretedCustomer?.installationDetail,
+    interpretedSiteValue?.installationDetail,
+  );
+  return {
+    businessClientName,
+    businessClientNormalizedKey: meterRegisterOperationalNameKey(businessClientName),
+    customerName,
+    siteName,
+    siteNameNormalizedKey: meterRegisterOperationalNameKey(siteName),
+    siteAddress,
+    siteState: isSubaruEssendon
+      ? 'VIC'
+      : meterRegisterOperationalState(row.siteStateSnapshot),
+    details: {
+      status: row.statusSnapshot,
+      serviceType: row.serviceTypeSnapshot,
+      meteringSolutionType: row.meteringSolutionTypeSnapshot,
+      installationDetail,
+      meterType: row.meterTypeSnapshot,
+      fergusJobNumber: row.fergusJobNumberSnapshot,
+      quoteNumber: row.quoteNumberSnapshot,
+      purchaseOrderNumber: row.purchaseOrderNumberSnapshot,
+      jobCompletionDate: row.jobCompletionDate,
+      jobCompletedBy: row.jobCompletedBySnapshot,
+      hardwareInstalled: row.hardwareInstalledSnapshot,
+      maas: row.maas,
+      maasStartDate: row.maasStartDate,
+      maasTerm: row.maasTermSnapshot,
+      maasReportingRequired: row.maasReportingRequired,
+      dataEnabled: row.dataEnabled,
+      productName: row.productNameSnapshot,
+      xeroInvoiceNumber: row.xeroInvoiceNumberSnapshot,
+      meterCostExGstCents: row.meterCostExGstCents,
+      meteringRecurringFeeExGstCents: row.meteringRecurringFeeExGstCents,
+      otherInvoiceCostsExGstCents: row.otherInvoiceCostsExGstCents,
+      invoiceAmountExGstCents: row.invoiceAmountExGstCents,
+      recurringFeePo: row.recurringFeePoSnapshot,
+      invoicingClientContact: row.invoicingClientContactSnapshot,
+      comments: row.commentsSnapshot,
+      recurringStartDate: row.recurringStartDate,
+      recurringFrequency: row.recurringFrequencySnapshot,
+      recurringNextInvoiceIssueDate: row.recurringNextInvoiceIssueDate,
+      invoiceIssuedDate: row.invoiceIssuedDate,
+      billingPeriod: row.billingPeriodSnapshot,
+      issuedPeriodNextInvoiceIssueDate: row.issuedPeriodNextInvoiceIssueDate,
+    },
+  };
 }
 
 function canonicalJsonValue(

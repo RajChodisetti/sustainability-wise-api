@@ -14,6 +14,7 @@ import {
   uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { MeterRegisterOperationalDetails } from '../../services/wattwatchersMeterRegisterImport.js';
 import { businessClients, businessSites } from './shared.js';
 
 const instant = (name: string) => timestamp(name, { withTimezone: true });
@@ -341,6 +342,41 @@ export const wwMeterRegisterEntries = pgTable('ww_meter_register_entries', {
       ELSE ${table.existingWattwatchersDeviceId}
     END
   `),
+]);
+
+/**
+ * Mutable operational projection of immutable Master Register evidence.
+ * Each imported row with a current identifier owns exactly one record.
+ */
+export const wwMeterRegisterRecords = pgTable('ww_meter_register_records', {
+  entryId: text('entry_id').primaryKey().references(
+    () => wwMeterRegisterEntries.id,
+    { onDelete: 'restrict' },
+  ),
+  businessClientId: text('business_client_id').notNull().references(
+    () => businessClients.id,
+    { onDelete: 'restrict' },
+  ),
+  businessSiteId: text('business_site_id').notNull().references(
+    () => businessSites.id,
+    { onDelete: 'restrict' },
+  ),
+  customerName: text('customer_name').notNull(),
+  details: jsonb('details').notNull().$type<MeterRegisterOperationalDetails>(),
+  revision: integer('revision').notNull().default(1),
+  updatedByUserId: text('updated_by_user_id'),
+  manuallyCorrectedAt: instant('manually_corrected_at'),
+  createdAt: instant('created_at').notNull().defaultNow(),
+  updatedAt: instant('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('ww_meter_register_records_client_idx').on(table.businessClientId),
+  index('ww_meter_register_records_site_idx').on(table.businessSiteId),
+  index('ww_meter_register_records_updated_idx').on(table.updatedAt),
+  check('ww_meter_register_records_customer_check', sql`
+    char_length(btrim(${table.customerName})) BETWEEN 1 AND 300
+  `),
+  check('ww_meter_register_records_details_check', sql`jsonb_typeof(${table.details}) = 'object'`),
+  check('ww_meter_register_records_revision_check', sql`${table.revision} >= 1`),
 ]);
 
 export const wwCollectionRuns = pgTable('ww_collection_runs', {

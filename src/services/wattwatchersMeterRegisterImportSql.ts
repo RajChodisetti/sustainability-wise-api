@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  projectMeterRegisterOperationalRecord,
   summarizeWattwatchersMeterRegister,
   type MeterRegisterImportSummary,
   type NormalizedMeterRegisterRow,
@@ -121,6 +122,7 @@ function assertSingleSource(rows: readonly NormalizedMeterRegisterRow[]): Normal
 
 function stageRowSql(row: NormalizedMeterRegisterRow, importId: string): string {
   const entryId = stableId('wwmre_', row.sourceKey);
+  const operational = projectMeterRegisterOperationalRecord(row);
   return `(${[
     sqlText(entryId),
     sqlText(importId),
@@ -168,7 +170,311 @@ function stageRowSql(row: NormalizedMeterRegisterRow, importId: string): string 
     sqlText(row.billingPeriodSnapshot),
     sqlDate(row.issuedPeriodNextInvoiceIssueDate),
     sqlJson(row.rawValues),
+    sqlText(operational.businessClientName),
+    sqlText(operational.businessClientNormalizedKey),
+    sqlText(operational.customerName),
+    sqlText(operational.siteName),
+    sqlText(operational.siteNameNormalizedKey),
+    sqlText(operational.siteAddress),
+    sqlText(operational.siteState),
+    sqlBoolean(operational.siteAddress === 'NA'),
+    sqlJson(operational.details),
   ].join(', ')})`;
+}
+
+/**
+ * Materializes only missing editable records. Existing records may already
+ * contain operator corrections, so repeated imports never overwrite them.
+ */
+function operationalProjectionSql(): string {
+  return `SELECT pg_advisory_xact_lock(hashtextextended(
+  'sustainability-wise:meter-register-entry:' || entry_locks.entry_id,
+  0
+))
+FROM (
+  SELECT stage.entry_id
+  FROM ww_meter_register_stage stage
+  WHERE stage.current_device_identifier IS NOT NULL
+  ORDER BY stage.entry_id
+) entry_locks;
+
+CREATE TEMP TABLE ww_meter_register_operational_stage ON COMMIT DROP AS
+SELECT
+  stage.entry_id,
+  stage.operational_client_name AS business_client_name,
+  stage.operational_client_normalized_key AS business_client_normalized_key,
+  stage.operational_customer_name AS customer_name,
+  stage.operational_site_name AS site_name,
+  stage.operational_site_name_normalized_key AS site_name_normalized_key,
+  stage.operational_site_address AS site_address,
+  stage.operational_site_state AS site_state,
+  stage.operational_placeholder_site AS placeholder_site,
+  CASE WHEN stage.operational_placeholder_site THEN stage.entry_id ELSE '' END
+    AS site_identity_discriminator,
+  sw_business_site_address_fingerprint(
+    stage.operational_site_address,
+    NULL,
+    stage.operational_site_state,
+    NULL,
+    'AU'
+  ) AS address_fingerprint,
+  stage.operational_details AS details
+FROM ww_meter_register_stage stage
+WHERE stage.current_device_identifier IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM ww_meter_register_records existing
+    WHERE existing.entry_id = stage.entry_id
+  );
+
+ALTER TABLE ww_meter_register_operational_stage ADD PRIMARY KEY (entry_id);
+
+SELECT pg_advisory_xact_lock(hashtextextended(
+  'sustainability-wise:client:' || client_locks.business_client_normalized_key,
+  0
+))
+FROM (
+  SELECT DISTINCT stage.business_client_normalized_key
+  FROM ww_meter_register_operational_stage stage
+  ORDER BY stage.business_client_normalized_key
+) client_locks;
+
+INSERT INTO business_clients (
+  id, company_key, name, normalized_key, created_at, updated_at
+)
+SELECT DISTINCT ON (stage.business_client_normalized_key)
+  'bc_wwmr_' || md5(stage.business_client_normalized_key),
+  'sustainability-wise',
+  stage.business_client_name,
+  stage.business_client_normalized_key,
+  now(),
+  now()
+FROM ww_meter_register_operational_stage stage
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM business_clients existing
+  WHERE existing.company_key = 'sustainability-wise'
+    AND existing.normalized_key = stage.business_client_normalized_key
+)
+ORDER BY stage.business_client_normalized_key, stage.entry_id
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TEMP TABLE ww_meter_register_operational_client_map ON COMMIT DROP AS
+WITH RECURSIVE client_roots AS (
+  SELECT
+    keys.business_client_normalized_key,
+    candidate.id AS business_client_id,
+    candidate.merged_into_client_id,
+    ARRAY[candidate.id]::text[] AS visited_ids,
+    0 AS depth
+  FROM (
+    SELECT DISTINCT stage.business_client_normalized_key
+    FROM ww_meter_register_operational_stage stage
+  ) keys
+  JOIN LATERAL (
+    SELECT client.id, client.merged_into_client_id
+    FROM business_clients client
+    WHERE client.company_key = 'sustainability-wise'
+      AND client.normalized_key = keys.business_client_normalized_key
+    ORDER BY
+      (client.merged_into_client_id IS NULL) DESC,
+      client.created_at,
+      client.id
+    LIMIT 1
+  ) candidate ON true
+), client_chain AS (
+  SELECT * FROM client_roots
+  UNION ALL
+  SELECT
+    client_chain.business_client_normalized_key,
+    next_client.id,
+    next_client.merged_into_client_id,
+    client_chain.visited_ids || next_client.id,
+    client_chain.depth + 1
+  FROM client_chain
+  JOIN business_clients next_client
+    ON next_client.id = client_chain.merged_into_client_id
+   AND next_client.company_key = 'sustainability-wise'
+  WHERE client_chain.merged_into_client_id IS NOT NULL
+    AND client_chain.depth < 19
+    AND NOT (next_client.id = ANY(client_chain.visited_ids))
+)
+SELECT DISTINCT ON (client_chain.business_client_normalized_key)
+  client_chain.business_client_normalized_key,
+  client_chain.business_client_id
+FROM client_chain
+WHERE client_chain.merged_into_client_id IS NULL
+ORDER BY
+  client_chain.business_client_normalized_key,
+  client_chain.depth DESC,
+  client_chain.business_client_id;
+
+ALTER TABLE ww_meter_register_operational_client_map
+  ADD PRIMARY KEY (business_client_normalized_key);
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM ww_meter_register_operational_stage stage
+    LEFT JOIN ww_meter_register_operational_client_map client_map
+      ON client_map.business_client_normalized_key = stage.business_client_normalized_key
+    WHERE client_map.business_client_id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Meter Register client alias has an invalid merge target, cycle, or excessive depth';
+  END IF;
+END $$;
+
+SELECT pg_advisory_xact_lock(hashtextextended(site_locks.lock_key, 0))
+FROM (
+  SELECT DISTINCT
+    'sustainability-wise:site:' || client_map.business_client_id
+      || ':' || stage.address_fingerprint AS lock_key
+  FROM ww_meter_register_operational_stage stage
+  JOIN ww_meter_register_operational_client_map client_map
+    ON client_map.business_client_normalized_key = stage.business_client_normalized_key
+  ORDER BY lock_key
+) site_locks;
+
+WITH resolved AS (
+  SELECT stage.*, client_map.business_client_id
+  FROM ww_meter_register_operational_stage stage
+  JOIN ww_meter_register_operational_client_map client_map
+    ON client_map.business_client_normalized_key = stage.business_client_normalized_key
+), canonical_sites AS (
+  SELECT DISTINCT ON (
+    resolved.business_client_id,
+    resolved.site_name_normalized_key,
+    resolved.address_fingerprint,
+    resolved.site_identity_discriminator
+  ) resolved.*
+  FROM resolved
+  ORDER BY
+    resolved.business_client_id,
+    resolved.site_name_normalized_key,
+    resolved.address_fingerprint,
+    resolved.site_identity_discriminator,
+    resolved.entry_id
+)
+INSERT INTO business_sites (
+  id, client_id, name, address, state, country_code,
+  address_source, geocode_status, address_fingerprint, timezone,
+  created_at, updated_at
+)
+SELECT
+  CASE WHEN canonical_sites.placeholder_site THEN
+    'bs_wwmr_' || md5(
+      canonical_sites.business_client_id || chr(31)
+      || 'entry:' || canonical_sites.entry_id
+    )
+  ELSE
+    'bs_wwmr_' || md5(
+      canonical_sites.business_client_id || chr(31)
+      || canonical_sites.site_name_normalized_key || chr(31)
+      || canonical_sites.address_fingerprint
+    )
+  END,
+  canonical_sites.business_client_id,
+  canonical_sites.site_name,
+  canonical_sites.site_address,
+  canonical_sites.site_state,
+  'AU',
+  'manual',
+  'unresolved',
+  canonical_sites.address_fingerprint,
+  CASE canonical_sites.site_state
+    WHEN 'QLD' THEN 'Australia/Brisbane'
+    WHEN 'NT' THEN 'Australia/Darwin'
+    WHEN 'SA' THEN 'Australia/Adelaide'
+    WHEN 'TAS' THEN 'Australia/Hobart'
+    WHEN 'VIC' THEN 'Australia/Melbourne'
+    WHEN 'WA' THEN 'Australia/Perth'
+    ELSE 'Australia/Sydney'
+  END,
+  now(),
+  now()
+FROM canonical_sites
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM business_sites existing
+  WHERE (
+    canonical_sites.placeholder_site
+    AND existing.id = 'bs_wwmr_' || md5(
+      canonical_sites.business_client_id || chr(31)
+      || 'entry:' || canonical_sites.entry_id
+    )
+  ) OR (
+    NOT canonical_sites.placeholder_site
+    AND existing.client_id = canonical_sites.business_client_id
+    AND lower(regexp_replace(btrim(normalize(existing.name, NFKC)), '[[:space:]]+', ' ', 'g'))
+      = canonical_sites.site_name_normalized_key
+    AND existing.address_fingerprint = canonical_sites.address_fingerprint
+  )
+)
+ON CONFLICT (id) DO NOTHING;
+
+WITH resolved AS (
+  SELECT
+    stage.*,
+    client_map.business_client_id AS resolved_business_client_id,
+    CASE WHEN stage.placeholder_site THEN
+      'bs_wwmr_' || md5(
+        client_map.business_client_id || chr(31) || 'entry:' || stage.entry_id
+      )
+    ELSE NULL END AS placeholder_business_site_id
+  FROM ww_meter_register_operational_stage stage
+  JOIN ww_meter_register_operational_client_map client_map
+    ON client_map.business_client_normalized_key = stage.business_client_normalized_key
+), linked AS (
+  SELECT resolved.*, site.id AS resolved_business_site_id
+  FROM resolved
+  JOIN LATERAL (
+    SELECT candidate.id
+    FROM business_sites candidate
+    WHERE (
+      resolved.placeholder_site
+      AND candidate.client_id = resolved.resolved_business_client_id
+      AND candidate.id = resolved.placeholder_business_site_id
+    ) OR (
+      NOT resolved.placeholder_site
+      AND candidate.client_id = resolved.resolved_business_client_id
+      AND lower(regexp_replace(btrim(normalize(candidate.name, NFKC)), '[[:space:]]+', ' ', 'g'))
+        = resolved.site_name_normalized_key
+      AND candidate.address_fingerprint = resolved.address_fingerprint
+    )
+    ORDER BY candidate.created_at, candidate.id
+    LIMIT 1
+  ) site ON true
+)
+INSERT INTO ww_meter_register_records (
+  entry_id, business_client_id, business_site_id, customer_name,
+  details, revision, updated_by_user_id, created_at, updated_at
+)
+SELECT
+  linked.entry_id,
+  linked.resolved_business_client_id,
+  linked.resolved_business_site_id,
+  linked.customer_name,
+  linked.details,
+  1,
+  NULL,
+  now(),
+  now()
+FROM linked
+ON CONFLICT (entry_id) DO NOTHING;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM ww_meter_register_stage stage
+    LEFT JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+    WHERE stage.current_device_identifier IS NOT NULL
+      AND record.entry_id IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Every imported Meter Register current identifier must have an operational record';
+  END IF;
+END $$;`;
 }
 
 export type BuildWattwatchersMeterRegisterImportSqlInput = {
@@ -253,7 +559,16 @@ CREATE TEMP TABLE ww_meter_register_stage (
   invoice_issued_date date,
   billing_period_snapshot text,
   issued_period_next_invoice_issue_date date,
-  source_payload jsonb NOT NULL
+  source_payload jsonb NOT NULL,
+  operational_client_name text NOT NULL,
+  operational_client_normalized_key text NOT NULL,
+  operational_customer_name text NOT NULL,
+  operational_site_name text NOT NULL,
+  operational_site_name_normalized_key text NOT NULL,
+  operational_site_address text NOT NULL,
+  operational_site_state text,
+  operational_placeholder_site boolean NOT NULL,
+  operational_details jsonb NOT NULL
 ) ON COMMIT DROP;
 
 INSERT INTO ww_meter_register_stage VALUES
@@ -572,6 +887,8 @@ BEGIN
     RAISE EXCEPTION 'Meter Register Fleet links do not match source confirmation';
   END IF;
 END $$;
+
+${operationalProjectionSql()}
 
 WITH identifiers AS (
   SELECT existing_device_identifier AS identifier,
