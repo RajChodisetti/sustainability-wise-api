@@ -318,9 +318,13 @@ export async function installhubInstallationRoutes(
         .update(ihInstallations)
         .set({
           assignedInspectorUserId: assignedInspectorUserId || null,
+          treeRevision: installation.treeRevision + 1,
           updatedAt: new Date(),
         })
-        .where(eq(ihInstallations.id, installation.id))
+        .where(and(
+          eq(ihInstallations.id, installation.id),
+          eq(ihInstallations.treeRevision, installation.treeRevision),
+        ))
         .returning();
       return row;
     });

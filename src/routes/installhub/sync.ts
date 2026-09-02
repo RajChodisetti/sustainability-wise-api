@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, gt, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, isNotNull, isNull, notInArray, or } from 'drizzle-orm';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { config } from '../../config.js';
 import { db } from '../../db/client.js';
@@ -13,7 +13,7 @@ import {
   ihSiteAssets,
   ihZones,
 } from '../../db/schema/installhub.js';
-import { photoRegistry } from '../../db/schema/shared.js';
+import { photoRegistry, portalScheduleEvents } from '../../db/schema/shared.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 import { deleteOneDrivePath } from '../../onedrive/uploadSession.js';
 import { resolveSyncCreatedByUserId } from '../syncOwnership.js';
@@ -2334,6 +2334,45 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       )!);
     }
     const installations = await db.select().from(ihInstallations).where(and(...conditions));
+    const activeScheduleRows = installations.length
+      ? await db.select({
+          eventId: portalScheduleEvents.id,
+          sourceId: portalScheduleEvents.sourceId,
+          scheduledStartAt: portalScheduleEvents.scheduledStartAt,
+          scheduledEndAt: portalScheduleEvents.scheduledEndAt,
+          deadlineAt: portalScheduleEvents.deadlineAt,
+          status: portalScheduleEvents.status,
+        }).from(portalScheduleEvents).where(and(
+          eq(portalScheduleEvents.sourceApp, 'installhub'),
+          eq(portalScheduleEvents.sourceType, 'installation'),
+          inArray(portalScheduleEvents.sourceId, installations.map((item) => item.id)),
+          inArray(portalScheduleEvents.status, ['planned', 'in_progress']),
+        )).orderBy(
+          asc(portalScheduleEvents.scheduledStartAt),
+          asc(portalScheduleEvents.createdAt),
+        )
+      : [];
+    const activeScheduleByInstallation = new Map<string, typeof activeScheduleRows[number]>();
+    for (const row of activeScheduleRows) {
+      if (row.sourceId && !activeScheduleByInstallation.has(row.sourceId)) {
+        activeScheduleByInstallation.set(row.sourceId, row);
+      }
+    }
+    const withScheduleProjection = (
+      installation: Record<string, unknown>,
+      installationId: string,
+    ): Record<string, unknown> => {
+      const schedule = activeScheduleByInstallation.get(installationId);
+      if (!schedule) return installation;
+      return {
+        ...installation,
+        scheduleEventId: schedule.eventId,
+        scheduledStartAt: schedule.scheduledStartAt.toISOString(),
+        scheduledEndAt: schedule.scheduledEndAt?.toISOString() ?? null,
+        deadlineAt: schedule.deadlineAt.toISOString(),
+        scheduleStatus: schedule.status,
+      };
+    };
     const trees = await Promise.all(installations.map(async (installation) => {
       if (installation.treeSchemaVersion >= 2) {
         if (!config.installhubCanonicalV2Enabled) {
@@ -2341,13 +2380,20 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         }
         const canonical = await loadCanonicalInstallationTree(installation.id);
         if (!canonical) throw new Error('Installation disappeared during pull');
-        return projectLegacyInstallationTree(canonical);
+        const projected = projectLegacyInstallationTree(canonical);
+        return {
+          ...projected,
+          installation: withScheduleProjection(
+            projected.installation as unknown as Record<string, unknown>,
+            installation.id,
+          ),
+        };
       }
       return {
         treeSchemaVersion: 1,
         treeRevision: installation.treeRevision,
         recordVersionNumber: installation.recordVersionNumber,
-        installation,
+        installation: withScheduleProjection(installation, installation.id),
         gridSupplies: [],
         zones: await db.select().from(ihZones).where(and(
           eq(ihZones.installationId, installation.id),

@@ -11,7 +11,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     { buildApp },
     { db, closeDb },
     { ihInstallations, ihZones },
-    { photoRegistry, recordVersions },
+    { photoRegistry, portalScheduleEvents, recordVersions },
     { signAccessToken },
     { makePhotoStorageKeyFromNames },
     { writeLocalFile },
@@ -36,6 +36,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
   const racedSessionId = randomUUID();
   const userId = randomUUID();
   const freshInstallationId = randomUUID();
+  const freshScheduleEventId = randomUUID();
   const derivedSiteCodeInstallationId = randomUUID();
   const invalidSiteCodeInstallationId = randomUUID();
   const importedCopyId = randomUUID();
@@ -163,6 +164,20 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     const freshReplay = await push(freshPayload(freshInstallationId));
     assert.equal(freshReplay.statusCode, 200, freshReplay.body);
     assert.equal(freshReplay.json().treeRevision, 1);
+    await db.insert(portalScheduleEvents).values({
+      id: freshScheduleEventId,
+      title: 'Scheduled route installation',
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: freshInstallationId,
+      assigneeFieldUserId: userId,
+      scheduledStartAt: new Date('2026-08-20T09:00:00.000Z'),
+      scheduledEndAt: new Date('2026-08-20T10:30:00.000Z'),
+      deadlineAt: new Date('2026-08-21T17:00:00.000Z'),
+      status: 'planned',
+      createdByUserId: userId,
+      createdByApp: 'installhub',
+    });
 
     const invalidFreshSiteCode = freshPayload(invalidSiteCodeInstallationId);
     invalidFreshSiteCode.installation.siteCode = 'Invalid Fresh Site Code';
@@ -188,6 +203,11 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     assert.equal(firstPull.statusCode, 200, firstPull.body);
     const firstTree = firstPull.json().installations[0] as Record<string, unknown>;
     const firstInstallation = firstTree.installation as Record<string, unknown>;
+    assert.equal(firstInstallation.scheduleEventId, freshScheduleEventId);
+    assert.equal(firstInstallation.scheduledStartAt, '2026-08-20T09:00:00.000Z');
+    assert.equal(firstInstallation.scheduledEndAt, '2026-08-20T10:30:00.000Z');
+    assert.equal(firstInstallation.deadlineAt, '2026-08-21T17:00:00.000Z');
+    assert.equal(firstInstallation.scheduleStatus, 'planned');
     assert.match(String(firstInstallation.externalKey), /^ih_/);
     assert.doesNotMatch(String(firstInstallation.externalKey), /^local:/);
     assert.equal(firstInstallation.treeRevision, 1);
@@ -713,6 +733,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
       .where(eq(ihInstallations.id, installationId));
     assert.deepEqual(installation, { treeRevision: 5, recordVersionNumber: 0 });
   } finally {
+    await db.delete(portalScheduleEvents).where(eq(portalScheduleEvents.id, freshScheduleEventId));
     await db.update(ihInstallations).set({ status: 'Draft' })
       .where(eq(ihInstallations.id, installationId));
     await purgeInstallHubInstallationTree(installationId).catch(() => {});

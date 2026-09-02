@@ -565,8 +565,10 @@ async function alignLinkedSourceAssignment(
   subject: UnifiedSchedulerSubject,
   scheduledStartAt?: Date,
   strict = true,
-): Promise<boolean> {
-  if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') return false;
+): Promise<{ assignmentChanged: boolean; sourceProjectionChanged: boolean }> {
+  if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') {
+    return { assignmentChanged: false, sourceProjectionChanged: false };
+  }
   if (sourceApp === 'ecoaudit' && sourceType === 'audit') {
     const desiredAssignee = requireProductUserId(subject, 'ecoaudit');
     const [current] = await executor
@@ -580,10 +582,12 @@ async function alignLinkedSourceAssignment(
       .for('update')
       .limit(1);
     if (!current) {
-      if (!strict) return false;
+      if (!strict) return { assignmentChanged: false, sourceProjectionChanged: false };
       throw conflict('Linked audit is no longer an active Draft');
     }
-    if (current.assignedInspectorUserId === desiredAssignee) return false;
+    if (current.assignedInspectorUserId === desiredAssignee) {
+      return { assignmentChanged: false, sourceProjectionChanged: false };
+    }
     const [updated] = await executor
       .update(eaAudits)
       .set({
@@ -598,7 +602,7 @@ async function alignLinkedSourceAssignment(
       ))
       .returning({ id: eaAudits.id });
     if (!updated) throw conflict('Linked audit is no longer an active Draft');
-    return true;
+    return { assignmentChanged: true, sourceProjectionChanged: true };
   }
   if (sourceApp === 'solarsense' && sourceType === 'assessment') {
     const desiredAssignee = requireProductUserId(subject, 'solarsense');
@@ -613,10 +617,12 @@ async function alignLinkedSourceAssignment(
       .for('update')
       .limit(1);
     if (!current) {
-      if (!strict) return false;
+      if (!strict) return { assignmentChanged: false, sourceProjectionChanged: false };
       throw conflict('Linked assessment is no longer an active Draft');
     }
-    if (current.assignedInspectorUserId === desiredAssignee) return false;
+    if (current.assignedInspectorUserId === desiredAssignee) {
+      return { assignmentChanged: false, sourceProjectionChanged: false };
+    }
     const [updated] = await executor
       .update(ssRooftopAssessments)
       .set({
@@ -631,7 +637,7 @@ async function alignLinkedSourceAssignment(
       ))
       .returning({ id: ssRooftopAssessments.id });
     if (!updated) throw conflict('Linked assessment is no longer an active Draft');
-    return true;
+    return { assignmentChanged: true, sourceProjectionChanged: true };
   }
   if (sourceApp === 'installhub' && sourceType === 'installation') {
     const [current] = await executor
@@ -640,6 +646,7 @@ async function alignLinkedSourceAssignment(
         inspectorName: ihInstallations.inspectorName,
         auditDate: ihInstallations.auditDate,
         timezone: ihInstallations.timezone,
+        treeRevision: ihInstallations.treeRevision,
       })
       .from(ihInstallations)
       .where(and(
@@ -650,7 +657,7 @@ async function alignLinkedSourceAssignment(
       .for('update')
       .limit(1);
     if (!current) {
-      if (!strict) return false;
+      if (!strict) return { assignmentChanged: false, sourceProjectionChanged: false };
       throw conflict('Linked installation is no longer an active Draft');
     }
     const inspectorName = installHubSchedulerInspectorName(subject);
@@ -662,19 +669,21 @@ async function alignLinkedSourceAssignment(
       !assignmentChanged
       && current.inspectorName === inspectorName
       && current.auditDate === auditDate
-    ) return false;
+    ) return { assignmentChanged: false, sourceProjectionChanged: false };
     const [updated] = await executor
       .update(ihInstallations)
       .set({
         assignedInspectorUserId: subject.fieldUserId,
         inspectorName,
         auditDate,
+        treeRevision: current.treeRevision + 1,
         updatedAt: new Date(),
         syncStatus: 'local',
       })
       .where(and(
         eq(ihInstallations.id, sourceId),
         eq(ihInstallations.status, 'Draft'),
+        eq(ihInstallations.treeRevision, current.treeRevision),
         isNull(ihInstallations.deletedAt),
       ))
       .returning({ id: ihInstallations.id });
@@ -682,7 +691,7 @@ async function alignLinkedSourceAssignment(
     // Notification repair is concerned only with assignment drift. A legacy
     // date/name projection repair must not turn a normal event edit into a new
     // assignment notification.
-    return assignmentChanged;
+    return { assignmentChanged, sourceProjectionChanged: true };
   }
   if (sourceApp === 'solarsense' && sourceType === 'site') {
     throw badRequest('Legacy Solar site events cannot change product assignment');
@@ -724,6 +733,7 @@ async function clearLinkedSourceAssignment(
   if (sourceApp === 'installhub' && sourceType === 'installation') {
     await executor.update(ihInstallations).set({
       assignedInspectorUserId: null,
+      treeRevision: sql`${ihInstallations.treeRevision} + 1`,
       updatedAt: new Date(),
       syncStatus: 'local',
     }).where(and(
@@ -2333,11 +2343,16 @@ export async function updateScheduleEvent(
       patch.title = title.slice(0, 300);
     }
     if (input.description !== undefined) {
-      patch.description = input.description?.trim() || null;
-      if (existing.sourceApp === 'installhub' && existing.sourceId) {
-        const jobComments = input.description?.trim() || null;
+      const jobComments = input.description?.trim() || null;
+      patch.description = jobComments;
+      if (
+        existing.sourceApp === 'installhub'
+        && existing.sourceId
+        && jobComments !== existing.description
+      ) {
         await tx.update(ihInstallations).set({
           jobComments,
+          treeRevision: sql`${ihInstallations.treeRevision} + 1`,
           updatedAt: new Date(),
           syncStatus: 'local',
         }).where(eq(ihInstallations.id, existing.sourceId));
@@ -2365,10 +2380,14 @@ export async function updateScheduleEvent(
       scheduledStartChanged = requestedStart.getTime() !== existing.scheduledStartAt.getTime();
       if (scheduledStartChanged) patch.scheduledStartAt = requestedStart;
     }
+    let deadlineChanged = false;
     if (input.deadlineAt !== undefined) {
-      patch.deadlineAt = requireIsoDate(input.deadlineAt, 'deadlineAt');
+      const requestedDeadline = requireIsoDate(input.deadlineAt, 'deadlineAt');
+      deadlineChanged = requestedDeadline.getTime() !== existing.deadlineAt.getTime();
+      if (deadlineChanged) patch.deadlineAt = requestedDeadline;
     }
     const nextStatus = input.status !== undefined ? parseStatus(input.status) : existing.status as ScheduleStatus;
+    const scheduleStatusChanged = nextStatus !== existing.status;
     const nextStatusIsActive = nextStatus === 'planned' || nextStatus === 'in_progress';
     if (
       existing.status !== 'cancelled'
@@ -2417,6 +2436,8 @@ export async function updateScheduleEvent(
     const end = patch.scheduledEndAt !== undefined
       ? (patch.scheduledEndAt as Date | null)
       : existing.scheduledEndAt;
+    const scheduledEndChanged = (end?.getTime() ?? null)
+      !== (existing.scheduledEndAt?.getTime() ?? null);
 
     const explicitAssignee = input.assigneeFieldUserId !== undefined;
     const availabilityChanged = scheduleUpdateRequiresAvailabilityCheck({
@@ -2435,6 +2456,7 @@ export async function updateScheduleEvent(
       );
     }
     let productAssignmentRepaired = false;
+    let sourceProjectionRevisionAdvanced = false;
     const installHubScheduleProjectionRequired = existing.sourceApp === 'installhub'
       && existing.sourceType === 'installation'
       && nextStatusIsActive
@@ -2460,7 +2482,7 @@ export async function updateScheduleEvent(
         ?? await loadSchedulerSubject(tx, existing.assigneeFieldUserId);
       // Lock the linked product before checking for another active event. This
       // serializes concurrent inactive-event reactivation attempts.
-      productAssignmentRepaired = await alignLinkedSourceAssignment(
+      const alignment = await alignLinkedSourceAssignment(
         tx,
         existing.sourceApp as ScheduleSourceApp,
         existing.sourceType as ScheduleSourceType,
@@ -2468,7 +2490,34 @@ export async function updateScheduleEvent(
         subject,
         start,
       );
+      productAssignmentRepaired = alignment.assignmentChanged;
+      sourceProjectionRevisionAdvanced = alignment.sourceProjectionChanged;
       assignee = subject;
+    }
+    if (
+      existing.sourceApp === 'installhub'
+      && existing.sourceType === 'installation'
+      && existing.sourceId
+      && (
+        scheduledStartChanged
+        || scheduledEndChanged
+        || deadlineChanged
+        || scheduleStatusChanged
+      )
+      && !sourceProjectionRevisionAdvanced
+    ) {
+      // Schedule-only fields are projected into the mobile assigned-work pull.
+      // Touch the installation revision so an installed client can accept the
+      // new projection instead of receiving changed metadata at the same CAS.
+      await tx.update(ihInstallations).set({
+        treeRevision: sql`${ihInstallations.treeRevision} + 1`,
+        updatedAt: new Date(),
+        syncStatus: 'local',
+      }).where(and(
+        eq(ihInstallations.id, existing.sourceId),
+        eq(ihInstallations.status, 'Draft'),
+        isNull(ihInstallations.deletedAt),
+      ));
     }
     if (
       nextStatusIsActive

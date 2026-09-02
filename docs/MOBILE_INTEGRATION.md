@@ -76,6 +76,16 @@ show the operating-system popup only: they do not keep a notification history
 or deep-link a notification tap into the work record. A normal app launch/list
 and subsequent API/sync response remain authoritative for access.
 
+For an active linked Field App installation, `/v1/installhub/sync/pull` also
+adds `scheduleEventId`, `scheduledStartAt`, `scheduledEndAt`, `deadlineAt`, and
+`scheduleStatus` to the returned installation object. These are additive,
+read-only Scheduler projections used by the mobile job list and pre-start
+summary; they are not canonical installation fields and must not be pushed back.
+Every Scheduler mutation that changes the linked installation projection or one
+of its projected job-detail fields advances `ih_installations.tree_revision`
+and `updated_at` in the same transaction so installed clients never observe
+changed assigned-work metadata at an unchanged CAS revision.
+
 Linked Field App Complete installations are Scheduler notification targets.
 EcoAudit and SolarSense records remain valid product-sync and active-time
 records, but hidden Scheduler rows for those products do not queue new pushes.

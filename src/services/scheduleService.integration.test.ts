@@ -449,6 +449,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(linkedFieldRow.assignedInspectorUserId, firstAssignee.fieldUserId);
     assert.equal(linkedFieldRow.inspectorName, firstAssignee.name);
     assert.equal(linkedFieldRow.auditDate, '2026-08-21');
+    assert.equal(linkedFieldRow.treeRevision, 1);
     const defaultFieldPool = await listUnscheduledJobs(admin, {
       q: `Linkable field ${runId}`,
       sourceApp: 'installhub',
@@ -476,8 +477,41 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(linkedFieldRow.assignedInspectorUserId, secondAssignee.fieldUserId);
     assert.equal(linkedFieldRow.inspectorName, secondAssignee.name);
     assert.equal(linkedFieldRow.auditDate, '2026-08-22');
+    assert.equal(linkedFieldRow.treeRevision, 2);
     assert.equal(linkedFieldRow.status, 'Draft');
     assert.equal(linkedFieldRow.completedAt, null);
+
+    await updateScheduleEvent(admin, linkedField.id, {
+      description: 'Updated scheduler scope',
+    });
+    [linkedFieldRow] = await db.select().from(ihInstallations)
+      .where(eq(ihInstallations.id, linkableFieldInstallationId));
+    assert.equal(linkedFieldRow.jobComments, 'Updated scheduler scope');
+    assert.equal(linkedFieldRow.treeRevision, 3);
+
+    await updateScheduleEvent(admin, linkedField.id, {
+      deadlineAt: '2026-08-24T17:00:00.000Z',
+    });
+    [linkedFieldRow] = await db.select().from(ihInstallations)
+      .where(eq(ihInstallations.id, linkableFieldInstallationId));
+    assert.equal(linkedFieldRow.treeRevision, 4);
+
+    // Same-local-day time changes and duration-only changes alter fields that
+    // are projected into the mobile pull even when audit_date is unchanged.
+    await updateScheduleEvent(admin, linkedField.id, {
+      scheduledStartAt: '2026-08-22T00:30:00.000Z',
+    });
+    [linkedFieldRow] = await db.select().from(ihInstallations)
+      .where(eq(ihInstallations.id, linkableFieldInstallationId));
+    assert.equal(linkedFieldRow.auditDate, '2026-08-22');
+    assert.equal(linkedFieldRow.treeRevision, 5);
+
+    await updateScheduleEvent(admin, linkedField.id, {
+      estimatedDurationMinutes: 90,
+    });
+    [linkedFieldRow] = await db.select().from(ihInstallations)
+      .where(eq(ihInstallations.id, linkableFieldInstallationId));
+    assert.equal(linkedFieldRow.treeRevision, 6);
 
     // Legacy rows remain readable with their historic end until the schedule
     // itself is rewritten. A start edit without an estimate must not invent a
