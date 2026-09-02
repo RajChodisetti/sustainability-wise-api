@@ -667,8 +667,12 @@ export type TopologyBetaNode = {
   label: string;
   deviceLabel?: string | null;
   role?: string | null;
+  roleSource?: string | null;
+  suggestedRole?: string | null;
   phase?: string | null;
   telemetryStatus?: string | null;
+  telemetryEvidenceValid?: boolean | null;
+  sampleCount?: number | null;
   validSampleCount?: number | null;
   validFraction?: number | null;
   state: TopologyBetaNodeState;
@@ -714,6 +718,9 @@ export type TopologyBetaDocument = {
     name?: string;
     clientCode: string;
     rootMeterId?: string | null;
+    rootSource?: string | null;
+    rootIsHeuristic?: boolean | null;
+    suggestedRootMeterId?: string | null;
     mappingRevision?: number;
   };
   runId?: string | null;
@@ -729,16 +736,48 @@ export type TopologyBetaDocument = {
   summary: {
     selectedMeterCount: number;
     confidentRelationCount: number;
+    strongTelemetryRelationCount?: number;
+    reviewedRelationCount?: number;
     reviewRelationCount: number;
     unresolvedMeterCount: number;
     withheldCandidateCount: number;
   };
+  evidence?: {
+    assessmentReasons?: string[] | null;
+    bootstrap?: {
+      requestedReplicates?: number | null;
+      successfulReplicates?: number | null;
+      failedReplicates?: number | null;
+      observationCount?: number | null;
+      windowSize?: number | null;
+      successFraction?: number | null;
+    } | null;
+    sourceWindow?: {
+      fromTs: number;
+      toTs: number;
+      intervalSeconds: number;
+    } | null;
+    sourceWindowEvidenceDays?: number | null;
+    sourceWindowMaximumSampleCount?: number | null;
+    telemetryCandidateBlockReasons?: string[];
+    consecutiveStableRuns?: number | null;
+    stableRunsRequired?: number | null;
+    stabilityEvidenceToTs?: number | null;
+    stabilityMetadataValid?: boolean;
+  };
   thresholds: {
     minimumTopKInclusion: number;
     minimumBootstrapStability: number;
+    minimumHighOverlapSamples?: number;
+    minimumHighValidFraction?: number;
+    minimumHighValidSampleCount?: number | null;
+    minimumEvidenceDays?: number;
+    minimumNewEvidenceDaysBetweenStableRuns?: number;
     minimumLowTopKInclusion: number;
     minimumLowBootstrapStability: number;
     minimumLowOverlapSamples: number;
+    minimumBootstrapSuccessFraction?: number;
+    stableRunsRequired?: number | null;
   };
   disclaimer: string;
   reconstruction?: TopologyReconstructionStatus;

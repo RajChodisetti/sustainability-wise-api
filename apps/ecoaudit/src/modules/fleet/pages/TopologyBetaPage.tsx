@@ -19,15 +19,19 @@ import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import {
   businessSiteMatchesQuery,
   businessSiteSearchLabel,
-  buildTopologyForest,
+  buildTopologyPresentation,
+  isReviewedTopologyEdge,
   parseTopologyDeviceIds,
+  topologyNodeRoleDisplay,
+  type TopologyPresentation,
   type TopologyTreeItem,
 } from '@/modules/fleet/lib/topologyBeta';
-import { formatDateTime, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
+import { formatDateTime, formatDuration, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
 import type {
   FleetBusinessSiteSearchItem,
   TopologyBetaDocument,
   TopologyBetaEdge,
+  TopologyBetaNode,
 } from '@/modules/fleet/types/domain';
 
 function confidencePercent(value?: number | null) {
@@ -35,11 +39,18 @@ function confidencePercent(value?: number | null) {
 }
 
 function relationTone(edge: TopologyBetaEdge) {
+  if (isReviewedTopologyEdge(edge)) {
+    return {
+      border: 'border-[var(--primary)]',
+      badge: 'bg-[var(--primary-soft)] text-[var(--primary)]',
+      label: 'Reviewed site relation',
+    };
+  }
   return edge.state === 'CONFIDENT'
     ? {
         border: 'border-[var(--green)]',
         badge: 'bg-[var(--green-soft)] text-[var(--green)]',
-        label: 'Confident',
+        label: 'Strong telemetry support',
       }
     : {
         border: 'border-[var(--amber)]',
@@ -48,14 +59,104 @@ function relationTone(edge: TopologyBetaEdge) {
       };
 }
 
+function MeterCard({ node }: { node: TopologyBetaNode }) {
+  const role = topologyNodeRoleDisplay(node);
+  return (
+    <div className="max-w-xl rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface2)] px-4 py-3.5 shadow-[var(--shadow-xs)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-extrabold text-[var(--text)]">{node.label || node.meterId}</p>
+          <p className="mt-0.5 break-all font-mono text-xs text-[var(--text-sub)]">{node.deviceId}</p>
+        </div>
+        <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-bold text-[var(--text-sub)]">
+          {node.telemetryStatus || 'WAITING'}
+        </span>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-sub)]">
+        <span>Meter {node.meterId}</span>
+        {role ? <span>{role.label} {role.value}</span> : null}
+        {typeof node.validSampleCount === 'number' ? (
+          <span>{formatNumber(node.validSampleCount)} valid samples</span>
+        ) : node.telemetryEvidenceValid === false ? (
+          <span>No usable telemetry evidence</span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function RootEvidenceNotice({ document }: { document: TopologyBetaDocument }) {
+  const { rootIsHeuristic, suggestedRootMeterId, rootSource } = document.location;
+  const heuristicRoot = rootIsHeuristic === true || rootSource === 'LABEL_HEURISTIC_REVIEW_REQUIRED';
+  if (!heuristicRoot) return null;
+  const suggestedNode = document.nodes.find((node) => node.meterId === suggestedRootMeterId);
+  const suggestedLabel = suggestedNode?.label || suggestedRootMeterId || 'the selected root';
+  return (
+    <div className="border-b border-[var(--amber)]/30 bg-[var(--amber-soft)] px-5 py-3 text-xs font-semibold leading-5 text-[var(--text)] sm:px-6" role="status">
+      <strong>Suggested root only.</strong>{' '}
+      {suggestedLabel} was suggested from meter labels{rootSource ? ` (${rootSource.replaceAll('_', ' ').toLowerCase()})` : ''}; this is not reconstructed or confirmed wiring evidence.
+    </div>
+  );
+}
+
+function EvidenceWindowNotice({ document }: { document: TopologyBetaDocument }) {
+  const sourceWindow = document.evidence?.sourceWindow;
+  const validWindow = sourceWindow
+    && Number.isInteger(sourceWindow.fromTs)
+    && sourceWindow.fromTs >= 0
+    && Number.isInteger(sourceWindow.toTs)
+    && sourceWindow.toTs > sourceWindow.fromTs
+    && Number.isInteger(sourceWindow.intervalSeconds)
+    && sourceWindow.intervalSeconds > 0;
+  const fromDate = validWindow ? new Date(sourceWindow.fromTs * 1_000) : null;
+  const toDate = validWindow ? new Date(sourceWindow.toTs * 1_000) : null;
+  if (!validWindow
+    || !fromDate
+    || !toDate
+    || Number.isNaN(fromDate.getTime())
+    || Number.isNaN(toDate.getTime())
+  ) {
+    return (
+      <div className="border-b border-[var(--border)] bg-[var(--surface2)] px-5 py-3 text-xs font-semibold leading-5 text-[var(--text-sub)] sm:px-6" role="status">
+        <strong className="text-[var(--text)]">Telemetry evidence window unavailable.</strong>{' '}
+        Telemetry-derived relationships stay withheld until the service supplies a verifiable window.
+      </div>
+    );
+  }
+
+  const evidenceDays = (sourceWindow.toTs - sourceWindow.fromTs) / 86_400;
+  const intervalMinutes = sourceWindow.intervalSeconds / 60;
+  const stabilityDays = document.thresholds.minimumNewEvidenceDaysBetweenStableRuns;
+  const cadenceSeconds = document.reconstruction?.cadenceSeconds;
+  const consecutiveStableRuns = document.evidence?.consecutiveStableRuns;
+  const stableRunsRequired = document.evidence?.stableRunsRequired;
+  return (
+    <div className="border-b border-[var(--border)] bg-[var(--primary-soft)] px-5 py-3 text-xs font-semibold leading-5 text-[var(--text)] sm:px-6" role="status">
+      <strong>Evidence window requested:</strong>{' '}
+      {formatNumber(evidenceDays)} days, from {formatDateTime(fromDate.toISOString())} to {formatDateTime(toDate.toISOString())}, at {formatNumber(intervalMinutes)}-minute intervals.
+      {typeof cadenceSeconds === 'number' && Number.isFinite(cadenceSeconds) && cadenceSeconds > 0
+        ? ` While running, the reconstruction checks for updates every ${formatDuration(cadenceSeconds)}.`
+        : ''}
+      {typeof stabilityDays === 'number' && Number.isFinite(stabilityDays) && stabilityDays > 0
+        ? ` A stability run is credited only after every selected relation gains at least ${formatNumber(stabilityDays)} new days of valid overlap.`
+        : ''}
+      {typeof consecutiveStableRuns === 'number'
+        && Number.isInteger(consecutiveStableRuns)
+        && consecutiveStableRuns >= 0
+        && typeof stableRunsRequired === 'number'
+        && Number.isInteger(stableRunsRequired)
+        && stableRunsRequired > 0
+        ? ` Current stability: ${formatNumber(consecutiveStableRuns)} of ${formatNumber(stableRunsRequired)} required checkpoints.`
+        : ''}
+      {' '}Window length alone never places a meter; every selected meter must supply valid telemetry.
+    </div>
+  );
+}
+
 function TreeBranch({ item, root = false }: { item: TopologyTreeItem; root?: boolean }) {
   const edge = item.incomingEdge;
   const tone = edge ? relationTone(edge) : null;
-  const nodeTone = item.node.state === 'CONFIDENT'
-    ? 'border-[var(--green)]/50 bg-[var(--green-soft)]/45'
-    : item.node.state === 'REVIEW'
-      ? 'border-[var(--amber)]/55 bg-[var(--amber-soft)]/45'
-      : 'border-[var(--border-strong)] bg-[var(--surface2)]';
+  const reviewed = edge ? isReviewedTopologyEdge(edge) : false;
   return (
     <li className={root ? '' : `border-l-2 pl-4 sm:pl-6 ${tone?.border ?? 'border-[var(--border)]'}`}>
       {edge && tone ? (
@@ -63,32 +164,19 @@ function TreeBranch({ item, root = false }: { item: TopologyTreeItem; root?: boo
           <span className={`rounded-full px-2.5 py-1 font-extrabold ${tone.badge}`}>
             {tone.label}
           </span>
-          <span className="font-semibold text-[var(--text-sub)]">
-            Top-K {confidencePercent(edge.topKInclusionWeight)} · Bootstrap {confidencePercent(edge.bootstrapStability)}
-          </span>
-          {typeof edge.overlapSampleCount === 'number' ? (
-            <span className="text-[var(--muted)]">{formatNumber(edge.overlapSampleCount)} samples</span>
-          ) : null}
+          {reviewed ? (
+            <span className="font-semibold text-[var(--text-sub)]">Operator-reviewed site evidence</span>
+          ) : (
+            <>
+              <span className="font-semibold text-[var(--text-sub)]">
+                Top-K {confidencePercent(edge.topKInclusionWeight)} · Bootstrap {confidencePercent(edge.bootstrapStability)}
+              </span>
+              <span className="text-[var(--muted)]">{formatNumber(edge.overlapSampleCount)} samples</span>
+            </>
+          )}
         </div>
       ) : null}
-      <div className={`max-w-xl rounded-[var(--radius-sm)] border px-4 py-3.5 shadow-[var(--shadow-xs)] ${nodeTone}`}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="truncate font-extrabold text-[var(--text)]">{item.node.label || item.node.meterId}</p>
-            <p className="mt-0.5 break-all font-mono text-xs text-[var(--text-sub)]">{item.node.deviceId}</p>
-          </div>
-          <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-bold text-[var(--text-sub)]">
-            {item.node.telemetryStatus || 'WAITING'}
-          </span>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-sub)]">
-          <span>Meter {item.node.meterId}</span>
-          {item.node.role ? <span>Role {item.node.role}</span> : null}
-          {typeof item.node.validSampleCount === 'number' ? (
-            <span>{formatNumber(item.node.validSampleCount)} valid samples</span>
-          ) : null}
-        </div>
-      </div>
+      <MeterCard node={item.node} />
       {item.children.length > 0 ? (
         <ul className="mt-4 space-y-4" role="group">
           {item.children.map((child) => (
@@ -100,8 +188,14 @@ function TreeBranch({ item, root = false }: { item: TopologyTreeItem; root?: boo
   );
 }
 
-function TopologyMap({ document }: { document: TopologyBetaDocument }) {
-  const forest = buildTopologyForest(document);
+function TopologyMap({
+  document,
+  presentation,
+}: {
+  document: TopologyBetaDocument;
+  presentation: TopologyPresentation;
+}) {
+  const { forest, unplacedNodes, suppressedEdgeCount } = presentation;
   return (
     <Card className="min-w-0 !p-0">
       <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
@@ -124,26 +218,58 @@ function TopologyMap({ document }: { document: TopologyBetaDocument }) {
         </div>
       </div>
 
+      <RootEvidenceNotice document={document} />
+      <EvidenceWindowNotice document={document} />
+
       <div className="border-b border-[var(--border)] bg-[var(--surface2)] px-5 py-3 sm:px-6">
         <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold">
-          <span className="inline-flex items-center gap-2 text-[var(--green)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--green)]" />Confident relation</span>
+          <span className="inline-flex items-center gap-2 text-[var(--green)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--green)]" />Strong telemetry support</span>
+          <span className="inline-flex items-center gap-2 text-[var(--primary)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />Reviewed site relation</span>
           <span className="inline-flex items-center gap-2 text-[var(--amber)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--amber)]" />Review or more data</span>
           <span className="inline-flex items-center gap-2 text-[var(--text-sub)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--muted)]" />Waiting for evidence</span>
         </div>
       </div>
 
-      <div className="overflow-x-auto p-5 sm:p-6">
-        {forest.length ? (
-          <ul className="min-w-[540px] space-y-5" role="tree" aria-label="Observed electrical meter hierarchy">
-            {forest.map((item) => <TreeBranch key={item.node.meterId} item={item} root />)}
-          </ul>
-        ) : (
-          <EmptyState
-            icon="zap"
-            title="Waiting for a usable relationship"
-            description="The meters remain visible only after the algorithm has enough evidence for at least the low-confidence review floor."
-          />
-        )}
+      {suppressedEdgeCount > 0 ? (
+        <div className="border-b border-[var(--amber)]/30 bg-[var(--amber-soft)] px-5 py-3 text-xs font-semibold leading-5 text-[var(--text)] sm:px-6" role="status">
+          {formatNumber(suppressedEdgeCount)} {suppressedEdgeCount === 1 ? 'relation was' : 'relations were'} withheld because the current response does not contain enough usable evidence to display them safely.
+        </div>
+      ) : null}
+
+      <div className="p-5 sm:p-6">
+        <section aria-labelledby="topology-relationship-tree-title">
+          <h3 id="topology-relationship-tree-title" className="text-sm font-extrabold text-[var(--text)]">Relationship tree</h3>
+          <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+            Every placed child has an indented connector and an explicit relationship badge.
+          </p>
+          <div className="mt-4 overflow-x-auto">
+            {forest.length ? (
+              <ul className="min-w-[540px] space-y-5" role="tree" aria-label="Observed electrical meter hierarchy">
+                {forest.map((item) => <TreeBranch key={item.node.meterId} item={item} root />)}
+              </ul>
+            ) : (
+              <EmptyState
+                icon="zap"
+                title="Waiting for a usable relationship"
+                description="No parent-child relationship is displayed until its evidence reaches the review floor."
+              />
+            )}
+          </div>
+        </section>
+
+        {unplacedNodes.length > 0 ? (
+          <section className="mt-6 border-t border-[var(--border)] pt-6" aria-labelledby="topology-unplaced-title">
+            <h3 id="topology-unplaced-title" className="text-sm font-extrabold text-[var(--text)]">Unplaced / waiting for evidence</h3>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-sub)]">
+              These meters remain selected, but they have no displayed parent. Offline, missing, or insufficient telemetry is not treated as relationship evidence.
+            </p>
+            <ul className="mt-4 grid gap-3" aria-label="Meters waiting for relationship evidence">
+              {unplacedNodes.map((node) => (
+                <li key={node.meterId}><MeterCard node={node} /></li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
       </div>
 
       <div className="border-t border-[var(--border)] px-5 py-4 text-xs leading-5 text-[var(--text-sub)] sm:px-6">
@@ -205,6 +331,10 @@ export default function TopologyBetaPage() {
     ),
   });
   const document = topologyQuery.data;
+  const topologyPresentation = useMemo(
+    () => (document ? buildTopologyPresentation(document) : null),
+    [document],
+  );
   const deviceIds = useMemo(() => parseTopologyDeviceIds(deviceText), [deviceText]);
   const reconstructionDeviceIds = useMemo(() => (
     [...new Set([...selectedSiteDeviceIds, ...deviceIds])]
@@ -290,7 +420,7 @@ export default function TopologyBetaPage() {
     <div>
       <PageHeader
         title="Electrical Map"
-        subtitle="Continuously reconstruct an observed-meter hierarchy. Confident relations appear green; possible relations remain yellow until review or stronger telemetry."
+        subtitle="Continuously reconstruct an observed-meter hierarchy. Telemetry-supported relations appear green, reviewed site evidence blue, and possible relations yellow."
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-cyan-100 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.1em] text-cyan-900">Beta</span>
@@ -467,21 +597,40 @@ export default function TopologyBetaPage() {
         </Card>
 
         <div className="min-w-0">
-          {document ? (
+          {document && topologyPresentation ? (
             <>
-              <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Topology confidence summary">
+              <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Topology evidence summary">
                 <StatCard label="Selected meters" value={formatNumber(document.summary.selectedMeterCount)} icon="gauge" />
-                <StatCard label="Confident links" value={formatNumber(document.summary.confidentRelationCount)} icon="check" tone="success" />
-                <StatCard label="Needs review" value={formatNumber(document.summary.reviewRelationCount)} icon="activity" tone="warning" />
-                <StatCard label="Waiting" value={formatNumber(document.summary.unresolvedMeterCount)} icon="cloud" />
+                <StatCard
+                  label="Strong telemetry support"
+                  value={formatNumber(topologyPresentation.displayedEdges.filter((edge) => (
+                    edge.state === 'CONFIDENT' && !isReviewedTopologyEdge(edge)
+                  )).length)}
+                  icon="check"
+                  tone="success"
+                />
+                <StatCard
+                  label="Reviewed site relations"
+                  value={formatNumber(topologyPresentation.displayedEdges.filter(isReviewedTopologyEdge).length)}
+                  icon="eye"
+                />
+                <StatCard
+                  label="Needs review"
+                  value={formatNumber(topologyPresentation.displayedEdges.filter((edge) => (
+                    edge.state === 'REVIEW' && !isReviewedTopologyEdge(edge)
+                  )).length)}
+                  icon="activity"
+                  tone="warning"
+                />
+                <StatCard label="Waiting" value={formatNumber(topologyPresentation.unplacedNodes.length)} icon="cloud" />
               </section>
-              <TopologyMap document={document} />
+              <TopologyMap document={document} presentation={topologyPresentation} />
             </>
           ) : (
             <EmptyState
               icon="zap"
               title="Select a site or device list"
-              description="View an existing site, or start a continuous reconstruction. Confident relationships appear first and review candidates join only after reaching the minimum evidence floor."
+              description="View an existing site, or start a continuous reconstruction. Strong telemetry support appears first and review candidates join only after reaching the minimum evidence floor."
             />
           )}
         </div>
