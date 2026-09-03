@@ -8,6 +8,7 @@ import {
   buildTopologyPresentation,
   isReviewedTopologyEdge,
   parseTopologyDeviceIds,
+  topologyDecisionLabel,
   topologyNodeRoleDisplay,
   topologySiteLabel,
 } from '@/modules/fleet/lib/topologyBeta';
@@ -480,6 +481,14 @@ test('topology beta labels heuristic roles as suggestions without breaking older
     role: 'grid-root',
     state: 'CONFIDENT',
   }), { label: 'Role', value: 'grid-root' });
+});
+
+test('topology beta presents telemetry-waiting decisions as relationship evidence state', () => {
+  assert.equal(
+    topologyDecisionLabel('AdaptiveDecision.WAITING_TELEMETRY'),
+    'Waiting for relationship evidence',
+  );
+  assert.equal(topologyDecisionLabel('STABLE_CANDIDATE'), 'Stable candidate');
 });
 
 test('topology beta labels registered sites for the searchable input', () => {

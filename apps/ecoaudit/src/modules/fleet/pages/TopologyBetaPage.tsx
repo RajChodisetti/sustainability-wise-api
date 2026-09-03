@@ -16,50 +16,25 @@ import {
   stopTopologyReconstruction,
 } from '@/modules/fleet/api/fleet';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
+import { TopologyTreeDiagram } from '@/modules/fleet/components/TopologyTreeDiagram';
 import {
   businessSiteMatchesQuery,
   businessSiteSearchLabel,
   buildTopologyPresentation,
   isReviewedTopologyEdge,
   parseTopologyDeviceIds,
+  topologyDecisionLabel,
   topologyNodeRoleDisplay,
   type TopologyPresentation,
-  type TopologyTreeItem,
 } from '@/modules/fleet/lib/topologyBeta';
-import { formatDateTime, formatDuration, formatNumber, formatPercent } from '@/modules/fleet/lib/format';
+import { formatDateTime, formatDuration, formatNumber } from '@/modules/fleet/lib/format';
 import type {
   FleetBusinessSiteSearchItem,
   TopologyBetaDocument,
-  TopologyBetaEdge,
   TopologyBetaNode,
 } from '@/modules/fleet/types/domain';
 
-function confidencePercent(value?: number | null) {
-  return typeof value === 'number' ? formatPercent(value * 100, 0) : '—';
-}
-
-function relationTone(edge: TopologyBetaEdge) {
-  if (isReviewedTopologyEdge(edge)) {
-    return {
-      border: 'border-[var(--primary)]',
-      badge: 'bg-[var(--primary-soft)] text-[var(--primary)]',
-      label: 'Reviewed site relation',
-    };
-  }
-  return edge.state === 'CONFIDENT'
-    ? {
-        border: 'border-[var(--green)]',
-        badge: 'bg-[var(--green-soft)] text-[var(--green)]',
-        label: 'Strong telemetry support',
-      }
-    : {
-        border: 'border-[var(--amber)]',
-        badge: 'bg-[var(--amber-soft)] text-[var(--amber)]',
-        label: 'Needs review',
-      };
-}
-
-function MeterCard({ node }: { node: TopologyBetaNode }) {
+function PendingMeterCard({ node }: { node: TopologyBetaNode }) {
   const role = topologyNodeRoleDisplay(node);
   return (
     <div className="max-w-xl rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface2)] px-4 py-3.5 shadow-[var(--shadow-xs)]">
@@ -69,17 +44,15 @@ function MeterCard({ node }: { node: TopologyBetaNode }) {
           <p className="mt-0.5 break-all font-mono text-xs text-[var(--text-sub)]">{node.deviceId}</p>
         </div>
         <span className="rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] font-bold text-[var(--text-sub)]">
-          {node.telemetryStatus || 'WAITING'}
+          Relationship pending
         </span>
       </div>
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-[var(--text-sub)]">
         <span>Meter {node.meterId}</span>
         {role ? <span>{role.label} {role.value}</span> : null}
-        {typeof node.validSampleCount === 'number' ? (
+        {typeof node.validSampleCount === 'number' && node.validSampleCount > 0 ? (
           <span>{formatNumber(node.validSampleCount)} valid samples</span>
-        ) : node.telemetryEvidenceValid === false ? (
-          <span>No usable telemetry evidence</span>
-        ) : null}
+        ) : <span>No verified parent yet</span>}
       </div>
     </div>
   );
@@ -153,41 +126,6 @@ function EvidenceWindowNotice({ document }: { document: TopologyBetaDocument }) 
   );
 }
 
-function TreeBranch({ item, root = false }: { item: TopologyTreeItem; root?: boolean }) {
-  const edge = item.incomingEdge;
-  const tone = edge ? relationTone(edge) : null;
-  const reviewed = edge ? isReviewedTopologyEdge(edge) : false;
-  return (
-    <li className={root ? '' : `border-l-2 pl-4 sm:pl-6 ${tone?.border ?? 'border-[var(--border)]'}`}>
-      {edge && tone ? (
-        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
-          <span className={`rounded-full px-2.5 py-1 font-extrabold ${tone.badge}`}>
-            {tone.label}
-          </span>
-          {reviewed ? (
-            <span className="font-semibold text-[var(--text-sub)]">Operator-reviewed site evidence</span>
-          ) : (
-            <>
-              <span className="font-semibold text-[var(--text-sub)]">
-                Top-K {confidencePercent(edge.topKInclusionWeight)} · Bootstrap {confidencePercent(edge.bootstrapStability)}
-              </span>
-              <span className="text-[var(--muted)]">{formatNumber(edge.overlapSampleCount)} samples</span>
-            </>
-          )}
-        </div>
-      ) : null}
-      <MeterCard node={item.node} />
-      {item.children.length > 0 ? (
-        <ul className="mt-4 space-y-4" role="group">
-          {item.children.map((child) => (
-            <TreeBranch key={child.node.meterId} item={child} />
-          ))}
-        </ul>
-      ) : null}
-    </li>
-  );
-}
-
 function TopologyMap({
   document,
   presentation,
@@ -210,7 +148,7 @@ function TopologyMap({
         </div>
         <div className="flex flex-wrap gap-2">
           <span className="rounded-full bg-[var(--primary-soft)] px-3 py-1.5 text-xs font-extrabold text-[var(--primary)]">
-            {document.decision.replaceAll('_', ' ')}
+            {topologyDecisionLabel(document.decision)}
           </span>
           <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-3 py-1.5 text-xs font-bold text-[var(--text-sub)]">
             {document.reconstruction?.state || 'IDLE'}
@@ -240,13 +178,11 @@ function TopologyMap({
         <section aria-labelledby="topology-relationship-tree-title">
           <h3 id="topology-relationship-tree-title" className="text-sm font-extrabold text-[var(--text)]">Relationship tree</h3>
           <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
-            Every placed child has an indented connector and an explicit relationship badge.
+            Parent meters sit above their children. Siblings share a row and each arrow points from parent to child.
           </p>
-          <div className="mt-4 overflow-x-auto">
+          <div className="mt-4">
             {forest.length ? (
-              <ul className="min-w-[540px] space-y-5" role="tree" aria-label="Observed electrical meter hierarchy">
-                {forest.map((item) => <TreeBranch key={item.node.meterId} item={item} root />)}
-              </ul>
+              <TopologyTreeDiagram forest={forest} />
             ) : (
               <EmptyState
                 icon="zap"
@@ -261,11 +197,11 @@ function TopologyMap({
           <section className="mt-6 border-t border-[var(--border)] pt-6" aria-labelledby="topology-unplaced-title">
             <h3 id="topology-unplaced-title" className="text-sm font-extrabold text-[var(--text)]">Unplaced / waiting for evidence</h3>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-[var(--text-sub)]">
-              These meters remain selected, but they have no displayed parent. Offline, missing, or insufficient telemetry is not treated as relationship evidence.
+              These meters remain selected but stay outside the tree until a safe parent relationship is available.
             </p>
-            <ul className="mt-4 grid gap-3" aria-label="Meters waiting for relationship evidence">
+            <ul className="mt-4 grid gap-3 sm:grid-cols-2" aria-label="Meters waiting for relationship evidence">
               {unplacedNodes.map((node) => (
-                <li key={node.meterId}><MeterCard node={node} /></li>
+                <li key={node.meterId}><PendingMeterCard node={node} /></li>
               ))}
             </ul>
           </section>

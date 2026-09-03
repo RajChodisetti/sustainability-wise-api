@@ -75,6 +75,24 @@ export function topologyNodeRoleDisplay(node: TopologyBetaNode): TopologyNodeRol
   return value ? { label: heuristic ? 'Suggested role' : 'Role', value } : null;
 }
 
+export function topologyDecisionLabel(decision: string): string {
+  const normalized = decision.trim().toUpperCase().split('.').at(-1) ?? '';
+  const labels: Record<string, string> = {
+    COLLECT_MORE: 'Collecting relationship evidence',
+    WAITING_TELEMETRY: 'Waiting for relationship evidence',
+    STABLE_CANDIDATE: 'Stable candidate',
+    CONVERGED: 'Converged',
+    REVIEW_REQUIRED: 'Review required',
+  };
+  if (labels[normalized]) return labels[normalized];
+  if (!normalized) return 'Status unavailable';
+  return normalized
+    .split('_')
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0)}${word.slice(1).toLocaleLowerCase()}`)
+    .join(' ');
+}
+
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number'
     && Number.isFinite(value)
