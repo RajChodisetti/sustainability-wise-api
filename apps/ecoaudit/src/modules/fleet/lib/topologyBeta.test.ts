@@ -112,7 +112,7 @@ test('topology beta builds a deterministic complete tree', () => {
   assert.deepEqual(buildTopologyForest(document), presentation.forest);
 });
 
-test('topology beta suppresses an unreviewed relation when telemetry evidence is unavailable', () => {
+test('topology beta keeps supported branches when another endpoint is unavailable', () => {
   for (const telemetryStatus of ['OFFLINE', 'TELEMETRY_OFFLINE']) {
     const unsafeDocument: TopologyBetaDocument = {
       ...document,
@@ -125,12 +125,15 @@ test('topology beta suppresses an unreviewed relation when telemetry evidence is
     };
 
     const presentation = buildTopologyPresentation(unsafeDocument);
-    assert.deepEqual(presentation.displayedEdges, []);
+    assert.deepEqual(
+      presentation.displayedEdges.map((edge) => `${edge.parent}->${edge.child}`),
+      ['grid->panel'],
+    );
     assert.deepEqual(
       presentation.unplacedNodes.map((node) => node.meterId),
-      ['grid', 'load', 'panel'],
+      ['load'],
     );
-    assert.equal(presentation.suppressedEdgeCount, 2);
+    assert.equal(presentation.suppressedEdgeCount, 1);
   }
 });
 
@@ -211,7 +214,7 @@ test('topology beta independently downgrades a false green payload', () => {
   assert.match(presentation.displayedEdges[0]?.confidenceLabel ?? '', /needs review/u);
 });
 
-test('topology beta never presents a telemetry edge as green before stable convergence', () => {
+test('topology beta independently distinguishes high and low confidence branches while collecting', () => {
   const presentation = buildTopologyPresentation({
     ...document,
     decision: 'COLLECT_MORE',
@@ -221,12 +224,16 @@ test('topology beta never presents a telemetry edge as green before stable conve
     },
   });
 
-  assert.equal(presentation.displayedEdges[0]?.state, 'REVIEW');
+  assert.equal(presentation.displayedEdges[0]?.state, 'CONFIDENT');
   assert.equal(presentation.displayedEdges[1]?.state, 'REVIEW');
 });
 
-test('topology beta fails closed without independently verifiable run evidence', () => {
-  const presentation = buildTopologyPresentation({ ...document, evidence: undefined });
+test('topology beta fails closed when an unsupported payload omits verifiable run evidence', () => {
+  const presentation = buildTopologyPresentation({
+    ...document,
+    schemaVersion: 2,
+    evidence: undefined,
+  });
 
   assert.deepEqual(presentation.displayedEdges, []);
   assert.deepEqual(presentation.forest, []);
@@ -271,6 +278,28 @@ test('topology beta fails closed on explicit run blockers or durable job failure
   ]) {
     assert.deepEqual(buildTopologyPresentation(unsafeDocument).displayedEdges, []);
   }
+});
+
+test('topology beta keeps the last successful beta candidates during a harmless duplicate-start conflict', () => {
+  const presentation = buildTopologyPresentation({
+    ...document,
+    evidence: undefined,
+    nodes: document.nodes.map((node) => ({
+      ...node,
+      sampleCount: undefined,
+      telemetryEvidenceValid: undefined,
+    })),
+    reconstruction: {
+      locationId: 'essendon',
+      state: 'WAITING_RETRY',
+      job: { lastErrorCode: 'IDEMPOTENCYCONFLICTERROR', consecutiveFailures: 2 },
+    },
+  });
+
+  assert.deepEqual(
+    presentation.displayedEdges.map((edge) => edge.state),
+    ['CONFIDENT', 'REVIEW'],
+  );
 });
 
 test('topology beta fails closed on incoherent endpoint or source-window evidence', () => {
@@ -318,14 +347,22 @@ test('topology beta downgrades green when the evidence horizon is too short', ()
   assert.equal(presentation.displayedEdges[0]?.state, 'REVIEW');
 });
 
-test('topology beta withholds an incomplete telemetry hypothesis', () => {
+test('topology beta displays a safe partial telemetry forest', () => {
   const presentation = buildTopologyPresentation({
     ...document,
     edges: [document.edges[0]!],
   });
 
-  assert.deepEqual(presentation.displayedEdges, []);
-  assert.deepEqual(presentation.forest, []);
+  assert.deepEqual(
+    presentation.displayedEdges.map((edge) => `${edge.parent}->${edge.child}`),
+    ['grid->panel'],
+  );
+  assert.equal(presentation.forest[0]?.node.meterId, 'grid');
+  assert.equal(presentation.forest[0]?.children[0]?.node.meterId, 'panel');
+  assert.deepEqual(
+    presentation.unplacedNodes.map((node) => node.meterId),
+    ['load'],
+  );
 });
 
 test('topology beta keeps explicitly unresolved meters out of the relationship tree', () => {
@@ -380,17 +417,16 @@ test('topology beta fails closed when an unreviewed endpoint omits its valid sam
   );
 });
 
-test('topology beta fails closed when telemetry is pending or overlap is below the review floor', () => {
+test('topology beta shows qualified candidates while telemetry is pending and filters below-floor edges', () => {
   const waitingPresentation = buildTopologyPresentation({
     ...document,
     decision: 'WAITING_TELEMETRY',
   });
-  assert.deepEqual(waitingPresentation.displayedEdges, []);
-  assert.deepEqual(waitingPresentation.forest, []);
   assert.deepEqual(
-    waitingPresentation.unplacedNodes.map((node) => node.meterId),
-    ['grid', 'load', 'panel'],
+    waitingPresentation.displayedEdges.map((edge) => edge.state),
+    ['CONFIDENT', 'REVIEW'],
   );
+  assert.deepEqual(waitingPresentation.unplacedNodes, []);
 
   const lowOverlapPresentation = buildTopologyPresentation({
     ...document,

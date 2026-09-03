@@ -134,6 +134,25 @@ function nodeLacksTelemetryEvidence(
     || !nearlyEqual(validFraction, expectedValidFraction);
 }
 
+function nodeLacksBetaCandidateEvidence(node: TopologyBetaNode): boolean {
+  const validSampleCount = node.validSampleCount;
+  const validFraction = node.validFraction;
+  return node.telemetryStatus?.trim().toUpperCase() !== 'ONLINE'
+    || node.telemetryEvidenceValid === false
+    || !isNonNegativeInteger(validSampleCount)
+    || validSampleCount <= 0
+    || !isUnitInterval(validFraction)
+    || validFraction <= 0;
+}
+
+function hasLegacyBetaCandidateEvidence(document: TopologyBetaDocument): boolean {
+  const errorCode = document.reconstruction?.job?.lastErrorCode?.trim().toUpperCase();
+  return document.schemaVersion === 1
+    && document.surface === 'BETA_REVIEW_ONLY'
+    && document.evidence == null
+    && (!errorCode || errorCode === 'IDEMPOTENCYCONFLICTERROR');
+}
+
 function validatedTelemetryEvidence(
   document: TopologyBetaDocument,
   minimumOverlap: number,
@@ -143,6 +162,8 @@ function validatedTelemetryEvidence(
   const bootstrap = evidence?.bootstrap;
   const assessmentReasons = evidence?.assessmentReasons;
   const blockReasons = evidence?.telemetryCandidateBlockReasons;
+  const jobErrorCode = document.reconstruction?.job?.lastErrorCode?.trim().toUpperCase();
+  const duplicateStartConflict = jobErrorCode === 'IDEMPOTENCYCONFLICTERROR';
   if (!evidence
     || !sourceWindow
     || !bootstrap
@@ -150,15 +171,14 @@ function validatedTelemetryEvidence(
     || assessmentReasons.some((reason) => typeof reason !== 'string' || !reason.trim())
     || assessmentReasons.some((reason) => [
       'INVALID_EVIDENCE_DIAGNOSTICS',
-      'BEST_HYPOTHESIS_INCOMPLETE_ROOTED_TREE',
       'BOOTSTRAP_EVIDENCE_INCOMPLETE',
-      'WAITING_FOR_OFFLINE_METERS',
     ].includes(reason.trim().toUpperCase()))
     || !Array.isArray(blockReasons)
     || blockReasons.some((reason) => typeof reason !== 'string' || !reason.trim())
     || blockReasons.length > 0
-    || document.reconstruction?.job?.lastErrorCode
-    || (document.reconstruction?.job?.consecutiveFailures ?? 0) > 0
+    || (jobErrorCode && !duplicateStartConflict)
+    || ((document.reconstruction?.job?.consecutiveFailures ?? 0) > 0
+      && !duplicateStartConflict)
   ) return null;
 
   const { fromTs, toTs, intervalSeconds } = sourceWindow;
@@ -254,46 +274,6 @@ function edgeHasImpossibleOverlap(
         && edge.overlapSampleCount > child.validSampleCount));
 }
 
-function hasCompleteRootedHypothesis(
-  nodes: TopologyBetaNode[],
-  edges: TopologyBetaEdge[],
-  expectedRootMeterId?: string | null,
-): boolean {
-  const nodeIds = nodes.map((node) => node.meterId);
-  const known = new Set(nodeIds);
-  if (known.size !== nodeIds.length || known.size === 0 || edges.length !== known.size - 1) {
-    return false;
-  }
-
-  const incoming = new Map<string, number>();
-  const children = new Map<string, string[]>();
-  const seenEdges = new Set<string>();
-  for (const edge of edges) {
-    const key = `${edge.parent}\u0000${edge.child}`;
-    if (!known.has(edge.parent)
-      || !known.has(edge.child)
-      || edge.parent === edge.child
-      || seenEdges.has(key)
-    ) return false;
-    seenEdges.add(key);
-    incoming.set(edge.child, (incoming.get(edge.child) ?? 0) + 1);
-    if ((incoming.get(edge.child) ?? 0) !== 1) return false;
-    children.set(edge.parent, [...(children.get(edge.parent) ?? []), edge.child]);
-  }
-
-  const roots = nodeIds.filter((meterId) => !incoming.has(meterId));
-  if (roots.length !== 1 || (expectedRootMeterId && roots[0] !== expectedRootMeterId)) return false;
-  const visited = new Set<string>();
-  const pending = [roots[0]!];
-  while (pending.length > 0) {
-    const meterId = pending.pop()!;
-    if (visited.has(meterId)) return false;
-    visited.add(meterId);
-    pending.push(...(children.get(meterId) ?? []));
-  }
-  return visited.size === known.size;
-}
-
 function hasSafeReviewedForest(nodes: TopologyBetaNode[], edges: TopologyBetaEdge[]): boolean {
   const nodeIds = nodes.map((node) => node.meterId);
   const known = new Set(nodeIds);
@@ -361,7 +341,7 @@ function normalizeTelemetryEdgeState(
   parent: TopologyBetaNode,
   child: TopologyBetaNode,
   document: TopologyBetaDocument,
-  evidence: ValidatedTelemetryEvidence,
+  evidence: ValidatedTelemetryEvidence | null,
 ): TopologyBetaEdge {
   if (edge.state !== 'CONFIDENT') return edge;
   const configuredValidFraction = document.thresholds.minimumHighValidFraction;
@@ -379,7 +359,7 @@ function normalizeTelemetryEdgeState(
       ? Math.max(7, configuredEvidenceDays)
       : Number.POSITIVE_INFINITY;
   const derivedValidSampleCount = Math.ceil(
-    highEvidenceDays * 86_400 / evidence.intervalSeconds * highValidFraction,
+    highEvidenceDays * 86_400 / (evidence?.intervalSeconds ?? 300) * highValidFraction,
   );
   const configuredValidSampleCount = document.thresholds.minimumHighValidSampleCount;
   const highValidSampleCount = configuredValidSampleCount == null
@@ -393,7 +373,7 @@ function normalizeTelemetryEdgeState(
     : isNonNegativeInteger(configuredHighOverlap)
       ? Math.max(576, configuredHighOverlap)
       : Number.POSITIVE_INFINITY;
-  const stronglySupported = evidence.stableForGreen && finiteProbabilityMeetsFloor(
+  const stronglySupported = finiteProbabilityMeetsFloor(
     edge.topKInclusionWeight,
     Math.max(0.9, document.thresholds.minimumTopKInclusion),
   ) && finiteProbabilityMeetsFloor(
@@ -404,8 +384,8 @@ function normalizeTelemetryEdgeState(
     configuredHighOverlap,
     576,
   )
-    && evidence.bootstrapWindowSize >= highOverlap
-    && evidence.evidenceDays >= highEvidenceDays
+    && (!evidence || evidence.bootstrapWindowSize >= highOverlap)
+    && (!evidence || evidence.evidenceDays >= highEvidenceDays)
     && [parent, child].every((node) => (
       finiteProbabilityMeetsConfiguredFloor(
         node.validFraction,
@@ -482,38 +462,32 @@ function buildForest(
 export function buildTopologyPresentation(document: TopologyBetaDocument): TopologyPresentation {
   const nodeById = new Map(document.nodes.map((node) => [node.meterId, node]));
   const unresolved = new Set(document.unresolvedMeterIds);
-  const normalizedDecision = typeof document.decision === 'string'
-    ? document.decision.trim().toUpperCase().split('.').at(-1)
-    : '';
-  const waitingForTelemetry = normalizedDecision === 'WAITING_TELEMETRY'
-    || document.nodes.some((node) => node.telemetryStatus?.trim().toUpperCase() !== 'ONLINE');
   const configuredMinimumOverlap = document.thresholds.minimumLowOverlapSamples;
   const minimumOverlap = isNonNegativeInteger(configuredMinimumOverlap)
     ? Math.max(288, configuredMinimumOverlap)
     : Number.POSITIVE_INFINITY;
   const telemetryEvidence = validatedTelemetryEvidence(document, minimumOverlap);
+  const candidateEvidenceAvailable = telemetryEvidence !== null
+    || hasLegacyBetaCandidateEvidence(document);
   const reviewedEdges = document.edges.filter(isReviewedTopologyEdge);
   const reviewedStructureValid = hasSafeReviewedForest(document.nodes, reviewedEdges);
-  const telemetryStructureValid = unresolved.size === 0
-    && document.unknownRequestedMeters.length === 0
-    && hasCompleteRootedHypothesis(
-      document.nodes,
-      document.edges,
-      document.location.rootMeterId,
-    );
-  const displayedEdges = document.edges.flatMap((edge) => {
+  const telemetryEdges = document.edges.filter((edge) => !isReviewedTopologyEdge(edge));
+  const telemetryStructureValid = document.unknownRequestedMeters.length === 0
+    && hasSafeReviewedForest(document.nodes, telemetryEdges);
+  const candidateEdges = document.edges.flatMap((edge) => {
     const parent = nodeById.get(edge.parent);
     const child = nodeById.get(edge.child);
     if (!parent || !child) return [];
     // Reviewed site evidence has its own explicit provenance and is not a
     // telemetry-confidence claim, so telemetry diagnostics do not veto it.
     if (isReviewedTopologyEdge(edge)) return reviewedStructureValid ? [edge] : [];
-    if (!telemetryEvidence || !telemetryStructureValid) return [];
+    if (!candidateEvidenceAvailable || !telemetryStructureValid) return [];
     if (edgeHasImpossibleOverlap(edge, parent, child)) return [];
-    if (waitingForTelemetry || unresolved.has(edge.parent) || unresolved.has(edge.child)) return [];
-    if (nodeLacksTelemetryEvidence(parent, telemetryEvidence.maximumSampleCount)
-      || nodeLacksTelemetryEvidence(child, telemetryEvidence.maximumSampleCount)
-    ) return [];
+    const endpointEvidenceUnavailable = telemetryEvidence
+      ? nodeLacksTelemetryEvidence(parent, telemetryEvidence.maximumSampleCount)
+        || nodeLacksTelemetryEvidence(child, telemetryEvidence.maximumSampleCount)
+      : nodeLacksBetaCandidateEvidence(parent) || nodeLacksBetaCandidateEvidence(child);
+    if (endpointEvidenceUnavailable || unresolved.has(edge.child)) return [];
     const meetsDisplayFloor = typeof edge.overlapSampleCount === 'number'
       && Number.isFinite(edge.overlapSampleCount)
       && Number.isInteger(edge.overlapSampleCount)
@@ -530,6 +504,11 @@ export function buildTopologyPresentation(document: TopologyBetaDocument): Topol
       ? [normalizeTelemetryEdgeState(edge, parent, child, document, telemetryEvidence)]
       : [];
   });
+  const displayedEdges = hasSafeReviewedForest(document.nodes, candidateEdges)
+    ? candidateEdges
+    : reviewedStructureValid
+      ? reviewedEdges
+      : [];
 
   const relationshipNodeIds = new Set<string>();
   for (const edge of displayedEdges) {

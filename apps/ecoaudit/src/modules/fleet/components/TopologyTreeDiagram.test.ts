@@ -36,9 +36,12 @@ test('topology diagram shows parent, child and sibling structure without raw tel
     children: [child('load-a', 'D-A'), child('load-b', 'D-B')],
   }];
 
-  const markup = renderToStaticMarkup(createElement(TopologyTreeDiagram, { forest }));
+  const markup = renderToStaticMarkup(createElement(TopologyTreeDiagram, {
+    forest,
+    rootMeterId: 'grid',
+  }));
 
-  assert.match(markup, /Root meter/u);
+  assert.match(markup, /Site root/u);
   assert.match(markup, /Child of Main grid/u);
   assert.match(markup, /Sibling 1\/2/u);
   assert.match(markup, /Sibling 2\/2/u);
@@ -48,4 +51,20 @@ test('topology diagram shows parent, child and sibling structure without raw tel
   assert.match(markup, /Operator-reviewed site evidence/u);
   assert.doesNotMatch(markup, /stroke-dasharray/u);
   assert.doesNotMatch(markup, /TELEMETRY_OFFLINE|Telemetry offline/u);
+});
+
+test('topology diagram identifies a disconnected partial branch without calling it the site root', () => {
+  const forest: TopologyTreeItem[] = [{
+    node: { meterId: 'panel', deviceId: 'D-PANEL', label: 'Panel', state: 'CONFIDENT' },
+    incomingEdge: null,
+    children: [],
+  }];
+
+  const markup = renderToStaticMarkup(createElement(TopologyTreeDiagram, {
+    forest,
+    rootMeterId: 'grid',
+  }));
+
+  assert.match(markup, /Branch root — upstream not shown/u);
+  assert.doesNotMatch(markup, /Site root/u);
 });

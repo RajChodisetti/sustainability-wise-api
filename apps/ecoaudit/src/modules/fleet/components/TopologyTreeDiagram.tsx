@@ -31,24 +31,33 @@ function relationshipTone(edge: TopologyBetaEdge) {
     ? {
         border: 'border-[var(--green)]',
         badge: 'bg-[var(--green-soft)] text-[var(--green)]',
-        label: 'Strong support',
+        label: 'High confidence',
         marker: 'topology-arrow-confident',
         stroke: 'var(--green)',
       }
     : {
         border: 'border-[var(--amber)]',
         badge: 'bg-[var(--amber-soft)] text-[var(--amber)]',
-        label: 'Needs review',
+        label: 'Low confidence',
         marker: 'topology-arrow-review',
         stroke: 'var(--amber)',
       };
 }
 
-function DiagramMeterCard({ layoutNode }: { layoutNode: TopologyTreeLayoutNode }) {
+function DiagramMeterCard({
+  layoutNode,
+  rootMeterId,
+}: {
+  layoutNode: TopologyTreeLayoutNode;
+  rootMeterId?: string | null;
+}) {
   const { item, parent, siblingCount, siblingIndex } = layoutNode;
   const role = topologyNodeRoleDisplay(item.node);
   const tone = item.incomingEdge ? relationshipTone(item.incomingEdge) : null;
   const parentLabel = parent?.label || parent?.meterId;
+  const rootLabel = item.node.meterId === rootMeterId
+    ? 'Site root'
+    : 'Branch root — upstream not shown';
   const relationshipEvidence = item.incomingEdge
     ? isReviewedTopologyEdge(item.incomingEdge)
       ? 'Operator-reviewed site evidence'
@@ -68,9 +77,9 @@ function DiagramMeterCard({ layoutNode }: { layoutNode: TopologyTreeLayoutNode }
       <div className="flex min-w-0 items-center justify-between gap-2 text-[10px] font-extrabold uppercase tracking-[0.08em]">
         <span
           className={`min-w-0 truncate rounded-full px-2 py-1 ${tone?.badge ?? 'bg-[var(--primary-soft)] text-[var(--primary)]'}`}
-          title={parentLabel ? `Child of ${parentLabel}` : 'Root meter'}
+          title={parentLabel ? `Child of ${parentLabel}` : rootLabel}
         >
-          {parentLabel ? `Child of ${parentLabel}` : 'Root meter'}
+          {parentLabel ? `Child of ${parentLabel}` : rootLabel}
         </span>
         {parent && siblingCount > 1 ? (
           <span className="shrink-0 text-[var(--muted)]">Sibling {siblingIndex + 1}/{siblingCount}</span>
@@ -114,21 +123,27 @@ function DiagramMeterCard({ layoutNode }: { layoutNode: TopologyTreeLayoutNode }
 function AccessibleTreeBranch({
   item,
   parentLabel,
+  rootMeterId,
 }: {
   item: TopologyTreeItem;
   parentLabel?: string;
+  rootMeterId?: string | null;
 }) {
   const label = item.node.label || item.node.meterId;
   return (
     <li>
-      {label}. {parentLabel ? `Child of ${parentLabel}.` : 'Root meter.'}{' '}
+      {label}. {parentLabel
+        ? `Child of ${parentLabel}.`
+        : item.node.meterId === rootMeterId
+          ? 'Site root.'
+          : 'Branch root; upstream relationship is not shown.'}{' '}
       {item.children.length
         ? `Feeds ${item.children.length} ${item.children.length === 1 ? 'child' : 'children'}.`
         : 'End branch.'}
       {item.children.length ? (
         <ul>
           {item.children.map((child) => (
-            <AccessibleTreeBranch key={child.node.meterId} item={child} parentLabel={label} />
+            <AccessibleTreeBranch key={child.node.meterId} item={child} parentLabel={label} rootMeterId={rootMeterId} />
           ))}
         </ul>
       ) : null}
@@ -136,7 +151,13 @@ function AccessibleTreeBranch({
   );
 }
 
-export function TopologyTreeDiagram({ forest }: { forest: TopologyTreeItem[] }) {
+export function TopologyTreeDiagram({
+  forest,
+  rootMeterId,
+}: {
+  forest: TopologyTreeItem[];
+  rootMeterId?: string | null;
+}) {
   const layout = buildTopologyTreeLayout(forest);
   return (
     <>
@@ -203,7 +224,7 @@ export function TopologyTreeDiagram({ forest }: { forest: TopologyTreeItem[] }) 
             })}
           </svg>
           {layout.nodes.map((layoutNode) => (
-            <DiagramMeterCard key={layoutNode.item.node.meterId} layoutNode={layoutNode} />
+            <DiagramMeterCard key={layoutNode.item.node.meterId} layoutNode={layoutNode} rootMeterId={rootMeterId} />
           ))}
         </div>
       </div>
@@ -211,7 +232,7 @@ export function TopologyTreeDiagram({ forest }: { forest: TopologyTreeItem[] }) 
       <div className="sr-only">
         <h4>Electrical relationship tree</h4>
         <ul>
-          {forest.map((item) => <AccessibleTreeBranch key={item.node.meterId} item={item} />)}
+          {forest.map((item) => <AccessibleTreeBranch key={item.node.meterId} item={item} rootMeterId={rootMeterId} />)}
         </ul>
       </div>
     </>

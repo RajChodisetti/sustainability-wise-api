@@ -34,6 +34,33 @@ import type {
   TopologyBetaNode,
 } from '@/modules/fleet/types/domain';
 
+const ACTIVE_RECONSTRUCTION_STATES = new Set([
+  'STARTING',
+  'ANALYSING',
+  'COLLECTING',
+  'RUNNING',
+  'WAITING_FOR_DATA',
+  'WAITING_RETRY',
+  'STOPPING',
+]);
+
+function reconstructionStateLabel(state?: string): string {
+  const labels: Record<string, string> = {
+    STARTING: 'Starting',
+    ANALYSING: 'Updating map',
+    COLLECTING: 'Collecting evidence',
+    RUNNING: 'Updating map',
+    WAITING_FOR_DATA: 'Waiting for next evidence',
+    WAITING_RETRY: 'Retry scheduled',
+    STOPPING: 'Stopping',
+    STOPPED: 'Stopped',
+    PAUSED: 'Paused',
+    IDLE: 'Idle',
+  };
+  const normalized = state?.trim().toUpperCase() || 'IDLE';
+  return labels[normalized] ?? normalized.replaceAll('_', ' ').toLocaleLowerCase();
+}
+
 function PendingMeterCard({ node }: { node: TopologyBetaNode }) {
   const role = topologyNodeRoleDisplay(node);
   return (
@@ -134,6 +161,7 @@ function TopologyMap({
   presentation: TopologyPresentation;
 }) {
   const { forest, unplacedNodes, suppressedEdgeCount } = presentation;
+  const partial = document.publicHierarchyAvailable !== true;
   return (
     <Card className="min-w-0 !p-0">
       <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
@@ -151,7 +179,7 @@ function TopologyMap({
             {topologyDecisionLabel(document.decision)}
           </span>
           <span className="rounded-full border border-[var(--border)] bg-[var(--surface2)] px-3 py-1.5 text-xs font-bold text-[var(--text-sub)]">
-            {document.reconstruction?.state || 'IDLE'}
+            {reconstructionStateLabel(document.reconstruction?.state)}
           </span>
         </div>
       </div>
@@ -161,9 +189,9 @@ function TopologyMap({
 
       <div className="border-b border-[var(--border)] bg-[var(--surface2)] px-5 py-3 sm:px-6">
         <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold">
-          <span className="inline-flex items-center gap-2 text-[var(--green)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--green)]" />Strong telemetry support</span>
+          <span className="inline-flex items-center gap-2 text-[var(--green)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--green)]" />High-confidence candidate</span>
           <span className="inline-flex items-center gap-2 text-[var(--primary)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />Reviewed site relation</span>
-          <span className="inline-flex items-center gap-2 text-[var(--amber)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--amber)]" />Review or more data</span>
+          <span className="inline-flex items-center gap-2 text-[var(--amber)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--amber)]" />Low-confidence candidate</span>
           <span className="inline-flex items-center gap-2 text-[var(--text-sub)]"><i className="h-2.5 w-2.5 rounded-full bg-[var(--muted)]" />Waiting for evidence</span>
         </div>
       </div>
@@ -174,15 +202,23 @@ function TopologyMap({
         </div>
       ) : null}
 
+      {partial && forest.length > 0 ? (
+        <div className="border-b border-[var(--amber)]/30 bg-[var(--amber-soft)] px-5 py-3 text-xs font-semibold leading-5 text-[var(--text)] sm:px-6" role="status">
+          <strong>Partial evidence map.</strong> Green relationships have strong telemetry support; yellow relationships are low-confidence candidates. Neither colour means the complete site wiring has been published or confirmed.
+        </div>
+      ) : null}
+
       <div className="p-5 sm:p-6">
         <section aria-labelledby="topology-relationship-tree-title">
-          <h3 id="topology-relationship-tree-title" className="text-sm font-extrabold text-[var(--text)]">Relationship tree</h3>
+          <h3 id="topology-relationship-tree-title" className="text-sm font-extrabold text-[var(--text)]">
+            {partial ? 'Partial relationship tree' : 'Relationship tree'}
+          </h3>
           <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
             Parent meters sit above their children. Siblings share a row and each arrow points from parent to child.
           </p>
           <div className="mt-4">
             {forest.length ? (
-              <TopologyTreeDiagram forest={forest} />
+              <TopologyTreeDiagram forest={forest} rootMeterId={document.location.rootMeterId} />
             ) : (
               <EmptyState
                 icon="zap"
@@ -263,10 +299,15 @@ export default function TopologyBetaPage() {
     queryFn: () => getTopologyReconstruction(activeLocationId),
     enabled: Boolean(activeLocationId),
     refetchInterval: (query) => (
-      query.state.data?.reconstruction?.state === 'RUNNING' ? 15_000 : false
+      ACTIVE_RECONSTRUCTION_STATES.has(query.state.data?.reconstruction?.state ?? '')
+        ? 15_000
+        : false
     ),
   });
   const document = topologyQuery.data;
+  const reconstructionActive = ACTIVE_RECONSTRUCTION_STATES.has(
+    document?.reconstruction?.state ?? '',
+  );
   const topologyPresentation = useMemo(
     () => (document ? buildTopologyPresentation(document) : null),
     [document],
@@ -356,7 +397,7 @@ export default function TopologyBetaPage() {
     <div>
       <PageHeader
         title="Electrical Map"
-        subtitle="Continuously reconstruct an observed-meter hierarchy. Telemetry-supported relations appear green, reviewed site evidence blue, and possible relations yellow."
+        subtitle="Show supported branches while the complete observed-meter hierarchy continues collecting. High-confidence candidates appear green, reviewed site evidence blue, and low-confidence candidates yellow."
         actions={(
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-cyan-100 px-3 py-1.5 text-xs font-extrabold uppercase tracking-[0.1em] text-cyan-900">Beta</span>
@@ -511,7 +552,7 @@ export default function TopologyBetaPage() {
               <Icon name="eye" size={17} />{action === 'view' ? 'Loading…' : 'View latest'}
             </Button>
             <Button
-              disabled={!isAdmin || selectedBusinessSiteQuery.isFetching || action !== null}
+              disabled={!isAdmin || selectedBusinessSiteQuery.isFetching || action !== null || reconstructionActive}
               onClick={() => void start()}
             >
               <Icon name="activity" size={17} />{action === 'start' ? 'Starting…' : 'Start reconstruction'}
@@ -519,7 +560,7 @@ export default function TopologyBetaPage() {
             <Button
               variant="danger"
               className="sm:col-span-2 xl:col-span-1 2xl:col-span-2"
-              disabled={!isAdmin || !activeLocationId || action !== null || document?.reconstruction?.state !== 'RUNNING'}
+              disabled={!isAdmin || !activeLocationId || action !== null || !reconstructionActive}
               onClick={() => void stop()}
             >
               <Icon name="close" size={17} />{action === 'stop' ? 'Stopping…' : 'Stop reconstruction'}
@@ -538,7 +579,7 @@ export default function TopologyBetaPage() {
               <section className="mb-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5" aria-label="Topology evidence summary">
                 <StatCard label="Selected meters" value={formatNumber(document.summary.selectedMeterCount)} icon="gauge" />
                 <StatCard
-                  label="Strong telemetry support"
+                  label="High-confidence candidates"
                   value={formatNumber(topologyPresentation.displayedEdges.filter((edge) => (
                     edge.state === 'CONFIDENT' && !isReviewedTopologyEdge(edge)
                   )).length)}
@@ -551,7 +592,7 @@ export default function TopologyBetaPage() {
                   icon="eye"
                 />
                 <StatCard
-                  label="Needs review"
+                  label="Low-confidence candidates"
                   value={formatNumber(topologyPresentation.displayedEdges.filter((edge) => (
                     edge.state === 'REVIEW' && !isReviewedTopologyEdge(edge)
                   )).length)}
