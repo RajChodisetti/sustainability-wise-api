@@ -316,7 +316,9 @@ export function InstallHubRoutePage() {
               </p>
               <p className="mt-1 text-xs text-[var(--muted)]">
                 Times use {result.timezone}.{' '}
-                {result.optimization === 'road_duration'
+                {!result.jobs.length
+                  ? 'No travel estimates are needed for an empty route.'
+                  : result.optimization === 'road_duration'
                   ? 'Ordered using road travel-time estimates.'
                   : 'Road routing is unavailable, so this order uses straight-line estimates.'}
                 {' '}These suggestions do not change your schedule.

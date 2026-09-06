@@ -7,7 +7,6 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import {
   useCreateCostLine,
   useDeleteCostLine,
-  useUpdateCostLine,
 } from '@/modules/installhub/finance/hooks';
 import type { CostCategory, CostLine } from '@/modules/installhub/finance/types';
 
@@ -23,7 +22,6 @@ export function CostLinesPanel({
   canEdit: boolean;
 }) {
   const create = useCreateCostLine(installationId);
-  const update = useUpdateCostLine(installationId);
   const remove = useDeleteCostLine(installationId);
   const [error, setError] = useState<string | null>(null);
 
@@ -31,14 +29,14 @@ export function CostLinesPanel({
   const [description, setDescription] = useState('');
   const [costAmount, setCostAmount] = useState('');
   const [sellAmount, setSellAmount] = useState('');
-  const [hours, setHours] = useState('');
 
   return (
     <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
       <div>
         <h3 className="text-sm font-extrabold text-[var(--text)]">Cost lines</h3>
         <p className="mt-1 text-xs text-[var(--text-sub)]">
-          Log labour, materials, and other costs. Toggle invoiced as you bill outside the portal.
+          Log labour, materials, and other costs. Labour hours are managed through audited
+          financial settings. Invoice status follows invoice creation, issue and void actions.
         </p>
       </div>
 
@@ -77,25 +75,7 @@ export function CostLinesPanel({
                     <span className={line.billable ? 'text-[var(--primary)]' : 'text-[var(--muted)]'}>
                       {line.billable ? 'Billable' : 'Non-billable'}
                     </span>
-                    {canEdit ? (
-                      <button
-                        type="button"
-                        className="text-[var(--text-sub)] underline"
-                        onClick={() => {
-                          setError(null);
-                          void update
-                            .mutateAsync({
-                              lineId: line.id,
-                              input: { invoiced: !line.invoiced },
-                            })
-                            .catch((err) => setError(installHubConnectionErrorMessage(err)));
-                        }}
-                      >
-                        {line.invoiced ? 'Invoiced' : 'Mark invoiced'}
-                      </button>
-                    ) : (
-                      <span>{line.invoiced ? 'Invoiced' : 'Uninvoiced'}</span>
-                    )}
+                    <span>{line.invoiced ? 'Invoiced' : 'Uninvoiced'}</span>
                   </div>
                 </td>
                 {canEdit ? (
@@ -143,15 +123,12 @@ export function CostLinesPanel({
                 description: description.trim(),
                 costAmount: Number(costAmount),
                 sellAmount: sellAmount.trim() === '' ? null : Number(sellAmount),
-                hours: hours.trim() === '' ? null : Number(hours),
                 billable: true,
-                invoiced: false,
               })
               .then(() => {
                 setDescription('');
                 setCostAmount('');
                 setSellAmount('');
-                setHours('');
               })
               .catch((err) => setError(installHubConnectionErrorMessage(err)));
           }}
@@ -195,17 +172,6 @@ export function CostLinesPanel({
               min="0"
               value={sellAmount}
               onChange={(e) => setSellAmount(e.target.value)}
-              placeholder="Optional"
-            />
-          </div>
-          <div>
-            <FieldLabel>Hours</FieldLabel>
-            <Input
-              type="number"
-              step="0.25"
-              min="0"
-              value={hours}
-              onChange={(e) => setHours(e.target.value)}
               placeholder="Optional"
             />
           </div>
