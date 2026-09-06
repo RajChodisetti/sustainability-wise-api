@@ -10,6 +10,7 @@ import {
   installHubInstallationStatusForSync,
   installHubSiteAddressChanged,
   installHubSubmittedAddressSource,
+  rememberInstallHubClientSite,
   parseInstallHubUploadBaseTreeRevision,
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
@@ -261,11 +262,10 @@ test('InstallHub address comparison invalidates only meaningful address changes'
   }), true);
 });
 
-test('InstallHub sync rejects an incomplete installation payload', () => {
+test('InstallHub sync still requires installation transport identity', () => {
   assert.throws(
     () => installationValuesFromPayload({
-      id: 'installation-1',
-      siteName: 'Missing required values',
+      siteName: 'Missing required ID',
     }, {
       userId: 'authenticated-user',
       role: 'inspector',
@@ -273,7 +273,7 @@ test('InstallHub sync rejects an incomplete installation payload', () => {
     (error: unknown) => (
       error instanceof Error &&
       'detail' in error &&
-      error.detail === 'clientName is required'
+      error.detail === 'id is required'
     ),
   );
 });
@@ -1053,4 +1053,33 @@ test('InstallHub form mapping rejects non-array schema-v2 attachments', () => {
       && error.detail === 'attachments must be an array'
     ),
   );
+});
+
+test('optional Field capture detaches obsolete directory IDs without requiring a reusable site', async () => {
+  for (const cleared of ['clientName', 'siteName', 'siteAddress'] as const) {
+    const tree = normalizeInstallationTreeV2(prepareCanonicalInstallHubWrite(
+      freshCanonicalWrite(`incomplete-${cleared}`, {}), undefined, `ih_incomplete_${cleared}`,
+    ));
+    tree.installation[cleared] = '   ';
+    tree.installation.clientId = 'old-client';
+    tree.installation.clientSiteId = 'old-site';
+    const writes: unknown[] = [];
+    const executor = {
+      update: () => ({ set: (values: unknown) => ({ where: async () => { writes.push(values); } }) }),
+    } as unknown as Parameters<typeof rememberInstallHubClientSite>[0];
+    const before = { ...tree.installation };
+    const result = await rememberInstallHubClientSite(executor, tree.installation, 'actor');
+    assert.deepEqual(result, { client: null, site: null });
+    assert.deepEqual(writes, [{ businessSiteId: null }]);
+    assert.deepEqual(tree.installation, { ...before, clientId: null, clientSiteId: null });
+  }
+});
+
+test('legacy Field capture allows optional client and address while rejecting supplied wrong types', () => {
+  const payload = { id: 'legacy-optional', siteName: '', clientName: '', siteAddress: '', inspectorName: 'Inspector', auditDate: '2026-09-05' };
+  const values = installationValuesFromPayload(payload, { userId: 'owner', role: 'inspector' });
+  assert.equal(values.siteName, 'Untitled installation');
+  assert.equal(values.clientName, '');
+  assert.equal(values.siteAddress, '');
+  assert.throws(() => installationValuesFromPayload({ ...payload, siteAddress: 123 }, { userId: 'owner', role: 'inspector' }), (error: unknown) => Boolean(error && typeof error === 'object' && 'detail' in error && error.detail === 'siteAddress must be a string'));
 });

@@ -53,14 +53,17 @@ import {
   installationReadiness,
   isValidInstallationSiteCode,
   normalizeInstallationTreeV2,
+  resolveMetadataReplayDisplayCodes,
   retainOmittedCanonicalInstallationFields,
   type CanonicalInstallation,
+  type CanonicalInstallationTree,
   type CanonicalFormSubmission,
   type InstallationAddressSource,
 } from './canonical.js';
 import {
   assertCompletedFormsImmutable,
   ensureCanonicalRecordVersion,
+  existingDisplayCodeClaims,
   isCanonicalChildOwnershipDatabaseError,
   loadCanonicalInstallationTree,
   projectLegacyInstallationTree,
@@ -535,6 +538,9 @@ function installHubLegacyAddressColumns(
 type InstallHubClientMemoryResult = {
   client: ClientDirectoryClientDto;
   site: ClientDirectorySiteDto;
+} | {
+  client: null;
+  site: null;
 };
 
 export function installHubSubmittedAddressSource(
@@ -550,11 +556,23 @@ export function installHubSubmittedAddressSource(
   );
 }
 
-async function rememberInstallHubClientSite(
+export async function rememberInstallHubClientSite(
   executor: InstallHubExecutor,
   installation: CanonicalInstallation,
   actorUserId: string,
 ): Promise<InstallHubClientMemoryResult> {
+  // A Field installation can be captured before its directory details are complete;
+  // a reusable site requires a client, site name and address. Never feed incomplete field
+  // capture into the shared service's stricter directory contract. Clear the
+  // product pointer so a later pull cannot restore a removed client/site ID.
+  if (![installation.clientName, installation.siteName, installation.siteAddress]
+    .every((value) => value.trim().length > 0)) {
+    installation.clientId = null;
+    installation.clientSiteId = null;
+    await executor.update(ihInstallations).set({ businessSiteId: null })
+      .where(eq(ihInstallations.id, installation.id));
+    return { client: null, site: null };
+  }
   const submittedSource = installHubSubmittedAddressSource(installation);
   const memory = await upsertClientSiteFromProductRecord(executor, {
     clientName: installation.clientName,
@@ -651,9 +669,9 @@ export function installationValuesFromPayload(
   existing?: typeof ihInstallations.$inferSelect,
 ) {
   const id = requiredString(payload, 'id');
-  const siteName = requiredString(payload, 'siteName');
-  const clientName = requiredString(payload, 'clientName');
-  const siteAddress = requiredString(payload, 'siteAddress');
+  const siteName = canonicalOptionalString(payload, 'siteName', 'Untitled installation');
+  const clientName = canonicalOptionalString(payload, 'clientName', '');
+  const siteAddress = canonicalOptionalString(payload, 'siteAddress', '');
   const derivedSiteCode = deriveInstallHubSiteCode(siteName);
   const siteLocality = legacyNullableText(payload, 'siteLocality', 200, existing?.siteLocality);
   const siteState = legacyNullableSiteState(payload, existing?.siteState);
@@ -1601,7 +1619,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         existingInstallation?.siteCode,
       );
 
-      let incomingTree;
+      let incomingTree: CanonicalInstallationTree;
       try {
         incomingTree = normalizeInstallationTreeV2(normalizationInput);
       } catch (error) {
@@ -1737,10 +1755,20 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               incomingTree.installation,
               request.user.userId,
             );
+            const comparisonTree = syncStage === 'metadata'
+              ? resolveMetadataReplayDisplayCodes({
+                  current: currentTree,
+                  incoming: incomingTree,
+                  existingClaims: await existingDisplayCodeClaims(installationId, tx),
+                })
+              : incomingTree;
             if (
               canonicalTreeMutationFingerprint(currentTree)
-              === canonicalTreeMutationFingerprint(incomingTree)
+              === canonicalTreeMutationFingerprint(comparisonTree)
             ) {
+              // The acknowledgement must return the same resolved identities
+              // that made this a no-op, not the retry's provisional labels.
+              incomingTree = comparisonTree;
               const recordVersionNumber = installHubSyncCreatesRecordVersion(syncStage)
                 ? await ensureCanonicalRecordVersion({
                     executor: tx,
@@ -1980,8 +2008,8 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         treeRevision: transactionResult.treeRevision,
         recordVersionNumber: transactionResult.recordVersionNumber || null,
         versionNumber: transactionResult.recordVersionNumber || null,
-        clientId: transactionResult.clientMemory.client.id,
-        clientSiteId: transactionResult.clientMemory.site.id,
+        clientId: transactionResult.clientMemory.client?.id ?? null,
+        clientSiteId: transactionResult.clientMemory.site?.id ?? null,
         clientMemory: transactionResult.clientMemory,
         readiness: paginateReadiness(transactionResult.readiness),
         displayCodeReconciliations: [
@@ -2310,8 +2338,8 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       treeRevision: transactionState.treeRevision,
       recordVersionNumber: transactionState.recordVersionNumber,
       versionNumber: null,
-      clientId: transactionState.clientMemory.client.id,
-      clientSiteId: transactionState.clientMemory.site.id,
+      clientId: transactionState.clientMemory.client?.id ?? null,
+      clientSiteId: transactionState.clientMemory.site?.id ?? null,
       clientMemory: transactionState.clientMemory,
     });
   });

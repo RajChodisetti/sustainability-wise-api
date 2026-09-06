@@ -2803,6 +2803,74 @@ export function canonicalOrderInstallationTree(
   return tree;
 }
 
+/**
+ * Resolve only a metadata retry's server-normalized display metadata against
+ * verified, already retained claims. This is a comparison copy, not allocation:
+ * it neither creates claims nor changes the submitted business tree.
+ */
+export function resolveMetadataReplayDisplayCodes(input: {
+  current: CanonicalInstallationTree;
+  incoming: CanonicalInstallationTree;
+  existingClaims: ReadonlyArray<DisplayCodeClaim & { installationId: string }>;
+}): CanonicalInstallationTree {
+  const tree = structuredClone(input.incoming);
+  const installationId = tree.installation.id;
+  if (input.current.installation.id !== installationId) return tree;
+  const entities = (value: CanonicalInstallationTree) => [
+    ...value.electricalAssets.map((item) => ({
+      type: 'board' as const, id: item.id, installationId: item.installationId, display: item.displayCode,
+    })),
+    ...value.siteAssets.map((item) => ({
+      type: 'site_asset' as const, id: item.id, installationId: item.installationId, display: item.displayCode,
+    })),
+    ...value.meterDevices.map((item) => ({
+      type: 'meter' as const, id: item.id, installationId: item.installationId, display: item.displayName,
+    })),
+  ];
+  const currentEntities = entities(input.current);
+  for (const entity of entities(tree)) {
+    const current = currentEntities.find((item) => item.type === entity.type && item.id === entity.id);
+    const claims = input.existingClaims.filter((claim) => (
+      claim.entityType === entity.type && claim.entityId === entity.id
+    ));
+    const claim = claims.length === 1 ? claims[0] : undefined;
+    if (
+      !current || !claim
+      || entity.installationId !== installationId || current.installationId !== installationId
+      || claim.installationId !== installationId
+      || current.display.provisional === true
+      || current.display.value !== claim.displayCode
+      || current.display.ruleVersion !== claim.ruleVersion
+      || normalizeDisplayCode(claim.displayCode) !== claim.normalizedDisplayCode
+    ) continue;
+    if (entity.display.isOverridden) {
+      // An accepted custom value stays user-owned. Only allocation's rule and
+      // marker normalization may differ; generatedValue/reason remain in the
+      // full fingerprint alongside the exact custom value.
+      if (claim.generated || !current.display.isOverridden
+        || entity.display.value !== current.display.value) continue;
+      entity.display.ruleVersion = claim.ruleVersion;
+      delete entity.display.provisional;
+      continue;
+    }
+    if (!claim.generated || current.display.isOverridden
+      || current.display.generatedValue !== claim.displayCode) continue;
+    // Supported pre-v4 serializers may omit the marker even when replaying an
+    // immutable rule-1/2/3 claim. Current-rule or unknown non-provisional
+    // identities remain an explicit comparison.
+    const knownLegacyDisplay = entity.display.ruleVersion >= 1 && entity.display.ruleVersion <= 3
+      && claim.ruleVersion >= 1 && claim.ruleVersion <= DISPLAY_CODE_RULE_VERSION;
+    if (entity.display.provisional !== true && !knownLegacyDisplay) continue;
+    entity.display.value = claim.displayCode;
+    entity.display.generatedValue = claim.displayCode;
+    entity.display.ruleVersion = claim.ruleVersion;
+    delete entity.display.provisional;
+    // Keep overrideReason and any other supplied display metadata, so they
+    // still participate in comparison alongside every name/type/relationship.
+  }
+  return tree;
+}
+
 export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree): string {
   const ordered = canonicalOrderInstallationTree(projectCanonicalOptionalDefaults(tree));
   const stripLifecycle = <T extends Record<string, unknown>>(value: T) => {
@@ -3181,7 +3249,10 @@ export function allocateDisplayCodes(input: {
       // claims refresh only when the portal sends the explicit v4 provisional
       // marker after a name or type edit.
       entity.display.value = priorForEntity.displayCode;
-      entity.display.generatedValue = priorForEntity.displayCode;
+      // New overrides retain their supplied generatedValue. Preserve the same
+      // captured metadata on subsequent writes, so an unrelated save cannot
+      // rewrite it and make that accepted body's exact replay conflict.
+      if (priorForEntity.generated) entity.display.generatedValue = priorForEntity.displayCode;
       entity.display.isOverridden = !priorForEntity.generated;
       entity.display.ruleVersion = priorForEntity.ruleVersion;
       entity.display.provisional = false;

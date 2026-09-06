@@ -55,7 +55,14 @@ copies retain original evidence URLs; when such a copy is later backed up, recon
 `photo_copy_references` rather than duplicating photo bytes. Keep push field names, full-snapshot
 deletion semantics, upload responses, and auth behavior backward compatible for installed clients.
 The optional-capture and TBC-only readiness policy is enforced server-side
-without requiring an installed mobile client upgrade. Authentication,
+without requiring an installed mobile client upgrade.
+Client/site directory learning is secondary to installation capture: when the
+client name, site name or display address is blank, skip reusable-directory
+upsert and detach the installation's business-site pointer. Persist the captured
+values and return `clientId: null`, `clientSiteId: null`, and
+`clientMemory: { client: null, site: null }`. Existing directory/site/job history
+is retained. Apply this boundary in canonical and legacy sync without weakening
+the shared client-directory validation used by other products. Authentication,
 ownership/parentage, compare-and-swap revisions, stable IDs, and structural
 payload/attachment validation remain enforced.
 Permanent Cloud Backup purge is limited to the creator or an elevated user, must reject active PDF

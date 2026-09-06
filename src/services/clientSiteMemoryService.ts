@@ -503,22 +503,18 @@ async function upsertProductJob(
 ): Promise<string> {
   const sourceId = requiredText(input.sourceId, 'job.sourceId', 500);
   const title = requiredText(input.title, 'job.title', 300);
+  // Share the site row lock used by Scheduler job creation before allocating
+  // this site's next revision, including when an existing product changes site.
+  await executor.select({ id: businessSites.id }).from(businessSites)
+    .where(eq(businessSites.id, siteId)).for('update');
   const [existing] = await executor.select().from(businessJobs).where(and(
     eq(businessJobs.sourceApp, input.sourceApp),
     eq(businessJobs.sourceType, input.sourceType),
     eq(businessJobs.sourceId, sourceId),
   )).limit(1);
 
-  let jobId: string;
-  if (existing) {
-    jobId = existing.id;
-    await executor.update(businessJobs).set({
-      siteId,
-      title,
-      status: input.status,
-      updatedAt: now,
-    }).where(eq(businessJobs.id, jobId));
-  } else {
+  let destinationRevision: { revisionNumber: number; previousJobId: string | null } | undefined;
+  if (!existing || existing.siteId !== siteId) {
     const [previous] = await executor.select({
       id: businessJobs.id,
       revisionNumber: businessJobs.revisionNumber,
@@ -526,6 +522,25 @@ async function upsertProductJob(
       eq(businessJobs.siteId, siteId),
       eq(businessJobs.sourceApp, input.sourceApp),
     )).orderBy(desc(businessJobs.revisionNumber)).limit(1);
+    destinationRevision = {
+      revisionNumber: (previous?.revisionNumber ?? 0) + 1,
+      previousJobId: previous?.id ?? null,
+    };
+  }
+
+  let jobId: string;
+  if (existing) {
+    jobId = existing.id;
+    await executor.update(businessJobs).set({
+      siteId,
+      // The source job and its historical predecessor remain the same record;
+      // only its destination site's revision namespace needs reallocation.
+      ...(destinationRevision ? { revisionNumber: destinationRevision.revisionNumber } : {}),
+      title,
+      status: input.status,
+      updatedAt: now,
+    }).where(eq(businessJobs.id, jobId));
+  } else {
     jobId = randomUUID();
     await executor.insert(businessJobs).values({
       id: jobId,
@@ -536,8 +551,7 @@ async function upsertProductJob(
       sourceApp: input.sourceApp,
       sourceType: input.sourceType,
       sourceId,
-      revisionNumber: (previous?.revisionNumber ?? 0) + 1,
-      previousJobId: previous?.id ?? null,
+      ...destinationRevision!,
       createdByUserId: input.createdByUserId ?? null,
       createdAt: now,
       updatedAt: now,

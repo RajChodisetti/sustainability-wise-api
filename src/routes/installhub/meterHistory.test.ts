@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CanonicalInstallationTree } from './canonical.js';
+import { normalizeInstallationTreeV2, type CanonicalInstallationTree } from './canonical.js';
 import {
   CommsReplacementStateError,
   MeterHistoryRestoreError,
@@ -12,6 +12,10 @@ import {
   restoreMeterFromHistory,
 } from './meterHistory.js';
 import { retainCompletedFormsDuringMetadata } from './treeService.js';
+import {
+  prepareCanonicalInstallHubWrite,
+  validateCanonicalFormContractsForSync,
+} from './sync.js';
 
 function tree(): CanonicalInstallationTree {
   return {
@@ -462,6 +466,194 @@ test('pending replacement staging fails closed when its meter is absent', () => 
       && error.code === 'comms_replacement_meter_missing'
     ),
   );
+});
+
+function offlineNewMeter(): { current: CanonicalInstallationTree; incoming: CanonicalInstallationTree } {
+  const incoming = tree();
+  incoming.formSubmissions[0].historicalMeterRemoved = false;
+  const meter = incoming.meterDevices[0];
+  meter.deviceModel = 'A3RM';
+  meter.deviceNumber = 'ORIGINAL-TAG';
+  meter.serialNumber = 'ORIGINAL-SERIAL';
+  meter.channels = [1, 2, 3].map((ordinal) => ({
+    id: `${meter.id}:${ordinal}`, ordinal, purpose: 'SPARE', capabilities: {},
+  }));
+  meter.wwPhotos = {};
+  incoming.measurementAssignments = [];
+  incoming.siteAssets[0].meterPresent = false;
+  incoming.siteAssets[0].meteringState = { kind: 'UNMETERED' };
+  incoming.formSubmissions[0].answers = {
+    'existing.device_type': 'A3RM',
+    'existing.device_id': 'ORIGINAL-SERIAL',
+    'existing.device_number': 'ORIGINAL-TAG',
+    'works.replace_device': 'yes',
+    'works.new_device_type': 'A6M',
+    'works.new_device_id': 'REPLACEMENT-SERIAL',
+    'works.new_device_number': 'REPLACEMENT-TAG',
+    'works.new_sensor_rating': 'CT-400A',
+  };
+  const current = structuredClone(incoming);
+  current.meterDevices = [];
+  current.formSubmissions = [];
+  return { current, incoming };
+}
+
+// Exercise the production sync preparation, normalization, retention and form
+// contract boundary. The route's DB/CAS/ownership guards remain separate.
+function stageMetadata(input: ReturnType<typeof offlineNewMeter>): CanonicalInstallationTree {
+  const { current } = input;
+  const incoming = normalizeInstallationTreeV2(prepareCanonicalInstallHubWrite({
+    ...structuredClone(input.incoming),
+    baseTreeRevision: current.installation.treeRevision,
+    syncStage: 'metadata',
+  }, current.installation, current.installation.externalKey));
+  incoming.formSubmissions = retainCompletedFormsDuringMetadata({
+    existing: current.formSubmissions,
+    incoming: incoming.formSubmissions,
+  });
+  retainPendingCommsReplacementMeterState({ current, incoming });
+  validateCanonicalFormContractsForSync({
+    incoming: incoming.formSubmissions,
+    existing: current.formSubmissions,
+    syncStage: 'metadata',
+  });
+  return incoming;
+}
+
+test('metadata stages a new supported meter and Comms Draft with its original state and no WW prerequisite', () => {
+  const fixture = offlineNewMeter();
+  const before = structuredClone(fixture);
+  const staged = stageMetadata(fixture);
+  assert.deepEqual(staged.meterDevices, normalizeInstallationTreeV2(fixture.incoming).meterDevices);
+  assert.equal(staged.meterDevices[0].deviceModel, 'A3RM');
+  assert.equal(staged.meterDevices[0].serialNumber, 'ORIGINAL-SERIAL');
+  assert.equal(staged.meterDevices[0].deviceNumber, 'ORIGINAL-TAG');
+  assert.equal(staged.meterDevices[0].channels.length, 3);
+  assert.equal(staged.formSubmissions[0].status, 'Draft');
+  assert.equal(staged.formSubmissions[0].answers['works.new_device_id'], 'REPLACEMENT-SERIAL');
+  assert.deepEqual(completedCommsReplacementTransitions({ current: fixture.current, incoming: staged }), []);
+  assert.deepEqual(fixture, before, 'staging never mutates the frozen original input');
+});
+
+test('metadata permits a newly captured supported meter with its linked WW and Comms Drafts', () => {
+  const fixture = offlineNewMeter();
+  fixture.incoming.formSubmissions.push({
+    ...structuredClone(fixture.incoming.formSubmissions[0]),
+    id: 'ww-draft-1',
+    formType: 'ww-installation',
+    answers: {
+      'device.type': 'A3RM',
+      'device.id': 'ORIGINAL-SERIAL',
+      'device.number': 'ORIGINAL-TAG',
+    },
+  });
+  const staged = stageMetadata(fixture);
+  assert.equal(staged.formSubmissions.length, 2);
+  assert.equal(staged.meterDevices[0].serialNumber, 'ORIGINAL-SERIAL');
+  assert.deepEqual(staged.meterDevices[0].channels, normalizeInstallationTreeV2(fixture.incoming).meterDevices[0].channels);
+});
+
+test('new-meter original captures use canonical trimmed text and remain optional when blank', () => {
+  for (const model of ['A3RM', 'A6M'] as const) {
+    for (const capture of ['omitted', 'blank', 'trimmed'] as const) {
+      const fixture = offlineNewMeter();
+      fixture.incoming.meterDevices[0].deviceModel = model;
+      fixture.incoming.meterDevices[0].serialNumber = ' ORIGINAL-SERIAL ';
+      fixture.incoming.meterDevices[0].deviceNumber = ' ORIGINAL-TAG ';
+      const answers = fixture.incoming.formSubmissions[0].answers;
+      for (const [key, value] of Object.entries({
+        'existing.device_type': model,
+        'existing.device_id': 'ORIGINAL-SERIAL',
+        'existing.device_number': 'ORIGINAL-TAG',
+      })) {
+        if (capture === 'omitted') delete answers[key];
+        else answers[key] = capture === 'blank' ? '  ' : ` ${value} `;
+      }
+      const staged = stageMetadata(fixture);
+      assert.equal(staged.meterDevices[0].deviceModel, model);
+      assert.equal(staged.meterDevices[0].serialNumber, 'ORIGINAL-SERIAL');
+      assert.equal(staged.meterDevices[0].deviceNumber, 'ORIGINAL-TAG');
+    }
+  }
+});
+
+test('new-meter staging rejects a supplied original identity that describes a different meter', () => {
+  for (const key of ['existing.device_type', 'existing.device_id', 'existing.device_number']) {
+    const fixture = offlineNewMeter();
+    fixture.incoming.formSubmissions[0].answers[key] = 'different';
+    assert.throws(() => stageMetadata(fixture), /comms_replacement_state_mismatch/, key);
+  }
+  const projectedTooEarly = offlineNewMeter();
+  projectedTooEarly.incoming.meterDevices[0].deviceModel = 'A6M';
+  projectedTooEarly.incoming.meterDevices[0].serialNumber = 'REPLACEMENT-SERIAL';
+  assert.throws(() => stageMetadata(projectedTooEarly), /comms_replacement_state_mismatch/);
+});
+
+test('new-meter exception rejects unsupported family-model pairs and mismatched form context', () => {
+  for (const mutate of [
+    (input: ReturnType<typeof offlineNewMeter>) => { input.incoming.meterDevices[0].deviceFamily = 'OTHER'; },
+    (input: ReturnType<typeof offlineNewMeter>) => { input.incoming.meterDevices[0].deviceModel = 'OTHER'; },
+    (input: ReturnType<typeof offlineNewMeter>) => { input.current.installation.id = 'foreign-installation'; },
+    (input: ReturnType<typeof offlineNewMeter>) => {
+      input.incoming.electricalAssets.push({ ...input.incoming.electricalAssets[0], id: 'board-2' });
+      input.incoming.formSubmissions[0].boardId = 'board-2';
+    },
+    (input: ReturnType<typeof offlineNewMeter>) => {
+      input.incoming.zones.push({ ...input.incoming.zones[0], id: 'zone-2', zoneCode: 'Z2' });
+      input.incoming.formSubmissions[0].zoneId = 'zone-2';
+    },
+  ]) {
+    const fixture = offlineNewMeter();
+    mutate(fixture);
+    assert.throws(() => stageMetadata(fixture), /comms_replacement_state_mismatch/);
+  }
+});
+
+test('canonical metadata normalization still rejects missing meters, foreign parents and malformed channels', () => {
+  for (const mutate of [
+    (input: ReturnType<typeof offlineNewMeter>) => { input.incoming.meterDevices = []; },
+    (input: ReturnType<typeof offlineNewMeter>) => { input.incoming.meterDevices[0].installationId = 'foreign'; },
+    (input: ReturnType<typeof offlineNewMeter>) => { input.incoming.meterDevices[0].channels[0].ordinal = 0; },
+  ]) {
+    const fixture = offlineNewMeter();
+    mutate(fixture);
+    assert.throws(() => stageMetadata(fixture));
+  }
+});
+
+test('a previously saved form or retained meter history cannot use the first-capture exception', () => {
+  for (const type of ['comms-fault', 'ww-installation']) {
+    const fixture = offlineNewMeter();
+    fixture.current.formSubmissions = [{
+      ...structuredClone(fixture.incoming.formSubmissions[0]),
+      id: 'retained-form', formType: type, status: 'Completed', historicalMeterRemoved: true,
+    }];
+    assert.throws(() => stageMetadata(fixture), /comms_replacement_meter_missing/);
+  }
+  const repointedDraft = offlineNewMeter();
+  repointedDraft.current.formSubmissions = [{
+    ...structuredClone(repointedDraft.incoming.formSubmissions[0]), meterId: 'different-old-meter',
+  }];
+  assert.throws(() => stageMetadata(repointedDraft), /comms_replacement_state_mismatch/);
+});
+
+test('first-capture Draft staging does not authorize an invalid completed replacement', () => {
+  const fixture = offlineNewMeter();
+  const completedWithoutPreimage = structuredClone(fixture.incoming);
+  completedWithoutPreimage.formSubmissions[0].status = 'Completed';
+  assert.throws(() => authorizeCommsReplacementTransitions({
+    current: fixture.current,
+    incoming: completedWithoutPreimage,
+    transitions: completedCommsReplacementTransitions({ current: fixture.current, incoming: completedWithoutPreimage }),
+  }), /comms_replacement_meter_missing/);
+  const staged = stageMetadata(fixture);
+  const incompleteReplacement = structuredClone(staged);
+  incompleteReplacement.formSubmissions[0].status = 'Completed';
+  assert.throws(() => authorizeCommsReplacementTransitions({
+    current: staged,
+    incoming: incompleteReplacement,
+    transitions: completedCommsReplacementTransitions({ current: staged, incoming: incompleteReplacement }),
+  }), /comms_replacement_state_mismatch/);
 });
 
 test('rollback restores the selected device graph and preserves unrelated current data', () => {

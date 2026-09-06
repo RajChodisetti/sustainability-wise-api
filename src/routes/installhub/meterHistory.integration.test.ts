@@ -36,6 +36,7 @@ test('meter replacement history is scoped, linear, idempotent and rollback-safe'
   ]);
   const app = await buildApp();
   const installationId = randomUUID();
+  const assignedChannelFourId = `assigned-channel-four-${installationId}`;
   const userId = randomUUID();
   const otherUserId = randomUUID();
   const gridId = randomUUID();
@@ -307,7 +308,7 @@ test('meter replacement history is scoped, linear, idempotent and rollback-safe'
       if (index === 2) {
         tree.baseTreeRevision = tree.treeRevision;
         tree.measurementAssignments.push({
-          id: 'assigned-channel-four',
+          id: assignedChannelFourId,
           installationId,
           meterId,
           channelIds: [`${meterId}:4`],
@@ -323,7 +324,7 @@ test('meter replacement history is scoped, linear, idempotent and rollback-safe'
         rejectedShrink.baseTreeRevision = rejectedShrink.treeRevision;
         applyReplacementMeter(rejectedShrink, index, model);
         rejectedShrink.measurementAssignments = rejectedShrink.measurementAssignments.filter(
-          (assignment) => assignment.id !== 'assigned-channel-four',
+          (assignment) => assignment.id !== assignedChannelFourId,
         );
         rejectedShrink.formSubmissions.push(replacementForm({
           index,
@@ -339,13 +340,13 @@ test('meter replacement history is scoped, linear, idempotent and rollback-safe'
         const afterRejected = await pull() as MutableHistoryTree;
         assert.equal(
           afterRejected.measurementAssignments.some(
-            (assignment) => assignment.id === 'assigned-channel-four',
+            (assignment) => assignment.id === assignedChannelFourId,
           ),
           true,
         );
         afterRejected.baseTreeRevision = afterRejected.treeRevision;
         afterRejected.measurementAssignments = afterRejected.measurementAssignments.filter(
-          (assignment) => assignment.id !== 'assigned-channel-four',
+          (assignment) => assignment.id !== assignedChannelFourId,
         );
         const clearedBaseline = await push(afterRejected, 'metadata');
         assert.equal(clearedBaseline.statusCode, 200, clearedBaseline.body);

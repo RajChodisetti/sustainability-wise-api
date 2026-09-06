@@ -370,7 +370,38 @@ test('canonical child IDs cannot cross installation ownership, including a concu
     assert.match(boardClaimsAfter[0].displayCode, /-MSB-RENAMED-SOURCE-BOARD$/);
     assert.equal(confirmedAfterRename?.electricalAssets[0].assetName, 'Renamed source board');
     assert.equal(confirmedAfterRename?.electricalAssets[0].displayCode.value, boardClaimsAfter[0].displayCode);
-    assert.equal(confirmedAfterRename?.electricalAssets[0].displayCode.provisional, false);
+    assert.notEqual(confirmedAfterRename?.electricalAssets[0].displayCode.provisional, true);
+
+
+    // Adding a second zone and its first board must create the zone before its
+    // immediate display-claim foreign key, while retaining existing identities.
+    assert.ok(confirmedAfterRename);
+    const expanded = structuredClone(confirmedAfterRename);
+    const addedZoneId = `${prefix}-added-zone`;
+    const addedBoardId = `${prefix}-added-board`;
+    expanded.zones.push({
+      ...expanded.zones[0], id: addedZoneId, zoneCode: 'ADDED-ZONE', zoneName: 'Added zone',
+    });
+    expanded.electricalAssets.push({
+      ...expanded.electricalAssets[0], id: addedBoardId, zoneId: addedZoneId,
+      assetName: 'Added board', displayCode: display(''), meterPresent: false,
+    });
+    await db.transaction(async (tx) => {
+      await replaceCanonicalInstallationChildren({ executor: tx, tree: expanded });
+    });
+    const expandedClaims = await db.select().from(ihDisplayCodeClaims)
+      .where(eq(ihDisplayCodeClaims.installationId, sourceInstallationId));
+    const addedClaim = expandedClaims.find((claim) => claim.entityId === addedBoardId);
+    assert.ok(addedClaim);
+    assert.equal(addedClaim.zoneId, addedZoneId);
+    assert.equal(expandedClaims.length, afterRenameClaims.length + 1);
+    assert.ok(afterRenameClaims.every((prior) => expandedClaims.some((claim) => claim.id === prior.id)));
+    await db.transaction(async (tx) => {
+      await replaceCanonicalInstallationChildren({ executor: tx, tree: expanded });
+    });
+    const replayClaims = await db.select().from(ihDisplayCodeClaims)
+      .where(eq(ihDisplayCodeClaims.installationId, sourceInstallationId));
+    assert.deepEqual(replayClaims.map((claim) => claim.id).sort(), expandedClaims.map((claim) => claim.id).sort());
   } finally {
     await purgeInstallHubInstallationTree(targetInstallationId).catch(() => {});
     await purgeInstallHubInstallationTree(sourceInstallationId).catch(() => {});

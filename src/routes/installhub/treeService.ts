@@ -812,13 +812,14 @@ async function retainedCommissioningRemoval(input: {
   return { meterIds: retainedMeterIds, formIds: retainedFormIds };
 }
 
-async function existingDisplayCodeClaims(
+export async function existingDisplayCodeClaims(
   installationId: string,
   executor: InstallHubExecutor,
-): Promise<DisplayCodeClaim[]> {
+): Promise<Array<DisplayCodeClaim & { installationId: string }>> {
   const rows = await executor.select().from(ihDisplayCodeClaims)
     .where(eq(ihDisplayCodeClaims.installationId, installationId));
   return rows.map((row) => ({
+    installationId: row.installationId,
     entityType: row.entityType as DisplayCodeClaim['entityType'],
     entityId: row.entityId,
     zoneId: row.zoneId,
@@ -1036,36 +1037,6 @@ async function replaceCanonicalInstallationChildrenUnchecked(
   const priorClaims = await existingDisplayCodeClaims(installationId, executor);
   const updatedClaims: DisplayCodeClaim[] = [];
   const newClaims = allocateDisplayCodes({ tree, existingClaims: priorClaims, updatedClaims });
-  for (const claim of updatedClaims) {
-    await executor.update(ihDisplayCodeClaims).set({
-      zoneId: claim.zoneId,
-      typeCode: claim.typeCode,
-      sequence: claim.sequence,
-      displayCode: claim.displayCode,
-      normalizedDisplayCode: claim.normalizedDisplayCode,
-      generated: claim.generated,
-      ruleVersion: claim.ruleVersion,
-    }).where(and(
-      eq(ihDisplayCodeClaims.installationId, installationId),
-      eq(ihDisplayCodeClaims.entityType, claim.entityType),
-      eq(ihDisplayCodeClaims.entityId, claim.entityId),
-    ));
-  }
-  if (newClaims.length) {
-    await executor.insert(ihDisplayCodeClaims).values(newClaims.map((claim) => ({
-      id: randomUUID(),
-      installationId,
-      entityType: claim.entityType,
-      entityId: claim.entityId,
-      zoneId: claim.zoneId,
-      typeCode: claim.typeCode,
-      sequence: claim.sequence,
-      displayCode: claim.displayCode,
-      normalizedDisplayCode: claim.normalizedDisplayCode,
-      generated: claim.generated,
-      ruleVersion: claim.ruleVersion,
-    })));
-  }
 
   for (const supply of tree.gridSupplies) {
     const values = {
@@ -1102,6 +1073,39 @@ async function replaceCanonicalInstallationChildrenUnchecked(
     const { id: _id, createdAt: _createdAt, ...update } = values;
     await executor.insert(ihZones).values(values).onConflictDoUpdate({ target: ihZones.id, set: update });
   }
+  // Zone-scoped claims reference ih_zones immediately. Persist their parents
+  // first so the initial nested tree and later new zones satisfy that foreign key.
+  for (const claim of updatedClaims) {
+    await executor.update(ihDisplayCodeClaims).set({
+      zoneId: claim.zoneId,
+      typeCode: claim.typeCode,
+      sequence: claim.sequence,
+      displayCode: claim.displayCode,
+      normalizedDisplayCode: claim.normalizedDisplayCode,
+      generated: claim.generated,
+      ruleVersion: claim.ruleVersion,
+    }).where(and(
+      eq(ihDisplayCodeClaims.installationId, installationId),
+      eq(ihDisplayCodeClaims.entityType, claim.entityType),
+      eq(ihDisplayCodeClaims.entityId, claim.entityId),
+    ));
+  }
+  if (newClaims.length) {
+    await executor.insert(ihDisplayCodeClaims).values(newClaims.map((claim) => ({
+      id: randomUUID(),
+      installationId,
+      entityType: claim.entityType,
+      entityId: claim.entityId,
+      zoneId: claim.zoneId,
+      typeCode: claim.typeCode,
+      sequence: claim.sequence,
+      displayCode: claim.displayCode,
+      normalizedDisplayCode: claim.normalizedDisplayCode,
+      generated: claim.generated,
+      ruleVersion: claim.ruleVersion,
+    })));
+  }
+
   for (const board of tree.electricalAssets) {
     const values = {
       id: board.id,

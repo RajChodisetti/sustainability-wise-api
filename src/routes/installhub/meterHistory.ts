@@ -400,8 +400,10 @@ function pendingDraftCommsReplacementMeterIds(
 /**
  * Metadata staging may save form answers/evidence, but it must not make the
  * pending replacement identity operational before the final complete push.
- * Keep only the current meter state while allowing independent assignment,
- * asset and installation metadata edits to proceed.
+ * Keep the current meter state while allowing independent assignment, asset
+ * and installation metadata edits to proceed. A newly captured meter has no
+ * server preimage: its incoming original state is staged unchanged, without
+ * applying any of the Draft form's works.new_* answers.
  */
 export function retainPendingCommsReplacementMeterState(input: {
   current: CanonicalInstallationTree;
@@ -413,11 +415,55 @@ export function retainPendingCommsReplacementMeterState(input: {
     const incomingMeterIndex = input.incoming.meterDevices.findIndex(
       (meter) => meter.id === meterId,
     );
-    if (!currentMeter || incomingMeterIndex < 0) {
+    if (incomingMeterIndex < 0) {
       throw new CommsReplacementStateError('comms_replacement_meter_missing');
     }
 
     const incomingMeter = input.incoming.meterDevices[incomingMeterIndex];
+    if (!currentMeter) {
+      const pendingForms = input.incoming.formSubmissions.filter((form) => (
+        form.meterId === meterId
+        && form.formType === 'comms-fault'
+        && form.status === 'Draft'
+        && form.answers['works.replace_device'] === 'yes'
+      ));
+      // An existing form/history reference is evidence of a missing old meter,
+      // not permission to recreate it through the first-capture exception.
+      if (input.current.formSubmissions.some((form) => form.meterId === meterId)) {
+        throw new CommsReplacementStateError('comms_replacement_meter_missing');
+      }
+      const board = input.incoming.electricalAssets.find(
+        (candidate) => candidate.id === incomingMeter.installedOnBoardId,
+      );
+      const originalIdentity = {
+        'existing.device_type': incomingMeter.deviceModel,
+        'existing.device_id': incomingMeter.serialNumber,
+        'existing.device_number': incomingMeter.deviceNumber,
+      };
+      if (
+        input.current.installation.id !== input.incoming.installation.id
+        || incomingMeter.installationId !== input.incoming.installation.id
+        || incomingMeter.deviceFamily !== 'WATTWATCHERS'
+        || !['A3RM', 'A6M'].includes(incomingMeter.deviceModel)
+        || !board
+        || board.installationId !== input.incoming.installation.id
+        || pendingForms.some((form) => (
+          form.installationId !== input.incoming.installation.id
+          || (form.boardId && form.boardId !== board.id)
+          || (form.zoneId && form.zoneId !== board.zoneId)
+          || input.current.formSubmissions.some((prior) => prior.id === form.id)
+          || Object.entries(originalIdentity).some(([key, value]) => {
+            // Match canonical optional text normalization. Blank original
+            // captures stay optional; a supplied value must describe this meter.
+            const captured = optionalAnswer(form.answers[key]);
+            return captured !== null && captured !== optionalAnswer(value ?? undefined);
+          })
+        ))
+      ) {
+        throw new CommsReplacementStateError('comms_replacement_state_mismatch');
+      }
+      continue;
+    }
     input.incoming.meterDevices[incomingMeterIndex] = {
       ...incomingMeter,
       id: currentMeter.id,

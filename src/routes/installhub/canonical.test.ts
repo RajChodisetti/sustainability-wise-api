@@ -14,6 +14,7 @@ import {
   isValidInstallationZoneCode,
   normalizeInstallationTreeV2,
   projectCanonicalOptionalDefaults,
+  resolveMetadataReplayDisplayCodes,
   retainOmittedCanonicalInstallationFields,
   type CanonicalFormSubmission,
   type CanonicalInstallationTree,
@@ -411,6 +412,184 @@ test('saved electrical map layout is normalized and pinned without becoming a sy
     snapshot.installationTree.installation.electricalMapLayout,
     canonicalLayout,
   );
+});
+
+function metadataReplayFixture() {
+  const raw = baseTree();
+  raw.meterDevices = [a3Meter()];
+  raw.formSubmissions = [{
+    id: 'form-1', installationId: raw.installation.id, formType: 'captis-logger',
+    schemaVersion: 2, status: 'Draft', zoneId: 'zone-1', boardId: 'board-1', historicalMeterRemoved: false,
+    answers: { 'captis.supply_description': 'Original capture' }, attachments: [],
+  }];
+  raw.measurementAssignments = [{
+    id: 'assignment-1', installationId: raw.installation.id, meterId: 'meter-1',
+    channelIds: ['channel-1'], phaseMode: 'SINGLE_PHASE', target: { kind: 'SITE_ASSET', siteAssetId: 'asset-1' },
+    direction: 'CONSUMPTION', status: 'CONFIRMED',
+  }];
+  const incoming = normalizeInstallationTreeV2(raw);
+  for (const display of [incoming.electricalAssets[0].displayCode, incoming.siteAssets[0].displayCode, incoming.meterDevices[0].displayName]) {
+    display.provisional = true;
+    display.ruleVersion = 2;
+  }
+  const allocated = structuredClone(incoming);
+  const existingClaims = allocateDisplayCodes({ tree: allocated, existingClaims: [] })
+    .map((claim) => ({ ...claim, installationId: incoming.installation.id }));
+  const current = normalizeInstallationTreeV2(allocated);
+  return { current, incoming, existingClaims };
+}
+
+test('metadata comparison resolves only retained generated identities without allocating or mutating input', () => {
+  const fixture = metadataReplayFixture();
+  const before = structuredClone(fixture);
+  assert.notEqual(canonicalTreeMutationFingerprint(fixture.incoming), canonicalTreeMutationFingerprint(fixture.current));
+  const resolved = resolveMetadataReplayDisplayCodes(fixture);
+  assert.equal(canonicalTreeMutationFingerprint(resolved), canonicalTreeMutationFingerprint(fixture.current));
+  assert.deepEqual(fixture, before);
+  assert.equal(resolved.installation.treeRevision, fixture.incoming.installation.treeRevision);
+  assert.equal(resolved.installation.recordVersionNumber, fixture.incoming.installation.recordVersionNumber);
+});
+
+test('metadata replay accepts marker-free rules 1–3 against verified old and current generated claims', () => {
+  for (const claimedRule of [1, 2, 3, 4]) {
+    for (const submittedRule of [1, 2, 3]) {
+      const fixture = metadataReplayFixture();
+      for (const display of [fixture.incoming.electricalAssets[0].displayCode, fixture.incoming.siteAssets[0].displayCode, fixture.incoming.meterDevices[0].displayName]) {
+        display.ruleVersion = submittedRule;
+        delete display.provisional;
+      }
+      for (const display of [fixture.current.electricalAssets[0].displayCode, fixture.current.siteAssets[0].displayCode, fixture.current.meterDevices[0].displayName]) display.ruleVersion = claimedRule;
+      for (const claim of fixture.existingClaims) claim.ruleVersion = claimedRule;
+      const before = structuredClone(fixture);
+      assert.equal(
+        canonicalTreeMutationFingerprint(resolveMetadataReplayDisplayCodes(fixture)),
+        canonicalTreeMutationFingerprint(fixture.current),
+        `submitted rule ${submittedRule}, claimed rule ${claimedRule}`,
+      );
+      assert.deepEqual(fixture, before);
+    }
+  }
+});
+
+function overriddenMetadataReplayFixture() {
+  const { incoming } = metadataReplayFixture();
+  for (const [index, display] of [incoming.electricalAssets[0].displayCode, incoming.siteAssets[0].displayCode, incoming.meterDevices[0].displayName].entries()) {
+    display.value = `INSTALLER-CUSTOM-${index}`;
+    display.generatedValue = `PREVIOUS-GENERATED-${index}`;
+    display.isOverridden = true;
+    display.overrideReason = 'Installer custom code';
+    display.ruleVersion = 1;
+  }
+  const allocated = structuredClone(incoming);
+  const existingClaims = allocateDisplayCodes({ tree: allocated, existingClaims: [] })
+    .map((claim) => ({ ...claim, installationId: incoming.installation.id }));
+  return { incoming, current: normalizeInstallationTreeV2(allocated), existingClaims };
+}
+
+test('metadata replay preserves accepted custom values and normalizes only allocation metadata', () => {
+  const fixture = overriddenMetadataReplayFixture();
+  const before = structuredClone(fixture);
+  const resolved = resolveMetadataReplayDisplayCodes(fixture);
+  assert.equal(canonicalTreeMutationFingerprint(resolved), canonicalTreeMutationFingerprint(fixture.current));
+  assert.equal(resolved.electricalAssets[0].displayCode.generatedValue, 'PREVIOUS-GENERATED-0');
+  assert.equal(resolved.electricalAssets[0].displayCode.overrideReason, 'Installer custom code');
+  assert.deepEqual(fixture, before);
+});
+
+test('retained custom claims preserve the originally captured generated value on later allocation', () => {
+  const fixture = overriddenMetadataReplayFixture();
+  const later = structuredClone(fixture.current);
+  const before = structuredClone(later);
+  assert.deepEqual(allocateDisplayCodes({ tree: later, existingClaims: fixture.existingClaims }), []);
+  assert.deepEqual(normalizeInstallationTreeV2(later), before);
+});
+
+test('accepted override replay cannot hide custom metadata edits or invalid retained claims', () => {
+  type Fixture = ReturnType<typeof overriddenMetadataReplayFixture>;
+  const mutations: Array<[string, (fixture: Fixture) => void]> = [
+    ['custom value', ({ incoming }) => { incoming.electricalAssets[0].displayCode.value = 'CHANGED-CUSTOM'; }],
+    ['generated value', ({ incoming }) => { incoming.electricalAssets[0].displayCode.generatedValue = 'CHANGED-GENERATED'; }],
+    ['reason', ({ incoming }) => { incoming.electricalAssets[0].displayCode.overrideReason = 'Changed reason'; }],
+    ['override flag', ({ incoming }) => { incoming.electricalAssets[0].displayCode.isOverridden = false; }],
+    ['business name', ({ incoming }) => { incoming.electricalAssets[0].assetName = 'Changed board'; }],
+    ['live identity', ({ current }) => { current.electricalAssets[0].displayCode.value = 'CHANGED-LIVE'; }],
+    ['foreign claim', ({ existingClaims }) => { existingClaims.find((claim) => claim.entityType === 'board')!.installationId = 'foreign'; }],
+    ['generated claim', ({ existingClaims }) => { existingClaims.find((claim) => claim.entityType === 'board')!.generated = true; }],
+    ['missing claim', (fixture) => { fixture.existingClaims = fixture.existingClaims.filter((claim) => claim.entityType !== 'board'); }],
+    ['ambiguous claim', ({ existingClaims }) => { existingClaims.push(structuredClone(existingClaims.find((claim) => claim.entityType === 'board')!)); }],
+  ];
+  for (const [label, mutate] of mutations) {
+    const fixture = overriddenMetadataReplayFixture();
+    mutate(fixture);
+    assert.notEqual(
+      canonicalTreeMutationFingerprint(resolveMetadataReplayDisplayCodes(fixture)),
+      canonicalTreeMutationFingerprint(fixture.current), label,
+    );
+  }
+});
+
+test('metadata generated-code comparison preserves every captured business and child difference', () => {
+  const mutations: Array<[string, (tree: CanonicalInstallationTree) => void]> = [
+    ['root name', (tree) => { tree.installation.siteName = 'Changed site'; }],
+    ['board name', (tree) => { tree.electricalAssets[0].assetName = 'Changed board'; }],
+    ['asset name', (tree) => { tree.siteAssets[0].assetName = 'Changed load'; }],
+    ['asset type', (tree) => { tree.siteAssets[0].typeCode = 'LIGHTING'; }],
+    ['asset zone', (tree) => { tree.siteAssets[0].zoneId = 'different-zone'; }],
+    ['meter name', (tree) => { tree.meterDevices[0].customName = 'Changed meter'; }],
+    ['meter type', (tree) => { tree.meterDevices[0].deviceModel = 'A6M'; }],
+    ['meter placement', (tree) => { tree.meterDevices[0].installedOnBoardId = 'different-board'; }],
+    ['channel', (tree) => { tree.meterDevices[0].channels[0].description = 'Changed channel'; }],
+    ['capability', (tree) => { tree.meterDevices[0].channels[0].capabilities = { enabled: false }; }],
+    ['answer', (tree) => { tree.formSubmissions[0].answers['captis.supply_description'] = 'Changed capture'; }],
+    ['assignment', (tree) => { tree.measurementAssignments[0].direction = 'GENERATION'; }],
+    ['removed child', (tree) => { tree.siteAssets = []; }],
+    ['unknown display metadata', (tree) => {
+      (tree.siteAssets[0].displayCode as unknown as Record<string, unknown>).futureMetadata = 'Changed';
+    }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const fixture = metadataReplayFixture();
+    mutate(fixture.incoming);
+    const resolved = resolveMetadataReplayDisplayCodes(fixture);
+    assert.notEqual(canonicalTreeMutationFingerprint(resolved), canonicalTreeMutationFingerprint(fixture.current), name);
+  }
+});
+
+test('metadata comparison cannot mask override, missing/foreign/type-confused claim or live identity differences', () => {
+  type Fixture = ReturnType<typeof metadataReplayFixture>;
+  const mutations: Array<[string, (fixture: Fixture) => void]> = [
+    ['override', (fixture) => { fixture.incoming.siteAssets[0].displayCode.isOverridden = true; }],
+    ['override reason', (fixture) => { fixture.incoming.siteAssets[0].displayCode.overrideReason = 'New reason'; }],
+    ['current-rule non-provisional', (fixture) => {
+      delete fixture.incoming.siteAssets[0].displayCode.provisional;
+      fixture.incoming.siteAssets[0].displayCode.ruleVersion = fixture.current.siteAssets[0].displayCode.ruleVersion;
+    }],
+    ['unknown future non-provisional', (fixture) => {
+      delete fixture.incoming.siteAssets[0].displayCode.provisional;
+      fixture.incoming.siteAssets[0].displayCode.ruleVersion = 5;
+    }],
+    ['unknown previous non-provisional', (fixture) => {
+      delete fixture.incoming.siteAssets[0].displayCode.provisional;
+      fixture.incoming.siteAssets[0].displayCode.ruleVersion = 0;
+    }],
+    ['missing claim', (fixture) => { fixture.existingClaims = fixture.existingClaims.filter((claim) => claim.entityType !== 'site_asset'); }],
+    ['foreign claim', (fixture) => { fixture.existingClaims.find((claim) => claim.entityType === 'site_asset')!.installationId = 'foreign'; }],
+    ['wrong claim type', (fixture) => { fixture.existingClaims.find((claim) => claim.entityType === 'site_asset')!.entityType = 'meter'; }],
+    ['override claim', (fixture) => { fixture.existingClaims.find((claim) => claim.entityType === 'site_asset')!.generated = false; }],
+    ['ambiguous claim', (fixture) => { fixture.existingClaims.push(structuredClone(fixture.existingClaims.find((claim) => claim.entityType === 'site_asset')!)); }],
+    ['current identity', (fixture) => { fixture.current.siteAssets[0].displayCode.value = 'Different live identity'; }],
+    ['current parent', (fixture) => { fixture.current.siteAssets[0].installationId = 'foreign'; }],
+    ['current installation', (fixture) => { fixture.current.installation.id = 'foreign'; }],
+    ['unknown entity', (fixture) => { fixture.current.siteAssets = []; }],
+  ];
+  for (const [name, mutate] of mutations) {
+    const fixture = metadataReplayFixture();
+    mutate(fixture);
+    const resolved = resolveMetadataReplayDisplayCodes(fixture);
+    assert.notEqual(canonicalTreeMutationFingerprint(resolved), canonicalTreeMutationFingerprint(fixture.current), name);
+    if (name !== 'override reason') assert.deepEqual(resolved.siteAssets[0].displayCode, fixture.incoming.siteAssets[0].displayCode, name);
+    else assert.equal(resolved.siteAssets[0].displayCode.overrideReason, 'New reason');
+  }
 });
 import {
   buildAllAssetsView,
