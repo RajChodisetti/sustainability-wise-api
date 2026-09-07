@@ -480,6 +480,7 @@ export const businessJobs = pgTable('business_jobs', {
 export const fieldAppJobDetails = pgTable('field_app_job_details', {
   jobId: text('job_id').primaryKey().references(() => businessJobs.id, { onDelete: 'cascade' }),
   workType: text('work_type').notNull(),
+  existingDeviceId: text('existing_device_id'),
   maas: boolean('maas'),
   meteringSolutionType: text('metering_solution_type'),
   plannedMeterType: text('planned_meter_type'),
@@ -489,6 +490,7 @@ export const fieldAppJobDetails = pgTable('field_app_job_details', {
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 }, (table) => [
   check('field_app_job_details_work_type_check', sql`char_length(btrim(${table.workType})) BETWEEN 1 AND 120`),
+  check('field_app_job_details_existing_device_id_check', sql`${table.existingDeviceId} IS NULL OR char_length(btrim(${table.existingDeviceId})) BETWEEN 1 AND 10000`),
   check('field_app_job_details_metering_solution_check', sql`${table.meteringSolutionType} IS NULL OR char_length(btrim(${table.meteringSolutionType})) BETWEEN 1 AND 120`),
   check('field_app_job_details_planned_meter_check', sql`${table.plannedMeterType} IS NULL OR char_length(btrim(${table.plannedMeterType})) BETWEEN 1 AND 120`),
   check('field_app_job_details_custom_job_number_check', sql`${table.customJobNumber} IS NULL OR char_length(btrim(${table.customJobNumber})) BETWEEN 1 AND 100`),

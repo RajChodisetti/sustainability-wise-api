@@ -57,6 +57,7 @@ export const ihInstallations = pgTable('ih_installations', {
   ),
   maas: boolean('maas'),
   serviceType: text('service_type'),
+  existingDeviceId: text('existing_device_id'),
   meteringSolutionType: text('metering_solution_type'),
   plannedMeterType: text('planned_meter_type'),
   siteName: text('site_name').notNull(),
@@ -124,6 +125,10 @@ export const ihInstallations = pgTable('ih_installations', {
   check('ih_installations_service_type_length_check', sql`
     ${table.serviceType} IS NULL
     OR char_length(btrim(${table.serviceType})) BETWEEN 1 AND 120
+  `),
+  check('ih_installations_existing_device_id_length_check', sql`
+    ${table.existingDeviceId} IS NULL
+    OR char_length(btrim(${table.existingDeviceId})) BETWEEN 1 AND 10000
   `),
   check('ih_installations_metering_solution_type_length_check', sql`
     ${table.meteringSolutionType} IS NULL
@@ -440,6 +445,7 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   customName: text('custom_name').notNull().default('Meter'),
   deviceFamily: text('device_family').notNull(),
   deviceModel: text('device_model').notNull(),
+  lifecycleState: text('lifecycle_state').notNull().default('ACTIVE'),
   customManufacturerName: text('custom_manufacturer_name'),
   customModelName: text('custom_model_name'),
   deviceNumber: text('device_number'),
@@ -469,6 +475,7 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   }).onDelete('restrict'),
   check('ih_meter_devices_family_check', sql`${table.deviceFamily} IN ('WATTWATCHERS', 'OTHER')`),
   check('ih_meter_devices_model_check', sql`${table.deviceModel} IN ('A3RM', 'A6M', 'OTHER')`),
+  check('ih_meter_devices_lifecycle_state_check', sql`${table.lifecycleState} IN ('PLANNED', 'ACTIVE', 'INACTIVE')`),
 ]);
 
 /** Company meter register and current custody. Installed rows remain as durable history. */

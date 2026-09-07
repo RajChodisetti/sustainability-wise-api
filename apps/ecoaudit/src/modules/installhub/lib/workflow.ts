@@ -5,6 +5,7 @@ import {
   provisionalDisplayCodeV3,
   resolvedZoneCodes,
 } from '@/modules/installhub/lib/naming';
+import { meterChannelWithModelValidSensor } from '@/modules/installhub/lib/meterPresentation';
 import type {
   BoardType,
   ChannelPurpose,
@@ -328,6 +329,7 @@ export function meterChannelId(meterId: string, index: number): string {
 
 function canonicalChannels(meter: Meter): MeterDeviceChannel[] {
   return (meter.wwChannels || []).map((channel, index) => {
+    const sensorChannel = meterChannelWithModelValidSensor(meter.deviceType, channel);
     const purpose = (channel.purpose as ChannelPurpose) || 'SPARE';
     const rawLoadType = channel.loadType?.trim() || '';
     const loadTypeCode = purpose === 'SUB_CIRCUIT' && rawLoadType
@@ -347,7 +349,7 @@ function canonicalChannels(meter: Meter): MeterDeviceChannel[] {
       purpose,
       loadTypeCode,
       customLoadTypeName,
-      sensorRating: channel.rogowskiSize || channel.ctRatio || null,
+      sensorRating: sensorChannel.rogowskiSize || sensorChannel.ctRatio || null,
       description: channel.description || null,
       capabilities: channel.capabilities || {},
     };
@@ -452,6 +454,289 @@ export function activeMetersOnAssetSupplyingBoard(
     (meter.lifecycleState ?? 'ACTIVE') === 'ACTIVE'
     && meter.installedOnBoardId === source.boardId
   ));
+}
+
+export type AssetMeterChannelState =
+  | 'AVAILABLE'
+  | 'OWN_ASSIGNMENT'
+  | 'TBC_ASSIGNMENT'
+  | 'SITE_ASSET_ASSIGNMENT'
+  | 'PROTECTED_ASSIGNMENT'
+  | 'INCOMPATIBLE';
+
+export type AssetMeterChannelAvailability = {
+  channel: MeterDeviceChannel;
+  state: AssetMeterChannelState;
+  assignment?: MeasurementAssignment;
+  directlySelectable: boolean;
+  reassignable: boolean;
+  reason?: string;
+};
+
+export type AssetMeterAvailability = {
+  meter: MeterDevice;
+  topologyValid: boolean;
+  channels: AssetMeterChannelAvailability[];
+  availableCount: number;
+  ownCount: number;
+  tbcCount: number;
+  directlySelectableCount: number;
+  reassignableCount: number;
+  protectedCount: number;
+  occupiedCount: number;
+  unavailableCount: number;
+  usableCount: number;
+};
+
+export type AssetMeterSelectionStatus = {
+  unavailable: boolean;
+  missingChannelId?: string;
+  unavailableChannel?: AssetMeterChannelAvailability;
+};
+
+function meterFamilyMatchesModel(meter: MeterDevice): boolean {
+  return (
+    meter.deviceFamily === 'WATTWATCHERS'
+    && (meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M')
+  ) || (
+    meter.deviceFamily === 'OTHER'
+    && meter.deviceModel === 'OTHER'
+  );
+}
+
+function meterTopologyIsValidForAssetMapping(meter: MeterDevice): boolean {
+  if (!meter.channels.length || !meterFamilyMatchesModel(meter)) return false;
+  const channelIds = new Set(meter.channels.map((channel) => channel.id));
+  const ordinals = meter.channels.map((channel) => channel.ordinal);
+  const ordinalSet = new Set(ordinals);
+  if (
+    channelIds.size !== meter.channels.length
+    || ordinalSet.size !== meter.channels.length
+    || ordinals.some((ordinal) => !Number.isInteger(ordinal) || ordinal < 1)
+  ) return false;
+  const expectedCount = meter.deviceModel === 'A3RM'
+    ? 3
+    : meter.deviceModel === 'A6M'
+      ? 6
+      : null;
+  if (expectedCount === null) return true;
+  if (meter.channels.length !== expectedCount) return false;
+  return Array.from({ length: expectedCount }, (_, index) => index + 1)
+    .every((ordinal) => ordinalSet.has(ordinal));
+}
+
+function hasConfiguredChannelCapabilities(channel: MeterDeviceChannel): boolean {
+  const capabilities = Object.entries(channel.capabilities || {});
+  return capabilities.length > 0 && capabilities.every(([key, value]) => (
+    key.trim().length > 0
+    && value !== null
+    && value !== undefined
+    && (typeof value !== 'string' || value.trim().length > 0)
+  ));
+}
+
+/**
+ * Returns the exact channel choices that the site-asset editor may offer.
+ * Occupancy checks use both canonical meter and channel identities. A channel
+ * ID reused by another meter is a topology error and makes the affected meter
+ * unavailable until its channel identities are repaired.
+ */
+export function assetMeterAvailability(
+  tree: InstallationTree,
+  meter: MeterDevice,
+  assetId: string,
+): AssetMeterAvailability {
+  const channelOwners = new Map<string, Set<string>>();
+  for (const candidate of meterDevices(tree)) {
+    for (const channel of candidate.channels) {
+      const owners = channelOwners.get(channel.id) || new Set<string>();
+      owners.add(candidate.id);
+      channelOwners.set(channel.id, owners);
+    }
+  }
+  const duplicateCrossMeterChannelIds = new Set(meter.channels
+    .filter((channel) => (channelOwners.get(channel.id)?.size || 0) > 1)
+    .map((channel) => channel.id));
+  const topologyValid = meterTopologyIsValidForAssetMapping(meter)
+    && duplicateCrossMeterChannelIds.size === 0;
+  const assignments = measurementAssignments(tree);
+  const channels = meter.channels
+    .slice()
+    .sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id))
+    .map((channel): AssetMeterChannelAvailability => {
+      const attached = assignments.filter((assignment) => (
+        assignment.meterId === meter.id
+        && assignment.channelIds.includes(channel.id)
+      ));
+      if (attached.length > 1) {
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'This meter channel has multiple assignments; reconcile its ownership before mapping an asset.',
+        };
+      }
+      if (!topologyValid) {
+        const expected = meter.deviceModel === 'A3RM' ? 3 : meter.deviceModel === 'A6M' ? 6 : 'one or more';
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: duplicateCrossMeterChannelIds.size > 0
+            ? duplicateCrossMeterChannelIds.has(channel.id)
+              ? 'This channel ID is also used by another meter; repair the meter channel identities before mapping assets.'
+              : 'Another channel ID on this meter is also used by a different meter; repair the meter channel identities before mapping assets.'
+            : !meterFamilyMatchesModel(meter)
+            ? 'The meter device family and model are inconsistent; correct the meter before mapping its channels.'
+            : `${meter.deviceModel === 'OTHER' ? 'Custom meters require' : `${meter.deviceModel} requires`} ${expected} uniquely numbered channels.`,
+        };
+      }
+      const ownerAssignment = attached[0];
+      if (
+        ownerAssignment?.target.kind === 'BOARD'
+        || ownerAssignment?.target.kind === 'GRID_BOUNDARY'
+      ) {
+        return {
+          channel,
+          state: 'PROTECTED_ASSIGNMENT',
+          assignment: ownerAssignment,
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'This channel is reserved for a switchboard or Grid-boundary measurement.',
+        };
+      }
+      if (channel.purpose === 'MAIN_SUPPLY') {
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'Main-supply channels measure a switchboard or Grid boundary, not a site asset.',
+        };
+      }
+      if (channel.purpose === 'SPARE') {
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'This channel is marked spare on the device.',
+        };
+      }
+      if (channel.purpose !== 'SUB_CIRCUIT') {
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'Set this channel to Sub-circuit / asset on the meter before assigning it to an asset.',
+        };
+      }
+      if (meter.deviceModel === 'OTHER' && !hasConfiguredChannelCapabilities(channel)) {
+        return {
+          channel,
+          state: 'INCOMPATIBLE',
+          directlySelectable: false,
+          reassignable: false,
+          reason: 'Configure this custom channel\'s capabilities on the meter before assigning it to an asset.',
+        };
+      }
+      if (
+        ownerAssignment?.target.kind === 'SITE_ASSET'
+        && ownerAssignment.target.siteAssetId !== assetId
+      ) {
+        return {
+          channel,
+          state: 'SITE_ASSET_ASSIGNMENT',
+          assignment: ownerAssignment,
+          directlySelectable: false,
+          reassignable: true,
+          reason: 'This channel is assigned to another site asset and requires explicit reassignment approval.',
+        };
+      }
+      if (ownerAssignment?.target.kind === 'TBC') {
+        return {
+          channel,
+          state: 'TBC_ASSIGNMENT',
+          assignment: ownerAssignment,
+          directlySelectable: true,
+          reassignable: false,
+          reason: 'This channel belongs to an unresolved TBC group and can be claimed here.',
+        };
+      }
+      if (
+        ownerAssignment?.target.kind === 'SITE_ASSET'
+        && ownerAssignment.target.siteAssetId === assetId
+      ) {
+        return {
+          channel,
+          state: 'OWN_ASSIGNMENT',
+          assignment: ownerAssignment,
+          directlySelectable: true,
+          reassignable: false,
+          reason: 'This channel is already assigned to this asset and remains editable.',
+        };
+      }
+      return {
+        channel,
+        state: 'AVAILABLE',
+        directlySelectable: true,
+        reassignable: false,
+      };
+    });
+  const availableCount = channels.filter((channel) => channel.state === 'AVAILABLE').length;
+  const ownCount = channels.filter((channel) => channel.state === 'OWN_ASSIGNMENT').length;
+  const tbcCount = channels.filter((channel) => channel.state === 'TBC_ASSIGNMENT').length;
+  const directlySelectableCount = availableCount + ownCount + tbcCount;
+  const reassignableCount = channels.filter((channel) => channel.reassignable).length;
+  const protectedCount = channels.filter((channel) => channel.state === 'PROTECTED_ASSIGNMENT').length;
+  const occupiedCount = reassignableCount + protectedCount;
+  const unavailableCount = channels.filter((channel) => channel.state === 'INCOMPATIBLE').length;
+  return {
+    meter,
+    topologyValid,
+    channels,
+    availableCount,
+    ownCount,
+    tbcCount,
+    directlySelectableCount,
+    reassignableCount,
+    protectedCount,
+    occupiedCount,
+    unavailableCount,
+    usableCount: directlySelectableCount + reassignableCount,
+  };
+}
+
+export function assetMeterSelectionStatus(
+  availability: AssetMeterAvailability | undefined,
+  channelIds: readonly string[],
+  approvedTakeoverAssignmentIds: ReadonlySet<string>,
+): AssetMeterSelectionStatus {
+  const availabilityByChannelId = new Map(
+    (availability?.channels || []).map((channel) => [channel.channel.id, channel]),
+  );
+  const selections = channelIds.map((channelId) => availabilityByChannelId.get(channelId));
+  const selectionIsUnavailable = (selection: AssetMeterChannelAvailability | undefined) => (
+    !selection
+    || (
+      !selection.directlySelectable
+      && !(
+        selection.reassignable
+        && selection.assignment
+        && approvedTakeoverAssignmentIds.has(selection.assignment.id)
+      )
+    )
+  );
+  return {
+    unavailable: selections.some(selectionIsUnavailable),
+    missingChannelId: channelIds.find((_, index) => !selections[index]),
+    unavailableChannel: selections.find((selection): selection is AssetMeterChannelAvailability => (
+      Boolean(selection) && selectionIsUnavailable(selection)
+    )),
+  };
 }
 
 export function meterDeviceName(meter: MeterDevice): string {
@@ -789,7 +1074,9 @@ export function setAssetMetering(
   if (!expected || unique.length !== expected) {
     throw new Error(`Select exactly ${expected} channel${expected === 1 ? '' : 's'} for ${input.phaseMode === 'THREE_PHASE' ? 'three' : 'single'} phase.`);
   }
-  const availableIds = new Set(meter.channels.filter((channel) => channel.purpose === 'SUB_CIRCUIT').map((channel) => channel.id));
+  const availableIds = new Set(meter.channels
+    .filter((channel) => channel.purpose === 'SUB_CIRCUIT')
+    .map((channel) => channel.id));
   if (unique.some((id) => !availableIds.has(id))) {
     throw new Error('A selected channel is spare, unavailable, or belongs to another meter.');
   }
@@ -797,6 +1084,7 @@ export function setAssetMetering(
   const ownedIds = new Set(owned.map((assignment) => assignment.id));
   const overlapping = assignments.filter((assignment) =>
     !ownedIds.has(assignment.id)
+    && assignment.meterId === meter.id
     && assignment.channelIds.some((channelId) => selectedChannelIds.has(channelId)));
   const forbidden = overlapping.find((assignment) =>
     assignment.target.kind === 'BOARD' || assignment.target.kind === 'GRID_BOUNDARY');
@@ -829,7 +1117,8 @@ export function setAssetMetering(
     return released ? [released] : [];
   });
   if (nextAssignments.some((assignment) =>
-    assignment.channelIds.some((channelId) => selectedChannelIds.has(channelId)))) {
+    assignment.meterId === meter.id
+    && assignment.channelIds.some((channelId) => selectedChannelIds.has(channelId)))) {
     throw new Error('A selected channel is already assigned elsewhere.');
   }
   const explicitAssignmentId = input.assignmentId?.trim();
@@ -887,7 +1176,7 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
     ...supply,
     isDefault: supply.id === selectedDefaultId,
   }));
-  const zoneCodes = resolvedZoneCodes(tree.zones);
+  const zoneCodes = resolvedZoneCodes(tree);
   tree.zones = tree.zones.map((zone) => ({
     ...zone,
     zoneCode: zoneCodes.get(zone.id) || 'ZONE',
@@ -902,9 +1191,15 @@ export function ensureCanonicalTree(input: InstallationTree): InstallationTree {
   for (const board of tree.electricalAssets) {
     board.meters = board.meters.map((meter) => {
       const canonical = canonicalMetersById.get(meter.id);
+      const modelValidMeter = {
+        ...meter,
+        wwChannels: meter.wwChannels?.map((channel) => (
+          meterChannelWithModelValidSensor(meter.deviceType, channel)
+        )),
+      };
       return canonical
-        ? { ...meter, customName: canonical.customName }
-        : meter;
+        ? { ...modelValidMeter, customName: canonical.customName }
+        : modelValidMeter;
     });
   }
   tree.measurementAssignments = measurementAssignments(tree).map((assignment) => ({

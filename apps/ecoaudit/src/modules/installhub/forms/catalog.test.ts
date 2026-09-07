@@ -28,7 +28,7 @@ import {
   validateForm,
 } from './catalog';
 
-test('new forms prefer the installation customer over the contracting client', () => {
+test('new forms use the installation client name without exposing a separate customer name', () => {
   const user = {
     fullName: 'Field Technician',
     email: 'field@example.com',
@@ -42,7 +42,7 @@ test('new forms prefer the installation customer over the contracting client', (
 
   assert.equal(
     createInitialFormAnswers(baseInstallation, user)['site.customer_name'],
-    'End Customer',
+    'Contracting Client',
   );
   assert.equal(
     createInitialFormAnswers(
@@ -154,7 +154,7 @@ test('every catalog field and label matches the audited iOS catalog snapshot', (
   assert.equal(fieldCount, 392);
   assert.equal(
     fingerprint,
-    '7c88a7acf4bd3bb6422baf7472b08fec2d20e47fee669fb8ec909fb0d852f17f',
+    '5c5a4eaeb3649b5bec819573e5934110aa2df9c5a399085d23158564acb92e61',
   );
   assert.equal(
     FORM_DEFINITIONS.every((definition) => definition.sections.every((section) => (
@@ -180,20 +180,16 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   assert.ok(firstLoad);
   assert.equal(channels.length, 6);
   assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A3RM, [
-    '10cm-200A',
-    '10cm-333mV',
-    '20cm-3000A',
-    '30cm-3000A',
-    '45cm-3000A',
-    'Not Used',
+    '3000A – 9cm',
+    '3000A – 20cm',
+    '3000A – 29cm',
   ]);
   assert.deepEqual(SENSOR_OPTIONS_BY_DEVICE.A6M, [
-    'CT-60A',
-    'CT-120A',
-    'CT-250A',
-    'CT-400A',
-    'CT-600A',
-    'Not Used',
+    '60A',
+    '120A',
+    '200A',
+    '400A',
+    '600A',
   ]);
   assert.deepEqual(
     optionsForField(firstRating, { 'device.type': 'A3RM' }),
@@ -221,7 +217,7 @@ test('WW form exposes the exact device sensor choices and channel counts', () =>
   );
 });
 
-test('WW Base44 choices are presented while persisted legacy selections remain editable', () => {
+test('current WW choices are strict while persisted legacy selections remain readable', () => {
   assert.deepEqual(SIGNALS, ['Low', 'Medium', 'High']);
   assert.deepEqual(ANTENNAS, [
     'Internal',
@@ -253,7 +249,7 @@ test('WW Base44 choices are presented while persisted legacy selections remain e
       'device.type': 'A3RM',
       'channel.1.rating': '3000A - 9cm',
     }),
-    ['3000A - 9cm', ...SENSOR_OPTIONS_BY_DEVICE.A3RM],
+    SENSOR_OPTIONS_BY_DEVICE.A3RM,
   );
 });
 
@@ -283,7 +279,7 @@ test('WW channel contract matches the API and iOS parity signature', () => {
 
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    '9d84b8a32742ac5c48be1538ccf967db37def7c1f767b821e04b0663ca6772e1',
+    'e76fada713bd71bc9a4ce559191baf1d54b20d1347dceaa8d93dc9195cdfa006',
   );
   assert.equal(
     definition.sections
@@ -452,7 +448,7 @@ test('Comms replacement completion requires a valid model, serial, and sensor', 
       'works.replace_device': 'yes',
       'works.new_device_type': 'A6M',
       'works.new_device_id': 'NEW-ID',
-      'works.new_sensor_rating': 'CT-120A',
+      'works.new_sensor_rating': '120A',
     }),
   ), []);
 
@@ -500,7 +496,7 @@ test('Comms replacement mirrors iOS meter reshaping', () => {
     'works.new_device_type': 'A3RM',
     'works.new_device_number': 'NEW-NUMBER',
     'works.new_device_id': 'NEW-ID',
-    'works.new_sensor_rating': '3000A - 20cm',
+    'works.new_sensor_rating': '3000A – 20cm',
   });
 
   assert.equal(replacement.deviceType, 'A3RM');
@@ -509,7 +505,7 @@ test('Comms replacement mirrors iOS meter reshaping', () => {
   assert.equal(replacement.wwChannels?.length, 3);
   assert.equal(
     replacement.wwChannels?.[0].rogowskiSize,
-    '3000A - 20cm',
+    '3000A – 20cm',
   );
   assert.equal(replacement.wwChannels?.[0].ctRatio, undefined);
 });
@@ -531,7 +527,7 @@ test('Comms replacement marks newly added A6M channels as sub-circuits', () => {
   const replacement = meterAfterCommsReplacement(meter, {
     'works.new_device_type': 'A6M',
     'works.new_device_id': 'NEW-ID',
-    'works.new_sensor_rating': 'CT-120A',
+    'works.new_sensor_rating': '120A',
   });
 
   assert.deepEqual(
@@ -547,7 +543,7 @@ test('Comms replacement marks newly added A6M channels as sub-circuits', () => {
   );
   assert.deepEqual(
     replacement.wwChannels?.map((channel) => channel.ctRatio),
-    Array.from({ length: 6 }, () => 'CT-120A'),
+    Array.from({ length: 6 }, () => '120A'),
   );
 });
 

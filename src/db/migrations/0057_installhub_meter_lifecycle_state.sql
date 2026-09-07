@@ -1,0 +1,2 @@
+ALTER TABLE "ih_meter_devices" ADD COLUMN "lifecycle_state" text DEFAULT 'ACTIVE' NOT NULL;--> statement-breakpoint
+ALTER TABLE "ih_meter_devices" ADD CONSTRAINT "ih_meter_devices_lifecycle_state_check" CHECK ("ih_meter_devices"."lifecycle_state" IN ('PLANNED', 'ACTIVE', 'INACTIVE'));

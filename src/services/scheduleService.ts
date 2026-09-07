@@ -17,7 +17,7 @@ import {
 } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
-import { ihGridSupplies, ihInstallations } from '../db/schema/installhub.js';
+import { ihGridSupplies, ihInstallations, ihMeterDevices } from '../db/schema/installhub.js';
 import {
   businessClients,
   businessJobs,
@@ -140,17 +140,23 @@ export type SchedulerSiteOption = {
   siteContactPhone: string | null;
   siteContactEmail: string | null;
   accessInformation: string | null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  knownMeters: Array<{
+    meterId: string;
+    serialNumber: string;
+    deviceNumber: string | null;
+    deviceModel: string;
+  }>;
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestWorkType: null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestMeteringSolutionType: null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestCustomJobNumber: null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestJobComments: null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestMaas: null;
-  /** @deprecated Existing-site selection no longer exposes or copies prior job data. */
+  /** @deprecated Existing-site selection does not prefill prior job-planning metadata. */
   latestElectricityNmi: null;
   /** @deprecated Retained as null for rolling portal compatibility. */
   latestJobId: null;
@@ -175,9 +181,11 @@ type SchedulerSiteLegacyJobFields = Pick<
 
 export function schedulerSitePrefillOption<T extends object>(
   site: T,
-): T & SchedulerSiteLegacyJobFields {
+  knownMeters: SchedulerSiteOption['knownMeters'] = [],
+): T & SchedulerSiteLegacyJobFields & Pick<SchedulerSiteOption, 'knownMeters'> {
   return {
     ...site,
+    knownMeters,
     latestWorkType: null,
     latestMeteringSolutionType: null,
     latestCustomJobNumber: null,
@@ -1111,6 +1119,24 @@ export type CreateScheduleEventInput = {
   status?: unknown;
 };
 
+async function alignLinkedBusinessJobTitle(
+  executor: ScheduleExecutor,
+  sourceApp: ScheduleSourceApp,
+  sourceType: ScheduleSourceType,
+  sourceId: string | null,
+  title: string,
+): Promise<void> {
+  if (!sourceId || sourceApp === 'custom') return;
+  await executor.update(businessJobs).set({
+    title,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(businessJobs.sourceApp, sourceApp),
+    eq(businessJobs.sourceType, sourceType),
+    eq(businessJobs.sourceId, sourceId),
+  ));
+}
+
 export async function createScheduleEvent(
   user: AuthUser,
   input: CreateScheduleEventInput,
@@ -1145,6 +1171,7 @@ export async function createScheduleEvent(
     const labelFromSource = await assertSourceExists(tx, sourceApp, sourceType, sourceId);
     const title = (input.title?.trim() || labelFromSource || 'Scheduled work').slice(0, 300);
     if (!title) throw badRequest('title is required');
+    await alignLinkedBusinessJobTitle(tx, sourceApp, sourceType, sourceId, title);
     const assignee = await loadSchedulerSubject(tx, input.assigneeFieldUserId.trim());
     await lockAndAssertAssigneeAvailable(tx, assignee.fieldUserId, start, end);
     // Updating the product assignment takes its row lock. Do this before the
@@ -1211,6 +1238,61 @@ export type CreateSchedulerDispatchInput = {
 };
 
 type DispatchJobInput = Record<string, unknown>;
+
+export const REPLACEMENT_METER_NUMBER_MAX_COUNT = 50;
+export const REPLACEMENT_METER_NUMBER_MAX_LENGTH = 200;
+const COMMS_FAULT_WORK_TYPE = 'M2 - Faults / COMMS fault';
+
+function splitStoredReplacementMeterNumbers(value: string | null): string[] {
+  return value ? value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean) : [];
+}
+
+export function replacementMeterNumbersFromDispatch(job: DispatchJobInput): string[] {
+  const plural = job.existingDeviceIds;
+  if (plural !== undefined && !Array.isArray(plural)) {
+    throw badRequest('job.existingDeviceIds must be an array of strings');
+  }
+  const legacy = optionalDispatchString(
+    job,
+    'existingDeviceId',
+    INSTALLATION_METADATA_TEXT_LIMITS.existingDeviceId,
+  );
+  const candidates = [
+    ...(plural ?? []),
+    ...splitStoredReplacementMeterNumbers(legacy),
+  ];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      throw badRequest('job.existingDeviceIds must contain only strings');
+    }
+    const value = candidate.trim();
+    if (!value) continue;
+    if (value.length > REPLACEMENT_METER_NUMBER_MAX_LENGTH) {
+      throw badRequest(`each replacement meter number must contain at most ${REPLACEMENT_METER_NUMBER_MAX_LENGTH} characters`);
+    }
+    const key = value.toLocaleLowerCase('en-AU');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(value);
+    if (normalized.length > REPLACEMENT_METER_NUMBER_MAX_COUNT) {
+      throw badRequest(`job.existingDeviceIds must contain at most ${REPLACEMENT_METER_NUMBER_MAX_COUNT} unique meter numbers`);
+    }
+  }
+  const serialized = normalized.join('\n');
+  if (serialized.length > INSTALLATION_METADATA_TEXT_LIMITS.existingDeviceId) {
+    throw badRequest(
+      `job.existingDeviceIds must serialize to at most ${INSTALLATION_METADATA_TEXT_LIMITS.existingDeviceId} characters`,
+    );
+  }
+  return normalized;
+}
+
+function storedReplacementMeterNumbers(job: DispatchJobInput): string | null {
+  const values = replacementMeterNumbersFromDispatch(job);
+  return values.length ? values.join('\n') : null;
+}
 
 const FIELD_SCOPE_CODE_PATTERN = /^\s*(M[1-5])\b/i;
 const FIELD_JOB_TITLE_SUFFIX_PATTERN = /^[A-Z0-9]{3}$/;
@@ -1297,6 +1379,8 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
     'clientContactEmail',
     'maas',
     'workType',
+    'existingDeviceId',
+    'existingDeviceIds',
     'serviceType',
     'meteringSolutionType',
     'plannedMeterType',
@@ -1430,6 +1514,13 @@ export function dispatchSiteSelection(job: DispatchJobInput): {
   return { mode: rawMode, existingSiteId };
 }
 
+export function shouldCopyExistingSiteFieldTopology(job: DispatchJobInput): boolean {
+  const selection = dispatchSiteSelection(job);
+  const workType = optionalDispatchString(job, 'workType', 120)
+    ?? optionalDispatchString(job, 'serviceType', 120);
+  return selection.mode === 'existing' && workType === COMMS_FAULT_WORK_TYPE;
+}
+
 export function validateDispatchJob(
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
   job: DispatchJobInput,
@@ -1458,6 +1549,15 @@ export function validateDispatchJob(
   dispatchString(job, 'clientName');
   dispatchString(job, 'siteAddress');
   optionalDispatchString(job, 'workType', 120);
+  const workType = optionalDispatchString(job, 'workType', 120)
+    ?? optionalDispatchString(job, 'serviceType', 120);
+  const replacementMeterNumbers = replacementMeterNumbersFromDispatch(job);
+  if (workType === COMMS_FAULT_WORK_TYPE && replacementMeterNumbers.length === 0) {
+    throw badRequest('job.existingDeviceIds must contain at least one meter for a COMMS fault');
+  }
+  if (workType !== COMMS_FAULT_WORK_TYPE && replacementMeterNumbers.length > 0) {
+    throw badRequest('job.existingDeviceIds are allowed only for a COMMS fault');
+  }
   optionalDispatchString(job, 'timezone');
   for (const [field, maxLength] of Object.entries(INSTALLATION_METADATA_TEXT_LIMITS)) {
     optionalDispatchString(job, field, maxLength);
@@ -1501,6 +1601,45 @@ type ResolvedDispatchSite = {
   previousJobId: string | null;
   revisionNumber: number;
 };
+
+async function latestReusableBusinessJob(
+  executor: ScheduleExecutor,
+  siteId: string,
+  sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
+): Promise<{ id: string; revisionNumber: number; sourceId: string } | undefined> {
+  if (sourceApp === 'installhub') {
+    const [previous] = await executor.select({
+      id: businessJobs.id,
+      revisionNumber: businessJobs.revisionNumber,
+      sourceId: businessJobs.sourceId,
+    }).from(businessJobs).innerJoin(ihInstallations, and(
+      eq(businessJobs.sourceType, 'installation'),
+      eq(businessJobs.sourceId, ihInstallations.id),
+      isNull(ihInstallations.deletedAt),
+    )).where(and(
+      eq(businessJobs.siteId, siteId),
+      eq(businessJobs.sourceApp, 'installhub'),
+    )).orderBy(
+      desc(businessJobs.revisionNumber),
+      desc(businessJobs.createdAt),
+      desc(businessJobs.id),
+    ).limit(1);
+    return previous;
+  }
+  const [previous] = await executor.select({
+    id: businessJobs.id,
+    revisionNumber: businessJobs.revisionNumber,
+    sourceId: businessJobs.sourceId,
+  }).from(businessJobs).where(and(
+    eq(businessJobs.siteId, siteId),
+    eq(businessJobs.sourceApp, sourceApp),
+  )).orderBy(
+    desc(businessJobs.revisionNumber),
+    desc(businessJobs.createdAt),
+    desc(businessJobs.id),
+  ).limit(1);
+  return previous;
+}
 
 function dispatchAddressForApp(
   sourceApp: Exclude<ScheduleSourceApp, 'custom'>,
@@ -1596,7 +1735,11 @@ async function resolveDispatchBusinessSite(
     }).from(businessJobs).where(and(
       eq(businessJobs.siteId, existing.id),
       eq(businessJobs.sourceApp, sourceApp),
-    )).orderBy(desc(businessJobs.revisionNumber), desc(businessJobs.createdAt)).limit(1);
+    )).orderBy(
+      desc(businessJobs.revisionNumber),
+      desc(businessJobs.createdAt),
+      desc(businessJobs.id),
+    ).limit(1);
     return {
       id: existing.id,
       clientId: existing.clientId,
@@ -1664,7 +1807,11 @@ async function resolveDispatchBusinessSite(
   }).from(businessJobs).where(and(
     eq(businessJobs.siteId, memory.site.id),
     eq(businessJobs.sourceApp, sourceApp),
-  )).orderBy(desc(businessJobs.revisionNumber), desc(businessJobs.createdAt)).limit(1);
+  )).orderBy(
+    desc(businessJobs.revisionNumber),
+    desc(businessJobs.createdAt),
+    desc(businessJobs.id),
+  ).limit(1);
   return {
     id: memory.site.id,
     clientId: memory.client.id,
@@ -1745,7 +1892,79 @@ export async function listSchedulerSites(
       ilike(businessClients.name, pattern),
     ),
   )).orderBy(asc(businessClients.name), asc(businessSites.name)).limit(limit);
-  return sites.map(schedulerSitePrefillOption);
+  if (opts.sourceApp !== 'installhub' || sites.length === 0) {
+    return sites.map((site) => schedulerSitePrefillOption(site));
+  }
+  const siteIds = sites.map((site) => site.id);
+  // Use the same prior business-job source that dispatch will copy. A newer
+  // standalone installation at the site is not necessarily the version in the
+  // Scheduler revision chain and must not supply misleading meter suggestions.
+  const priorJobs = await db.select({
+    id: businessJobs.id,
+    siteId: businessJobs.siteId,
+    sourceId: businessJobs.sourceId,
+    revisionNumber: businessJobs.revisionNumber,
+    createdAt: businessJobs.createdAt,
+  }).from(businessJobs).innerJoin(ihInstallations, and(
+    eq(businessJobs.sourceId, ihInstallations.id),
+    isNull(ihInstallations.deletedAt),
+  )).where(and(
+    inArray(businessJobs.siteId, siteIds),
+    eq(businessJobs.sourceApp, 'installhub'),
+    eq(businessJobs.sourceType, 'installation'),
+  )).orderBy(
+    desc(businessJobs.revisionNumber),
+    desc(businessJobs.createdAt),
+    desc(businessJobs.id),
+  );
+  const latestInstallationBySite = new Map<string, string>();
+  for (const job of priorJobs) {
+    if (!latestInstallationBySite.has(job.siteId)) {
+      latestInstallationBySite.set(job.siteId, job.sourceId);
+    }
+  }
+  const copiedSourceInstallationIds = [...latestInstallationBySite.values()];
+  const meters = copiedSourceInstallationIds.length
+    ? await db.select({
+      meterId: ihMeterDevices.id,
+      installationId: ihMeterDevices.installationId,
+      serialNumber: ihMeterDevices.serialNumber,
+      deviceNumber: ihMeterDevices.deviceNumber,
+      deviceModel: ihMeterDevices.deviceModel,
+    }).from(ihMeterDevices).where(and(
+      inArray(ihMeterDevices.installationId, copiedSourceInstallationIds),
+      isNull(ihMeterDevices.deletedAt),
+      or(
+        isNull(ihMeterDevices.lifecycleState),
+        eq(ihMeterDevices.lifecycleState, 'ACTIVE'),
+      ),
+    )).orderBy(asc(ihMeterDevices.serialNumber), asc(ihMeterDevices.id))
+    : [];
+  const siteByInstallation = new Map(
+    [...latestInstallationBySite].map(([siteId, installationId]) => [installationId, siteId]),
+  );
+  const metersBySite = new Map<string, SchedulerSiteOption['knownMeters']>();
+  const meterKeysBySite = new Map<string, Set<string>>();
+  for (const meter of meters) {
+    const siteId = siteByInstallation.get(meter.installationId);
+    if (!siteId) continue;
+    const serialNumber = meter.serialNumber.trim();
+    if (!serialNumber) continue;
+    const meterKey = serialNumber.toLocaleLowerCase('en-AU');
+    const meterKeys = meterKeysBySite.get(siteId) ?? new Set<string>();
+    if (meterKeys.has(meterKey)) continue;
+    meterKeys.add(meterKey);
+    meterKeysBySite.set(siteId, meterKeys);
+    const knownMeters = metersBySite.get(siteId) ?? [];
+    knownMeters.push({
+      meterId: meter.meterId,
+      serialNumber,
+      deviceNumber: meter.deviceNumber,
+      deviceModel: meter.deviceModel,
+    });
+    metersBySite.set(siteId, knownMeters);
+  }
+  return sites.map((site) => schedulerSitePrefillOption(site, metersBySite.get(site.id) ?? []));
 }
 
 async function createDispatchedProductJob(
@@ -1857,6 +2076,7 @@ async function createDispatchedProductJob(
       job.workType ? 'workType' : 'serviceType',
       INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
     ),
+    existingDeviceId: storedReplacementMeterNumbers(job),
     meteringSolutionType: optionalDispatchString(
       job,
       'meteringSolutionType',
@@ -1880,19 +2100,12 @@ async function createDispatchedProductJob(
     nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
   };
 
-  if (site.previousJobId) {
-    const [previousJob] = await executor.select({
-      sourceId: businessJobs.sourceId,
-    }).from(businessJobs).where(and(
-      eq(businessJobs.id, site.previousJobId),
-      eq(businessJobs.siteId, site.id),
-      eq(businessJobs.sourceApp, 'installhub'),
-      eq(businessJobs.sourceType, 'installation'),
-    )).limit(1);
-    if (previousJob?.sourceId) {
+  if (shouldCopyExistingSiteFieldTopology(job)) {
+    const copySource = await latestReusableBusinessJob(executor, site.id, 'installhub');
+    if (copySource?.sourceId) {
       const copiedSourceId = await copyFieldInstallationForJob(
         executor,
-        previousJob.sourceId,
+        copySource.sourceId,
         {
           businessSiteId: site.id,
           clientName: site.clientName,
@@ -1948,6 +2161,7 @@ async function createDispatchedProductJob(
     businessSiteId: site.id,
     maas: fieldPlanning.maas,
     serviceType: fieldPlanning.workType,
+    existingDeviceId: fieldPlanning.existingDeviceId,
     meteringSolutionType: fieldPlanning.meteringSolutionType,
     plannedMeterType: fieldPlanning.plannedMeterType,
     customJobNumber: fieldPlanning.customJobNumber,
@@ -2061,6 +2275,7 @@ async function createCanonicalJobHierarchy(
       workType: optionalDispatchString(job, 'workType', 120)
         ?? optionalDispatchString(job, 'serviceType', 120)
         ?? 'legacy_unclassified',
+      existingDeviceId: storedReplacementMeterNumbers(job),
       maas: optionalDispatchBoolean(job, 'maas'),
       meteringSolutionType: optionalDispatchString(job, 'meteringSolutionType', 120),
       plannedMeterType: optionalDispatchString(job, 'plannedMeterType', 120),
@@ -2129,14 +2344,14 @@ export async function createSchedulerDispatch(
       start,
     );
     const now = new Date();
-    const title = sourceApp === 'installhub'
+    const title = (input.title?.trim() || (sourceApp === 'installhub'
       ? generatedFieldJobTitle(
           optionalDispatchString(job, job.workType ? 'workType' : 'serviceType', 120),
           site.clientName,
           site.siteName,
           optionalDispatchFieldJobTitleSuffix(job),
         )
-      : (input.title?.trim() || product.label).slice(0, 300);
+      : product.label)).slice(0, 300);
     const description = sourceApp === 'installhub'
       ? optionalDispatchString(job, 'jobComments', 5_000)
       : input.description?.trim() || null;
@@ -2156,7 +2371,7 @@ export async function createSchedulerDispatch(
         kind: 'job' as const,
         value: {
           id: product.sourceId,
-          label: `${site.clientName} · ${site.siteName}`,
+          label: title,
           subtitle: 'Installation · Draft',
           sourceApp: 'installhub' as const,
           sourceType: 'installation' as const,
@@ -2341,6 +2556,13 @@ export async function updateScheduleEvent(
       const title = input.title.trim();
       if (!title) throw badRequest('title cannot be empty');
       patch.title = title.slice(0, 300);
+      await alignLinkedBusinessJobTitle(
+        tx,
+        existing.sourceApp as ScheduleSourceApp,
+        existing.sourceType as ScheduleSourceType,
+        existing.sourceId,
+        title.slice(0, 300),
+      );
     }
     if (input.description !== undefined) {
       const jobComments = input.description?.trim() || null;
@@ -2794,8 +3016,14 @@ export async function searchJobOptions(
         siteName: ihInstallations.siteName,
         clientName: ihInstallations.clientName,
         status: ihInstallations.status,
+        jobTitle: businessJobs.title,
       })
       .from(ihInstallations)
+      .leftJoin(businessJobs, and(
+        eq(businessJobs.sourceApp, 'installhub'),
+        eq(businessJobs.sourceType, 'installation'),
+        eq(businessJobs.sourceId, ihInstallations.id),
+      ))
       .where(and(
         eq(ihInstallations.status, 'Draft'),
         isNull(ihInstallations.deletedAt),
@@ -2803,6 +3031,7 @@ export async function searchJobOptions(
           ilike(ihInstallations.siteName, pattern),
           ilike(ihInstallations.clientName, pattern),
           ilike(ihInstallations.id, pattern),
+          ilike(businessJobs.title, pattern),
         ),
       ))
       .orderBy(desc(ihInstallations.createdAt))
@@ -2810,7 +3039,7 @@ export async function searchJobOptions(
     for (const row of rows) {
       results.push({
         id: row.id,
-        label: `${row.clientName} · ${row.siteName}`,
+        label: row.jobTitle?.trim() || `${row.clientName} · ${row.siteName}`,
         subtitle: `Installation · ${row.status}`,
         sourceApp: 'installhub',
         sourceType: 'installation',
@@ -2964,8 +3193,14 @@ export async function listUnscheduledJobs(
         status: ihInstallations.status,
         assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
         inspectorName: ihInstallations.inspectorName,
+        jobTitle: businessJobs.title,
       })
       .from(ihInstallations)
+      .leftJoin(businessJobs, and(
+        eq(businessJobs.sourceApp, 'installhub'),
+        eq(businessJobs.sourceType, 'installation'),
+        eq(businessJobs.sourceId, ihInstallations.id),
+      ))
       .where(and(
         eq(ihInstallations.status, 'Draft'),
         isNull(ihInstallations.deletedAt),
@@ -2973,6 +3208,7 @@ export async function listUnscheduledJobs(
           ilike(ihInstallations.siteName, pattern),
           ilike(ihInstallations.clientName, pattern),
           ilike(ihInstallations.id, pattern),
+          ilike(businessJobs.title, pattern),
         ),
         unscheduledOnly && scheduledIds.length > 0
           ? notInArray(ihInstallations.id, scheduledIds)
@@ -3003,7 +3239,7 @@ export async function listUnscheduledJobs(
       if (unscheduledOnly && scheduledEvent) continue;
       results.push({
         id: row.id,
-        label: `${row.clientName} · ${row.siteName}`,
+        label: row.jobTitle?.trim() || `${row.clientName} · ${row.siteName}`,
         subtitle: `Installation · ${row.status}`,
         sourceApp: 'installhub',
         sourceType: 'installation',

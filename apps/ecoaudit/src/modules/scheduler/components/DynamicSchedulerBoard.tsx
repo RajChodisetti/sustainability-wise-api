@@ -123,6 +123,7 @@ export function DynamicSchedulerBoard({
     day: Date,
     hour: number,
     assigneeFieldUserId: string,
+    title: string,
     estimatedDurationMinutes: number | null,
   ) {
     const start = slotDateTime(day, hour);
@@ -131,7 +132,7 @@ export function DynamicSchedulerBoard({
       sourceApp: job.sourceApp,
       sourceType: job.sourceType,
       sourceId: job.id,
-      title: job.label,
+      title,
       assigneeFieldUserId,
       scheduledStartAt: start.toISOString(),
       ...(estimatedDurationMinutes === null ? {} : { estimatedDurationMinutes }),
@@ -199,7 +200,10 @@ export function DynamicSchedulerBoard({
     if (job.assigneeFieldUserId) setStaffFilter([job.assigneeFieldUserId]);
   }
 
-  async function confirmPendingAssign(estimatedDurationMinutes: number | null) {
+  async function confirmPendingAssign(
+    title: string,
+    estimatedDurationMinutes: number | null,
+  ) {
     if (!pendingAssign || !pickAssignee) return;
     setBoardError(null);
     try {
@@ -209,6 +213,7 @@ export function DynamicSchedulerBoard({
           pendingAssign.day,
           pendingAssign.hour,
           pickAssignee,
+          title,
           estimatedDurationMinutes,
         );
       } else {
@@ -216,6 +221,7 @@ export function DynamicSchedulerBoard({
         await update.mutateAsync({
           id: pendingAssign.event.id,
           input: {
+            title,
             scheduledStartAt: start.toISOString(),
             assigneeFieldUserId: pickAssignee,
             ...estimatedDurationUpdate(
@@ -420,8 +426,8 @@ export function DynamicSchedulerBoard({
           busy={create.isPending || update.isPending}
           onPickAssignee={setPickAssignee}
           onCancel={() => setPendingAssign(null)}
-          onConfirm={(estimatedDurationMinutes) => {
-            void confirmPendingAssign(estimatedDurationMinutes);
+          onConfirm={(title, estimatedDurationMinutes) => {
+            void confirmPendingAssign(title, estimatedDurationMinutes);
           }}
         />
       ) : null}
@@ -444,7 +450,7 @@ function AssignStaffDialog({
   busy: boolean;
   onPickAssignee: (value: string) => void;
   onCancel: () => void;
-  onConfirm: (estimatedDurationMinutes: number | null) => void;
+  onConfirm: (title: string, estimatedDurationMinutes: number | null) => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(onCancel);
@@ -454,11 +460,11 @@ function AssignStaffDialog({
       ? String(pendingAssign.event.estimatedDurationMinutes)
       : ''
   ));
+  const [title, setTitle] = useState(() => (
+    pendingAssign.type === 'job' ? pendingAssign.job.label : pendingAssign.event.title
+  ));
   const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
   const durationError = estimatedDurationError(estimatedDurationMinutes);
-  const jobName = pendingAssign.type === 'job'
-    ? pendingAssign.job.label
-    : pendingAssign.event.title;
   const selectedPerson = staff.find((person) => person.fieldUserId === pickAssignee);
   const scheduledAt = slotDateTime(pendingAssign.day, pendingAssign.hour);
   const scheduledAtLabel = scheduledAt.toLocaleString('en-AU', {
@@ -540,15 +546,25 @@ function AssignStaffDialog({
           onSubmit={(event) => {
             event.preventDefault();
             if (parsedEstimatedDurationMinutes === undefined) return;
-            onConfirm(parsedEstimatedDurationMinutes);
+            const normalizedTitle = title.trim();
+            if (!normalizedTitle) return;
+            onConfirm(normalizedTitle, parsedEstimatedDurationMinutes);
           }}
         >
           <div className="mt-4">
             <div className="mb-4 overflow-hidden rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)]">
               <AssignmentSummaryRow label="Technician" value={selectedPerson?.label || 'Select a technician'} />
-              <AssignmentSummaryRow label="Job" value={jobName} />
+              <AssignmentSummaryRow label="Job" value={title.trim() || 'Enter a job title'} />
               <AssignmentSummaryRow label="Date & time" value={scheduledAtLabel} />
             </div>
+            <FieldLabel htmlFor="scheduler-pending-title">Job title</FieldLabel>
+            <Input
+              id="scheduler-pending-title"
+              value={title}
+              maxLength={300}
+              required
+              onChange={(event) => setTitle(event.target.value)}
+            />
             <FieldLabel htmlFor="scheduler-pending-assignee">Technician</FieldLabel>
             <Select
               id="scheduler-pending-assignee"
@@ -594,7 +610,7 @@ function AssignStaffDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!pickAssignee || parsedEstimatedDurationMinutes === undefined || busy}
+              disabled={!title.trim() || !pickAssignee || parsedEstimatedDurationMinutes === undefined || busy}
             >
               {busy ? 'Saving assignment…' : 'Confirm assignment'}
             </Button>

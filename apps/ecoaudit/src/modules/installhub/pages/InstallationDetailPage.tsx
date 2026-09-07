@@ -32,14 +32,18 @@ import {
   TreeDraftNavigationGuard,
 } from '@/modules/installhub/components/WorkflowUi';
 import { GridSupplyEditor } from '@/modules/installhub/components/GridSupplyEditor';
-import { idempotencyKey, meterDevices } from '@/modules/installhub/lib/workflow';
+import { replacementMeterNumbersFromStored } from '@/modules/installhub/components/ReplacementMeterPicker';
+import { idempotencyKey, meterDevices, primaryGridSupply } from '@/modules/installhub/lib/workflow';
 import {
   meteringInventorySummary,
   readinessCorrectionAction,
   readinessEntityDetails,
   readinessIssueKey,
 } from '@/modules/installhub/lib/electricalPresentation';
-import { groupReadinessIssues } from '@/modules/installhub/lib/readinessPresentation';
+import {
+  groupReadinessIssues,
+  reconciliationIssueWhy,
+} from '@/modules/installhub/lib/readinessPresentation';
 import { clearInstallationCreateAttempt } from '@/modules/installhub/lib/model';
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import {
@@ -57,7 +61,6 @@ import {
   restoreInstallationCompletionAttempt,
   reuseInstallationCompletionAttempt,
 } from '@/modules/installhub/lib/completion';
-import type { Installation } from '@/modules/installhub/types/domain';
 
 function optionalValue(value: string | null | undefined): string {
   return value?.trim() || 'Not recorded';
@@ -88,20 +91,6 @@ function completedAtValue(value: string | null | undefined, timezone?: string | 
   return value;
 }
 
-function structuredSiteAddress(installation: Installation): string {
-  const localityLine = [
-    installation.siteLocality?.trim(),
-    installation.siteState?.trim(),
-    installation.sitePostcode?.trim(),
-  ].filter(Boolean).join(' ');
-  const country = installation.siteCountryCode?.trim();
-  return [
-    installation.siteAddress.trim(),
-    localityLine,
-    country && country !== 'AU' ? country : '',
-  ].filter(Boolean).join('\n') || 'Not recorded';
-}
-
 function InstallationDetailItem({
   label,
   value,
@@ -112,7 +101,7 @@ function InstallationDetailItem({
   wide?: boolean;
 }) {
   return (
-    <div className={wide ? 'sm:col-span-2 xl:col-span-3' : ''}>
+    <div className={wide ? 'sm:col-span-full' : ''}>
       <dt className="text-[10px] font-extrabold uppercase tracking-wide text-[var(--muted)]">{label}</dt>
       <dd className="mt-1 whitespace-pre-wrap text-sm leading-5 text-[var(--text)]">{value}</dd>
     </div>
@@ -212,7 +201,18 @@ export function InstallHubInstallationDetailPage() {
   const canDelete =
     user?.role === 'admin' ||
     Boolean(user?.id && installation.createdByUserId === user.id);
-  const meters = meterDevices(tree).filter((meter) => meter.lifecycleState !== 'INACTIVE').length;
+  const activeMeterDevices = meterDevices(tree).filter((meter) => meter.lifecycleState !== 'INACTIVE');
+  const meters = activeMeterDevices.length;
+  const recordedMeterTypes = [...new Set(activeMeterDevices.map((meter) => (
+    meter.deviceModel === 'OTHER'
+      ? [meter.customManufacturerName, meter.customModelName].filter(Boolean).join(' ') || 'Other'
+      : meter.deviceModel
+  )))];
+  const meterType = recordedMeterTypes.join(', ')
+    || installation.plannedMeterType?.trim()
+    || 'Not recorded';
+  const primarySupply = primaryGridSupply(tree);
+  const replacementMeterNumbers = replacementMeterNumbersFromStored(installation.existingDeviceId);
   const meteringInventory = meteringInventorySummary(tree);
   const readiness = readinessQuery.data;
   const readinessAdvisory = readiness?.authority === 'LOCAL_ADVISORY';
@@ -572,40 +572,101 @@ export function InstallHubInstallationDetailPage() {
       <Card className="mb-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="font-extrabold text-[var(--text)]">Job and metering plan</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Planning fields provide job context. Installed devices, electrical relationships, and completion remain authoritative in their existing workspaces.</p>
+            <h2 className="font-extrabold text-[var(--text)]">Installation details</h2>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Client, site, job, contact, and metering details for this installation. Installed devices and electrical relationships remain authoritative in their workspaces.</p>
           </div>
-          {installation.status === 'Draft' ? <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit details</LinkButton> : null}
+          {installation.status === 'Draft' ? (
+            <div className="flex flex-wrap gap-2">
+              <LinkButton href={`/installhub/installations/${installationId}/edit`} variant="secondary">Edit details</LinkButton>
+              {!primarySupply.nmi?.trim() ? (
+                <LinkButton href={`#grid-supply-${primarySupply.id}`} variant="secondary">Add NMI</LinkButton>
+              ) : null}
+            </div>
+          ) : null}
         </div>
-        <dl className="mt-4 grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
-          <InstallationDetailItem label="Client" value={optionalValue(installation.clientName)} />
-          <InstallationDetailItem label="Customer" value={optionalValue(installation.customerName)} />
-          <InstallationDetailItem label="Site" value={optionalValue(installation.siteName)} />
-          <InstallationDetailItem label="Australian site address" value={structuredSiteAddress(installation)} wide />
-          <InstallationDetailItem label="Scope categorization" value={optionalValue(installation.serviceType)} />
-          <InstallationDetailItem label="Metering type" value={optionalValue(installation.meteringSolutionType)} />
-          <InstallationDetailItem label="MaaS" value={triStateValue(installation.maas)} />
-          <InstallationDetailItem label="Custom job number" value={optionalValue(installation.customJobNumber)} />
-          <InstallationDetailItem label="Warranty device" value={triStateValue(installation.warrantyDevice)} />
-          <InstallationDetailItem label="Monitoring installed" value={triStateValue(installation.monitoringInstalled)} />
-          <InstallationDetailItem label="Hardware installed" value={triStateValue(installation.hardwareInstalled)} />
-          <InstallationDetailItem label="Solar capacity" value={installation.solarCapacityKw == null ? 'Not recorded' : `${installation.solarCapacityKw.toLocaleString('en-AU')} kW`} />
-          <InstallationDetailItem label="Additional monitoring required" value={triStateValue(installation.additionalMonitoringRequired)} />
-          <InstallationDetailItem label="Additional monitoring hardware" value={optionalValue(installation.additionalMonitoringHardware)} />
-          <InstallationDetailItem label="Job comments" value={optionalValue(installation.jobComments)} wide />
-        </dl>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          <section aria-labelledby="installation-client-site" className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+            <h3 id="installation-client-site" className="text-sm font-extrabold text-[var(--text)]">Client &amp; site</h3>
+            <dl className="mt-3 grid gap-x-5 gap-y-4 sm:grid-cols-2">
+              <InstallationDetailItem label="Client Name" value={optionalValue(installation.clientName)} />
+              <InstallationDetailItem label="Site Name" value={optionalValue(installation.siteName)} />
+              <InstallationDetailItem label="Site Address" value={optionalValue(installation.siteAddress)} wide />
+              <InstallationDetailItem label="Suburb" value={optionalValue(installation.siteLocality)} />
+              <InstallationDetailItem label="State" value={optionalValue(installation.siteState)} />
+              <InstallationDetailItem label="Postcode" value={optionalValue(installation.sitePostcode)} />
+            </dl>
+          </section>
+
+          <section aria-labelledby="installation-job-scope" className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+            <h3 id="installation-job-scope" className="text-sm font-extrabold text-[var(--text)]">Job &amp; scope</h3>
+            <dl className="mt-3 grid gap-x-5 gap-y-4 sm:grid-cols-2">
+              <InstallationDetailItem label="Job Number #" value={optionalValue(installation.customJobNumber)} />
+              <InstallationDetailItem label="Job Type" value={optionalValue(installation.serviceType)} />
+              <InstallationDetailItem label="Scope Notes" value={optionalValue(installation.jobComments)} wide />
+            </dl>
+          </section>
+
+          <section aria-labelledby="installation-site-contact" className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+            <h3 id="installation-site-contact" className="text-sm font-extrabold text-[var(--text)]">Site contact</h3>
+            <dl className="mt-3 grid gap-x-5 gap-y-4 sm:grid-cols-2">
+              <InstallationDetailItem label="Site Contact Name" value={optionalValue(installation.siteContactName)} />
+              <InstallationDetailItem label="Site Contact Number" value={optionalValue(installation.siteContactPhone)} />
+              <InstallationDetailItem label="Site Contact Email" value={optionalValue(installation.siteContactEmail)} wide />
+            </dl>
+          </section>
+
+          <section aria-labelledby="installation-metering-hardware" className="rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-4">
+            <h3 id="installation-metering-hardware" className="text-sm font-extrabold text-[var(--text)]">Metering &amp; hardware</h3>
+            <dl className="mt-3 grid gap-x-5 gap-y-4 sm:grid-cols-2">
+              <InstallationDetailItem label="MaaS (Yes/No)" value={triStateValue(installation.maas)} />
+              <InstallationDetailItem label="MAAS Type" value={optionalValue(installation.meteringSolutionType)} />
+              <InstallationDetailItem label="Meter Type" value={meterType} />
+              <InstallationDetailItem label="Electricity NMI" value={optionalValue(primarySupply.nmi)} />
+              {installation.serviceType === 'M2 - Faults / COMMS fault' ? (
+                <InstallationDetailItem
+                  label="Meters to replace"
+                  value={replacementMeterNumbers.length ? replacementMeterNumbers.join('\n') : 'Not recorded'}
+                  wide
+                />
+              ) : null}
+              <InstallationDetailItem label="Warranty device" value={triStateValue(installation.warrantyDevice)} />
+              <InstallationDetailItem label="Monitoring installed" value={triStateValue(installation.monitoringInstalled)} />
+              <InstallationDetailItem label="Hardware installed" value={triStateValue(installation.hardwareInstalled)} />
+              <InstallationDetailItem label="Solar capacity" value={installation.solarCapacityKw == null ? 'Not recorded' : `${installation.solarCapacityKw.toLocaleString('en-AU')} kW`} />
+              <InstallationDetailItem label="Additional monitoring required" value={triStateValue(installation.additionalMonitoringRequired)} />
+              <InstallationDetailItem label="Additional monitoring hardware" value={optionalValue(installation.additionalMonitoringHardware)} />
+            </dl>
+          </section>
+        </div>
+        {installation.status === 'Draft' && replacementMeterNumbers.length ? (
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-[var(--border)] pt-4">
+            {replacementMeterNumbers.map((meterNumber) => (
+              <LinkButton
+                key={meterNumber.toLocaleLowerCase('en-AU')}
+                href={`/installhub/installations/${installationId}/devices?q=${encodeURIComponent(meterNumber)}`}
+                variant="secondary"
+              >
+                Replace {meterNumber}
+              </LinkButton>
+            ))}
+          </div>
+        ) : null}
       </Card>
 
       <details className="mb-6 rounded-[var(--radius-md)] border border-[var(--amber)]/30 bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
-        <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">Site contact and access information (sensitive)</summary>
-        <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">Open only when needed for this installation. These details are kept out of Scheduler job-option labels.</p>
+        <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">Access information (sensitive)</summary>
+        <p className="mt-2 text-xs leading-5 text-[var(--text-sub)]">Open only when access instructions are needed for this installation. These details are kept out of Scheduler job-option labels.</p>
         <dl className="mt-4 grid gap-x-5 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
-          <InstallationDetailItem label="Contact name" value={optionalValue(installation.siteContactName)} />
-          <InstallationDetailItem label="Contact phone" value={optionalValue(installation.siteContactPhone)} />
-          <InstallationDetailItem label="Contact email" value={optionalValue(installation.siteContactEmail)} />
           <InstallationDetailItem label="Access information" value={optionalValue(installation.accessInformation)} wide />
         </dl>
       </details>
+
+      <GridSupplyEditor
+        tree={tree}
+        mutate={writer.mutate}
+        onError={(error) => toast.error(installHubConnectionErrorMessage(error))}
+        onSuccess={(message) => toast.success(message)}
+      />
 
       <section className="mb-7" aria-labelledby="installhub-workspace">
         <h2 id="installhub-workspace" className="mb-3 text-lg font-extrabold text-[var(--text)]">Installation workspace</h2>
@@ -620,22 +681,13 @@ export function InstallHubInstallationDetailPage() {
 
       <details className="mb-6 rounded-[var(--radius-md)] border border-[var(--border)] bg-[var(--surface)] p-4 shadow-[var(--shadow-xs)]">
         <summary className="cursor-pointer text-sm font-extrabold text-[var(--text)]">More tools</summary>
-        <p className="mt-3 text-xs leading-5 text-[var(--text-sub)]">Detailed review and administration tools used when needed.</p>
+        <p className="mt-3 text-xs leading-5 text-[var(--text-sub)]">Additional installation and administration tools used when needed.</p>
         <div className="mt-3 flex flex-wrap gap-2">
-          <LinkButton href={`/installhub/installations/${installationId}/data`} variant="secondary">Reconciliation</LinkButton>
-          <LinkButton href={`/installhub/installations/${installationId}/metering`} variant="secondary">Metering table</LinkButton>
           <LinkButton href={`/installhub/installations/${installationId}/photos`} variant="secondary">Photo gallery</LinkButton>
           <LinkButton href={`/installhub/installations/${installationId}/cloud`} variant="secondary">Files & history</LinkButton>
           {user?.role === 'admin' ? <LinkButton href={`/installhub/installations/${installationId}/access`} variant="secondary">Access</LinkButton> : null}
         </div>
       </details>
-
-      <GridSupplyEditor
-        tree={tree}
-        mutate={writer.mutate}
-        onError={(error) => toast.error(installHubConnectionErrorMessage(error))}
-        onSuccess={(message) => toast.success(message)}
-      />
 
       <Card className="mb-6">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -688,6 +740,9 @@ export function InstallHubInstallationDetailPage() {
                               {entity.code ? `${entity.code} — ` : ''}{entity.name}
                             </span>
                             <span className="mt-1 block leading-5">{issue.message}</span>
+                            <span className="mt-1 block text-xs leading-5 text-[var(--text-sub)]">
+                              <span className="font-bold text-[var(--text)]">Why:</span> {reconciliationIssueWhy(issue)}
+                            </span>
                             <span className="mt-1 block text-xs font-bold text-[var(--primary)]">
                               {correction.label}{issue.field ? ` · ${issue.field}` : ''} <Icon name="chevron-right" size={14} className="inline" />
                             </span>

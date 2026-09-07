@@ -193,6 +193,7 @@ type SchedulerFieldJobPlanning = {
   electricityNmi: string;
   maas: boolean | null;
   workType: string;
+  existingDeviceIds?: string[];
   meteringSolutionType: string;
   jobComments: string;
 };
@@ -205,6 +206,7 @@ export function clearSchedulerFieldJobPlanning<T extends SchedulerFieldJobPlanni
     electricityNmi: '',
     maas: null,
     workType: '',
+    existingDeviceIds: [],
     meteringSolutionType: '',
     jobComments: '',
   };

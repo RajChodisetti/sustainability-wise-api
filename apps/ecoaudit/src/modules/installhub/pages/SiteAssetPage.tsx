@@ -55,6 +55,8 @@ import {
   activeMetersOnAssetSupplyingBoard,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
+  assetMeterAvailability,
+  assetMeterSelectionStatus,
   assetElectricalSource,
   boardTypeLabel,
   legacyBoardType,
@@ -236,22 +238,57 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     ? tree.electricalAssets.find((board) => board.id === draftSource.boardId)
     : undefined;
   const directSupplyBoardId = selectedSupplyBoard?.id ?? null;
-  const eligibleMeters = activeMetersOnAssetSupplyingBoard(tree, draft)
+  const activeMeters = activeMetersOnAssetSupplyingBoard(tree, draft)
     .sort((left, right) => left.id.localeCompare(right.id));
-  const meterOptions = eligibleMeters.map((meter) => ({
-    value: meter.id,
-    label: `${meter.serialNumber || 'No device ID'} · ${humanDeviceName(meter)}`,
-    keywords: `${meterDeviceName(meter)} ${meter.deviceModel} ${meter.displayName.value} ${meter.id}`,
-  }));
+  const activeMeterAvailability = activeMeters.map((meter) => assetMeterAvailability(tree, meter, draft.id));
+  const availabilityByMeterId = new Map(activeMeterAvailability.map((availability) => [availability.meter.id, availability]));
+  const eligibleMeters = activeMeterAvailability
+    .filter((availability) => availability.usableCount > 0)
+    .map((availability) => availability.meter);
+  const meterOptions = activeMeterAvailability.map((availability) => {
+    const { meter } = availability;
+    const availabilitySummary = [
+      `${availability.availableCount} free`,
+      availability.ownCount ? `${availability.ownCount} assigned to this asset` : null,
+      availability.tbcCount ? `${availability.tbcCount} TBC` : null,
+      availability.reassignableCount ? `${availability.reassignableCount} assigned to another asset` : null,
+      availability.protectedCount ? `${availability.protectedCount} protected` : null,
+      availability.unavailableCount ? `${availability.unavailableCount} incompatible` : null,
+    ].filter(Boolean).join(' · ');
+    return {
+      value: meter.id,
+      label: `${meter.serialNumber || 'No device ID'} · ${humanDeviceName(meter)} · ${availabilitySummary}`,
+      keywords: `${meterDeviceName(meter)} ${meter.deviceModel} ${meter.displayName.value} ${meter.id} ${availabilitySummary}`,
+      disabled: availability.usableCount === 0,
+    };
+  });
   const linkedMeter = meterDevices(tree).find((meter) => meter.id === draft.meterId);
   const linkedMeterBoard = tree.electricalAssets.find(
     (board) => board.id === (linkedMeter?.installedOnBoardId || draft.meterSwitchboardId),
   );
+  const linkedMeterAvailability = linkedMeter
+    ? assetMeterAvailability(tree, linkedMeter, draft.id)
+    : undefined;
   const formSelectedMeter = eligibleMeters.find((meter) => meter.id === draft.meterId);
-  const unavailableLinkedMeter = Boolean(draft.meterId && !formSelectedMeter);
+  const selectedMeterAvailability = formSelectedMeter
+    ? availabilityByMeterId.get(formSelectedMeter.id)
+    : undefined;
+  const draftSelectionStatus = assetMeterSelectionStatus(
+    selectedMeterAvailability,
+    draft.meterChannelIds || [],
+    approvedTakeoverAssignmentIds,
+  );
+  const unavailableLinkedMapping = Boolean(
+    draft.meterId
+    && (
+      !formSelectedMeter
+      || !(draft.meterChannelIds || []).length
+      || draftSelectionStatus.unavailable
+    ),
+  );
   const preserveUnavailableMeterMapping = Boolean(
     source
-    && unavailableLinkedMeter
+    && unavailableLinkedMapping
     && sameAssetMeterMapping(source, draft),
   );
   const selectedChannels = linkedMeter && linkedMeterBoard
@@ -259,16 +296,13 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       .filter((channel) => (draft.meterChannelIds || []).includes(channel.id))
       .sort((left, right) => left.ordinal - right.ordinal)
     : [];
-  const existingAssignment = measurementAssignments(tree).find(
+  const existingAssignments = measurementAssignments(tree).filter(
     (assignment) => assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === draft.id,
   );
-  const usedChannelAssignments = new Map<string, MeasurementAssignment>();
-  for (const assignment of measurementAssignments(tree)) {
-    if (assignment.id === existingAssignment?.id) continue;
-    for (const channelId of assignment.channelIds) {
-      usedChannelAssignments.set(channelId, assignment);
-    }
-  }
+  const existingAssignment = existingAssignments.find((assignment) => (
+    meteringState.kind === 'METERED'
+    && meteringState.measurementAssignmentIds.includes(assignment.id)
+  )) || existingAssignments[0];
   const selectedChannelCount = draft.meterChannelIds?.length || 0;
   const selectedPhaseMode = draft.phaseMode || 'SINGLE_PHASE';
   const requiredChannelCount = selectedPhaseMode === 'SINGLE_PHASE'
@@ -335,12 +369,18 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       : phaseMode === 'THREE_PHASE'
         ? 3
         : uniqueChannelIds.length;
-    const selectedConflicts = [...new Set(selectedChannelIds
-      .map((id) => usedChannelAssignments.get(id))
-      .filter((assignment): assignment is MeasurementAssignment => Boolean(assignment)))];
-    const blockedConflict = selectedConflicts.some((assignment) => (
-      assignment.target.kind !== 'TBC'
-      && !(assignment.target.kind === 'SITE_ASSET' && approvedTakeoverAssignmentIds.has(assignment.id))
+    const channelAvailabilityById = new Map(
+      (selectedMeterAvailability?.channels || []).map((availability) => [availability.channel.id, availability]),
+    );
+    const selectedChannelAvailability = uniqueChannelIds
+      .map((channelId) => channelAvailabilityById.get(channelId));
+    const allowedSelections = selectedChannelAvailability.every((availability) => (
+      Boolean(availability?.directlySelectable)
+      || Boolean(
+        availability?.reassignable
+        && availability.assignment
+        && approvedTakeoverAssignmentIds.has(availability.assignment.id),
+      )
     ));
     const structurallyConfirmedMetering = Boolean(
       state.kind === 'METERED'
@@ -350,10 +390,8 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       && expectedChannelCount > 0
       && uniqueChannelIds.length === selectedChannelIds.length
       && uniqueChannelIds.length === expectedChannelCount
-      && uniqueChannelIds.every((channelId) => (
-        formSelectedMeter.channels.find((channel) => channel.id === channelId)?.purpose === 'SUB_CIRCUIT'
-      ))
-      && !blockedConflict
+      && selectedChannelAvailability.length === uniqueChannelIds.length
+      && allowedSelections
     );
     const unresolvedOnSave = normalizedElectricalSource.kind === 'TBC'
       || state.kind === 'TBC'
@@ -382,11 +420,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         };
         applyAssetElectricalSource(value, normalizedElectricalSource);
         if (state.kind === 'METERED' && preserveUnavailableMeterMapping) {
-          // Historical cross-board/inactive mappings remain authoritative until
-          // the user deliberately replaces them with an eligible local meter.
+          // Historical cross-board, inactive, or malformed-topology mappings
+          // remain authoritative until the user deliberately replaces them.
         } else if (state.kind === 'METERED' && structurallyConfirmedMetering && formSelectedMeter) {
-          const takeoverAssignmentIds = [...new Set((currentDraft.meterChannelIds || [])
-            .map((channelId) => usedChannelAssignments.get(channelId))
+          const takeoverAssignmentIds = [...new Set(selectedChannelAvailability
+            .map((availability) => availability?.assignment)
             .filter((assignment): assignment is MeasurementAssignment => (
               assignment?.target.kind === 'SITE_ASSET'
               && approvedTakeoverAssignmentIds.has(assignment.id)
@@ -530,11 +568,13 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       next.meterSwitchboardId = null;
       next.meterId = null;
       next.meterChannelIds = [];
+      next.meterChannels = [];
       if (siteAssetMeteringState(next).kind === 'METERED') {
         next.meteringState = { kind: 'METERED', measurementAssignmentIds: existingAssignment ? [existingAssignment.id] : [] };
       }
       return next;
     });
+    setApprovedTakeoverAssignmentIds(new Set());
   }
 
   function chooseAssetType(value: string) {
@@ -609,6 +649,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         measurementDirection: null,
       };
     });
+    if (kind !== 'METERED') setApprovedTakeoverAssignmentIds(new Set());
   }
 
   function chooseMetering(kind: MeteringStateKind) {
@@ -675,6 +716,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         next.meterChannels = [];
         return next;
       });
+      setApprovedTakeoverAssignmentIds(new Set());
       setQuickBoardOpen(false);
       toast.success(`${normalizedQuickBoardName} added and selected.`);
     } catch (error) {
@@ -745,6 +787,12 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
     setDraft((current) => {
       if (!current) return current;
       const ids = new Set(current.meterChannelIds || []);
+      const limit = current.phaseMode === 'SINGLE_PHASE'
+        ? 1
+        : current.phaseMode === 'THREE_PHASE'
+          ? 3
+          : null;
+      if (checked && !ids.has(channelId) && limit !== null && ids.size >= limit) return current;
       if (checked) ids.add(channelId);
       else ids.delete(channelId);
       return { ...current, meterChannelIds: [...ids] };
@@ -979,8 +1027,10 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                       next.meterSwitchboardTbc = false;
                       next.meterId = null;
                       next.meterChannelIds = [];
+                      next.meterChannels = [];
                       return next;
                     });
+                    setApprovedTakeoverAssignmentIds(new Set());
                   }}
                 >
                   <option value="">Leave to be confirmed</option>
@@ -1001,7 +1051,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
 
           <div id="asset-metering" tabIndex={-1} className="mt-6 border-t border-[var(--border)] pt-2">
             <ChoiceGroup<MeteringStateKind>
-              label="How is this asset measured?"
+              label="How is this asset metered?"
               hint="Do not infer metering from missing fields; record the observed state explicitly."
               value={meteringState.kind}
               options={[
@@ -1026,18 +1076,39 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   </p>
                 </div>
 
-                {unavailableLinkedMeter ? (
+                {preserveUnavailableMeterMapping ? (
                   <div className="mt-3">
                     <InlineNotice tone="warning">
                       <strong>Existing meter link retained as read-only.</strong>{' '}
                       {linkedMeter
-                        ? `${humanDeviceName(linkedMeter)} is ${linkedMeter.lifecycleState === 'INACTIVE' ? 'inactive' : `installed on ${linkedMeterBoard?.assetName || 'another switchboard'}`}.`
+                        ? linkedMeter.lifecycleState === 'INACTIVE'
+                          ? `${humanDeviceName(linkedMeter)} is inactive.`
+                          : linkedMeter.installedOnBoardId !== directSupplyBoardId
+                            ? `${humanDeviceName(linkedMeter)} is installed on ${linkedMeterBoard?.assetName || 'another switchboard'}.`
+                            : linkedMeterAvailability && !linkedMeterAvailability.topologyValid
+                              ? `${humanDeviceName(linkedMeter)} has a malformed ${linkedMeter.deviceModel} channel layout.`
+                              : draftSelectionStatus.missingChannelId
+                                ? `${humanDeviceName(linkedMeter)} references a saved channel that no longer exists on this meter.`
+                                : draftSelectionStatus.unavailableChannel?.reason
+                                  ? `${humanDeviceName(linkedMeter)} uses an unavailable channel. ${draftSelectionStatus.unavailableChannel.reason}`
+                                : `${humanDeviceName(linkedMeter)} does not have a complete saved channel selection.`
                         : `Meter ${draft.meterId} is no longer available in the active meter register.`}{' '}
-                      Saving unrelated changes will not alter this historical link. Choose an active meter on the supplying switchboard to replace it.
+                      Saving unrelated changes will not alter this historical link. Correct that meter configuration or choose an eligible meter on the supplying switchboard to replace it.
                       {linkedMeter && linkedMeterBoard ? (
                         <>{' '}<Link className="font-semibold underline" href={`/installhub/installations/${installationId}/zones/${linkedMeterBoard.zoneId}/boards/${linkedMeterBoard.id}/meters/${linkedMeter.id}`}>Open existing meter</Link></>
                       ) : null}
                     </InlineNotice>
+                    {formSelectedMeter && (draft.meterChannelIds || []).length ? (
+                      <Button
+                        variant="secondary"
+                        className="mt-2"
+                        onClick={() => {
+                          set('meterChannelIds', []);
+                          set('meterChannels', []);
+                          setApprovedTakeoverAssignmentIds(new Set());
+                        }}
+                      >Replace saved channel selection</Button>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -1049,12 +1120,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   disabled={!directSupplyBoardId}
                   describedBy="asset-meter-hint"
                   placeholder="Search name, model, serial, or stable ID"
-                  emptyMessage="No active metering devices match this search."
+                  emptyMessage="No configured metering devices match this search."
                   onChange={chooseMeter}
                 />
-                <FieldHint id="asset-meter-hint">Only active meters installed on the selected supplying switchboard are shown. Up to 100 of {eligibleMeters.length} matching devices are available.</FieldHint>
-                {directSupplyBoardId && eligibleMeters.length === 0 ? (
+                <FieldHint id="asset-meter-hint">
+                  Active meters on this switchboard are checked against their device model, configured channel layout, channel purpose, capabilities, and current assignments. Each result shows free, owned, TBC, occupied, protected, and incompatible channel counts. {eligibleMeters.length} of {activeMeters.length} device{activeMeters.length === 1 ? '' : 's'} currently have an asset-usable channel.
+                </FieldHint>
+                {directSupplyBoardId && activeMeters.length === 0 ? (
                   <FieldHint>No active metering devices are installed on the supplying switchboard.</FieldHint>
+                ) : null}
+                {directSupplyBoardId && activeMeters.length > 0 && eligibleMeters.length === 0 ? (
+                  <InlineNotice tone="warning">The installed meters have no channels currently usable for this asset. Review their model layout, purposes, capabilities, and existing assignments.</InlineNotice>
                 ) : null}
                 {directSupplyBoardId ? (
                   <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -1077,6 +1153,8 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   onChange={(value) => {
                     set('phaseMode', value);
                     set('meterChannelIds', []);
+                    set('meterChannels', []);
+                    setApprovedTakeoverAssignmentIds(new Set());
                   }}
                 />
 
@@ -1097,8 +1175,9 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                   <p id="asset-channel-group-status" className="mt-1 text-xs font-semibold text-[var(--text-sub)]" role="status" aria-live="polite" aria-atomic="true">{channelGroupAnnouncement}</p>
                   {!formSelectedMeter ? <p className="mt-3 text-sm text-[var(--text-sub)]">Choose an active meter on the supplying switchboard to see its channels.</p> : (
                     <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      {formSelectedMeter.channels.map((channel) => {
-                        const ownerAssignment = usedChannelAssignments.get(channel.id);
+                      {(selectedMeterAvailability?.channels || []).map((channelAvailability) => {
+                        const { channel } = channelAvailability;
+                        const ownerAssignment = channelAvailability.assignment;
                         const ownerTarget = ownerAssignment
                           ? measurementTargetDetails(tree, ownerAssignment.target)
                           : null;
@@ -1106,26 +1185,38 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                           ? assignmentDeviceDetails(ownerAssignment)
                           : null;
                         const takeoverApproved = Boolean(ownerAssignment && approvedTakeoverAssignmentIds.has(ownerAssignment.id));
-                        const claimableTbc = ownerAssignment?.target.kind === 'TBC';
-                        const protectedTarget = ownerAssignment
-                          && ownerAssignment.target.kind !== 'SITE_ASSET'
-                          && ownerAssignment.target.kind !== 'TBC';
-                        const unavailable = channel.purpose === 'SPARE'
-                          || Boolean(ownerAssignment && !claimableTbc && !takeoverApproved);
-                        const unavailableReasonId = channel.purpose === 'SPARE' || ownerAssignment
+                        const claimableTbc = channelAvailability.state === 'TBC_ASSIGNMENT';
+                        const protectedTarget = channelAvailability.state === 'PROTECTED_ASSIGNMENT';
+                        const ownAssignment = channelAvailability.state === 'OWN_ASSIGNMENT';
+                        const selected = (draft.meterChannelIds || []).includes(channel.id);
+                        const phaseLimitReached = !selected
+                          && requiredChannelCount !== null
+                          && selectedChannelCount >= requiredChannelCount;
+                        const unavailable = phaseLimitReached || (
+                          !channelAvailability.directlySelectable
+                          && !(channelAvailability.reassignable && takeoverApproved)
+                        );
+                        const unavailableReasonId = phaseLimitReached || channelAvailability.reason || ownerAssignment
                           ? `asset-channel-${channel.id.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}-reason`
                           : undefined;
+                        const capabilitySummary = Object.entries(channel.capabilities || {})
+                          .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+                          .join(' · ');
                         return (
                           <div key={channel.id} className={`rounded-xl border px-3 py-2 ${unavailable ? 'border-[var(--amber)] bg-[var(--surface)]' : 'border-[var(--border-strong)] bg-[var(--surface)]'}`}>
                             <Checkbox
                               label={`Channel ${channel.ordinal} — ${channel.description || channel.loadTypeCode || channel.purpose.replaceAll('_', ' ').toLowerCase()}`}
-                              checked={(draft.meterChannelIds || []).includes(channel.id)}
+                              checked={selected}
                               disabled={unavailable}
                               ariaDescribedBy={unavailableReasonId}
                               onChange={(checked) => toggleChannel(channel.id, checked)}
                             />
-                            {channel.purpose === 'SPARE' ? (
-                              <p id={unavailableReasonId} className="pl-8 text-xs font-semibold text-[var(--amber)]">Unavailable: marked spare on the device.</p>
+                            {phaseLimitReached ? (
+                              <p id={unavailableReasonId} className="pl-8 text-xs font-semibold leading-5 text-[var(--amber)]">Deselect a channel before choosing another for this phase grouping.</p>
+                            ) : channelAvailability.state === 'INCOMPATIBLE' ? (
+                              <p id={unavailableReasonId} className="pl-8 text-xs font-semibold leading-5 text-[var(--amber)]">Unavailable: {channelAvailability.reason}</p>
+                            ) : ownAssignment ? (
+                              <p id={unavailableReasonId} className="pl-8 text-xs font-semibold leading-5 text-[var(--green)]">Already assigned to this asset; you can keep or remove it.</p>
                             ) : ownerAssignment && ownerTarget && ownerDevice ? (
                               <div id={unavailableReasonId} className="space-y-1 pb-1 pl-8 text-xs leading-5">
                                 <p className="font-semibold text-[var(--amber)]">
@@ -1143,7 +1234,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                                   {ownerTarget.href ? <Link className="font-semibold text-[var(--blue)] underline" href={ownerTarget.href}>Open attached target</Link> : null}
                                   {ownerDevice.href ? <Link className="font-semibold text-[var(--blue)] underline" href={ownerDevice.href}>Open device mapping</Link> : null}
                                 </div>
-                                {ownerAssignment.target.kind === 'SITE_ASSET' && !takeoverApproved ? (
+                                {channelAvailability.reassignable && ownerAssignment.target.kind === 'SITE_ASSET' && !takeoverApproved && !phaseLimitReached ? (
                                   <Button
                                     variant="secondary"
                                     className="mt-1"
@@ -1156,6 +1247,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                                 {protectedTarget ? <p className="font-semibold text-[var(--text-sub)]">Switchboard and Grid totals are protected. Change this from the device mapping.</p> : null}
                               </div>
                             ) : null}
+                            {capabilitySummary ? <p className="break-words pl-8 text-xs leading-5 text-[var(--text-sub)]">Capabilities: {capabilitySummary}</p> : null}
                           </div>
                         );
                       })}

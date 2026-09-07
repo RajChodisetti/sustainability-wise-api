@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   CanonicalInputError,
   allocateDisplayCodes,
+  assertCanonicalAssetMeteringWrite,
   assertStructurallySafeTree,
   canonicalPayloadHash,
   canonicalTreeMutationFingerprint,
@@ -40,14 +41,27 @@ test('historical site codes project to one bounded display-code prefix without m
 });
 
 test('zone-code contract derives bounded slugs and rejects invalid explicit codes', () => {
-  assert.equal(deriveZoneCode('  Plant room / Level 1  '), 'PLANT-ROOM-LEVEL');
-  assert.equal(deriveZoneCode('---'), 'ZONE');
+  assert.equal(deriveZoneCode('  Plant room / Level 1  ', 'GOLD'), 'PLA-GOLD-01');
+  assert.equal(deriveZoneCode('---', 'Gold Coast', 10), 'ZON-GOLD-COA-0A');
   assert.equal(isValidInstallationZoneCode('PLANT-1'), true);
   assert.equal(isValidInstallationZoneCode('plant-1'), false);
 
   const legacy = structuredClone(baseTree()) as unknown as Record<string, unknown>;
   (legacy.zones as Array<Record<string, unknown>>)[0].zoneCode = undefined;
-  assert.equal(normalizeInstallationTreeV2(legacy).zones[0].zoneCode, 'PLANT-ROOM');
+  assert.equal(normalizeInstallationTreeV2(legacy).zones[0].zoneCode, 'PLA-ACME-01');
+
+  const stable = structuredClone(baseTree());
+  stable.zones = [
+    { ...stable.zones[0], id: 'zone-z', zoneCode: undefined as unknown as string },
+    { ...stable.zones[0], id: 'zone-a', zoneCode: undefined as unknown as string },
+  ];
+  stable.electricalAssets[0].zoneId = 'zone-z';
+  stable.siteAssets[0].zoneId = 'zone-z';
+  const stableCodes = new Map(
+    normalizeInstallationTreeV2(stable).zones.map((zone) => [zone.id, zone.zoneCode]),
+  );
+  assert.equal(stableCodes.get('zone-a'), 'PLA-ACME-01');
+  assert.equal(stableCodes.get('zone-z'), 'PLA-ACME-02');
 
   const duplicate = baseTree();
   duplicate.zones.push({
@@ -71,6 +85,43 @@ test('canonicalizer backfills an editable meter custom name for legacy wire payl
   assert.equal(
     normalizeInstallationTreeV2(editable).meterDevices[0].customName,
     'Main incomer meter',
+  );
+});
+
+test('canonicalizer accepts additive meter lifecycle states while preserving legacy omission', () => {
+  const legacy = baseTree();
+  legacy.meterDevices = [a3Meter()];
+  legacy.electricalAssets[0].meterPresent = true;
+  const normalizedLegacy = normalizeInstallationTreeV2(legacy);
+  assert.equal(Object.hasOwn(normalizedLegacy.meterDevices[0], 'lifecycleState'), false);
+
+  for (const lifecycleState of ['PLANNED', 'ACTIVE', 'INACTIVE'] as const) {
+    const current = structuredClone(legacy);
+    current.meterDevices[0].lifecycleState = lifecycleState;
+    assert.equal(
+      normalizeInstallationTreeV2(current).meterDevices[0].lifecycleState,
+      lifecycleState,
+    );
+  }
+
+  const explicitActive = structuredClone(normalizedLegacy);
+  explicitActive.meterDevices[0].lifecycleState = 'ACTIVE';
+  const inactive = structuredClone(explicitActive);
+  inactive.meterDevices[0].lifecycleState = 'INACTIVE';
+  assert.equal(
+    canonicalTreeMutationFingerprint(normalizedLegacy),
+    canonicalTreeMutationFingerprint(explicitActive),
+  );
+  assert.notEqual(
+    canonicalTreeMutationFingerprint(explicitActive),
+    canonicalTreeMutationFingerprint(inactive),
+  );
+
+  const invalid = structuredClone(legacy) as unknown as Record<string, unknown>;
+  (invalid.meterDevices as Array<Record<string, unknown>>)[0].lifecycleState = 'RETIRED';
+  assert.throws(
+    () => normalizeInstallationTreeV2(invalid),
+    /meterDevices\[0\]\.lifecycleState must be one of PLANNED, ACTIVE, INACTIVE/,
   );
 });
 
@@ -107,6 +158,7 @@ test('canonical installation metadata is additive, nullable, bounded, and mutati
     customerName: '  Site owner  ',
     maas: false,
     serviceType: ' Metering install ',
+    existingDeviceId: ' WW-DEVICE-100 ',
     meteringSolutionType: ' Embedded network ',
     plannedMeterType: ' A6M ',
     customJobNumber: ' CUSTOM-100 ',
@@ -132,6 +184,7 @@ test('canonical installation metadata is additive, nullable, bounded, and mutati
   assert.deepEqual({
     customerName: normalized.installation.customerName,
     maas: normalized.installation.maas,
+    existingDeviceId: normalized.installation.existingDeviceId,
     siteState: normalized.installation.siteState,
     siteCountryCode: normalized.installation.siteCountryCode,
     solarCapacityKw: normalized.installation.solarCapacityKw,
@@ -139,6 +192,7 @@ test('canonical installation metadata is additive, nullable, bounded, and mutati
   }, {
     customerName: 'Site owner',
     maas: false,
+    existingDeviceId: 'WW-DEVICE-100',
     siteState: 'NSW',
     siteCountryCode: 'AU',
     solarCapacityKw: 99.75,
@@ -273,6 +327,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
     customName: '',
     deviceFamily: 'OTHER',
     deviceModel: 'OTHER',
+    lifecycleState: 'INACTIVE',
     customManufacturerName: 'Example manufacturer',
     customModelName: 'Example model',
     displayName: display('ACME-OTHER-001'),
@@ -301,6 +356,10 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
     'serial-old',
     'custom-serial',
   ]);
+  assert.deepEqual(projected.meterDevices.map((meter) => meter.lifecycleState), [
+    'ACTIVE',
+    'INACTIVE',
+  ]);
   assert.deepEqual(projectCanonicalOptionalDefaults(projected), projected);
   const normalized = normalizeInstallationTreeV2(historical);
   assert.equal(normalized.installation.clientName, projected.installation.clientName);
@@ -322,6 +381,8 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
     normalized.meterDevices.map((meter) => meter.serialNumber),
     projected.meterDevices.map((meter) => meter.serialNumber),
   );
+  assert.equal(Object.hasOwn(normalized.meterDevices[0], 'lifecycleState'), false);
+  assert.equal(normalized.meterDevices[1].lifecycleState, 'INACTIVE');
   assert.equal(
     canonicalTreeMutationFingerprint(historical),
     canonicalTreeMutationFingerprint(projected),
@@ -813,6 +874,8 @@ test('legacy meter projection uses friendly load labels without weakening canoni
 
   const legacy = projectLegacyInstallationTree(tree);
   assert.equal(legacy.electricalAssets[0]?.meters[0]?.deviceName, 'A3RM Meter');
+  assert.equal(legacy.electricalAssets[0]?.meters[0]?.lifecycleState, 'ACTIVE');
+  assert.equal(legacy.meterDevices[0]?.lifecycleState, 'ACTIVE');
   assert.deepEqual(
     legacy.electricalAssets[0]?.meters[0]?.wwChannels.map((item) => item.loadType),
     ['Mains Supply', 'Lighting', 'Refrigeration', 'Compressed Air', 'Blast Freezer', 'Not Used'],
@@ -1047,6 +1110,48 @@ test('structural validation rejects channel ownership, duplicate ordinals, and d
   }];
   assert.throws(() => normalizeInstallationTreeV2(wrongMeterChannel), /channel owned by another meter/);
 
+  const crossMeterChannelIdentity = baseTree();
+  const identityMeterOne = a3Meter();
+  const identityMeterTwo = structuredClone(a3Meter('serial-two'));
+  identityMeterTwo.id = 'meter-2';
+  identityMeterTwo.deviceNumber = 'device-2';
+  identityMeterTwo.displayName = display('ACME-A3RM-002');
+  crossMeterChannelIdentity.meterDevices = [identityMeterOne, identityMeterTwo];
+  assert.throws(
+    () => normalizeInstallationTreeV2(crossMeterChannelIdentity),
+    /Channel id channel-1 appears under more than one meter/,
+  );
+
+  const duplicateChannelOwner = baseTree();
+  const ownerMeter = a3Meter();
+  duplicateChannelOwner.meterDevices = [ownerMeter];
+  duplicateChannelOwner.measurementAssignments = [
+    {
+      id: 'assignment-one',
+      installationId: duplicateChannelOwner.installation.id,
+      meterId: ownerMeter.id,
+      channelIds: [ownerMeter.channels[0].id],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: duplicateChannelOwner.siteAssets[0].id },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+    {
+      id: 'assignment-two',
+      installationId: duplicateChannelOwner.installation.id,
+      meterId: ownerMeter.id,
+      channelIds: [ownerMeter.channels[0].id],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'TBC' },
+      direction: 'CONSUMPTION',
+      status: 'TBC',
+    },
+  ];
+  assert.throws(
+    () => normalizeInstallationTreeV2(duplicateChannelOwner),
+    /Channel channel-1 is assigned by both assignment-one and assignment-two/,
+  );
+
   const danglingForm = baseTree();
   danglingForm.formSubmissions = [{
     id: 'form-dangling',
@@ -1060,6 +1165,232 @@ test('structural validation rejects channel ownership, duplicate ordinals, and d
     historicalMeterRemoved: false,
   }];
   assert.throws(() => normalizeInstallationTreeV2(danglingForm), /unknown zoneId/);
+});
+
+test('canonical asset metering writes resolve exact meter, channel, phase, and board topology', () => {
+  const directlyMetered = (model: 'A3RM' | 'A6M' = 'A3RM') => {
+    const tree = baseTree();
+    const meter = a3Meter();
+    meter.deviceModel = model;
+    meter.customName = `${model} Meter`;
+    meter.channels = Array.from(
+      { length: model === 'A3RM' ? 3 : 6 },
+      (_, index) => channel(index + 1),
+    );
+    tree.meterDevices = [meter];
+    tree.electricalAssets[0].meterPresent = true;
+    const assignment: MeasurementAssignment = {
+      id: 'assignment-asset',
+      installationId: tree.installation.id,
+      meterId: meter.id,
+      channelIds: [meter.channels[0].id],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: tree.siteAssets[0].id },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    };
+    tree.measurementAssignments = [assignment];
+    tree.siteAssets[0].meterPresent = true;
+    tree.siteAssets[0].meteringState = {
+      kind: 'METERED',
+      measurementAssignmentIds: [assignment.id],
+    };
+    return { tree, meter, assignment };
+  };
+
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: directlyMetered('A3RM').tree,
+  }));
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: directlyMetered('A6M').tree,
+  }));
+  const configuredCustom = directlyMetered();
+  configuredCustom.meter.deviceFamily = 'OTHER';
+  configuredCustom.meter.deviceModel = 'OTHER';
+  configuredCustom.meter.channels[0].capabilities = {
+    enabled: false,
+    scale: 0,
+    nested: { optionalDetail: null },
+  };
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: configuredCustom.tree,
+  }));
+
+  const cases: Array<{
+    name: string;
+    pattern: RegExp;
+    mutate: (fixture: ReturnType<typeof directlyMetered>) => void;
+  }> = [
+    {
+      name: 'projection does not name the actual assignment',
+      pattern: /must name exactly one assignment/,
+      mutate: ({ tree }) => {
+        tree.siteAssets[0].meteringState = {
+          kind: 'METERED',
+          measurementAssignmentIds: ['missing-assignment'],
+        };
+      },
+    },
+    {
+      name: 'legacy meter-present projection is false',
+      pattern: /legacy meter-present projection/,
+      mutate: ({ tree }) => { tree.siteAssets[0].meterPresent = false; },
+    },
+    {
+      name: 'assignment is not confirmed',
+      pattern: /confirmed measurement assignment/,
+      mutate: ({ assignment }) => { assignment.status = 'TBC'; },
+    },
+    {
+      name: 'device family and model conflict',
+      pattern: /incoherent device family and model/,
+      mutate: ({ meter }) => { meter.deviceFamily = 'OTHER'; },
+    },
+    ...(['PLANNED', 'INACTIVE'] as const).map((lifecycleState) => ({
+      name: `${lifecycleState} meter is selected`,
+      pattern: /which is not active/,
+      mutate: ({ meter }: ReturnType<typeof directlyMetered>) => {
+        meter.lifecycleState = lifecycleState;
+      },
+    })),
+    {
+      name: 'standard meter has incomplete topology',
+      pattern: /exact 3-channel topology/,
+      mutate: ({ meter }) => { meter.channels = meter.channels.slice(0, 2); },
+    },
+    {
+      name: 'selected custom-meter channel has no configured capabilities',
+      pattern: /only after its capabilities are configured/,
+      mutate: ({ meter }) => {
+        meter.deviceFamily = 'OTHER';
+        meter.deviceModel = 'OTHER';
+        meter.channels[0].capabilities = {};
+      },
+    },
+    ...[
+      { name: 'blank capability key', capabilities: { '   ': true } },
+      { name: 'null capability value', capabilities: { rating: null } },
+      { name: 'undefined capability value', capabilities: { rating: undefined } },
+      { name: 'blank capability string', capabilities: { rating: '   ' } },
+    ].map(({ name, capabilities }) => ({
+      name: `selected custom-meter channel has a ${name}`,
+      pattern: /only after its capabilities are configured/,
+      mutate: ({ meter }: ReturnType<typeof directlyMetered>) => {
+        meter.deviceFamily = 'OTHER';
+        meter.deviceModel = 'OTHER';
+        meter.channels[0].capabilities = capabilities;
+      },
+    })),
+    {
+      name: 'meter is not on the immediate supplying board',
+      pattern: /immediate supplying board/,
+      mutate: ({ tree }) => {
+        tree.electricalAssets.push({
+          ...structuredClone(tree.electricalAssets[0]),
+          id: 'board-2',
+          assetName: 'Downstream board',
+          displayCode: display('ACME-DB-002'),
+          electricalSource: { kind: 'BOARD', boardId: 'board-1' },
+        });
+        tree.siteAssets[0].electricalSource = { kind: 'BOARD', boardId: 'board-2' };
+      },
+    },
+    {
+      name: 'phase group count is invalid',
+      pattern: /does not match its phase mode/,
+      mutate: ({ assignment, meter }) => {
+        assignment.phaseMode = 'THREE_PHASE';
+        assignment.channelIds = [meter.channels[0].id];
+      },
+    },
+    {
+      name: 'main-supply channel is claimed by an asset',
+      pattern: /only captured SUB_CIRCUIT channels/,
+      mutate: ({ meter }) => { meter.channels[0].purpose = 'MAIN_SUPPLY'; },
+    },
+    {
+      name: 'spare channel is claimed by an asset',
+      pattern: /only captured SUB_CIRCUIT channels/,
+      mutate: ({ meter }) => { meter.channels[0].purpose = 'SPARE'; },
+    },
+  ];
+  for (const testCase of cases) {
+    const fixture = directlyMetered();
+    testCase.mutate(fixture);
+    assert.throws(
+      () => assertCanonicalAssetMeteringWrite({ incoming: fixture.tree }),
+      testCase.pattern,
+      testCase.name,
+    );
+  }
+});
+
+test('asset metering write fence keeps TBC authoring and exact historical round trips compatible', () => {
+  const historical = baseTree();
+  const meter = a3Meter();
+  meter.channels[0].purpose = 'MAIN_SUPPLY';
+  historical.meterDevices = [meter];
+  historical.electricalAssets[0].meterPresent = true;
+  historical.measurementAssignments = [{
+    id: 'historical-assignment',
+    installationId: historical.installation.id,
+    meterId: meter.id,
+    channelIds: [meter.channels[0].id],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'SITE_ASSET', siteAssetId: historical.siteAssets[0].id },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  historical.siteAssets[0].meterPresent = true;
+  historical.siteAssets[0].meteringState = {
+    kind: 'METERED',
+    measurementAssignmentIds: ['historical-assignment'],
+  };
+
+  const unrelatedEdit = structuredClone(historical);
+  unrelatedEdit.siteAssets[0].comments = 'Unrelated historical asset note';
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: unrelatedEdit,
+    existing: historical,
+  }));
+
+  const changedInvalidMapping = structuredClone(historical);
+  changedInvalidMapping.measurementAssignments[0].direction = 'GENERATION';
+  assert.throws(
+    () => assertCanonicalAssetMeteringWrite({
+      incoming: changedInvalidMapping,
+      existing: historical,
+    }),
+    /only captured SUB_CIRCUIT channels/,
+  );
+
+  const tbcAuthoring = structuredClone(historical);
+  tbcAuthoring.siteAssets[0].meterPresent = false;
+  tbcAuthoring.siteAssets[0].meteringState = { kind: 'TBC' };
+  tbcAuthoring.measurementAssignments[0].target = { kind: 'TBC' };
+  tbcAuthoring.measurementAssignments[0].status = 'TBC';
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: tbcAuthoring,
+  }));
+
+  const historicalInactive = structuredClone(historical);
+  historicalInactive.meterDevices[0].channels[0].purpose = 'SUB_CIRCUIT';
+  historicalInactive.meterDevices[0].lifecycleState = 'INACTIVE';
+  const historicalInactiveEdit = structuredClone(historicalInactive);
+  historicalInactiveEdit.siteAssets[0].comments = 'Unrelated note on an inactive historical mapping';
+  assert.doesNotThrow(() => assertCanonicalAssetMeteringWrite({
+    incoming: historicalInactiveEdit,
+    existing: historicalInactive,
+  }));
+  const changedInactiveMapping = structuredClone(historicalInactive);
+  changedInactiveMapping.measurementAssignments[0].direction = 'GENERATION';
+  assert.throws(
+    () => assertCanonicalAssetMeteringWrite({
+      incoming: changedInactiveMapping,
+      existing: historicalInactive,
+    }),
+    /which is not active/,
+  );
 });
 
 test('EXP-06 electrical graph node ids are globally unique and reserve virtual identities', () => {
@@ -2445,6 +2776,13 @@ test('commissioned meter identity changes require an equivalent completed amendm
     allowIdentityChangeMeterIds: new Set(['meter-1']),
   }));
 
+  const lifecycleChange = structuredClone(existing);
+  lifecycleChange.meterDevices[0].lifecycleState = 'INACTIVE';
+  assert.throws(
+    () => assertCommissionedMetersRequireAmendment({ existing, incoming: lifecycleChange }),
+    /WW_METER_AMENDMENT_REQUIRED:meter-1/,
+  );
+
   const amendment = completedWwForm('form-2', incoming.meterDevices[0], 'form-1');
   assert.equal(wwCommissioningFormMatchesMeter(amendment, incoming.meterDevices[0]), true);
   incoming.formSubmissions.push(amendment);
@@ -2892,5 +3230,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     JSON.stringify(preCompletionNotesSnapshot),
     preCompletionNotesBeforeComparison,
   );
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.9');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.10');
 });

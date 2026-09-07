@@ -240,10 +240,16 @@ editable copy shown to the user and become the site's current known details.
 The new `business_jobs` row receives the next per-site/per-app `revisionNumber`
 and `previousJobId`. The source product row is always new: Field copies known
 electrical topology, meters, channels, and assignments without copying completed
-forms; EcoAudit copies its audit zones and equipment; SolarSense copies its site
-and latest assessment. Existing evidence remains available through explicit
-copy references rather than duplicated storage. This lets Field users replace
-an existing meter or add another meter without changing the prior job version.
+forms only for an explicit existing-site `M2 - Faults / COMMS fault` request;
+other Field work types and new-site M2 requests start with an empty installation
+workspace. The M2 meter suggestions are read from that same latest available,
+non-deleted source installation and include active devices plus legacy devices
+whose lifecycle is missing, but not planned, inactive, deleted, blank, or
+case-insensitive duplicate serials. EcoAudit copies its audit zones and
+equipment; SolarSense copies its site and latest assessment. Existing evidence
+remains available through explicit copy references rather than duplicated
+storage. This lets Field users replace an existing meter or add another meter
+without changing the prior job version.
 The Field App job form collects
 work type, planning, scope, contact, access, and optional NMI values. It does not ask for installation
 outcomes such as installed hardware or monitoring during job creation. Those

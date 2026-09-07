@@ -56,13 +56,17 @@ import type {
   InstallHubUser,
   MeasurementAssignment,
   Meter,
+  MeterDevice,
 } from '@/modules/installhub/types/domain';
 import {
   activeMetersOnAssetSupplyingBoard,
   applyAuthoritativeTreeRevision,
   applyAssetElectricalSource,
   applyBoardElectricalSource,
+  assetMeterAvailability,
+  assetMeterSelectionStatus,
   boardTypeCode,
+  canonicalMeterDevice,
   coverageState,
   displayCodeMetadata,
   ensureCanonicalTree,
@@ -180,6 +184,42 @@ function sixChannelMeter(): Meter {
   };
 }
 
+test('canonical meter conversion ignores sensor metadata hidden by the selected model', () => {
+  const tree = fixtureTree();
+  const a6m = sixChannelMeter();
+  a6m.wwChannels![0] = {
+    ...a6m.wwChannels![0],
+    ctRatio: '120A',
+    rogowskiSize: '3000A – 9cm',
+  };
+  assert.equal(
+    canonicalMeterDevice(tree, 'board-b', a6m).channels[0].sensorRating,
+    '120A',
+  );
+
+  const a3rm: Meter = {
+    ...a6m,
+    id: 'meter-a3rm',
+    deviceType: 'A3RM',
+    deviceId: 'SERIAL-A3RM',
+    wwChannels: a6m.wwChannels!.slice(0, 3).map((channel, index) => ({
+      ...channel,
+      id: `meter-a3rm:${index + 1}`,
+    })),
+  };
+  assert.equal(
+    canonicalMeterDevice(tree, 'board-b', a3rm).channels[0].sensorRating,
+    '3000A – 9cm',
+  );
+
+  tree.electricalAssets[1].meters = [a6m, a3rm];
+  const normalized = ensureCanonicalTree(tree);
+  assert.equal(normalized.electricalAssets[1].meters[0].wwChannels![0].ctRatio, '120A');
+  assert.equal(normalized.electricalAssets[1].meters[0].wwChannels![0].rogowskiSize, undefined);
+  assert.equal(normalized.electricalAssets[1].meters[1].wwChannels![0].rogowskiSize, '3000A – 9cm');
+  assert.equal(normalized.electricalAssets[1].meters[1].wwChannels![0].ctRatio, undefined);
+});
+
 test('site asset meter choices include only active meters on its direct supplying board', () => {
   const tree = fixtureTree();
   const asset = tree.siteAssets[0];
@@ -215,6 +255,300 @@ test('site asset meter choices include only active meters on its direct supplyin
   assert.deepEqual(activeMetersOnAssetSupplyingBoard(tree, asset), []);
 });
 
+test('asset metering choices follow device topology, channel purpose, and exact assignment ownership', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  tree.electricalAssets[1].meterPresent = true;
+  const device = syncMeterDevice(tree, 'board-b', meter);
+  const otherAsset = createSiteAsset(tree.installation.id, 'zone-b');
+  otherAsset.id = 'asset-other';
+  applyAssetElectricalSource(otherAsset, { kind: 'BOARD', boardId: 'board-b' });
+  tree.siteAssets.push(otherAsset);
+  tree.measurementAssignments = [
+    {
+      id: 'assignment-own',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:4'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+    {
+      id: 'assignment-tbc',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:5'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'TBC' },
+      direction: 'CONSUMPTION',
+      status: 'TBC',
+    },
+    {
+      id: 'assignment-other-asset',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:6'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: otherAsset.id },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+  ];
+
+  const availability = assetMeterAvailability(tree, device, 'asset-a');
+  assert.equal(availability.topologyValid, true);
+  assert.deepEqual(
+    availability.channels.map((channel) => [channel.channel.ordinal, channel.state]),
+    [
+      [1, 'INCOMPATIBLE'],
+      [2, 'INCOMPATIBLE'],
+      [3, 'INCOMPATIBLE'],
+      [4, 'OWN_ASSIGNMENT'],
+      [5, 'TBC_ASSIGNMENT'],
+      [6, 'SITE_ASSET_ASSIGNMENT'],
+    ],
+  );
+  assert.equal(availability.availableCount, 0);
+  assert.equal(availability.ownCount, 1);
+  assert.equal(availability.tbcCount, 1);
+  assert.equal(availability.directlySelectableCount, 2);
+  assert.equal(availability.reassignableCount, 1);
+  assert.equal(availability.occupiedCount, 1);
+  assert.equal(availability.unavailableCount, 3);
+  assert.equal(availability.usableCount, 3);
+});
+
+test('a missing saved channel remains an explicitly unavailable historical selection', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  const device = syncMeterDevice(tree, 'board-b', meter);
+  const availability = assetMeterAvailability(tree, device, 'asset-a');
+
+  const status = assetMeterSelectionStatus(
+    availability,
+    ['meter-a:missing-channel'],
+    new Set(),
+  );
+  assert.equal(status.unavailable, true);
+  assert.equal(status.missingChannelId, 'meter-a:missing-channel');
+  assert.equal(status.unavailableChannel, undefined);
+});
+
+test('all existing assignments owned by this asset stay editable while protected channels do not', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  const device = syncMeterDevice(tree, 'board-b', meter);
+  tree.measurementAssignments = [
+    {
+      id: 'assignment-own-four',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:4'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+    {
+      id: 'assignment-own-five',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:5'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'SITE_ASSET', siteAssetId: 'asset-a' },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+    {
+      id: 'assignment-protected',
+      installationId: tree.installation.id,
+      meterId: device.id,
+      channelIds: ['meter-a:6'],
+      phaseMode: 'SINGLE_PHASE',
+      target: { kind: 'BOARD', boardId: 'board-b' },
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+    },
+  ];
+
+  const availability = assetMeterAvailability(tree, device, 'asset-a');
+  assert.deepEqual(
+    availability.channels.slice(3).map((channel) => [channel.channel.ordinal, channel.state, channel.directlySelectable]),
+    [
+      [4, 'OWN_ASSIGNMENT', true],
+      [5, 'OWN_ASSIGNMENT', true],
+      [6, 'PROTECTED_ASSIGNMENT', false],
+    ],
+  );
+  assert.equal(availability.ownCount, 2);
+  assert.equal(availability.protectedCount, 1);
+
+  tree.measurementAssignments.push({
+    id: 'assignment-duplicate-owner',
+    installationId: tree.installation.id,
+    meterId: device.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'TBC' },
+    direction: 'CONSUMPTION',
+    status: 'TBC',
+  });
+  const duplicateOwner = assetMeterAvailability(tree, device, 'asset-a').channels
+    .find((channel) => channel.channel.id === 'meter-a:4');
+  assert.equal(duplicateOwner?.state, 'INCOMPATIBLE');
+  assert.equal(duplicateOwner?.directlySelectable, false);
+  assert.equal(duplicateOwner?.reassignable, false);
+  assert.match(duplicateOwner?.reason || '', /multiple assignments/);
+});
+
+test('asset metering rejects malformed A3RM/A6M topology and inconsistent family-model pairs', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  const device = syncMeterDevice(tree, 'board-b', meter);
+
+  device.channels = device.channels.slice(0, 5);
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').topologyValid, false);
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').usableCount, 0);
+
+  device.deviceModel = 'A3RM';
+  device.channels = device.channels.slice(0, 3);
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').topologyValid, true);
+  device.channels[2].ordinal = 4;
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').topologyValid, false);
+
+  device.deviceModel = 'OTHER';
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').topologyValid, false);
+  device.deviceFamily = 'OTHER';
+  device.deviceModel = 'A3RM';
+  assert.equal(assetMeterAvailability(tree, device, 'asset-a').topologyValid, false);
+});
+
+test('custom meters use their explicit channels and require configured channel capabilities', () => {
+  const tree = fixtureTree();
+  const customMeter: MeterDevice = {
+    id: 'custom-meter',
+    installationId: tree.installation.id,
+    installedOnBoardId: 'board-b',
+    deviceFamily: 'OTHER',
+    deviceModel: 'OTHER',
+    customManufacturerName: 'Acme',
+    customModelName: 'Flex',
+    displayName: {
+      value: 'CUSTOM-METER',
+      generatedValue: 'CUSTOM-METER',
+      isOverridden: false,
+      ruleVersion: 4,
+    },
+    serialNumber: 'CUSTOM-1',
+    lifecycleState: 'ACTIVE',
+    channels: [
+      {
+        id: 'custom-meter:2',
+        ordinal: 2,
+        purpose: 'SUB_CIRCUIT',
+        capabilities: { protocol: 'Modbus', currentRange: '0-600A' },
+      },
+      {
+        id: 'custom-meter:7',
+        ordinal: 7,
+        purpose: 'SUB_CIRCUIT',
+        capabilities: {},
+      },
+    ],
+  };
+  tree.meterDevices = [customMeter];
+
+  const availability = assetMeterAvailability(tree, customMeter, 'asset-a');
+  assert.equal(availability.topologyValid, true);
+  assert.deepEqual(
+    availability.channels.map((channel) => [channel.channel.ordinal, channel.state]),
+    [[2, 'AVAILABLE'], [7, 'INCOMPATIBLE']],
+  );
+  assert.equal(availability.usableCount, 1);
+  assert.match(availability.channels[1].reason || '', /capabilities/);
+  tree.measurementAssignments = [{
+    id: 'custom-protected',
+    installationId: tree.installation.id,
+    meterId: customMeter.id,
+    channelIds: ['custom-meter:7'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'BOARD', boardId: 'board-b' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+  const protectedChannel = assetMeterAvailability(tree, customMeter, 'asset-a').channels[1];
+  assert.equal(protectedChannel.state, 'PROTECTED_ASSIGNMENT');
+  assert.match(protectedChannel.reason || '', /switchboard or Grid-boundary/);
+  assert.doesNotThrow(() => setAssetMetering(tree, tree.siteAssets[0], {
+    kind: 'METERED',
+    meterId: customMeter.id,
+    channelIds: ['custom-meter:2'],
+    phaseMode: 'SINGLE_PHASE',
+    direction: 'CONSUMPTION',
+  }));
+  assert.equal(
+    localReadiness(tree).issues.some((issue) => issue.code === 'METER_CAPABILITY_REQUIRED'),
+    false,
+  );
+});
+
+test('channel occupancy is scoped to its meter even when malformed historical IDs collide', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  const device = syncMeterDevice(tree, 'board-b', meter);
+  tree.measurementAssignments = [{
+    id: 'assignment-other-meter',
+    installationId: tree.installation.id,
+    meterId: 'different-meter',
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    target: { kind: 'BOARD', boardId: 'board-b' },
+    direction: 'CONSUMPTION',
+    status: 'CONFIRMED',
+  }];
+
+  const channel = assetMeterAvailability(tree, device, 'asset-a').channels
+    .find((candidate) => candidate.channel.id === 'meter-a:4');
+  assert.equal(channel?.state, 'AVAILABLE');
+  assert.doesNotThrow(() => setAssetMetering(tree, tree.siteAssets[0], {
+    kind: 'METERED',
+    meterId: device.id,
+    channelIds: ['meter-a:4'],
+    phaseMode: 'SINGLE_PHASE',
+    direction: 'CONSUMPTION',
+  }));
+});
+
+test('cross-meter duplicate channel IDs disable the affected meter topology', () => {
+  const tree = fixtureTree();
+  const meter = sixChannelMeter();
+  tree.electricalAssets[1].meters = [meter];
+  const device = syncMeterDevice(tree, 'board-b', meter);
+  const duplicateDevice: MeterDevice = {
+    ...structuredClone(device),
+    id: 'meter-duplicate',
+    serialNumber: 'SERIAL-DUPLICATE',
+    displayName: {
+      ...device.displayName,
+      value: 'METER-DUPLICATE',
+      generatedValue: 'METER-DUPLICATE',
+    },
+  };
+  tree.meterDevices = [device, duplicateDevice];
+
+  const availability = assetMeterAvailability(tree, device, 'asset-a');
+  assert.equal(availability.topologyValid, false);
+  assert.equal(availability.usableCount, 0);
+  assert.match(availability.channels[0].reason || '', /also used by another meter/);
+});
+
 test('authoritative upload revisions advance every portal CAS field together', () => {
   const tree = fixtureTree();
   assert.equal(applyAuthoritativeTreeRevision(tree, 9), 9);
@@ -235,8 +569,8 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.equal(boardTypeCode(tree.electricalAssets[0]), 'MSB');
   assert.equal(boardTypeCode(tree.electricalAssets[1]), 'MSSB');
   assert.equal(siteAssetTypeCode(tree.siteAssets[0]), 'LIGHTING');
-  assert.equal(tree.zones[0].zoneCode, 'PLANT');
-  assert.equal(tree.zones[1].zoneCode, 'ROOF');
+  assert.equal(tree.zones[0].zoneCode, 'PLA-GOLD-01');
+  assert.equal(tree.zones[1].zoneCode, 'ROO-GOLD-01');
 
   const refrigeration = {
     ...tree.siteAssets[0],
@@ -276,7 +610,7 @@ test('portal canonicalization mirrors the golden v2 wire shape and legacy taxono
   assert.equal(typeof (wire.electricalAssets as Array<Record<string, unknown>>)[0].displayCode, 'object');
   assert.equal(
     (wire.zones as Array<Record<string, unknown>>)[0].zoneCode,
-    'PLANT',
+    'PLA-GOLD-01',
   );
 });
 

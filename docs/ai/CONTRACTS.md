@@ -368,7 +368,10 @@ replaced failed uploads cannot block the final snapshot. A `file://` or
 
 Newly unclaimed boards, site assets, and meter devices use canonical naming
 rule 4. Each zone has a persisted, installation-unique `zoneCode`
-(1–16 uppercase letters/numbers in hyphen-separated groups). A generated board
+(1–16 uppercase letters/numbers in hyphen-separated groups). New or missing
+codes use `ZZZ-SITE-SS`: three alphanumeric zone-name characters, the normalized
+site code (maximum eight characters), and a two-character uppercase base-36
+sequence; existing persisted codes are preserved. A generated board
 identity is `INSTALLATION-ZONE-NN-TYPE-SWITCHBOARD_NAME`. Generated site-asset and meter identities are
 `INSTALLATION-ZONE-NN-TYPE-HUMAN_NAME`; when the normalized human name already
 contains the complete type segment, the type is not duplicated. Identities are
@@ -410,11 +413,10 @@ switchboard address/map locator.
 
 When a business value is supplied, its serialized type and enclosing object
 shape still apply; no companion business answer becomes mandatory. New A3RM
-records present `10cm-200A`, `10cm-333mV`, `20cm-3000A`,
-`30cm-3000A`, `45cm-3000A`, and `Not Used`; new A6M records present `CT-60A`,
-`CT-120A`, `CT-250A`, `CT-400A`, `CT-600A`, and `Not Used`. Historical sensor
-strings remain accepted and visible for installed-client compatibility but are
-not offered as new-record defaults. `Not Used` remains a legacy load-only
+records present `3000A – 9cm`, `3000A – 20cm`, and `3000A – 29cm`; new A6M records
+present `60A`, `120A`, `200A`, `400A`, and `600A`. Historical sensor strings remain
+accepted and readable for installed-client compatibility but are not included in current
+dropdown choices. `Not Used` remains a legacy load-only
 compatibility signal rather than a current load choice.
 
 Adding a meter from a switchboard or in-progress site asset still branches by
@@ -424,6 +426,20 @@ capabilities are optional business capture. Any entity or channel that is
 present must retain its stable ID, installation parentage, valid ordinal, and
 structural object shape. The A3RM/A6M Comms Fault workflow is not offered for
 `Other` meters.
+
+For a new or changed `METERED` site-asset relationship, clients and the canonical
+write boundary derive eligibility from the asset's immediate supplying board,
+the meter family/model topology, and current assignment ownership. A3RM requires
+exact channel ordinals 1-3, A6M requires 1-6, and a selected `Other` channel must
+have non-empty explicit capabilities. Only `SUB_CIRCUIT` channels may measure a
+site asset. The asset's own channel remains editable, a `TBC` assignment is
+claimable, another site asset requires explicit takeover, and board/Grid totals
+are protected. Partial authoring is normalized to `TBC`; an unchanged invalid
+historical relationship may round-trip during unrelated edits, but any changed
+metering claim must satisfy the current rule. Only `ACTIVE` meters may receive a
+new or changed site-asset mapping. Meter lifecycle defaults to `ACTIVE` for new
+or historical records that never declared it; once stored, `PLANNED` or
+`INACTIVE` survives an older full-snapshot client omitting the additive field.
 
 Completion/readiness is blocked only by an explicit `TBC` electrical supply,
 asset metering state, or measurement target. `UNMETERED` is a resolved state and

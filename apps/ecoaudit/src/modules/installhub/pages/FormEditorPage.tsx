@@ -825,12 +825,14 @@ function FormField({
     );
   }
   if (field.kind === 'select') {
+    const fieldOptions = editorOptionsForField(field, answers);
+    const hiddenSavedValue = value && !fieldOptions.includes(value) ? value : null;
     return (
       <div>
         <FieldLabel>{label}</FieldLabel>
         <Select
           id={fieldId}
-          value={value}
+          value={hiddenSavedValue ? '' : value}
           disabled={readOnly}
           required={field.required}
           aria-invalid={Boolean(error)}
@@ -838,10 +840,15 @@ function FormField({
           onChange={(event) => onChange(field.key, event.target.value)}
         >
           <option value="">Select an option</option>
-          {editorOptionsForField(field, answers).map((option) => (
+          {fieldOptions.map((option) => (
             <option key={option}>{option}</option>
           ))}
         </Select>
+        {hiddenSavedValue ? (
+          <FieldHint>
+            Previously saved value: {hiddenSavedValue}. Select a current option to replace it.
+          </FieldHint>
+        ) : null}
         <FieldError id={errorId} message={error} />
       </div>
     );

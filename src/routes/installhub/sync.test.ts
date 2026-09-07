@@ -15,8 +15,34 @@ import {
   parseInstallHubSyncStage,
   parseInstallHubTreeSchemaMode,
   prepareCanonicalInstallHubWrite,
+  projectAssignedWorkScheduleSummary,
+  retainOmittedMeterLifecycleStates,
   validateCanonicalFormContractsForSync,
 } from './sync.js';
+
+test('assigned-work schedule projection includes the active Scheduler title', () => {
+  const installation = { id: 'installation-1', clientName: 'Example Client' };
+  const projected = projectAssignedWorkScheduleSummary(installation, {
+    eventId: 'schedule-1',
+    title: 'M2 - Example Client - Main Site - A1B',
+    scheduledStartAt: new Date('2026-09-08T01:00:00.000Z'),
+    scheduledEndAt: new Date('2026-09-08T02:30:00.000Z'),
+    deadlineAt: new Date('2026-09-09T07:00:00.000Z'),
+    status: 'planned',
+  });
+
+  assert.deepEqual(projected, {
+    ...installation,
+    scheduleEventId: 'schedule-1',
+    scheduleTitle: 'M2 - Example Client - Main Site - A1B',
+    scheduledStartAt: '2026-09-08T01:00:00.000Z',
+    scheduledEndAt: '2026-09-08T02:30:00.000Z',
+    deadlineAt: '2026-09-09T07:00:00.000Z',
+    scheduleStatus: 'planned',
+  });
+  assert.deepEqual(installation, { id: 'installation-1', clientName: 'Example Client' });
+  assert.equal(projectAssignedWorkScheduleSummary(installation, undefined), installation);
+});
 
 test('InstallHub product provenance preserves the submitted address source', () => {
   assert.equal(installHubSubmittedAddressSource({
@@ -176,6 +202,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     customerName: 'Server customer',
     maas: true,
     serviceType: 'Meter install',
+    existingDeviceId: 'WW-DEVICE-100',
     meteringSolutionType: 'Commercial',
     plannedMeterType: 'A6M',
     customJobNumber: 'CUSTOM-100',
@@ -217,6 +244,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   }, existing);
   assert.equal(preserved.customerName, 'Server customer');
   assert.equal(preserved.maas, true);
+  assert.equal(preserved.existingDeviceId, 'WW-DEVICE-100');
   assert.equal(preserved.sitePostcode, '2000');
   assert.equal(preserved.solarCapacityKw, 75);
   assert.equal('siteLatitude' in preserved, false);
@@ -225,6 +253,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     ...basePayload,
     customerName: null,
     maas: null,
+    existingDeviceId: null,
     siteLocality: null,
     solarCapacityKw: null,
   }, {
@@ -233,6 +262,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   }, existing);
   assert.equal(cleared.customerName, null);
   assert.equal(cleared.maas, null);
+  assert.equal(cleared.existingDeviceId, null);
   assert.equal(cleared.siteLocality, null);
   assert.equal(cleared.solarCapacityKw, null);
   assert.equal(cleared.siteLatitude, null);
@@ -693,7 +723,7 @@ test('canonical update preparation preserves authoritative zone codes for legacy
   }, 'unused');
   const normalized = normalizeInstallationTreeV2(prepared);
   assert.equal(normalized.zones.find((zone) => zone.id === 'zone-existing')?.zoneCode, 'ORIGINAL-ZONE');
-  assert.equal(normalized.zones.find((zone) => zone.id === 'zone-new')?.zoneCode, 'LOADING-DOCK');
+  assert.equal(normalized.zones.find((zone) => zone.id === 'zone-new')?.zoneCode, 'LOA-ZONE-SIT-01');
 });
 
 test('canonical update preparation preserves meter custom names omitted by legacy clients', () => {
@@ -736,6 +766,46 @@ test('canonical update preparation preserves meter custom names omitted by legac
   assert.equal(
     Object.prototype.hasOwnProperty.call(prepared.meterDevices?.[3] ?? {}, 'customName'),
     false,
+  );
+});
+
+test('canonical sync retains omitted meter lifecycle state without overriding explicit values', () => {
+  const meter = (id: string, lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE') => ({
+    id,
+    installationId: 'meter-lifecycle-existing',
+    installedOnBoardId: 'board-1',
+    customName: 'Meter',
+    deviceFamily: 'WATTWATCHERS' as const,
+    deviceModel: 'A3RM' as const,
+    ...(lifecycleState ? { lifecycleState } : {}),
+    serialNumber: `${id}-serial`,
+    displayName: {
+      value: `${id}-display`,
+      generatedValue: `${id}-display`,
+      isOverridden: false,
+      ruleVersion: 4,
+    },
+    channels: [],
+  });
+  const current = normalizeInstallationTreeV2(prepareCanonicalInstallHubWrite(
+    freshCanonicalWrite('meter-lifecycle-existing', {}),
+    undefined,
+    'ih_meter_lifecycle_existing',
+  ));
+  current.meterDevices = [
+    meter('meter-inactive', 'INACTIVE'),
+    meter('meter-planned', 'PLANNED'),
+  ];
+  const incoming = structuredClone(current);
+  delete incoming.meterDevices[0].lifecycleState;
+  incoming.meterDevices[1].lifecycleState = 'ACTIVE';
+  incoming.meterDevices.push(meter('meter-new'));
+
+  retainOmittedMeterLifecycleStates(current, incoming);
+
+  assert.deepEqual(
+    incoming.meterDevices.map(({ lifecycleState }) => lifecycleState),
+    ['INACTIVE', 'ACTIVE', 'ACTIVE'],
   );
 });
 

@@ -65,6 +65,12 @@ export type InstallHubFormAttachment = {
 
 const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 const SENSOR_OPTIONS: Readonly<Record<(typeof DEVICE_TYPES)[number], readonly string[]>> = {
+  A3RM: ['3000A – 9cm', '3000A – 20cm', '3000A – 29cm'],
+  A6M: ['60A', '120A', '200A', '400A', '600A'],
+};
+const LEGACY_SENSOR_OPTIONS: Readonly<
+  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
+> = {
   A3RM: [
     '10cm-200A',
     '10cm-333mV',
@@ -72,21 +78,11 @@ const SENSOR_OPTIONS: Readonly<Record<(typeof DEVICE_TYPES)[number], readonly st
     '30cm-3000A',
     '45cm-3000A',
     'Not Used',
+    '3000A - 9cm',
+    '3000A - 20cm',
+    '3000A - 29cm',
   ],
-  A6M: [
-    'CT-60A',
-    'CT-120A',
-    'CT-250A',
-    'CT-400A',
-    'CT-600A',
-    'Not Used',
-  ],
-};
-const LEGACY_SENSOR_OPTIONS: Readonly<
-  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
-> = {
-  A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
-  A6M: ['60A', '120A', '200A', '400A', '600A'],
+  A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
 };
 const CHANNEL_LOADS = [
   'Mains Supply',

@@ -15,6 +15,7 @@ import { ApiError, cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { AustralianAddressFields } from '@/modules/scheduler/components/AustralianAddressFields';
 import { SchedulerClientCombobox } from '@/modules/scheduler/components/SchedulerClientCombobox';
+import { ReplacementMeterPicker } from '@/modules/installhub/components/ReplacementMeterPicker';
 import {
   useCancelScheduleEvent,
   useCompleteSchedulerJob,
@@ -89,6 +90,7 @@ type InstallHubJobDetails = {
   clientContactEmail: string;
   maas: boolean | null;
   workType: string;
+  existingDeviceIds: string[];
   meteringSolutionType: string;
   siteContactName: string;
   siteContactPhone: string;
@@ -104,6 +106,7 @@ const EMPTY_INSTALLHUB_JOB_DETAILS: InstallHubJobDetails = {
   clientContactEmail: '',
   maas: null,
   workType: '',
+  existingDeviceIds: [],
   meteringSolutionType: '',
   siteContactName: '',
   siteContactPhone: '',
@@ -176,6 +179,7 @@ function installHubJobPayload(details: InstallHubJobDetails) {
     clientContactEmail: optionalJobText(details.clientContactEmail),
     maas: details.maas,
     workType: optionalJobText(details.workType),
+    existingDeviceIds: details.existingDeviceIds,
     meteringSolutionType: optionalJobText(details.meteringSolutionType),
     siteContactName: optionalJobText(details.siteContactName),
     siteContactPhone: optionalJobText(details.siteContactPhone),
@@ -198,6 +202,7 @@ const FIELD_WORK_TYPES = [
   ['M4 - BD/Upselling', 'M4 — BD/Upselling'],
 ] as const;
 const OTHER_WORK_TYPE = 'M5 - ';
+const COMMS_FAULT_WORK_TYPE = 'M2 - Faults / COMMS fault';
 const METERING_TYPES = ['NEM meter', 'Revenue metering', 'Monitoring / sub-meter', 'Water meter'] as const;
 const OTHER_METERING_TYPE = '__other_metering_type__';
 
@@ -340,6 +345,7 @@ export function EventFormModal({
     sourceApp === 'custom' ? 'installhub' : sourceApp,
     open && isAdmin && sourceApp !== 'custom' && siteSelectionMode === 'existing',
   );
+  const selectedExistingSite = sites.data?.find((site) => site.id === existingSiteId);
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
     sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
   )), [assignees.data, sourceApp]);
@@ -373,6 +379,8 @@ export function EventFormModal({
       && schedulerAddressIsComplete(jobAddress)
       && installHubJobDetails.workType
       && installHubJobDetails.workType !== OTHER_WORK_TYPE
+      && (installHubJobDetails.workType !== COMMS_FAULT_WORK_TYPE
+        || installHubJobDetails.existingDeviceIds.length > 0)
       && installHubJobDetails.meteringSolutionType !== OTHER_METERING_TYPE
     );
   }, [
@@ -392,6 +400,7 @@ export function EventFormModal({
     jobBuildingName,
     jobClientName,
     installHubJobDetails.workType,
+    installHubJobDetails.existingDeviceIds,
     installHubJobDetails.meteringSolutionType,
   ]);
 
@@ -898,9 +907,27 @@ export function EventFormModal({
                             ) : null}
                             {existingSiteId ? (
                               <FieldHint>
-                                The saved client and site details are filled in below. You can edit them
-                                before creating this new job. The latest electrical site state is carried
-                                forward so changes made during this job become the next site view.
+                                {sourceApp === 'installhub'
+                                  && installHubJobDetails.workType === COMMS_FAULT_WORK_TYPE ? (
+                                    <>
+                                      The saved client and site details are filled in below. For this M2 Field
+                                      App job, the latest zones, switchboards, site assets, active devices,
+                                      channels, and electrical mappings are copied into the new job. You can edit
+                                      the details before creating it, and changes made during this job become the
+                                      next site view.
+                                    </>
+                                  ) : sourceApp === 'installhub' ? (
+                                    <>
+                                      The saved client and site details are filled in below. This Field App job
+                                      starts with a fresh installation workspace; prior zones, devices, channels,
+                                      and electrical mappings are not copied.
+                                    </>
+                                  ) : (
+                                    <>
+                                      The saved client and site details are filled in below. You can edit them
+                                      before creating the new job.
+                                    </>
+                                  )}
                               </FieldHint>
                             ) : null}
                           </div>
@@ -966,7 +993,13 @@ export function EventFormModal({
                               </div>
                               <div>
                                 <FieldLabel htmlFor="scheduler-work-type">Scope categorization</FieldLabel>
-                                <Select id="scheduler-work-type" value={installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : installHubJobDetails.workType} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: event.target.value }))}>
+                                <Select id="scheduler-work-type" value={installHubJobDetails.workType.startsWith(OTHER_WORK_TYPE) ? OTHER_WORK_TYPE : installHubJobDetails.workType} onChange={(event) => setInstallHubJobDetails((current) => ({
+                                  ...current,
+                                  workType: event.target.value,
+                                  existingDeviceIds: event.target.value === COMMS_FAULT_WORK_TYPE
+                                    ? current.existingDeviceIds
+                                    : [],
+                                }))}>
                                   <option value="">Select scope</option>
                                   {FIELD_WORK_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                                   <option value={OTHER_WORK_TYPE}>M5 — Other</option>
@@ -975,6 +1008,17 @@ export function EventFormModal({
                                   <Input aria-label="Other scope" placeholder="Enter other scope" value={installHubJobDetails.workType.slice(OTHER_WORK_TYPE.length)} maxLength={115} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, workType: `${OTHER_WORK_TYPE}${event.target.value}` }))} />
                                 ) : null}
                               </div>
+                              {installHubJobDetails.workType === COMMS_FAULT_WORK_TYPE ? (
+                                <ReplacementMeterPicker
+                                  id="scheduler-replacement-meters"
+                                  value={installHubJobDetails.existingDeviceIds}
+                                  knownMeters={selectedExistingSite?.knownMeters ?? []}
+                                  onChange={(existingDeviceIds) => setInstallHubJobDetails((current) => ({
+                                    ...current,
+                                    existingDeviceIds,
+                                  }))}
+                                />
+                              ) : null}
                               <div>
                                 <FieldLabel htmlFor="scheduler-metering-solution">Metering type selection</FieldLabel>
                                 <Select id="scheduler-metering-solution" value={METERING_TYPES.some((value) => value === installHubJobDetails.meteringSolutionType) ? installHubJobDetails.meteringSolutionType : installHubJobDetails.meteringSolutionType ? OTHER_METERING_TYPE : ''} onChange={(event) => setInstallHubJobDetails((current) => ({ ...current, meteringSolutionType: event.target.value }))}>
@@ -987,6 +1031,19 @@ export function EventFormModal({
                                 ) : null}
                               </div>
                               <NullableBooleanSelect id="scheduler-maas" label="MaaS" value={installHubJobDetails.maas} onChange={(maas) => setInstallHubJobDetails((current) => ({ ...current, maas }))} />
+                              <div className="sm:col-span-2">
+                                <FieldLabel htmlFor="scheduler-job-comments">Notes / job scope</FieldLabel>
+                                <Textarea
+                                  id="scheduler-job-comments"
+                                  rows={3}
+                                  value={installHubJobDetails.jobComments}
+                                  maxLength={5000}
+                                  onChange={(event) => setInstallHubJobDetails((current) => ({
+                                    ...current,
+                                    jobComments: event.target.value,
+                                  }))}
+                                />
+                              </div>
                             </div>
                           </section>
                         ) : null}
@@ -1004,13 +1061,19 @@ export function EventFormModal({
 
             {sourceApp === 'installhub' && !editing ? (
               <>
-                <FieldLabel>Title</FieldLabel>
-                <Input readOnly value={schedulerFieldJobTitlePreview(
-                  installHubJobDetails.workType,
-                  jobClientName,
-                  jobSiteName,
-                  fieldJobTitleSuffix,
-                )} />
+                <FieldLabel htmlFor="scheduler-field-job-title">Title</FieldLabel>
+                <Input
+                  id="scheduler-field-job-title"
+                  value={title}
+                  maxLength={300}
+                  onChange={(event) => setTitle(event.target.value)}
+                  placeholder={schedulerFieldJobTitlePreview(
+                    installHubJobDetails.workType,
+                    jobClientName,
+                    jobSiteName,
+                    fieldJobTitleSuffix,
+                  )}
+                />
               </>
             ) : (
               <>

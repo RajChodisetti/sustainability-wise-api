@@ -365,6 +365,7 @@ test('meter-linked WW forms prefill canonical device and channel context', () =>
         purpose: 'MAIN_SUPPLY',
         loadType: 'Mains Supply',
         rogowskiSize: '3000A - 9cm',
+        ctRatio: '60A',
         description: 'Incoming red phase',
       },
       {
@@ -403,6 +404,40 @@ test('meter-linked WW forms prefill canonical device and channel context', () =>
   assert.equal(form.answers['channel.3.rating'], undefined);
   assert.equal(form.answers['channel.3.description'], undefined);
   assert.equal(form.answers['existing.device_id'], undefined);
+});
+
+test('WW form prefill uses only the sensor rating family supported by the meter model', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  board.meters = [{
+    id: 'meter-a6m',
+    deviceFamily: 'WATTWATCHERS',
+    deviceName: 'A6M Meter',
+    deviceType: 'A6M',
+    deviceId: 'A6M-001',
+    wwChannels: [{
+      id: 'meter-a6m:1',
+      ordinal: 1,
+      purpose: 'MAIN_SUPPLY',
+      loadType: 'Mains Supply',
+      ctRatio: '120A',
+      rogowskiSize: '3000A - 9cm',
+    }],
+  }];
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+
+  const form = createFormSubmission(tree, 'ww-installation', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+    meterId: 'meter-a6m',
+  });
+
+  assert.equal(form.answers['channel.1.rating'], '120A');
 });
 
 test('WW forms project first-class cold-service load types through editable Other labels', () => {
@@ -731,4 +766,42 @@ test('completed Wattwatcher forms update the operational meter registry', () => 
   assert.equal(board.meters[0].wwChannels?.[2].loadType, undefined);
   assert.equal(board.meters[0].wwChannels?.[2].rogowskiSize, undefined);
   assert.equal(form.meterId, board.meters[0].id);
+});
+
+test('an unrecorded planned M2 meter is captured on the selected board and replaced atomically', () => {
+  const tree = fixtureTree();
+  const zone = createZone(tree.installation.id, {
+    zoneName: 'Electrical',
+    zoneDescription: '',
+  });
+  const board = createBoard(tree.installation.id, zone.id);
+  tree.zones.push(zone);
+  tree.electricalAssets.push(board);
+  const form = createFormSubmission(tree, 'comms-fault', user, {
+    zoneId: zone.id,
+    boardId: board.id,
+  });
+  Object.assign(form.answers, {
+    'existing.device_type': 'A3RM',
+    'existing.device_id': 'OLD-PLANNED-100',
+    'works.replace_device': 'yes',
+    'works.new_device_type': 'A6M',
+    'works.new_device_id': 'NEW-DEVICE-200',
+    'works.new_sensor_rating': '120A',
+  });
+  form.status = 'Completed';
+
+  syncOperationalMeter(tree, form);
+  assert.ok(form.meterId);
+  const canonical = syncMeterDevice(tree, board.id, board.meters[0]);
+
+  assert.equal(board.meters.length, 1);
+  assert.equal(board.meters[0].deviceId, 'NEW-DEVICE-200');
+  assert.equal(board.meters[0].deviceType, 'A6M');
+  assert.equal(board.meters[0].lifecycleState, 'ACTIVE');
+  assert.equal(canonical.serialNumber, 'NEW-DEVICE-200');
+  assert.equal(canonical.lifecycleState, 'ACTIVE');
+  assert.equal(canonical.channels.length, 6);
+  assert.deepEqual(canonical.channels.map((channel) => channel.sensorRating), Array(6).fill('120A'));
+  assert.equal(form.answers['existing.device_id'], 'OLD-PLANNED-100');
 });

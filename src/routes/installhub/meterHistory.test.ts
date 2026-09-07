@@ -255,7 +255,7 @@ test('commissioned identity authorization requires the exact comms transformatio
     'works.replace_device': 'yes',
     'works.new_device_type': 'A6M',
     'works.new_device_id': 'replacement-serial',
-    'works.new_sensor_rating': 'CT-60A',
+    'works.new_sensor_rating': '60A',
   };
   incoming.meterDevices[0] = {
     ...incoming.meterDevices[0],
@@ -265,21 +265,21 @@ test('commissioned identity authorization requires the exact comms transformatio
     channels: [
       {
         ...incoming.meterDevices[0].channels[0],
-        sensorRating: 'CT-60A',
+        sensorRating: '60A',
       },
       {
         ...incoming.meterDevices[0].channels[1],
-        sensorRating: 'CT-60A',
+        sensorRating: '60A',
       },
       {
         ...incoming.meterDevices[0].channels[2],
-        sensorRating: 'CT-60A',
+        sensorRating: '60A',
       },
       ...[4, 5, 6].map((ordinal) => ({
         id: `meter-1:${ordinal}`,
         ordinal,
         purpose: 'SUB_CIRCUIT' as const,
-        sensorRating: 'CT-60A',
+        sensorRating: '60A',
         capabilities: {},
       })),
     ],
@@ -289,9 +289,9 @@ test('commissioned identity authorization requires the exact comms transformatio
     [...authorizeCommsReplacementTransitions({ current, incoming, transitions })],
     ['meter-1'],
   );
-  assert.equal(incoming.meterDevices[0].channels[0].sensorRating, 'CT-60A');
-  assert.equal(incoming.meterDevices[0].channels[1].sensorRating, 'CT-60A');
-  assert.equal(incoming.meterDevices[0].channels[2].sensorRating, 'CT-60A');
+  assert.equal(incoming.meterDevices[0].channels[0].sensorRating, '60A');
+  assert.equal(incoming.meterDevices[0].channels[1].sensorRating, '60A');
+  assert.equal(incoming.meterDevices[0].channels[2].sensorRating, '60A');
   const portalExpansion = structuredClone(incoming);
   for (const channel of portalExpansion.meterDevices[0].channels.slice(3)) {
     channel.purpose = 'SPARE';

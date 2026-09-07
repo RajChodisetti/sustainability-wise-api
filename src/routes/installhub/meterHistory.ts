@@ -149,6 +149,9 @@ function optionalAnswer(value: string | undefined): string | null {
 
 const COMMS_SENSOR_RATINGS: Readonly<Record<'A3RM' | 'A6M', ReadonlySet<string>>> = {
   A3RM: new Set([
+    '3000A – 9cm',
+    '3000A – 20cm',
+    '3000A – 29cm',
     '10cm-200A',
     '10cm-333mV',
     '20cm-3000A',
@@ -160,17 +163,17 @@ const COMMS_SENSOR_RATINGS: Readonly<Record<'A3RM' | 'A6M', ReadonlySet<string>>
     '3000A - 29cm',
   ]),
   A6M: new Set([
+    '60A',
+    '120A',
+    '200A',
+    '400A',
+    '600A',
     'CT-60A',
     'CT-120A',
     'CT-250A',
     'CT-400A',
     'CT-600A',
     'Not Used',
-    '60A',
-    '120A',
-    '200A',
-    '400A',
-    '600A',
   ]),
 };
 

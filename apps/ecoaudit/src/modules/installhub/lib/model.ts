@@ -566,7 +566,11 @@ function prefillWwInstallationAnswers(
         || (rawLoad && rawLoad !== 'Other' && rawLoad !== 'OTHER' ? rawLoad : '');
       if (customLoad) answers[`channel.${ordinal}.custom_load_type`] = customLoad;
     }
-    const rating = channel.rogowskiSize?.trim() || channel.ctRatio?.trim();
+    const rating = meter.deviceType === 'A6M'
+      ? channel.ctRatio?.trim()
+      : meter.deviceType === 'A3RM'
+        ? channel.rogowskiSize?.trim()
+        : channel.rogowskiSize?.trim() || channel.ctRatio?.trim();
     if (rating) answers[`channel.${ordinal}.rating`] = rating;
     if (channel.description?.trim()) {
       answers[`channel.${ordinal}.description`] = channel.description.trim();
@@ -808,16 +812,68 @@ export function syncOperationalMeter(
   tree: InstallationTree,
   completed: FormSubmission,
 ): void {
-  if (!completed.boardId) return;
+  if (!completed.boardId) {
+    if (completed.formType === 'comms-fault' && completed.answers['works.replace_device'] === 'yes') {
+      throw new Error('Select the switchboard where the existing meter is installed before completing the replacement.');
+    }
+    return;
+  }
   const board = tree.electricalAssets.find((item) => item.id === completed.boardId);
   if (!board) return;
-  if (completed.formType === 'comms-fault' && completed.meterId) {
+  if (completed.formType === 'comms-fault') {
     if (completed.answers['works.replace_device'] !== 'yes') return;
-    board.meters = board.meters.map((meter) =>
-      meter.id === completed.meterId
-        ? meterAfterCommsReplacement(meter, completed.answers)
-        : meter,
-    );
+    let meter = completed.meterId
+      ? board.meters.find((candidate) => candidate.id === completed.meterId)
+      : undefined;
+    if (completed.meterId && !meter) {
+      throw new Error('The linked meter is no longer available.');
+    }
+    if (!meter) {
+      const oldType = String(completed.answers['existing.device_type'] ?? '').trim();
+      const oldSerial = String(completed.answers['existing.device_id'] ?? '').trim();
+      if (oldType !== 'A3RM' && oldType !== 'A6M') {
+        throw new Error('Select whether the existing planned meter is an A3RM or A6M.');
+      }
+      if (!oldSerial) throw new Error('Enter or scan the existing planned Device ID / serial.');
+      const oldSerialKey = oldSerial.toLocaleLowerCase('en-AU');
+      const duplicate = tree.electricalAssets.flatMap((candidate) => candidate.meters).find((candidate) => (
+        (!candidate.lifecycleState || candidate.lifecycleState === 'ACTIVE')
+        && [candidate.deviceId, candidate.deviceNumber]
+          .filter(Boolean)
+          .some((value) => value!.trim().toLocaleLowerCase('en-AU') === oldSerialKey)
+      ));
+      if (duplicate) {
+        throw new Error('This meter is now in the site data. Open that device and start the replacement from it.');
+      }
+      const captured = createMeter();
+      const channelCount = oldType === 'A3RM' ? 3 : 6;
+      const oldSensorRating = String(completed.answers['existing.sensor_rating'] ?? '').trim();
+      meter = {
+        ...captured,
+        deviceFamily: 'WATTWATCHERS',
+        customName: defaultMeterCustomName({ deviceModel: oldType }),
+        deviceName: defaultMeterCustomName({ deviceModel: oldType }),
+        deviceType: oldType,
+        deviceId: oldSerial,
+        deviceNumber: String(completed.answers['existing.device_number'] ?? '').trim() || oldSerial,
+        lifecycleState: 'ACTIVE',
+        wwChannels: Array.from({ length: channelCount }, (_, index) => ({
+          id: `${captured.id}:${index + 1}`,
+          ordinal: index + 1,
+          purpose: 'SPARE',
+          ...(oldSensorRating
+            ? oldType === 'A3RM'
+              ? { rogowskiSize: oldSensorRating }
+              : { ctRatio: oldSensorRating }
+            : {}),
+        })),
+      };
+      completed.meterId = meter.id;
+    }
+    const replacement = meterAfterCommsReplacement(meter, completed.answers);
+    board.meters = board.meters.some((candidate) => candidate.id === meter.id)
+      ? board.meters.map((candidate) => candidate.id === meter!.id ? replacement : candidate)
+      : [...board.meters, replacement];
     board.updatedAt = nowIso();
     return;
   }

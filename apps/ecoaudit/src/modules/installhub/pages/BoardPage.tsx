@@ -219,7 +219,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       });
       setErrors([]);
       toast.success(saved ? 'Switchboard saved.' : 'Switchboard created.');
-      router.replace(`/installhub/installations/${installationId}/zones/${zoneId}`);
+      router.replace(`/installhub/installations/${installationId}/zones/${zoneId}/boards/${currentDraft.id}`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -626,7 +626,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       />
 
       {!saved ? (
-        <InlineNotice>Save the switchboard first, then commission devices and add evidence.</InlineNotice>
+        <InlineNotice>Save the switchboard first, then add meters and evidence.</InlineNotice>
       ) : (
         <>
           <Card id="board-relationships" tabIndex={-1} className="mb-5 scroll-mt-4">

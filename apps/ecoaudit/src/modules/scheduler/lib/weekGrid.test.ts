@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  GRID_HOUR_END,
+  GRID_HOUR_START,
+  HOUR_HEIGHT_PX,
   calendarDayMinWidthRem,
   calendarEventContentDensity,
   calendarEventLaneDensity,
@@ -8,7 +11,18 @@ import {
   calendarPreviewPosition,
   eventBlockStyle,
   eventLaneLayout,
+  gridHeightPx,
+  hoursInGrid,
 } from './weekGrid';
+
+test('calendar exposes every hour of the day', () => {
+  assert.equal(GRID_HOUR_START, 0);
+  assert.equal(GRID_HOUR_END, 24);
+  assert.deepEqual(hoursInGrid(), Array.from({ length: 24 }, (_, hour) => hour));
+  assert.equal(gridHeightPx(), 24 * HOUR_HEIGHT_PX);
+  assert.equal(eventBlockStyle('2026-08-17T00:30:00', 60, null).top, HOUR_HEIGHT_PX / 2);
+  assert.equal(eventBlockStyle('2026-08-17T23:00:00', 60, null).top, 23 * HOUR_HEIGHT_PX);
+});
 
 test('calendar retains completed jobs and warns only after an incomplete scheduled day passes', () => {
   const now = new Date(2026, 7, 29, 12, 0, 0);

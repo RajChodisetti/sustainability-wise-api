@@ -74,6 +74,7 @@ export type ProductJobMemoryInput = {
     | {
       kind: 'field';
       workType: string;
+      existingDeviceId?: string | null;
       maas?: boolean | null;
       meteringSolutionType?: string | null;
       plannedMeterType?: string | null;
@@ -179,6 +180,29 @@ function optionalText(value: unknown, field: string, maxLength: number): string 
   if (!normalized) return null;
   if (normalized.length > maxLength) {
     throw badRequest(`${field} must be ${maxLength} characters or fewer`);
+  }
+  return normalized;
+}
+
+export function normalizeFieldExistingDeviceId(
+  value: unknown,
+  field = 'job.detail.existingDeviceId',
+): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw badRequest(`${field} must be a string`);
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const candidate of value.split(/\r?\n/)) {
+    const meterNumber = candidate.trim();
+    const key = meterNumber.toLocaleLowerCase('en-AU');
+    if (!meterNumber || seen.has(key)) continue;
+    seen.add(key);
+    lines.push(meterNumber);
+  }
+  const normalized = lines.join('\n');
+  if (!normalized) return null;
+  if (normalized.length > 10_000) {
+    throw badRequest(`${field} must contain at most 10000 characters`);
   }
   return normalized;
 }
@@ -562,6 +586,7 @@ async function upsertProductJob(
     await executor.insert(fieldAppJobDetails).values({
       jobId,
       workType: requiredText(input.detail.workType, 'job.detail.workType', 120),
+      existingDeviceId: normalizeFieldExistingDeviceId(input.detail.existingDeviceId),
       maas: input.detail.maas ?? null,
       meteringSolutionType: optionalText(
         input.detail.meteringSolutionType,
@@ -585,6 +610,7 @@ async function upsertProductJob(
       target: fieldAppJobDetails.jobId,
       set: {
         workType: requiredText(input.detail.workType, 'job.detail.workType', 120),
+        existingDeviceId: normalizeFieldExistingDeviceId(input.detail.existingDeviceId),
         maas: input.detail.maas ?? null,
         meteringSolutionType: optionalText(
           input.detail.meteringSolutionType,

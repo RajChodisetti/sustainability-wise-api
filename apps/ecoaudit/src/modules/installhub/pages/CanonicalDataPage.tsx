@@ -49,6 +49,7 @@ import {
   unresolvedElectricalRecords,
   unresolvedRelationshipRemovalPlan,
 } from '@/modules/installhub/lib/electricalPresentation';
+import { reconciliationIssueWhy } from '@/modules/installhub/lib/readinessPresentation';
 import type { InstallationTree, ReadinessIssue } from '@/modules/installhub/types/domain';
 import type { ElectricalTreeReadModel } from '@/modules/installhub/types/domain';
 import { useToast } from '@/contexts/ToastContext';
@@ -415,7 +416,6 @@ export function InstallHubCanonicalDataPage() {
       <PageHeader
         title="Data & reconciliation"
         subtitle="Physical locations, confirmed electrical relationships, To be confirmed records, and full asset coverage."
-        actions={<LinkButton href={`/installhub/installations/${installationId}/metering`}><Icon name="gauge" size={17} />Metering table</LinkButton>}
       />
 
       {localAdvisory ? (
@@ -507,6 +507,9 @@ export function InstallHubCanonicalDataPage() {
                         {reviewed ? <span className="rounded-full bg-[var(--green)] px-2.5 py-1 text-xs font-extrabold text-white">Reviewed</span> : null}
                       </div>
                       <h3 className="mt-2 text-sm font-extrabold text-[var(--text)]">{issue.message}</h3>
+                      <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+                        <span className="font-bold text-[var(--text)]">Why:</span> {reconciliationIssueWhy(issue)}
+                      </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" onClick={() => setReviewedIssueKeys((current) => {

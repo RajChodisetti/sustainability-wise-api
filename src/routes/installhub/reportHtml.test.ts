@@ -179,6 +179,7 @@ test('legacy WW reports show commissioning for Base44 and persisted sensor vocab
   };
 
   const a3rm = visibility('a3rm-installation');
+  assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': '3000A – 9cm' }), true);
   assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': '10cm-200A' }), true);
   assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': '3000A - 9cm' }), true);
   assert.equal(isReportItemVisible(a3rm, { 'channel.1.rating': 'Not Used' }), false);

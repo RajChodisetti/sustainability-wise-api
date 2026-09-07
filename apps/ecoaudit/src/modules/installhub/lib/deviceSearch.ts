@@ -9,6 +9,7 @@ import type {
   InstallHubUser,
   MeterDevice,
 } from '@/modules/installhub/types/domain';
+import { replacementMeterNumbersFromStored } from '@/modules/installhub/components/ReplacementMeterPicker';
 
 export type DeviceSearchRecord = {
   installationId: string;
@@ -50,7 +51,7 @@ function distinctDeviceDisplayName(meter: MeterDevice, deviceName: string): stri
 
 export function deviceSearchRecords(trees: InstallationTree[]): DeviceSearchRecord[] {
   return trees.flatMap((tree) => meterDevices(tree)
-    .filter((meter) => meter.lifecycleState !== 'INACTIVE')
+    .filter((meter) => !meter.lifecycleState || meter.lifecycleState === 'ACTIVE')
     .flatMap((meter) => {
       const board = tree.electricalAssets.find((item) => item.id === meter.installedOnBoardId);
       if (!board) return [];
@@ -142,6 +143,51 @@ export function createReplacementForm(
     throw new Error('The selected device is not installed on this switchboard. Refresh the installation and try again.');
   }
   const form = createFormSubmission(tree, 'comms-fault', user, record);
+  form.answers['works.replace_device'] = 'yes';
+  tree.formSubmissions.push(form);
+  return form;
+}
+
+export function createPlannedReplacementForm(
+  tree: InstallationTree,
+  user: InstallHubUser,
+  context: {
+    boardId: string;
+    deviceModel: 'A3RM' | 'A6M';
+    meterNumber: string;
+  },
+): FormSubmission {
+  if (tree.installation.status === 'Completed') {
+    throw new Error('Reopen this completed installation before replacing its device.');
+  }
+  if (tree.installation.serviceType !== 'M2 - Faults / COMMS fault') {
+    throw new Error('This installation is not an M2 COMMS fault job.');
+  }
+  const plannedMeter = replacementMeterNumbersFromStored(tree.installation.existingDeviceId)
+    .find((value) => value.toLocaleLowerCase('en-AU') === context.meterNumber.trim().toLocaleLowerCase('en-AU'));
+  if (!plannedMeter) {
+    throw new Error('This meter is not in the current M2 replacement plan. Refresh the installation and try again.');
+  }
+  const board = tree.electricalAssets.find((item) => item.id === context.boardId);
+  if (!board || !tree.zones.some((zone) => zone.id === board.zoneId)) {
+    throw new Error('Select a current switchboard for this planned meter.');
+  }
+  const plannedKey = plannedMeter.toLocaleLowerCase('en-AU');
+  const duplicate = meterDevices(tree).find((meter) => (
+    (!meter.lifecycleState || meter.lifecycleState === 'ACTIVE')
+    && [meter.serialNumber, meter.deviceNumber]
+      .filter(Boolean)
+      .some((value) => value!.trim().toLocaleLowerCase('en-AU') === plannedKey)
+  ));
+  if (duplicate) {
+    throw new Error('This meter is now in the site data. Open that device and start the replacement from it.');
+  }
+  const form = createFormSubmission(tree, 'comms-fault', user, {
+    zoneId: board.zoneId,
+    boardId: board.id,
+  });
+  form.answers['existing.device_type'] = context.deviceModel;
+  form.answers['existing.device_id'] = plannedMeter;
   form.answers['works.replace_device'] = 'yes';
   tree.formSubmissions.push(form);
   return form;

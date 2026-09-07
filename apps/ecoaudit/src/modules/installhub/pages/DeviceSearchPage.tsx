@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { FieldLabel, Input } from '@/components/ui/FormFields';
+import { FieldHint, FieldLabel, Input, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { useToast } from '@/contexts/ToastContext';
 import { installHubConnectionErrorMessage } from '@/modules/installhub/api/client';
@@ -17,10 +17,12 @@ import {
 } from '@/modules/installhub/hooks/useInstallationTree';
 import {
   createReplacementForm,
+  createPlannedReplacementForm,
   deviceSearchRecords,
   filterDeviceSearchRecords,
   type DeviceSearchRecord,
 } from '@/modules/installhub/lib/deviceSearch';
+import { plannedReplacementMeterNumber } from '@/modules/installhub/components/ReplacementMeterPicker';
 import type { InstallationTree } from '@/modules/installhub/types/domain';
 
 function DeviceResultGroup({
@@ -122,10 +124,104 @@ function DeviceResultGroup({
   );
 }
 
+function PlannedReplacementCard({
+  tree,
+  meterNumber,
+}: {
+  tree: InstallationTree;
+  meterNumber: string;
+}) {
+  const writer = useTreeWriter(tree.installation.id);
+  const { user } = useInstallHubAuth();
+  const router = useRouter();
+  const toast = useToast();
+  const boards = useMemo(() => [...tree.electricalAssets].sort((left, right) => (
+    left.assetName.localeCompare(right.assetName) || left.id.localeCompare(right.id)
+  )), [tree.electricalAssets]);
+  const [boardId, setBoardId] = useState(boards[0]?.id ?? '');
+  const [deviceModel, setDeviceModel] = useState<'A3RM' | 'A6M'>('A3RM');
+  const [busy, setBusy] = useState(false);
+  const selectedBoardId = boards.some((board) => board.id === boardId)
+    ? boardId
+    : boards[0]?.id ?? '';
+
+  async function startReplacement() {
+    if (!user || !selectedBoardId || busy) return;
+    setBusy(true);
+    try {
+      let formId = '';
+      await writer.mutate((next) => {
+        formId = createPlannedReplacementForm(next, user, {
+          boardId: selectedBoardId,
+          deviceModel,
+          meterNumber,
+        }).id;
+      }, 'metadata');
+      toast.success('Existing meter captured. Complete the replacement details in the Comms Fault form.');
+      router.push(`/installhub/installations/${tree.installation.id}/forms/${formId}`);
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card className="mb-6 border-[var(--primary)]/40">
+      <h2 className="text-lg font-extrabold text-[var(--text)]">Planned meter {meterNumber}</h2>
+      <FieldHint>
+        This meter is in the M2 job plan but is not recorded in the copied site data. Confirm its existing type and actual switchboard before starting the replacement form.
+      </FieldHint>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div>
+          <FieldLabel htmlFor="planned-existing-device-type" className="mt-0">Existing meter type</FieldLabel>
+          <Select
+            id="planned-existing-device-type"
+            value={deviceModel}
+            disabled={busy || tree.installation.status === 'Completed'}
+            onChange={(event) => setDeviceModel(event.target.value as 'A3RM' | 'A6M')}
+          >
+            <option value="A3RM">A3RM</option>
+            <option value="A6M">A6M</option>
+          </Select>
+        </div>
+        <div>
+          <FieldLabel htmlFor="planned-existing-board" className="mt-0">Installed switchboard</FieldLabel>
+          <Select
+            id="planned-existing-board"
+            value={selectedBoardId}
+            disabled={busy || tree.installation.status === 'Completed' || boards.length === 0}
+            onChange={(event) => setBoardId(event.target.value)}
+          >
+            {boards.length === 0 ? <option value="">No switchboards available</option> : null}
+            {boards.map((board) => {
+              const zoneName = tree.zones.find((zone) => zone.id === board.zoneId)?.zoneName;
+              return <option key={board.id} value={board.id}>{board.assetName}{zoneName ? ` · ${zoneName}` : ''}</option>;
+            })}
+          </Select>
+        </div>
+      </div>
+      {boards.length === 0 ? (
+        <p className="mt-3 text-sm font-semibold text-[var(--red)]" role="alert">
+          Add the switchboard where this meter is installed before starting its replacement.
+        </p>
+      ) : null}
+      <Button
+        className="mt-4"
+        disabled={busy || !selectedBoardId || tree.installation.status === 'Completed' || writer.hasPendingTree}
+        onClick={() => void startReplacement()}
+      >
+        <Icon name="refresh" size={16} />
+        {busy ? 'Opening form…' : 'Capture old meter and start replacement'}
+      </Button>
+    </Card>
+  );
+}
+
 export function InstallHubDeviceSearchPage() {
   const { installationId } = useParams<{ installationId: string }>();
+  const search = useSearchParams();
   const treeQuery = useInstallationTree(installationId);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(search.get('q')?.trim() ?? '');
   const records = useMemo(
     () => deviceSearchRecords(treeQuery.data ? [treeQuery.data] : []),
     [treeQuery.data],
@@ -134,6 +230,15 @@ export function InstallHubDeviceSearchPage() {
     () => filterDeviceSearchRecords(records, query, installationId),
     [installationId, query, records],
   );
+  const plannedMeter = treeQuery.data?.installation.serviceType === 'M2 - Faults / COMMS fault'
+    ? plannedReplacementMeterNumber(treeQuery.data.installation.existingDeviceId, query)
+    : null;
+  const plannedMeterKey = plannedMeter?.toLocaleLowerCase('en-AU') ?? '';
+  const plannedMeterIsRecorded = Boolean(plannedMeter && records.some((record) => (
+    [record.serialNumber, record.deviceNumber]
+      .filter(Boolean)
+      .some((value) => value.trim().toLocaleLowerCase('en-AU') === plannedMeterKey)
+  )));
 
   if (treeQuery.isLoading) return <Spinner />;
   if (treeQuery.error) return <ErrorBanner message={installHubConnectionErrorMessage(treeQuery.error)} />;
@@ -171,11 +276,17 @@ export function InstallHubDeviceSearchPage() {
         </p>
       </Card>
 
+      {plannedMeter && !plannedMeterIsRecorded ? (
+        <PlannedReplacementCard tree={tree} meterNumber={plannedMeter} />
+      ) : null}
+
       {filtered.length === 0 ? (
         <EmptyState
           icon="search"
           title="No devices match"
-          description="Try a device ID, device name, zone, switchboard, or model such as A3RM."
+          description={plannedMeter && !plannedMeterIsRecorded
+            ? 'The planned meter can be captured above before its replacement form is started.'
+            : 'Try a device ID, device name, zone, switchboard, or model such as A3RM.'}
         />
       ) : (
         <DeviceResultGroup tree={tree} records={filtered} />

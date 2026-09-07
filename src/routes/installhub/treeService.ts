@@ -173,6 +173,7 @@ export async function loadCanonicalInstallationTree(
       clientName: installation.clientName,
       maas: installation.maas,
       serviceType: installation.serviceType,
+      existingDeviceId: installation.existingDeviceId,
       meteringSolutionType: installation.meteringSolutionType,
       plannedMeterType: installation.plannedMeterType,
       customJobNumber: installation.customJobNumber,
@@ -325,6 +326,7 @@ export async function loadCanonicalInstallationTree(
       customName: row.customName,
       deviceFamily: row.deviceFamily as MeterDevice['deviceFamily'],
       deviceModel: row.deviceModel as MeterDevice['deviceModel'],
+      lifecycleState: row.lifecycleState as MeterDevice['lifecycleState'],
       customManufacturerName: row.customManufacturerName,
       customModelName: row.customModelName,
       deviceNumber: row.deviceNumber,
@@ -452,8 +454,12 @@ function meterChannelLoadTypeLabel(channel: MeterDevice['channels'][number]): st
  * authority; array order is deterministic and never used as meter identity.
  */
 export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
+  const projectedMeterDevices = tree.meterDevices.map((meter) => ({
+    ...meter,
+    lifecycleState: meter.lifecycleState ?? 'ACTIVE',
+  }));
   const metersByBoard = new Map<string, MeterDevice[]>();
-  for (const meter of tree.meterDevices) {
+  for (const meter of projectedMeterDevices) {
     const meters = metersByBoard.get(meter.installedOnBoardId) ?? [];
     meters.push(meter);
     metersByBoard.set(meter.installedOnBoardId, meters);
@@ -483,6 +489,7 @@ export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
           deviceId: meter.serialNumber,
           deviceNumber: meter.deviceNumber,
           deviceFamily: meter.deviceFamily,
+          lifecycleState: meter.lifecycleState ?? 'ACTIVE',
           customManufacturerName: meter.customManufacturerName,
           customModelName: meter.customModelName,
           displayName: meter.displayName,
@@ -522,7 +529,7 @@ export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
         ? asset.meteringState.measurementAssignmentIds
         : [],
     })),
-    meterDevices: tree.meterDevices,
+    meterDevices: projectedMeterDevices,
     measurementAssignments: tree.measurementAssignments,
     formSubmissions: tree.formSubmissions,
     serverDerived: tree.serverDerived,
@@ -619,6 +626,7 @@ function commissionedMeterFingerprint(meter: MeterDevice | undefined): string {
   return stableStringify({
     deviceFamily: meter.deviceFamily,
     deviceModel: meter.deviceModel,
+    lifecycleState: meter.lifecycleState ?? 'ACTIVE',
     customManufacturerName: meter.customManufacturerName ?? null,
     customModelName: meter.customModelName ?? null,
     deviceNumber: meter.deviceNumber ?? null,
@@ -1192,6 +1200,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       customName: meter.customName,
       deviceFamily: meter.deviceFamily,
       deviceModel: meter.deviceModel,
+      lifecycleState: meter.lifecycleState ?? 'ACTIVE',
       customManufacturerName: meter.customManufacturerName ?? null,
       customModelName: meter.customModelName ?? null,
       deviceNumber: meter.deviceNumber ?? null,

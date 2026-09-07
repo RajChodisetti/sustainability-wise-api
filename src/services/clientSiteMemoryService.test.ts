@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { AppError } from '../utils/errors.js';
 import {
   BUSINESS_COMPANY_KEY,
   businessClientMergeLockKeys,
   normalizeClientName,
+  normalizeFieldExistingDeviceId,
 } from './clientSiteMemoryService.js';
 
 test('client matching uses one NFKC, whitespace-collapsed, case-insensitive key', () => {
@@ -23,4 +25,17 @@ test('overlapping client merges share a per-client advisory lock in stable order
   ]);
   assert.ok(first.some((key) => overlappingSource.includes(key)));
   assert.ok(first.some((key) => overlappingTarget.includes(key)));
+});
+
+test('Field replacement plans preserve meter boundaries and enforce the stored aggregate limit', () => {
+  assert.equal(
+    normalizeFieldExistingDeviceId('  WW-100  \nww-100\n WW-200 '),
+    'WW-100\nWW-200',
+  );
+  assert.equal(normalizeFieldExistingDeviceId('   '), null);
+  assert.throws(
+    () => normalizeFieldExistingDeviceId('X'.repeat(10_001)),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.detail.existingDeviceId must contain at most 10000 characters',
+  );
 });

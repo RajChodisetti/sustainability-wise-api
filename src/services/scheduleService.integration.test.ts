@@ -14,7 +14,11 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       ihElectricalAssets,
       ihGridSupplies,
       ihInstallations,
+      ihMeasurementAssignmentChannels,
+      ihMeasurementAssignments,
+      ihMeterChannels,
       ihMeterDevices,
+      ihSiteAssets,
       ihZones,
     },
     {
@@ -187,6 +191,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     const field = await createSchedulerDispatch(admin, {
       ...baseDispatch,
       sourceApp: 'installhub',
+      title: `Field title ${runId}`,
       job: {
         clientName: `Client ${runId}`,
         siteName: `Field ${runId}`,
@@ -209,6 +214,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     });
     const unassignedField = await createSchedulerDispatch(admin, {
       sourceApp: 'installhub',
+      title: `Unassigned title ${runId}`,
       scheduledStartAt: '2026-08-20T12:00:00.000Z',
       deadlineAt: '2026-08-22T17:00:00.000Z',
       job: {
@@ -234,6 +240,15 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(field.status, 'planned');
     assert.equal(unassignedField.assigneeFieldUserId, null);
     assert.equal(unassignedField.scheduledEventId, null);
+    assert.equal(unassignedField.label, `Unassigned title ${runId}`);
+    const unassignedFieldPool = await listUnscheduledJobs(admin, {
+      q: `Unassigned title ${runId}`,
+      sourceApp: 'installhub',
+    });
+    assert.equal(
+      unassignedFieldPool.find((option) => option.id === unassignedField.id)?.label,
+      `Unassigned title ${runId}`,
+    );
     const [[unassignedInstallation], unassignedEvents] = await Promise.all([
       db.select().from(ihInstallations).where(eq(ihInstallations.id, unassignedField.id)),
       db.select().from(portalScheduleEvents).where(eq(
@@ -281,13 +296,18 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(fieldIdentityEvent.jobId, field.jobId);
     assert.equal(fieldRow.customJobNumber, null);
     assert.equal(fieldDetail.customJobNumber, null);
-    assert.match(field.title, / - A7Z$/);
+    assert.equal(field.title, `Field title ${runId}`);
+    assert.equal(fieldIdentityJob.title, `Field title ${runId}`);
     assert.equal(gridRows.length, 1);
     assert.equal(gridRows[0].isDefault, true);
 
     const sourceZoneId = randomUUID();
     const sourceBoardId = randomUUID();
     const sourceMeterId = randomUUID();
+    const sourceChannelId = randomUUID();
+    const sourceSiteAssetId = randomUUID();
+    const sourceAssignmentId = randomUUID();
+    const sourceAssignmentChannelId = randomUUID();
     await db.insert(ihZones).values({
       id: sourceZoneId,
       serverId: randomUUID(),
@@ -328,6 +348,59 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       updatedAt: now,
       createdAt: now,
     });
+    await db.insert(ihMeterChannels).values({
+      id: sourceChannelId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      meterId: sourceMeterId,
+      ordinal: 1,
+      purpose: 'SUB_CIRCUIT',
+      loadTypeCode: 'HVAC',
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(ihSiteAssets).values({
+      id: sourceSiteAssetId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      zoneId: sourceZoneId,
+      assetName: 'Existing air conditioning',
+      assetType: 'HVAC',
+      typeCode: 'HVAC',
+      sourceKind: 'BOARD',
+      electricalBoardId: sourceBoardId,
+      meteringStateKind: 'METERED',
+      measurementAssignmentIds: [sourceAssignmentId],
+      meterPresent: true,
+      meterSwitchboardId: sourceBoardId,
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(ihMeasurementAssignments).values({
+      id: sourceAssignmentId,
+      serverId: randomUUID(),
+      syncStatus: 'synced',
+      installationId: field.sourceId!,
+      meterId: sourceMeterId,
+      phaseMode: 'SINGLE_PHASE',
+      targetKind: 'SITE_ASSET',
+      targetSiteAssetId: sourceSiteAssetId,
+      direction: 'CONSUMPTION',
+      status: 'CONFIRMED',
+      updatedAt: now,
+      createdAt: now,
+    });
+    await db.insert(ihMeasurementAssignmentChannels).values({
+      id: sourceAssignmentChannelId,
+      installationId: field.sourceId!,
+      assignmentId: sourceAssignmentId,
+      meterId: sourceMeterId,
+      channelId: sourceChannelId,
+      position: 1,
+      createdAt: now,
+    });
     const [fieldBusinessJob] = await db.select().from(businessJobs)
       .where(eq(businessJobs.id, field.jobId!));
     const followUpField = await createSchedulerDispatch(admin, {
@@ -341,7 +414,8 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
         clientName: `Client ${runId}`,
         siteName: `Field ${runId}`,
         siteAddress: '3 Field Street, Sydney NSW 2002, Australia',
-        workType: 'meter_replacement_m3',
+        workType: 'M2 - Faults / COMMS fault',
+        existingDeviceIds: ['KNOWN-METER-001', 'MANUAL-METER-002'],
         auditDate: '2026-08-24',
         address: {
           freeform: '3 Field Street',
@@ -356,28 +430,78 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     const [followUpJob] = await db.select().from(businessJobs)
       .where(eq(businessJobs.id, followUpField.jobId!));
     assert.equal(followUpJob.siteId, fieldBusinessJob.siteId);
-    const [[followUpInstallation], followUpZones, followUpMeters, originalMeters] = await Promise.all([
+    const [
+      [followUpInstallation],
+      followUpGridSupplies,
+      followUpZones,
+      followUpBoards,
+      followUpSiteAssets,
+      followUpMeters,
+      followUpChannels,
+      followUpAssignments,
+      followUpAssignmentChannels,
+      originalMeters,
+    ] = await Promise.all([
       db.select().from(ihInstallations)
         .where(eq(ihInstallations.id, followUpField.sourceId!)),
+      db.select().from(ihGridSupplies)
+        .where(eq(ihGridSupplies.installationId, followUpField.sourceId!)),
       db.select().from(ihZones)
         .where(eq(ihZones.installationId, followUpField.sourceId!)),
+      db.select().from(ihElectricalAssets)
+        .where(eq(ihElectricalAssets.installationId, followUpField.sourceId!)),
+      db.select().from(ihSiteAssets)
+        .where(eq(ihSiteAssets.installationId, followUpField.sourceId!)),
       db.select().from(ihMeterDevices)
         .where(eq(ihMeterDevices.installationId, followUpField.sourceId!)),
+      db.select().from(ihMeterChannels)
+        .where(eq(ihMeterChannels.installationId, followUpField.sourceId!)),
+      db.select().from(ihMeasurementAssignments)
+        .where(eq(ihMeasurementAssignments.installationId, followUpField.sourceId!)),
+      db.select().from(ihMeasurementAssignmentChannels)
+        .where(eq(ihMeasurementAssignmentChannels.installationId, followUpField.sourceId!)),
       db.select().from(ihMeterDevices)
         .where(eq(ihMeterDevices.installationId, field.sourceId!)),
     ]);
     assert.equal(followUpInstallation.businessSiteId, fieldBusinessJob.siteId);
     assert.equal(followUpInstallation.siteName, `Field ${runId}`);
     assert.equal(followUpInstallation.siteAddress, '3 Field Street, Sydney NSW 2002, Australia');
-    assert.equal(followUpInstallation.serviceType, 'meter_replacement_m3');
+    assert.equal(followUpInstallation.serviceType, 'M2 - Faults / COMMS fault');
+    assert.equal(followUpInstallation.existingDeviceId, 'KNOWN-METER-001\nMANUAL-METER-002');
+    assert.equal(followUpInstallation.assignedInspectorUserId, firstAssignee.fieldUserId);
     assert.equal(followUpInstallation.electricalMapLayout, null);
     assert.equal(followUpInstallation.electricalMapLayoutRevision, 0);
+    assert.equal(followUpGridSupplies.length, 1);
+    assert.notEqual(followUpGridSupplies[0].id, gridRows[0].id);
     assert.equal(followUpZones.length, 1);
     assert.notEqual(followUpZones[0].id, sourceZoneId);
     assert.equal(followUpZones[0].zoneName, 'Main building');
+    assert.equal(followUpBoards.length, 1);
+    assert.notEqual(followUpBoards[0].id, sourceBoardId);
+    assert.equal(followUpBoards[0].zoneId, followUpZones[0].id);
+    assert.equal(followUpBoards[0].gridSupplyId, followUpGridSupplies[0].id);
+    assert.equal(followUpSiteAssets.length, 1);
+    assert.notEqual(followUpSiteAssets[0].id, sourceSiteAssetId);
+    assert.equal(followUpSiteAssets[0].zoneId, followUpZones[0].id);
+    assert.equal(followUpSiteAssets[0].electricalBoardId, followUpBoards[0].id);
+    assert.equal(followUpSiteAssets[0].meterSwitchboardId, followUpBoards[0].id);
     assert.equal(followUpMeters.length, 1);
     assert.notEqual(followUpMeters[0].id, sourceMeterId);
+    assert.equal(followUpMeters[0].installedOnBoardId, followUpBoards[0].id);
     assert.equal(followUpMeters[0].serialNumber, 'KNOWN-METER-001');
+    assert.equal(followUpChannels.length, 1);
+    assert.notEqual(followUpChannels[0].id, sourceChannelId);
+    assert.equal(followUpChannels[0].meterId, followUpMeters[0].id);
+    assert.equal(followUpAssignments.length, 1);
+    assert.notEqual(followUpAssignments[0].id, sourceAssignmentId);
+    assert.equal(followUpAssignments[0].meterId, followUpMeters[0].id);
+    assert.equal(followUpAssignments[0].targetSiteAssetId, followUpSiteAssets[0].id);
+    assert.deepEqual(followUpSiteAssets[0].measurementAssignmentIds, [followUpAssignments[0].id]);
+    assert.equal(followUpAssignmentChannels.length, 1);
+    assert.notEqual(followUpAssignmentChannels[0].id, sourceAssignmentChannelId);
+    assert.equal(followUpAssignmentChannels[0].assignmentId, followUpAssignments[0].id);
+    assert.equal(followUpAssignmentChannels[0].meterId, followUpMeters[0].id);
+    assert.equal(followUpAssignmentChannels[0].channelId, followUpChannels[0].id);
     assert.equal(originalMeters.length, 1);
     assert.equal(originalMeters[0].id, sourceMeterId);
     assert.equal(originalMeters[0].serialNumber, 'KNOWN-METER-001');
@@ -589,8 +713,16 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
   } finally {
     await db.delete(portalScheduleEvents)
       .where(eq(portalScheduleEvents.createdByUserId, actor.appUserIds.ecoaudit));
+    await db.delete(ihMeasurementAssignmentChannels)
+      .where(inArray(ihMeasurementAssignmentChannels.installationId, createdProductIds));
+    await db.delete(ihMeasurementAssignments)
+      .where(inArray(ihMeasurementAssignments.installationId, createdProductIds));
+    await db.delete(ihMeterChannels)
+      .where(inArray(ihMeterChannels.installationId, createdProductIds));
     await db.delete(ihMeterDevices)
       .where(inArray(ihMeterDevices.installationId, createdProductIds));
+    await db.delete(ihSiteAssets)
+      .where(inArray(ihSiteAssets.installationId, createdProductIds));
     await db.delete(ihElectricalAssets)
       .where(inArray(ihElectricalAssets.installationId, createdProductIds));
     await db.delete(ihZones)

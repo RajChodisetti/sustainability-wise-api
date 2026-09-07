@@ -77,6 +77,8 @@ import { createReplacementForm, humanDeviceName } from '@/modules/installhub/lib
 import {
   assignmentApprovalSignature,
   assignmentCollectionConcurrencySignature,
+  meterChannelAfterDeviceTypeChange,
+  meterChannelWithModelValidSensor,
   meterStructuralConcurrencySignature,
   nextMeterChannelId,
   renamedMeterCapabilities,
@@ -115,22 +117,12 @@ const LOAD_TYPES = [
   'Other',
   'Not Used',
 ] as const;
-const ROGOWSKI_SIZES = [
-  '10cm-200A',
-  '10cm-333mV',
-  '20cm-3000A',
-  '30cm-3000A',
-  '45cm-3000A',
-  'Not Used',
-] as const;
-const CT_RATINGS = [
-  'CT-60A',
-  'CT-120A',
-  'CT-250A',
-  'CT-400A',
-  'CT-600A',
-  'Not Used',
-] as const;
+const ROGOWSKI_SIZES: readonly string[] = [
+  '3000A – 9cm',
+  '3000A – 20cm',
+  '3000A – 29cm',
+];
+const CT_RATINGS: readonly string[] = ['60A', '120A', '200A', '400A', '600A'];
 const SIGNAL_STRENGTHS = ['Low', 'Medium', 'High'] as const;
 const ANTENNA_TYPES = [
   'Internal',
@@ -761,14 +753,14 @@ export function InstallHubMeterPage({
                 capabilities,
               };
             }
-            return {
+            return meterChannelWithModelValidSensor(editableDraft.deviceType, {
               ...channel,
               id: channel.id || meterChannelId(currentDraft.id, channelIndex),
               ordinal: channelIndex + 1,
               purpose,
               capabilities,
               customLoadTypeName: channel.loadType === 'Other' ? channel.customLoadTypeName?.trim() : undefined,
-            };
+            });
           }),
         };
         const index = targetBoard.meters.findIndex((item) => item.id === value.id);
@@ -993,12 +985,14 @@ export function InstallHubMeterPage({
           defaultMeterCustomName({ deviceModel: deviceType }),
         );
         const count = deviceType === 'A6M' ? 6 : 3;
-        const channels = Array.from({ length: count }, (_, index) => ({
-          ...(current.wwChannels?.[index] || {}),
-          id: current.wwChannels?.[index]?.id || meterChannelId(current.id, index),
-          ordinal: index + 1,
-          purpose: current.wwChannels?.[index]?.purpose || 'SPARE',
-        }));
+        const channels = Array.from({ length: count }, (_, index) => (
+          meterChannelAfterDeviceTypeChange(current.deviceType, deviceType, {
+            ...(current.wwChannels?.[index] || {}),
+            id: current.wwChannels?.[index]?.id || meterChannelId(current.id, index),
+            ordinal: index + 1,
+            purpose: current.wwChannels?.[index]?.purpose || 'SPARE',
+          })
+        ));
         const validIds = new Set(channels.map((channel) => channel.id));
         setAssignmentDrafts((assignments) => assignments.map((assignment) => ({
           ...assignment,
@@ -1027,7 +1021,14 @@ export function InstallHubMeterPage({
             customModelName: current.customModelName,
           }),
         ),
-        wwChannels: current.wwChannels?.length ? current.wwChannels : [{ id: meterChannelId(current.id, 0), ordinal: 1, purpose: 'SPARE' }],
+        wwChannels: (current.wwChannels?.length
+          ? current.wwChannels
+          : [{ id: meterChannelId(current.id, 0), ordinal: 1, purpose: 'SPARE' as const }])
+          .map((channel) => meterChannelAfterDeviceTypeChange(
+            current.deviceType,
+            'Other',
+            channel,
+          )),
       };
     });
   }
@@ -1036,12 +1037,14 @@ export function InstallHubMeterPage({
     setDraft((current) => {
       if (!current) return current;
       const count = type === 'A3RM' ? 3 : type === 'A6M' ? 6 : Math.max(1, current.wwChannels?.length || 1);
-      const channels = Array.from({ length: count }, (_, index) => ({
-        ...(current.wwChannels?.[index] || {}),
-        id: current.wwChannels?.[index]?.id || meterChannelId(current.id, index),
-        ordinal: index + 1,
-        purpose: current.wwChannels?.[index]?.purpose || 'SPARE',
-      }));
+      const channels = Array.from({ length: count }, (_, index) => (
+        meterChannelAfterDeviceTypeChange(current.deviceType, type, {
+          ...(current.wwChannels?.[index] || {}),
+          id: current.wwChannels?.[index]?.id || meterChannelId(current.id, index),
+          ordinal: index + 1,
+          purpose: current.wwChannels?.[index]?.purpose || 'SPARE',
+        })
+      ));
       const validIds = new Set(channels.map((channel) => channel.id));
       setAssignmentDrafts((assignments) => assignments.map((assignment) => ({
         ...assignment,
@@ -1079,7 +1082,13 @@ export function InstallHubMeterPage({
             purpose: 'SPARE',
             capabilities: change.capabilities || before.capabilities || {},
           }
-        : { ...before, ...change, id: before.id || meterChannelId(current.id, index), ordinal: index + 1, purpose };
+        : meterChannelWithModelValidSensor(current.deviceType, {
+            ...before,
+            ...change,
+            id: before.id || meterChannelId(current.id, index),
+            ordinal: index + 1,
+            purpose,
+          });
       if (purpose === 'SPARE') {
         const channelId = channels[index].id!;
         setAssignmentDrafts((assignments) => assignments.map((assignment) => ({
@@ -1978,20 +1987,22 @@ export function InstallHubMeterPage({
                           <FieldLabel htmlFor={`meter-channel-${index + 1}-sensor`}>CT rating</FieldLabel>
                           <Select
                             id={`meter-channel-${index + 1}-sensor`}
-                            value={channel.ctRatio ?? ''}
+                            value={CT_RATINGS.includes(channel.ctRatio ?? '') ? channel.ctRatio : ''}
                             disabled={Boolean(commissionedForm)}
                             onChange={(event) => {
                               updateChannel(index, { ctRatio: event.target.value });
                             }}
                           >
                             <option value="">Select an option</option>
-                            {withLegacyOption(
-                              CT_RATINGS,
-                              channel.ctRatio,
-                            ).map((option) => (
+                            {CT_RATINGS.map((option) => (
                               <option key={option}>{option}</option>
                             ))}
                           </Select>
+                          {channel.ctRatio && !CT_RATINGS.includes(channel.ctRatio) ? (
+                            <FieldHint>
+                              Previously saved CT rating: {channel.ctRatio}. Select a current option to replace it.
+                            </FieldHint>
+                          ) : null}
                         </div>
                       ) : null}
                       {draft.deviceType === 'A3RM' ? (
@@ -1999,20 +2010,22 @@ export function InstallHubMeterPage({
                           <FieldLabel htmlFor={`meter-channel-${index + 1}-sensor`}>Rogowski coil</FieldLabel>
                           <Select
                             id={`meter-channel-${index + 1}-sensor`}
-                            value={channel.rogowskiSize ?? ''}
+                            value={ROGOWSKI_SIZES.includes(channel.rogowskiSize ?? '') ? channel.rogowskiSize : ''}
                             disabled={Boolean(commissionedForm)}
                             onChange={(event) => {
                               updateChannel(index, { rogowskiSize: event.target.value });
                             }}
                           >
                             <option value="">Select an option</option>
-                            {withLegacyOption(
-                              ROGOWSKI_SIZES,
-                              channel.rogowskiSize,
-                            ).map((option) => (
+                            {ROGOWSKI_SIZES.map((option) => (
                               <option key={option}>{option}</option>
                             ))}
                           </Select>
+                          {channel.rogowskiSize && !ROGOWSKI_SIZES.includes(channel.rogowskiSize) ? (
+                            <FieldHint>
+                              Previously saved Rogowski coil: {channel.rogowskiSize}. Select a current option to replace it.
+                            </FieldHint>
+                          ) : null}
                         </div>
                       ) : null}
                       <div>

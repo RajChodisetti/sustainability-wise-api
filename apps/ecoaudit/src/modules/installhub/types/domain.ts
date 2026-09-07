@@ -259,6 +259,8 @@ export type Installation = {
   customerName?: string | null;
   maas?: boolean | null;
   serviceType?: string | null;
+  /** Newline-delimited rolling representation of the M2 meters to replace. */
+  existingDeviceId?: string | null;
   meteringSolutionType?: string | null;
   /** Planning context only; installed device records remain authoritative for field work. */
   plannedMeterType?: string | null;

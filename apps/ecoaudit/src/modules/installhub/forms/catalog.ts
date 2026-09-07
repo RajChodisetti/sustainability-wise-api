@@ -42,6 +42,8 @@ export type FormFieldDefinition = {
     key: string;
     values: Readonly<Record<string, readonly string[]>>;
   };
+  /** Keep historical values valid without adding them to a controlled current-choice dropdown. */
+  showLegacyValueInEditor?: boolean;
   acceptUnlistedLegacyValue?: boolean;
   scanModes?: readonly ScanMode[];
   allowNotApplicable?: boolean;
@@ -110,6 +112,12 @@ export const DEVICE_TYPES = ['A3RM', 'A6M'] as const;
 export const SENSOR_OPTIONS_BY_DEVICE: Readonly<
   Record<(typeof DEVICE_TYPES)[number], readonly string[]>
 > = {
+  A3RM: ['3000A – 9cm', '3000A – 20cm', '3000A – 29cm'],
+  A6M: ['60A', '120A', '200A', '400A', '600A'],
+};
+const LEGACY_SENSOR_OPTIONS_BY_DEVICE: Readonly<
+  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
+> = {
   A3RM: [
     '10cm-200A',
     '10cm-333mV',
@@ -117,25 +125,22 @@ export const SENSOR_OPTIONS_BY_DEVICE: Readonly<
     '30cm-3000A',
     '45cm-3000A',
     'Not Used',
+    '3000A - 9cm',
+    '3000A - 20cm',
+    '3000A - 29cm',
   ],
   A6M: ['CT-60A', 'CT-120A', 'CT-250A', 'CT-400A', 'CT-600A', 'Not Used'],
-};
-const LEGACY_SENSOR_OPTIONS_BY_DEVICE: Readonly<
-  Record<(typeof DEVICE_TYPES)[number], readonly string[]>
-> = {
-  A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
-  A6M: ['60A', '120A', '200A', '400A', '600A'],
 };
 const ACCEPTED_USED_SENSOR_OPTIONS_BY_DEVICE: Readonly<
   Record<(typeof DEVICE_TYPES)[number], readonly string[]>
 > = {
   A3RM: [
     ...SENSOR_OPTIONS_BY_DEVICE.A3RM.filter((option) => option !== 'Not Used'),
-    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A3RM,
+    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A3RM.filter((option) => option !== 'Not Used'),
   ],
   A6M: [
     ...SENSOR_OPTIONS_BY_DEVICE.A6M.filter((option) => option !== 'Not Used'),
-    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A6M,
+    ...LEGACY_SENSOR_OPTIONS_BY_DEVICE.A6M.filter((option) => option !== 'Not Used'),
   ],
 };
 export const SWITCHBOARD_TYPES = [
@@ -223,6 +228,7 @@ function sensor(
       key: deviceTypeKey,
       values: LEGACY_SENSOR_OPTIONS_BY_DEVICE,
     },
+    showLegacyValueInEditor: false,
     ...(showWhen ? { showWhen } : {}),
   };
 }
@@ -246,7 +252,7 @@ function switchboardType(
 
 const siteFields: readonly FormFieldDefinition[] = [
   text('site.date_time', 'Date and time', true),
-  text('site.customer_name', 'Customer / site name', true),
+  text('site.customer_name', 'Client / site name', true),
   multiline('site.address', 'Address', true),
   number('site.latitude', 'Latitude'),
   number('site.longitude', 'Longitude'),
@@ -497,7 +503,7 @@ const commsFault: FormDefinition = {
     'Diagnose, replace and recommission an existing 4G Auditor.',
   schemaVersion: 2,
   sections: [
-    { title: 'Customer details', fields: siteFields },
+    { title: 'Client details', fields: siteFields },
     { title: 'Installer details', fields: installerFields },
     { title: 'Pre-start information', fields: prestartFields },
     {
@@ -967,6 +973,7 @@ function legacyDefinition(
             kind: 'select',
             options: sensorOptions,
             legacyOptions: LEGACY_SENSOR_OPTIONS_BY_DEVICE[kind],
+            showLegacyValueInEditor: false,
             required: true,
           },
           {
@@ -1240,6 +1247,7 @@ export function editorOptionsForField(
   const options = optionsForField(field, answers);
   const current = String(answers[field.key] ?? '').trim();
   if (!current || options.includes(current)) return options;
+  if (field.showLegacyValueInEditor === false) return options;
   if (
     field.acceptUnlistedLegacyValue
     || acceptedOptionsForField(field, answers).includes(current)
@@ -1423,8 +1431,7 @@ export function createInitialFormAnswers(
   return {
     'site.date_time': new Date().toISOString(),
     'site.customer_name':
-      installation.customerName?.trim()
-      || installation.clientName
+      installation.clientName
       || installation.siteName,
     'site.address': installation.siteAddress,
     'installer.name': user.fullName || user.email,
@@ -1460,6 +1467,7 @@ export function meterAfterCommsReplacement(
     deviceName: nextDefaultName,
     deviceType: typedDevice,
     deviceId: String(answers['works.new_device_id'] ?? ''),
+    lifecycleState: 'ACTIVE',
     deviceNumber: String(
       answers['works.new_device_number']
       || answers['works.new_device_id']

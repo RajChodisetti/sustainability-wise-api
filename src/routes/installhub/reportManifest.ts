@@ -72,7 +72,7 @@ const usedLoads = [
 
 const siteFields = [
   value('site.date_time', 'Date and time'),
-  value('site.customer_name', 'Customer / site name'),
+  value('site.customer_name', 'Client / site name'),
   value('site.address', 'Address'),
   value('site.latitude', 'Latitude'),
   value('site.longitude', 'Longitude'),
@@ -154,6 +154,9 @@ function commissioningFields(
             equals:
               deviceType === 'A3RM'
                 ? [
+                    '3000A – 9cm',
+                    '3000A – 20cm',
+                    '3000A – 29cm',
                     '10cm-200A',
                     '10cm-333mV',
                     '20cm-3000A',
@@ -164,16 +167,16 @@ function commissioningFields(
                     '3000A - 29cm',
                   ]
                 : [
-                    'CT-60A',
-                    'CT-120A',
-                    'CT-250A',
-                    'CT-400A',
-                    'CT-600A',
                     '60A',
                     '120A',
                     '200A',
                     '400A',
                     '600A',
+                    'CT-60A',
+                    'CT-120A',
+                    'CT-250A',
+                    'CT-400A',
+                    'CT-600A',
                   ],
           };
     return [
@@ -291,7 +294,7 @@ const communicationsFault: InstallHubReportDefinition = {
   shortTitle: 'Comms Fault',
   schemaVersion: 2,
   sections: [
-    { title: 'Customer details', fields: siteFields },
+    { title: 'Client details', fields: siteFields },
     { title: 'Installer details', fields: installerFields },
     { title: 'Pre-start information', fields: prestartFields },
     {

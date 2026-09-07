@@ -579,7 +579,7 @@ function coverDetails(
     };
   }
   return {
-    label: 'Customer / site',
+    label: 'Client / site',
     value: displayValue(form.answers['site.customer_name']),
   };
 }

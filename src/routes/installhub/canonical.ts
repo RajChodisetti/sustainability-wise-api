@@ -9,7 +9,7 @@ import {
 } from '../../services/schedulerAddressService.js';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.9';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.10';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.3-tbc-only';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
 export const DISPLAY_CODE_RULE_VERSION = 4;
@@ -23,6 +23,9 @@ export const VIRTUAL_METER_FORMULA_VERSION = 1;
 export const INSTALLATION_METADATA_TEXT_LIMITS = {
   customerName: 300,
   serviceType: 120,
+  // Rolling clients store the M2 replacement-meter plan as one newline-delimited
+  // value. Each individual meter number remains capped at 200 characters.
+  existingDeviceId: 10_000,
   meteringSolutionType: 120,
   plannedMeterType: 120,
   customJobNumber: 100,
@@ -41,6 +44,7 @@ export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
   'customerName',
   'maas',
   'serviceType',
+  'existingDeviceId',
   'meteringSolutionType',
   'plannedMeterType',
   'customJobNumber',
@@ -176,6 +180,7 @@ export type CanonicalInstallation = {
   clientName: string;
   maas?: boolean | null;
   serviceType?: string | null;
+  existingDeviceId?: string | null;
   meteringSolutionType?: string | null;
   plannedMeterType?: string | null;
   customJobNumber?: string | null;
@@ -357,6 +362,7 @@ export type MeterDevice = {
   customName: string;
   deviceFamily: 'WATTWATCHERS' | 'OTHER';
   deviceModel: 'A3RM' | 'A6M' | 'OTHER';
+  lifecycleState?: 'PLANNED' | 'ACTIVE' | 'INACTIVE';
   customManufacturerName?: string | null;
   customModelName?: string | null;
   deviceNumber?: string | null;
@@ -1019,15 +1025,42 @@ export function isValidInstallationSiteCode(value: string): boolean {
     && INSTALLATION_SITE_CODE_PATTERN.test(value);
 }
 
-export function deriveZoneCode(zoneName: string): string {
-  const code = zoneName
+function shortZonePrefix(zoneName: string): string {
+  return zoneName
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 3) || 'ZON';
+}
+
+function shortSiteSegment(siteCode: string): string {
+  return siteCode
     .normalize('NFKD')
     .toUpperCase()
     .replace(/[^A-Z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
-    .slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH)
+    .slice(0, 8)
+    .replace(/-+$/g, '') || 'SITE';
+}
+
+export function deriveZoneCode(
+  zoneName: string,
+  siteCode = 'SITE',
+  ordinal = 1,
+): string {
+  if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal >= 36 ** 2) {
+    throw new CanonicalInputError('Zone short-code sequence must fit two base-36 characters');
+  }
+  const prefix = shortZonePrefix(zoneName);
+  const suffix = ordinal.toString(36).toUpperCase().padStart(2, '0');
+  const availableSiteLength = INSTALLATION_ZONE_CODE_MAX_LENGTH
+    - prefix.length
+    - suffix.length
+    - 2;
+  const site = shortSiteSegment(siteCode)
+    .slice(0, availableSiteLength)
     .replace(/-+$/g, '');
-  return code || 'ZONE';
+  return `${prefix}-${site}-${suffix}`;
 }
 
 export function isValidInstallationZoneCode(value: string): boolean {
@@ -1036,14 +1069,12 @@ export function isValidInstallationZoneCode(value: string): boolean {
     && INSTALLATION_ZONE_CODE_PATTERN.test(value);
 }
 
-function nextAvailableZoneCode(base: string, used: Set<string>): string {
-  if (!used.has(base)) return base;
-  for (let ordinal = 2; ; ordinal += 1) {
-    const suffix = `-${ordinal}`;
-    const candidate = `${base.slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH - suffix.length)
-      .replace(/-+$/g, '')}${suffix}`;
+function nextAvailableZoneCode(zoneName: string, siteCode: string, used: Set<string>): string {
+  for (let ordinal = 1; ordinal < 36 ** 2; ordinal += 1) {
+    const candidate = deriveZoneCode(zoneName, siteCode, ordinal);
     if (!used.has(candidate)) return candidate;
   }
+  throw new CanonicalInputError('No two-character zone short codes remain for this site');
 }
 
 function defaultMeterCustomName(input: {
@@ -1139,6 +1170,7 @@ export function projectCanonicalOptionalDefaults(
   }));
   tree.meterDevices = tree.meterDevices.map((meter) => ({
     ...meter,
+    lifecycleState: meter.lifecycleState ?? 'ACTIVE',
     customName: meter.customName.trim() || defaultMeterCustomName({
       deviceModel: meter.deviceModel,
       customManufacturerName: meter.customManufacturerName,
@@ -1280,6 +1312,11 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
       item,
       'serviceType',
       INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
+    ),
+    ...nullableBoundedTextProperty(
+      item,
+      'existingDeviceId',
+      INSTALLATION_METADATA_TEXT_LIMITS.existingDeviceId,
     ),
     ...nullableBoundedTextProperty(
       item,
@@ -1490,11 +1527,17 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
     explicitZoneCodes.add(zone.requestedZoneCode);
   }
   const usedZoneCodes = new Set(explicitZoneCodes);
+  const generatedZoneCodes = new Map<string, string>();
+  for (const zone of [...zoneInputs]
+    .filter((item) => !item.requestedZoneCode)
+    .sort((left, right) => left.id.localeCompare(right.id))) {
+    const zoneCode = nextAvailableZoneCode(zone.zoneName, installation.siteCode, usedZoneCodes);
+    usedZoneCodes.add(zoneCode);
+    generatedZoneCodes.set(zone.id, zoneCode);
+  }
   const zones: CanonicalZone[] = zoneInputs.map(({ requestedZoneCode, ...zone }) => {
     if (requestedZoneCode) return { ...zone, zoneCode: requestedZoneCode };
-    const zoneCode = nextAvailableZoneCode(deriveZoneCode(zone.zoneName), usedZoneCodes);
-    usedZoneCodes.add(zoneCode);
-    return { ...zone, zoneCode };
+    return { ...zone, zoneCode: generatedZoneCodes.get(zone.id)! };
   });
 
   const electricalAssets = uniqueById(array(input.electricalAssets, 'electricalAssets').map((value, index) => {
@@ -1580,6 +1623,13 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       customManufacturerName,
       customModelName,
     });
+    const lifecycleState = item.lifecycleState == null
+      ? undefined
+      : enumValue(
+          item.lifecycleState,
+          ['PLANNED', 'ACTIVE', 'INACTIVE'] as const,
+          `meterDevices[${index}].lifecycleState`,
+        );
     const channels = uniqueById(array(item.channels, `meterDevices[${index}].channels`).map((value, channelIndex) => {
       const channel = record(value, `meterDevices[${index}].channels[${channelIndex}]`);
       const ordinal = integer(channel.ordinal, 0, `meterDevices[${index}].channels[${channelIndex}].ordinal`);
@@ -1621,6 +1671,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       customName,
       deviceFamily: enumValue(item.deviceFamily, ['WATTWATCHERS', 'OTHER'] as const, 'meter.deviceFamily'),
       deviceModel,
+      ...(lifecycleState ? { lifecycleState } : {}),
       customManufacturerName,
       customModelName,
       deviceNumber: optionalText(item.deviceNumber),
@@ -1898,6 +1949,197 @@ export function assertStructurallySafeTree(tree: CanonicalInstallationTree): voi
     if (form.supersedesId && (form.supersedesId === form.id || !formIds.has(form.supersedesId))) {
       throw new CanonicalInputError(`Form ${form.id} has an invalid supersedesId`);
     }
+  }
+}
+
+type AssetMeteringWriteProblem = {
+  assetId: string;
+  detail: string;
+};
+
+/**
+ * Return the first strict problem for an explicitly claimed direct asset
+ * measurement. UNMETERED/TBC remain authoring states and intentionally do not
+ * make optional meter or channel capture mandatory.
+ */
+function assetMeteringWriteProblem(
+  tree: CanonicalInstallationTree,
+  asset: CanonicalSiteAsset,
+): AssetMeteringWriteProblem | null {
+  if (asset.meteringState.kind !== 'METERED') return null;
+  const problem = (detail: string): AssetMeteringWriteProblem => ({
+    assetId: asset.id,
+    detail: `Site asset ${asset.id} ${detail}`,
+  });
+  const declaredIds = asset.meteringState.measurementAssignmentIds;
+  const uniqueDeclaredIds = new Set(declaredIds);
+  const directAssignments = tree.measurementAssignments.filter((assignment) => (
+    assignment.target.kind === 'SITE_ASSET'
+    && assignment.target.siteAssetId === asset.id
+  ));
+  if (
+    declaredIds.length !== 1
+    || uniqueDeclaredIds.size !== 1
+    || directAssignments.length !== 1
+    || directAssignments[0]?.id !== declaredIds[0]
+  ) {
+    return problem('must name exactly one assignment that directly targets this asset.');
+  }
+  if (!asset.meterPresent) {
+    return problem('must retain the legacy meter-present projection for its direct assignment.');
+  }
+  const assignment = directAssignments[0]!;
+  if (assignment.status !== 'CONFIRMED') {
+    return problem('must use a confirmed measurement assignment.');
+  }
+  const meter = tree.meterDevices.find((candidate) => candidate.id === assignment.meterId);
+  if (!meter) return problem('references an unavailable metering device.');
+  if ((meter.lifecycleState ?? 'ACTIVE') !== 'ACTIVE') {
+    return problem(`references meter ${meter.id}, which is not active.`);
+  }
+  const modelFamilyValid = meter.deviceFamily === 'WATTWATCHERS'
+    ? meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M'
+    : meter.deviceModel === 'OTHER';
+  if (!modelFamilyValid) {
+    return problem(`references meter ${meter.id} with an incoherent device family and model.`);
+  }
+  const expectedMeterChannels = meter.deviceModel === 'A3RM'
+    ? 3
+    : meter.deviceModel === 'A6M'
+      ? 6
+      : null;
+  if (expectedMeterChannels !== null) {
+    const ordinals = meter.channels
+      .map((channel) => channel.ordinal)
+      .sort((left, right) => left - right);
+    const expectedOrdinals = Array.from(
+      { length: expectedMeterChannels },
+      (_, index) => index + 1,
+    );
+    if (
+      meter.channels.length !== expectedMeterChannels
+      || ordinals.some((ordinal, index) => ordinal !== expectedOrdinals[index])
+    ) {
+      return problem(
+        `references ${meter.deviceModel} meter ${meter.id} without its exact ${expectedMeterChannels}-channel topology.`,
+      );
+    }
+  }
+  if (
+    asset.electricalSource.kind !== 'BOARD'
+    || asset.electricalSource.boardId !== meter.installedOnBoardId
+  ) {
+    return problem('must use a meter installed on its immediate supplying board.');
+  }
+  const uniqueChannelIds = new Set(assignment.channelIds);
+  const expectedAssignmentChannels = assignment.phaseMode === 'SINGLE_PHASE'
+    ? 1
+    : assignment.phaseMode === 'THREE_PHASE'
+      ? 3
+      : null;
+  if (
+    uniqueChannelIds.size === 0
+    || uniqueChannelIds.size !== assignment.channelIds.length
+    || (
+      expectedAssignmentChannels !== null
+      && uniqueChannelIds.size !== expectedAssignmentChannels
+    )
+  ) {
+    return problem('has a channel group that does not match its phase mode.');
+  }
+  const channelById = new Map(meter.channels.map((channel) => [channel.id, channel]));
+  if ([...uniqueChannelIds].some((channelId) => channelById.get(channelId)?.purpose !== 'SUB_CIRCUIT')) {
+    return problem('may use only captured SUB_CIRCUIT channels from the selected meter.');
+  }
+  if (
+    meter.deviceFamily === 'OTHER'
+    && [...uniqueChannelIds].some((channelId) => {
+      const capabilities = channelById.get(channelId)?.capabilities;
+      const entries = Object.entries(capabilities ?? {});
+      return entries.length === 0 || entries.some(([key, value]) => (
+        !key.trim()
+        || value === null
+        || value === undefined
+        || (typeof value === 'string' && !value.trim())
+      ));
+    })
+  ) {
+    return problem('may use a custom-meter channel only after its capabilities are configured.');
+  }
+  return null;
+}
+
+function assetMeteringRelationshipFingerprint(
+  tree: CanonicalInstallationTree,
+  assetId: string,
+): string | null {
+  const asset = tree.siteAssets.find((candidate) => candidate.id === assetId);
+  if (!asset) return null;
+  const declaredIds = asset.meteringState.kind === 'METERED'
+    ? asset.meteringState.measurementAssignmentIds
+    : [];
+  const relationshipAssignments = tree.measurementAssignments.filter((assignment) => (
+    declaredIds.includes(assignment.id)
+    || (assignment.target.kind === 'SITE_ASSET' && assignment.target.siteAssetId === asset.id)
+  ));
+  const relationshipMeterIds = new Set(relationshipAssignments.map((assignment) => assignment.meterId));
+  return stableStringify({
+    electricalSource: asset.electricalSource,
+    meteringState: asset.meteringState.kind === 'METERED'
+      ? {
+          kind: 'METERED',
+          measurementAssignmentIds: [...asset.meteringState.measurementAssignmentIds].sort(),
+        }
+      : asset.meteringState,
+    meterPresent: asset.meterPresent,
+    assignments: relationshipAssignments.map((assignment) => ({
+      id: assignment.id,
+      meterId: assignment.meterId,
+      channelIds: [...assignment.channelIds].sort(),
+      phaseMode: assignment.phaseMode,
+      target: assignment.target,
+      direction: assignment.direction,
+      status: assignment.status,
+    })).sort((left, right) => left.id.localeCompare(right.id)),
+    meters: tree.meterDevices.filter((meter) => relationshipMeterIds.has(meter.id)).map((meter) => ({
+      id: meter.id,
+      installedOnBoardId: meter.installedOnBoardId,
+      deviceFamily: meter.deviceFamily,
+      deviceModel: meter.deviceModel,
+      lifecycleState: meter.lifecycleState ?? 'ACTIVE',
+      channels: meter.channels.map((channel) => ({
+        id: channel.id,
+        ordinal: channel.ordinal,
+        purpose: channel.purpose,
+        capabilities: channel.capabilities,
+      })).sort((left, right) => left.id.localeCompare(right.id)),
+    })).sort((left, right) => left.id.localeCompare(right.id)),
+  });
+}
+
+/**
+ * Enforce the concrete choice behind "How is this asset metered?" at the
+ * canonical write boundary. An unchanged historical invalid relationship may
+ * round-trip so installed clients can edit unrelated fields; any new or
+ * changed METERED claim must resolve to the current meter/channel topology.
+ */
+export function assertCanonicalAssetMeteringWrite(input: {
+  incoming: CanonicalInstallationTree;
+  existing?: CanonicalInstallationTree;
+}): void {
+  for (const asset of [...input.incoming.siteAssets].sort((left, right) => left.id.localeCompare(right.id))) {
+    const problem = assetMeteringWriteProblem(input.incoming, asset);
+    if (!problem) continue;
+    const existingAsset = input.existing?.siteAssets.find((candidate) => candidate.id === asset.id);
+    const unchangedHistoricalRelationship = Boolean(
+      input.existing
+      && existingAsset
+      && assetMeteringWriteProblem(input.existing, existingAsset)
+      && assetMeteringRelationshipFingerprint(input.incoming, asset.id)
+        === assetMeteringRelationshipFingerprint(input.existing, asset.id)
+    );
+    if (unchangedHistoricalRelationship) continue;
+    throw new CanonicalInputError(problem.detail, 'asset_metering_invalid');
   }
 }
 
@@ -2214,6 +2456,9 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
       }
       const allowedRatings = meter.deviceModel === 'A3RM'
         ? new Set([
+            '3000A – 9cm',
+            '3000A – 20cm',
+            '3000A – 29cm',
             '10cm-200A',
             '10cm-333mV',
             '20cm-3000A',
@@ -2226,17 +2471,17 @@ function meterIssues(tree: CanonicalInstallationTree): ReadinessIssue[] {
           ])
         : meter.deviceModel === 'A6M'
           ? new Set([
+              '60A',
+              '120A',
+              '200A',
+              '400A',
+              '600A',
               'CT-60A',
               'CT-120A',
               'CT-250A',
               'CT-400A',
               'CT-600A',
               'Not Used',
-              '60A',
-              '120A',
-              '200A',
-              '400A',
-              '600A',
             ])
           : null;
       if (
@@ -2894,6 +3139,7 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       clientName: ordered.installation.clientName,
       maas: ordered.installation.maas ?? null,
       serviceType: ordered.installation.serviceType ?? null,
+      existingDeviceId: ordered.installation.existingDeviceId ?? null,
       meteringSolutionType: ordered.installation.meteringSolutionType ?? null,
       plannedMeterType: ordered.installation.plannedMeterType ?? null,
       customJobNumber: ordered.installation.customJobNumber ?? null,

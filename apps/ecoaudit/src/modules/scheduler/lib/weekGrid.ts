@@ -1,7 +1,7 @@
 /** Week time-grid layout helpers (local timezone). */
 
-export const GRID_HOUR_START = 5;
-export const GRID_HOUR_END = 21; // exclusive end display through 20:00–21:00
+export const GRID_HOUR_START = 0;
+export const GRID_HOUR_END = 24;
 export const HOUR_HEIGHT_PX = 56;
 
 export type TimedGridItem = {

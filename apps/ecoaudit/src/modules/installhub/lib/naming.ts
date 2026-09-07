@@ -1,7 +1,6 @@
 import type {
   DisplayCodeMetadata,
   InstallationTree,
-  Zone,
 } from '@/modules/installhub/types/domain';
 
 export const ZONE_CODE_MAX_LENGTH = 16;
@@ -32,14 +31,37 @@ export function isValidZoneCode(value: string): boolean {
     && ZONE_CODE_PATTERN.test(value);
 }
 
-function uniqueDerivedZoneCode(baseValue: string, used: Set<string>): string {
-  const base = normalizedZoneCode(baseValue);
-  if (!used.has(base)) return base;
-  for (let ordinal = 2; ; ordinal += 1) {
-    const suffix = `-${ordinal}`;
-    const candidate = `${base.slice(0, ZONE_CODE_MAX_LENGTH - suffix.length).replace(/-+$/g, '')}${suffix}`;
+function zoneNameSegment(value: string): string {
+  return value
+    .normalize('NFKD')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 3)
+    || 'ZON';
+}
+
+function zoneSiteSegment(tree: Pick<InstallationTree, 'installation'>): string {
+  const explicit = identifierSegment(tree.installation.siteCode || '', 8);
+  if (explicit) return explicit;
+  const words = tree.installation.siteName.match(/[A-Za-z0-9]+/g) || [];
+  return words.map((word) => word[0]).join('').toUpperCase().slice(0, 8) || 'SITE';
+}
+
+function zoneSequence(ordinal: number): string {
+  return ordinal.toString(36).toUpperCase().padStart(2, '0');
+}
+
+function uniqueDerivedZoneCode(
+  tree: Pick<InstallationTree, 'installation'>,
+  zoneName: string,
+  used: Set<string>,
+): string {
+  const base = `${zoneNameSegment(zoneName)}-${zoneSiteSegment(tree)}`;
+  for (let ordinal = 1; ordinal < 36 ** 2; ordinal += 1) {
+    const candidate = `${base}-${zoneSequence(ordinal)}`;
     if (!used.has(candidate)) return candidate;
   }
+  throw new Error('No two-character zone sequence remains for this zone and site code.');
 }
 
 /**
@@ -47,19 +69,19 @@ function uniqueDerivedZoneCode(baseValue: string, used: Set<string>): string {
  * the canonical API. Explicit valid codes are reserved before derivation.
  */
 export function resolvedZoneCodes(
-  zones: readonly Pick<Zone, 'id' | 'zoneName' | 'zoneCode'>[],
+  tree: Pick<InstallationTree, 'installation' | 'zones'>,
 ): Map<string, string> {
   const result = new Map<string, string>();
   const used = new Set<string>();
-  for (const zone of zones) {
+  for (const zone of tree.zones) {
     const explicit = zone.zoneCode?.trim().toUpperCase() || '';
     if (!isValidZoneCode(explicit) || used.has(explicit)) continue;
     result.set(zone.id, explicit);
     used.add(explicit);
   }
-  for (const zone of [...zones].sort((left, right) => left.id.localeCompare(right.id))) {
+  for (const zone of [...tree.zones].sort((left, right) => left.id.localeCompare(right.id))) {
     if (result.has(zone.id)) continue;
-    const derived = uniqueDerivedZoneCode(zone.zoneName, used);
+    const derived = uniqueDerivedZoneCode(tree, zone.zoneName, used);
     result.set(zone.id, derived);
     used.add(derived);
   }
@@ -67,28 +89,28 @@ export function resolvedZoneCodes(
 }
 
 export function availableZoneCode(
-  tree: Pick<InstallationTree, 'zones'>,
+  tree: Pick<InstallationTree, 'installation' | 'zones'>,
   zoneName: string,
   excludeZoneId?: string,
 ): string {
-  const resolved = resolvedZoneCodes(tree.zones);
+  const resolved = resolvedZoneCodes(tree);
   const used = new Set(
     [...resolved.entries()]
       .filter(([id]) => id !== excludeZoneId)
       .map(([, code]) => code),
   );
-  return uniqueDerivedZoneCode(zoneName, used);
+  return uniqueDerivedZoneCode(tree, zoneName, used);
 }
 
 export function isZoneCodeAvailable(
-  tree: Pick<InstallationTree, 'zones'>,
+  tree: Pick<InstallationTree, 'installation' | 'zones'>,
   zoneCode: string,
   excludeZoneId?: string,
 ): boolean {
   const candidate = zoneCode.trim().toUpperCase();
   if (!isValidZoneCode(candidate)) return false;
   const otherZones = tree.zones.filter((zone) => zone.id !== excludeZoneId);
-  return ![...resolvedZoneCodes(otherZones).values()].includes(candidate);
+  return ![...resolvedZoneCodes({ installation: tree.installation, zones: otherZones }).values()].includes(candidate);
 }
 
 export function normalizedCustomName(value: string, fallback: string): string {
@@ -181,7 +203,7 @@ function largestSequenceForZone(
   zoneId: string,
   excludeId?: string,
 ): number {
-  const zoneCode = resolvedZoneCodes(tree.zones).get(zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(tree).get(zoneId) || 'ZONE';
   const prefix = `${sitePrefix(tree)}-${zoneCode}`;
   return displayedCodes(tree, excludeId).reduce(
     (largest, value) => Math.max(
@@ -203,7 +225,7 @@ function generatedWithSequence(
   },
   sequence: number,
 ): string {
-  const zoneCode = resolvedZoneCodes(tree.zones).get(input.zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(tree).get(input.zoneId) || 'ZONE';
   const prefix = `${sitePrefix(tree)}-${zoneCode}`;
   const ordinal = String(sequence).padStart(2, '0');
   const fixedPrefix = `${prefix}-${ordinal}-`;
@@ -280,7 +302,7 @@ export function provisionalDisplayCodeV3(
     return input.current;
   }
   const currentValue = input.current?.generatedValue || input.current?.value || '';
-  const zoneCode = resolvedZoneCodes(tree.zones).get(input.zoneId) || 'ZONE';
+  const zoneCode = resolvedZoneCodes(tree).get(input.zoneId) || 'ZONE';
   const currentPrefix = `${sitePrefix(tree)}-${zoneCode}`;
   const previousPrefix = input.previousZoneCode
     ? `${sitePrefix(tree)}-${normalizedZoneCode(input.previousZoneCode)}`

@@ -195,7 +195,7 @@ test('WW installation presents Base44 choices and accepts persisted legacy choic
     'device.type': 'A3RM',
   });
   assert.doesNotThrow(() => validateInstallHubFormContract(a3rm));
-  assert.equal(a3rm.answers['channel.1.rating'], '10cm-200A');
+  assert.equal(a3rm.answers['channel.1.rating'], '3000A – 9cm');
   assert.equal(a3rm.answers['channel.4.load'], undefined);
 
   a3rm.answers['channel.1.rating'] = '3000A - 9cm';
@@ -211,7 +211,7 @@ test('WW installation presents Base44 choices and accepts persisted legacy choic
   const a6m = generatedCompletedFixture('ww-installation', {
     'device.type': 'A6M',
   });
-  assert.equal(a6m.answers['channel.1.rating'], 'CT-60A');
+  assert.equal(a6m.answers['channel.1.rating'], '60A');
   assert.doesNotThrow(() => validateInstallHubFormContract(a6m));
   a6m.answers['channel.1.rating'] = '60A';
   assert.doesNotThrow(() => validateInstallHubFormContract(a6m));
@@ -301,12 +301,32 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
             key: 'device.type',
             values: {
               A3RM: [
+                '3000A – 9cm',
+                '3000A – 20cm',
+                '3000A – 29cm',
+              ],
+              A6M: [
+                '60A',
+                '120A',
+                '200A',
+                '400A',
+                '600A',
+              ],
+            },
+          },
+          legacyOptionsWhen: {
+            key: 'device.type',
+            values: {
+              A3RM: [
                 '10cm-200A',
                 '10cm-333mV',
                 '20cm-3000A',
                 '30cm-3000A',
                 '45cm-3000A',
                 'Not Used',
+                '3000A - 9cm',
+                '3000A - 20cm',
+                '3000A - 29cm',
               ],
               A6M: [
                 'CT-60A',
@@ -316,13 +336,6 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
                 'CT-600A',
                 'Not Used',
               ],
-            },
-          },
-          legacyOptionsWhen: {
-            key: 'device.type',
-            values: {
-              A3RM: ['3000A - 9cm', '3000A - 20cm', '3000A - 29cm'],
-              A6M: ['60A', '120A', '200A', '400A', '600A'],
             },
           },
           showWhen: usedLoadVisible,
@@ -344,7 +357,7 @@ test('WW channel contract accepts the canonical purpose and conditional load sha
   }));
   assert.equal(
     createHash('sha256').update(canonicalJson(channelContract)).digest('hex'),
-    'fde8e7b441b6607221a658fba6dfce3ab49e76dda1b03338d5af539d3d0c31b3',
+    '4eb36f234317b45849d4e4e1e134188719fdccf272b60732b0469e2a6e744830',
   );
 
   assert.doesNotThrow(() => validateInstallHubFormContract({

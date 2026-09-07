@@ -77,10 +77,11 @@ or deep-link a notification tap into the work record. A normal app launch/list
 and subsequent API/sync response remain authoritative for access.
 
 For an active linked Field App installation, `/v1/installhub/sync/pull` also
-adds `scheduleEventId`, `scheduledStartAt`, `scheduledEndAt`, `deadlineAt`, and
-`scheduleStatus` to the returned installation object. These are additive,
-read-only Scheduler projections used by the mobile job list and pre-start
-summary; they are not canonical installation fields and must not be pushed back.
+adds `scheduleEventId`, `scheduleTitle`, `scheduledStartAt`, `scheduledEndAt`,
+`deadlineAt`, and `scheduleStatus` to the returned installation object. These
+are additive, read-only Scheduler projections used by the mobile job list and
+pre-start summary; they are not canonical installation fields and must not be
+pushed back.
 Every Scheduler mutation that changes the linked installation projection or one
 of its projected job-detail fields advances `ih_installations.tree_revision`
 and `updated_at` in the same transaction so installed clients never observe
@@ -326,7 +327,7 @@ installed mobile clients and their accepted aliases.
 
 The installation object also carries additive job metadata for Scheduler and
 Field App Complete: nullable `customerName`, `maas`, `serviceType`,
-`meteringSolutionType`, `plannedMeterType`, structured Australian site fields,
+`existingDeviceId`, `meteringSolutionType`, `plannedMeterType`, structured Australian site fields,
 site-contact name/phone/email, `customJobNumber`, `fergusJobNumber`, `quoteNumber`, `jobComments`,
 `accessInformation`, `warrantyDevice`, `monitoringInstalled`,
 `hardwareInstalled`, `solarCapacityKw`, `additionalMonitoringRequired`, and
@@ -340,10 +341,14 @@ between 0 and 1,000,000 inclusive.
 migration/import fields. Current Scheduler and Field App authoring UIs do not
 request or write them. Scheduler also omits `customJobNumber` and relies on the
 server-generated shared Job ID; installed clients may continue to exchange the
-legacy nullable field. Scheduler creation requests NMI, MaaS, scope, and
-metering type, but does not request job-scope comments; those optional values
-remain available to Field App installation authoring and installed-client
-compatibility.
+legacy nullable field. Scheduler creation requests NMI, MaaS, scope, metering
+type, and job-scope comments. Selecting `M2 - Faults / COMMS fault` also requires
+at least one value in `existingDeviceIds`; the API trims and case-insensitively
+deduplicates up to 50 meter numbers. `existingDeviceId` remains accepted for
+rolling single-meter clients. The canonical installation stores the normalized
+plan as newline-delimited `existingDeviceId`, so older clients preserve it and
+new Scheduler, portal, and iOS clients can round-trip the full list. Other scope
+values reject either replacement-meter input.
 `serviceType` remains the compatibility projection of the shared Field job
 detail `workType` for installed clients.
 
@@ -353,14 +358,21 @@ and `completedByUserId`. Scheduler owns scheduled time and scheduler actor; for
 compatibility it projects the linked event's local calendar date and resolved
 assignee display name into legacy `auditDate` and `inspectorName` fields. The
 default grid-supply row owns the nullable, trimmed, maximum-100-character
-electricity NMI, while meter/device entities
-and form evidence own actual meter type and existing/new device identifiers;
+electricity NMI, while meter/device entities and form evidence own installed
+meter type and replacement outcomes. The replacement-meter list is Scheduler
+planning context for a COMMS fault and does not replace the form's captured
+device serial. Saved-site Scheduler selection suggests meters from the latest
+Field installation, but manual meter numbers remain allowed;
 `plannedMeterType` is planning metadata only. Contact and access information is
 restricted operational detail and must not be copied into broad list labels,
 notifications, invoice snapshots, or other unrelated exports.
 
 New canonical-v2 zones carry a persisted `zoneCode` (uppercase letters,
-numbers, and hyphens; maximum 16 characters). Newly unclaimed records receive
+numbers, and hyphens; maximum 16 characters). New or previously unclaimed zones
+derive it as `ZZZ-SITE-SS`: the first three alphanumeric zone-name characters,
+the normalized installation site code (maximum eight characters), and a
+two-character uppercase base-36 sequence such as `01` or `0A`. Existing saved
+zone codes remain unchanged. Newly unclaimed records receive
 rule-4 identities. Boards use `INSTALLATION-ZONE-NN-TYPE-SWITCHBOARD_NAME`; site
 assets and meters use `INSTALLATION-ZONE-NN-TYPE-HUMAN_NAME`, without repeating
 the type when the normalized human name already contains it. Identities are
@@ -504,11 +516,10 @@ channel business values are optional. Supplied values retain their serialized
 types and channel object shape, but no companion business answer becomes
 mandatory. The UI may clear hidden load, rating, description, evidence, and
 commissioning values for `Spare / unused`. New A3RM records present
-`10cm-200A`, `10cm-333mV`, `20cm-3000A`, `30cm-3000A`, `45cm-3000A`, and
-`Not Used`; new A6M records present `CT-60A`, `CT-120A`, `CT-250A`,
-`CT-400A`, `CT-600A`, and `Not Used`. Persisted legacy sensor strings remain
-accepted and visible for installed-client compatibility but are not offered for
-new choices. Current editors clear hidden channel 4-6 values when A3RM is
+`3000A – 9cm`, `3000A – 20cm`, and `3000A – 29cm`; new A6M records present
+`60A`, `120A`, `200A`, `400A`, and `600A`. Persisted legacy sensor strings remain
+accepted and readable for installed-client compatibility but are not included in
+current dropdown choices. Current editors clear hidden channel 4-6 values when A3RM is
 selected; historical hidden observations do not become readiness issues.
 
 Load-only and other accepted legacy answer shapes remain syncable through a
@@ -740,11 +751,18 @@ general_electricity:      photos[], extra_photos[]
 
 Selecting an existing canonical site in Scheduler fills the editable client,
 site, address, contact, and access fields. Creating the job then produces a
-fresh Draft product record linked to that saved site. It does not copy an
-earlier audit, assessment, installation tree, device, form, photo, job scope,
-NMI, or comment. If the user edits the address, the saved-site binding is
-cleared and the new or matching address is linked without removing the original
-saved address.
+fresh Draft product record linked to that saved site. Only an explicitly
+existing-site `M2 - Faults / COMMS fault` Field job copies the latest available,
+non-deleted Field installation topology for that site: zones, switchboards, site
+assets, devices, channels, and electrical mappings. It does not copy completed
+forms, photos, job scope, NMI, or comments. Meter-number suggestions for that M2
+job come from the same copied installation and include only active devices (a
+missing lifecycle on a historical device is treated as active); inactive,
+planned, deleted, blank, and case-insensitive duplicate serials are omitted.
+Other Field work types and new-site M2 work start with a fresh installation
+workspace. If the user edits the address, the saved-site binding is cleared and
+the new or matching address is linked without removing the original saved
+address.
 
 ---
 

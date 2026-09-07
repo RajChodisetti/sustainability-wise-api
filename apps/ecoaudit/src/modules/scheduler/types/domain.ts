@@ -117,6 +117,12 @@ export type SchedulerSiteOption = {
   siteContactPhone: string | null;
   siteContactEmail: string | null;
   accessInformation: string | null;
+  knownMeters?: Array<{
+    meterId: string;
+    serialNumber: string;
+    deviceNumber: string | null;
+    deviceModel: string;
+  }>;
   /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
   latestWorkType: null;
   /** @deprecated Always null; saved-site selection no longer exposes prior job data. */
@@ -175,6 +181,10 @@ export type CreateSchedulerDispatchInput = {
     customerName?: string | null;
     maas?: boolean | null;
     workType?: string | null;
+    /** @deprecated Rolling compatibility for clients that can select only one meter. */
+    existingDeviceId?: string | null;
+    /** Required multi-meter replacement plan for an M2 COMMS fault. */
+    existingDeviceIds?: string[];
     /** @deprecated Legacy dispatch compatibility only. */
     serviceType?: string | null;
     meteringSolutionType?: string | null;

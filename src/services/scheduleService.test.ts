@@ -13,9 +13,11 @@ import {
   parseDispatchJob,
   parseEstimatedDurationMinutes,
   randomFieldJobTitleSuffix,
+  replacementMeterNumbersFromDispatch,
   schedulerSitePrefillOption,
   scheduleUpdateRequiresAvailabilityCheck,
   scheduleUpdateRequiresActiveProduct,
+  shouldCopyExistingSiteFieldTopology,
   sortByDeadlineUrgency,
   validateDispatchJob,
 } from './scheduleService.js';
@@ -69,6 +71,7 @@ test('saved-site prefill suppresses prior job and revision metadata for rolling 
     latestJobId: null,
     latestSourceId: null,
     latestRevisionNumber: null,
+    knownMeters: [],
   });
 });
 
@@ -89,6 +92,81 @@ test('Field job titles retain a three-character A-Z/0-9 suffix', () => {
   );
   assert.equal(longTitle.length, 300);
   assert.match(longTitle, / - Q9X$/);
+});
+
+test('COMMS fault dispatch accepts multiple replacement meters and retains legacy single-meter input', () => {
+  const baseJob = {
+    clientName: 'Client Co',
+    siteName: 'North Site',
+    siteAddress: '1 Main Street',
+  };
+  assert.throws(
+    () => validateDispatchJob('installhub', {
+      ...baseJob,
+      workType: 'M2 - Faults / COMMS fault',
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingDeviceIds must contain at least one meter for a COMMS fault',
+  );
+  assert.doesNotThrow(() => validateDispatchJob('installhub', {
+    ...baseJob,
+    workType: 'M2 - Faults / COMMS fault',
+    existingDeviceId: 'WW-DEVICE-100',
+  }));
+  const maximumLengthItems = Array.from({ length: 50 }, (_, index) => (
+    `${String(index).padStart(3, '0')}${'X'.repeat(197)}`
+  ));
+  assert.equal(maximumLengthItems.every((item) => item.length === 200), true);
+  assert.throws(
+    () => replacementMeterNumbersFromDispatch({ existingDeviceIds: maximumLengthItems }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingDeviceIds must serialize to at most 10000 characters',
+  );
+  assert.deepEqual(replacementMeterNumbersFromDispatch({
+    existingDeviceIds: [' WW-DEVICE-100 ', 'ww-device-100', 'WW-DEVICE-200'],
+  }), ['WW-DEVICE-100', 'WW-DEVICE-200']);
+  assert.equal(replacementMeterNumbersFromDispatch({
+    existingDeviceIds: Array(50).fill('WW-DEVICE-100'),
+    existingDeviceId: 'ww-device-100',
+  }).length, 1);
+  assert.throws(
+    () => replacementMeterNumbersFromDispatch({
+      existingDeviceIds: Array.from({ length: 51 }, (_, index) => `WW-${index}`),
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingDeviceIds must contain at most 50 unique meter numbers',
+  );
+  assert.doesNotThrow(() => validateDispatchJob('installhub', {
+    ...baseJob,
+    workType: 'M2 - Faults / COMMS fault',
+    existingDeviceIds: ['WW-DEVICE-100', 'WW-DEVICE-200'],
+  }));
+  assert.throws(
+    () => validateDispatchJob('installhub', {
+      ...baseJob,
+      workType: 'M3 - Inspection',
+      existingDeviceId: 'WW-DEVICE-100',
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.existingDeviceIds are allowed only for a COMMS fault',
+  );
+});
+
+test('Field topology copy is limited to explicit existing-site M2 dispatches', () => {
+  assert.equal(shouldCopyExistingSiteFieldTopology({
+    siteMode: 'existing',
+    existingSiteId: 'site-1',
+    workType: 'M2 - Faults / COMMS fault',
+  }), true);
+  assert.equal(shouldCopyExistingSiteFieldTopology({
+    siteMode: 'existing',
+    existingSiteId: 'site-1',
+    workType: 'M1 - New install',
+  }), false);
+  assert.equal(shouldCopyExistingSiteFieldTopology({
+    siteMode: 'new',
+    workType: 'M2 - Faults / COMMS fault',
+  }), false);
 });
 
 test('sortByDeadlineUrgency puts overdue and soonest first; done last', () => {

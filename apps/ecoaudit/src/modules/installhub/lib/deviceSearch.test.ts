@@ -7,6 +7,7 @@ import {
 } from '@/modules/installhub/lib/model';
 import {
   createReplacementForm,
+  createPlannedReplacementForm,
   createDeviceCommissioningForm,
   deviceSearchRecords,
   filterDeviceSearchRecords,
@@ -101,6 +102,23 @@ test('device search retains the exact editable device name', () => {
   assert.equal(record.deviceDisplayName, 'MANUAL-ASSET-ID');
 });
 
+test('device search exposes active and legacy lifecycle rows but hides planned and inactive rows', () => {
+  const { tree, board } = fixture();
+  const legacy = structuredClone(board.meters[0]);
+  board.meters = [
+    legacy,
+    { ...structuredClone(legacy), id: 'meter-active', deviceId: 'ACTIVE-1', lifecycleState: 'ACTIVE' },
+    { ...structuredClone(legacy), id: 'meter-planned', deviceId: 'PLANNED-1', lifecycleState: 'PLANNED' },
+    { ...structuredClone(legacy), id: 'meter-inactive', deviceId: 'INACTIVE-1', lifecycleState: 'INACTIVE' },
+  ];
+  tree.meterDevices = undefined;
+
+  assert.deepEqual(
+    deviceSearchRecords([tree]).map((record) => record.meterId),
+    ['meter-active', 'meter-1'],
+  );
+});
+
 test('replace creates a preselected comms form with stable device context', () => {
   const { tree, zone, board } = fixture();
   const record = deviceSearchRecords([tree])[0];
@@ -114,6 +132,52 @@ test('replace creates a preselected comms form with stable device context', () =
   assert.equal(form.answers['existing.device_id'], 'SERIAL-42');
   assert.equal(form.answers['existing.device_number'], 'COMPAT-42');
   assert.equal(tree.formSubmissions.at(-1)?.id, form.id);
+});
+
+test('a manually planned M2 meter can start a guarded replacement without a canonical device', () => {
+  const { tree, board } = fixture();
+  tree.installation.serviceType = 'M2 - Faults / COMMS fault';
+  tree.installation.existingDeviceId = 'SERIAL-42\nMANUAL-99';
+  board.meters = [];
+  tree.meterDevices = [];
+
+  const form = createPlannedReplacementForm(tree, user, {
+    boardId: board.id,
+    deviceModel: 'A6M',
+    meterNumber: ' manual-99 ',
+  });
+
+  assert.equal(form.formType, 'comms-fault');
+  assert.equal(form.zoneId, board.zoneId);
+  assert.equal(form.boardId, board.id);
+  assert.equal(form.meterId, null);
+  assert.equal(form.answers['existing.device_type'], 'A6M');
+  assert.equal(form.answers['existing.device_id'], 'MANUAL-99');
+  assert.equal(form.answers['works.replace_device'], 'yes');
+});
+
+test('planned replacement refuses an unplanned number or a newly recorded device', () => {
+  const { tree, board } = fixture();
+  tree.installation.serviceType = 'M2 - Faults / COMMS fault';
+  tree.installation.existingDeviceId = 'MANUAL-99';
+
+  assert.throws(() => createPlannedReplacementForm(tree, user, {
+    boardId: board.id,
+    deviceModel: 'A3RM',
+    meterNumber: 'NOT-PLANNED',
+  }), /not in the current M2 replacement plan/);
+  assert.throws(() => createPlannedReplacementForm(tree, user, {
+    boardId: board.id,
+    deviceModel: 'A3RM',
+    meterNumber: 'SERIAL-42',
+  }), /not in the current M2 replacement plan/);
+
+  tree.installation.existingDeviceId = 'SERIAL-42';
+  assert.throws(() => createPlannedReplacementForm(tree, user, {
+    boardId: board.id,
+    deviceModel: 'A3RM',
+    meterNumber: 'SERIAL-42',
+  }), /now in the site data/);
 });
 
 test('replacement rejects device families unsupported by the comms-fault contract', () => {

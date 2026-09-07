@@ -13,7 +13,7 @@ import {
   ihSiteAssets,
   ihZones,
 } from '../../db/schema/installhub.js';
-import { photoRegistry, portalScheduleEvents } from '../../db/schema/shared.js';
+import { businessJobs, photoRegistry, portalScheduleEvents } from '../../db/schema/shared.js';
 import { mirrorStoredPhotoToOneDrive } from '../../onedrive/photoBackup.js';
 import { deleteOneDrivePath } from '../../onedrive/uploadSession.js';
 import { resolveSyncCreatedByUserId } from '../syncOwnership.js';
@@ -46,7 +46,7 @@ import {
 import {
   CanonicalInputError,
   INSTALLATION_METADATA_TEXT_LIMITS,
-  INSTALLATION_ZONE_CODE_MAX_LENGTH,
+  assertCanonicalAssetMeteringWrite,
   canonicalTreeMutationFingerprint,
   deriveSiteCode,
   deriveZoneCode,
@@ -131,6 +131,35 @@ function isoDate(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
 
+export type AssignedWorkScheduleProjection = {
+  eventId: string;
+  title: string;
+  scheduledStartAt: Date;
+  scheduledEndAt: Date | null;
+  deadlineAt: Date;
+  status: string;
+};
+
+/**
+ * Projects the active Scheduler record into the mobile assigned-work summary.
+ * These fields are read-only sync metadata, not canonical installation data.
+ */
+export function projectAssignedWorkScheduleSummary(
+  installation: Record<string, unknown>,
+  schedule: AssignedWorkScheduleProjection | undefined,
+): Record<string, unknown> {
+  if (!schedule) return installation;
+  return {
+    ...installation,
+    scheduleEventId: schedule.eventId,
+    scheduleTitle: schedule.title,
+    scheduledStartAt: schedule.scheduledStartAt.toISOString(),
+    scheduledEndAt: schedule.scheduledEndAt?.toISOString() ?? null,
+    deadlineAt: schedule.deadlineAt.toISOString(),
+    scheduleStatus: schedule.status,
+  };
+}
+
 export function parseInstallHubSyncStage(
   value: unknown,
 ): PushBody['syncStage'] {
@@ -182,6 +211,23 @@ function canonicalServerInteger(value: unknown, authoritativeValue: number): unk
     return authoritativeValue;
   }
   return value;
+}
+
+/**
+ * Rolling clients released before meter lifecycle capture omit this additive
+ * field. Preserve the server value for an existing meter so an old full-tree
+ * replay cannot silently reactivate a planned or inactive device. New meters
+ * retain the historical ACTIVE default.
+ */
+export function retainOmittedMeterLifecycleStates(
+  current: CanonicalInstallationTree,
+  incoming: CanonicalInstallationTree,
+): void {
+  const currentById = new Map(current.meterDevices.map((meter) => [meter.id, meter]));
+  for (const meter of incoming.meterDevices) {
+    if (meter.lifecycleState !== undefined) continue;
+    meter.lifecycleState = currentById.get(meter.id)?.lifecycleState ?? 'ACTIVE';
+  }
 }
 
 /**
@@ -245,7 +291,7 @@ export function prepareCanonicalInstallHubWrite(
       continue;
     }
     if (typeof zone.zoneName !== 'string' || !zone.zoneName.trim()) continue;
-    const zoneCode = nextLegacyZoneCode(deriveZoneCode(zone.zoneName), reservedZoneCodes);
+    const zoneCode = nextLegacyZoneCode(zone.zoneName, siteCode, reservedZoneCodes);
     reservedZoneCodes.add(zoneCode);
     generatedZoneCodes.set(zoneId, zoneCode);
   }
@@ -574,6 +620,14 @@ export async function rememberInstallHubClientSite(
     return { client: null, site: null };
   }
   const submittedSource = installHubSubmittedAddressSource(installation);
+  const [existingBusinessJob] = await executor.select({ title: businessJobs.title })
+    .from(businessJobs)
+    .where(and(
+      eq(businessJobs.sourceApp, 'installhub'),
+      eq(businessJobs.sourceType, 'installation'),
+      eq(businessJobs.sourceId, installation.id),
+    ))
+    .limit(1);
   const memory = await upsertClientSiteFromProductRecord(executor, {
     clientName: installation.clientName,
     selectedClientId: installation.clientId,
@@ -604,12 +658,13 @@ export async function rememberInstallHubClientSite(
       sourceType: 'installation',
       sourceId: installation.id,
       jobType: 'field',
-      title: `${installation.clientName} · ${installation.siteName}`,
+      title: existingBusinessJob?.title ?? `${installation.clientName} · ${installation.siteName}`,
       status: installation.status === 'Completed' ? 'done' : 'planned',
       createdByUserId: installation.createdByUserId ?? actorUserId,
       detail: {
         kind: 'field',
         workType: installation.serviceType ?? 'legacy_unclassified',
+        existingDeviceId: installation.existingDeviceId,
         maas: installation.maas,
         meteringSolutionType: installation.meteringSolutionType,
         plannedMeterType: installation.plannedMeterType,
@@ -705,6 +760,12 @@ export function installationValuesFromPayload(
       'serviceType',
       INSTALLATION_METADATA_TEXT_LIMITS.serviceType,
       existing?.serviceType,
+    ),
+    existingDeviceId: legacyNullableText(
+      payload,
+      'existingDeviceId',
+      INSTALLATION_METADATA_TEXT_LIMITS.existingDeviceId,
+      existing?.existingDeviceId,
     ),
     meteringSolutionType: legacyNullableText(
       payload,
@@ -913,19 +974,18 @@ export function parseInstallHubUploadBaseTreeRevision(
   return value;
 }
 
-function nextLegacyZoneCode(base: string, used: Set<string>): string {
-  if (!used.has(base)) return base;
-  for (let ordinal = 2; ; ordinal += 1) {
-    const suffix = `-${ordinal}`;
-    const candidate = `${base.slice(0, INSTALLATION_ZONE_CODE_MAX_LENGTH - suffix.length)
-      .replace(/-+$/g, '')}${suffix}`;
+function nextLegacyZoneCode(zoneName: string, siteCode: string, used: Set<string>): string {
+  for (let ordinal = 1; ordinal < 36 ** 2; ordinal += 1) {
+    const candidate = deriveZoneCode(zoneName, siteCode, ordinal);
     if (!used.has(candidate)) return candidate;
   }
+  throw badRequest('No two-character zone short codes remain for this site');
 }
 
 function zoneValues(
   item: JsonRecord,
   installationId: string,
+  siteCode: string,
   existing?: typeof ihZones.$inferSelect,
   allocatedZoneCode?: string,
 ) {
@@ -938,7 +998,7 @@ function zoneValues(
     updatedAt: dateOrNow(item.updatedAt),
     deletedAt: optionalDate(item.deletedAt),
     installationId,
-    zoneCode: existing?.zoneCode ?? allocatedZoneCode ?? deriveZoneCode(zoneName),
+    zoneCode: existing?.zoneCode ?? allocatedZoneCode ?? deriveZoneCode(zoneName, siteCode),
     zoneName,
     zoneDescription: optionalString(item, 'zoneDescription') ?? '',
     photos: jsonArray<string>(item.photos),
@@ -1697,6 +1757,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               currentTree.installation,
               incomingTree.installation,
             );
+            retainOmittedMeterLifecycleStates(currentTree, incomingTree);
             if (syncStage === 'metadata') {
               // Installed clients stage server-completed forms as Draft during
               // metadata sync. Restore those first so only a genuinely pending
@@ -1731,6 +1792,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               current: currentTree,
               incoming: incomingTree,
               transitions: replacementTransitions,
+            });
+            assertCanonicalAssetMeteringWrite({
+              incoming: incomingTree,
+              existing: currentTree,
             });
             replacementFromVersionNumber = replacementTransitions.length
               ? await ensureCanonicalRecordVersion({
@@ -1805,6 +1870,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               clientName: incomingTree.installation.clientName,
               maas: incomingTree.installation.maas ?? null,
               serviceType: incomingTree.installation.serviceType ?? null,
+              existingDeviceId: incomingTree.installation.existingDeviceId ?? null,
               meteringSolutionType: incomingTree.installation.meteringSolutionType ?? null,
               plannedMeterType: incomingTree.installation.plannedMeterType ?? null,
               customJobNumber: incomingTree.installation.customJobNumber ?? null,
@@ -1846,6 +1912,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             incomingTree.installation.recordVersionNumber =
               replacementFromVersionNumber ?? current.recordVersionNumber;
           } else {
+            assertCanonicalAssetMeteringWrite({ incoming: incomingTree });
             if (
               syncStage === 'metadata'
               && incomingTree.formSubmissions.some((form) => form.status === 'Completed')
@@ -1877,6 +1944,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               clientName: incomingTree.installation.clientName,
               maas: incomingTree.installation.maas ?? null,
               serviceType: incomingTree.installation.serviceType ?? null,
+              existingDeviceId: incomingTree.installation.existingDeviceId ?? null,
               meteringSolutionType: incomingTree.installation.meteringSolutionType ?? null,
               plannedMeterType: incomingTree.installation.plannedMeterType ?? null,
               customJobNumber: incomingTree.installation.customJobNumber ?? null,
@@ -2228,11 +2296,18 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         const allocatedZoneCode = existing
           ? existing.zoneCode
           : nextLegacyZoneCode(
-              deriveZoneCode(requiredString(item, 'zoneName')),
+              requiredString(item, 'zoneName'),
+              memoryTree.installation.siteCode,
               retainedZoneCodes,
             );
         retainedZoneCodes.add(allocatedZoneCode);
-        const values = zoneValues(item, installationId, existing, allocatedZoneCode);
+        const values = zoneValues(
+          item,
+          installationId,
+          memoryTree.installation.siteCode,
+          existing,
+          allocatedZoneCode,
+        );
         const { id: _id, ...update } = values;
         await tx.insert(ihZones).values(values).onConflictDoUpdate({ target: ihZones.id, set: update });
         serverIds.zoneIds[id] = values.serverId;
@@ -2366,6 +2441,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
       ? await db.select({
           eventId: portalScheduleEvents.id,
           sourceId: portalScheduleEvents.sourceId,
+          title: portalScheduleEvents.title,
           scheduledStartAt: portalScheduleEvents.scheduledStartAt,
           scheduledEndAt: portalScheduleEvents.scheduledEndAt,
           deadlineAt: portalScheduleEvents.deadlineAt,
@@ -2386,21 +2462,6 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         activeScheduleByInstallation.set(row.sourceId, row);
       }
     }
-    const withScheduleProjection = (
-      installation: Record<string, unknown>,
-      installationId: string,
-    ): Record<string, unknown> => {
-      const schedule = activeScheduleByInstallation.get(installationId);
-      if (!schedule) return installation;
-      return {
-        ...installation,
-        scheduleEventId: schedule.eventId,
-        scheduledStartAt: schedule.scheduledStartAt.toISOString(),
-        scheduledEndAt: schedule.scheduledEndAt?.toISOString() ?? null,
-        deadlineAt: schedule.deadlineAt.toISOString(),
-        scheduleStatus: schedule.status,
-      };
-    };
     const trees = await Promise.all(installations.map(async (installation) => {
       if (installation.treeSchemaVersion >= 2) {
         if (!config.installhubCanonicalV2Enabled) {
@@ -2411,9 +2472,9 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         const projected = projectLegacyInstallationTree(canonical);
         return {
           ...projected,
-          installation: withScheduleProjection(
+          installation: projectAssignedWorkScheduleSummary(
             projected.installation as unknown as Record<string, unknown>,
-            installation.id,
+            activeScheduleByInstallation.get(installation.id),
           ),
         };
       }
@@ -2421,7 +2482,10 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
         treeSchemaVersion: 1,
         treeRevision: installation.treeRevision,
         recordVersionNumber: installation.recordVersionNumber,
-        installation: withScheduleProjection(installation, installation.id),
+        installation: projectAssignedWorkScheduleSummary(
+          installation,
+          activeScheduleByInstallation.get(installation.id),
+        ),
         gridSupplies: [],
         zones: await db.select().from(ihZones).where(and(
           eq(ihZones.installationId, installation.id),

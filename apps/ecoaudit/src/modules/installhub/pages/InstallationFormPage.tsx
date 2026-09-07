@@ -37,11 +37,18 @@ import {
   TreeDraftNavigationGuard,
   requestTreeNavigation,
 } from '@/modules/installhub/components/WorkflowUi';
+import {
+  ReplacementMeterPicker,
+  replacementMeterNumbersFromStored,
+  storedReplacementMeterNumbers,
+} from '@/modules/installhub/components/ReplacementMeterPicker';
+import { meterDevices } from '@/modules/installhub/lib/workflow';
 
 type FormState = {
   clientName: string;
   maas: boolean | null;
   serviceType: string;
+  replacementMeterNumbers: string[];
   meteringSolutionType: string;
   customJobNumber: string;
   siteName: string;
@@ -71,6 +78,7 @@ const emptyForm: FormState = {
   clientName: '',
   maas: null,
   serviceType: '',
+  replacementMeterNumbers: [],
   meteringSolutionType: '',
   customJobNumber: '',
   siteName: '',
@@ -154,6 +162,7 @@ function formStateFromInstallation(installation: Installation): FormState {
     clientName: installation.clientName,
     maas: installation.maas ?? null,
     serviceType: installation.serviceType ?? '',
+    replacementMeterNumbers: replacementMeterNumbersFromStored(installation.existingDeviceId),
     meteringSolutionType: installation.meteringSolutionType ?? '',
     customJobNumber: installation.customJobNumber ?? '',
     siteName: installation.siteName,
@@ -295,6 +304,13 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       toast.error('Enter the Other metering type.');
       return;
     }
+    if (
+      form.serviceType === 'M2 - Faults / COMMS fault'
+      && form.replacementMeterNumbers.length === 0
+    ) {
+      toast.error('Select or add at least one meter to replace for an M2 job.');
+      return;
+    }
     const solarCapacityKw = form.solarCapacityKw.trim()
       ? Number(form.solarCapacityKw)
       : null;
@@ -309,10 +325,20 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       toast.error(`Solar capacity must be between 0 and ${MAX_SOLAR_CAPACITY_KW.toLocaleString('en-AU')} kW.`);
       return;
     }
+    let existingDeviceId: string | null = null;
+    try {
+      existingDeviceId = form.serviceType === 'M2 - Faults / COMMS fault'
+        ? storedReplacementMeterNumbers(form.replacementMeterNumbers)
+        : null;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Check the meters to replace.');
+      return;
+    }
     const normalizedForm = {
       clientName: form.clientName.trim(),
       maas: form.maas,
       serviceType: optionalText(form.serviceType),
+      existingDeviceId,
       meteringSolutionType: optionalText(form.meteringSolutionType),
       customJobNumber: optionalText(form.customJobNumber),
       siteName: form.siteName.trim() || 'Untitled installation',
@@ -519,6 +545,24 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
 
   const completedLocked = mode === 'edit' && treeQuery.data?.installation.status === 'Completed';
   const formLocked = busy || createRetryLocked || Boolean(acknowledgedCreateId) || completedLocked;
+  const knownReplacementMeters = treeQuery.data
+    ? (() => {
+        const seen = new Set<string>();
+        return meterDevices(treeQuery.data).flatMap((meter) => {
+          if (meter.lifecycleState && meter.lifecycleState !== 'ACTIVE') return [];
+          const serialNumber = meter.serialNumber.trim();
+          const key = serialNumber.toLocaleLowerCase('en-AU');
+          if (!serialNumber || seen.has(key)) return [];
+          seen.add(key);
+          return [{
+            meterId: meter.id,
+            serialNumber,
+            deviceNumber: meter.deviceNumber?.trim() || null,
+            deviceModel: meter.deviceModel,
+          }];
+        });
+      })()
+    : [];
 
   return (
     <div>
@@ -556,7 +600,7 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
         <Card className="max-w-5xl">
           <section aria-labelledby="installation-job-identity">
             <h2 id="installation-job-identity" className="text-base font-extrabold text-[var(--text)]">Job identity</h2>
-            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Keep the delivery client and end customer separate when they are different organisations.</p>
+            <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">Use the client name that should appear throughout the Field App, forms, and reports.</p>
             <div className="mt-2 grid gap-x-4 sm:grid-cols-2">
               <div>
                 <FieldLabel htmlFor="installation-client-name">Client name</FieldLabel>
@@ -627,7 +671,12 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
             <div className="mt-2 grid gap-x-4 sm:grid-cols-2 lg:grid-cols-3">
               <div>
                 <FieldLabel htmlFor="installation-service-type">Scope categorization</FieldLabel>
-                <Select id="installation-service-type" value={form.serviceType.startsWith(OTHER_WORK_TYPE) || (form.serviceType && !FIELD_WORK_TYPES.some(([value]) => value === form.serviceType)) ? OTHER_WORK_TYPE : form.serviceType} disabled={formLocked} onChange={(event) => updateForm({ serviceType: event.target.value })}>
+                <Select id="installation-service-type" value={form.serviceType.startsWith(OTHER_WORK_TYPE) || (form.serviceType && !FIELD_WORK_TYPES.some(([value]) => value === form.serviceType)) ? OTHER_WORK_TYPE : form.serviceType} disabled={formLocked} onChange={(event) => updateForm({
+                  serviceType: event.target.value,
+                  replacementMeterNumbers: event.target.value === 'M2 - Faults / COMMS fault'
+                    ? form.replacementMeterNumbers
+                    : [],
+                })}>
                   <option value="">Select scope</option>
                   {FIELD_WORK_TYPES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   <option value={OTHER_WORK_TYPE}>M5 — Other</option>
@@ -636,6 +685,15 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
                   <Input aria-label="Other scope" placeholder="Enter other scope" value={form.serviceType.startsWith(OTHER_WORK_TYPE) ? form.serviceType.slice(OTHER_WORK_TYPE.length) : form.serviceType} maxLength={115} disabled={formLocked} onChange={(event) => updateForm({ serviceType: `${OTHER_WORK_TYPE}${event.target.value}` })} />
                 ) : null}
               </div>
+              {form.serviceType === 'M2 - Faults / COMMS fault' ? (
+                <ReplacementMeterPicker
+                  id="installation-replacement-meters"
+                  value={form.replacementMeterNumbers}
+                  knownMeters={knownReplacementMeters}
+                  disabled={formLocked}
+                  onChange={(replacementMeterNumbers) => updateForm({ replacementMeterNumbers })}
+                />
+              ) : null}
               <div>
                 <FieldLabel htmlFor="installation-metering-solution">Metering type selection</FieldLabel>
                 <Select id="installation-metering-solution" value={METERING_TYPES.some((value) => value === form.meteringSolutionType) ? form.meteringSolutionType : form.meteringSolutionType ? OTHER_METERING_TYPE : ''} disabled={formLocked} onChange={(event) => updateForm({ meteringSolutionType: event.target.value })}>

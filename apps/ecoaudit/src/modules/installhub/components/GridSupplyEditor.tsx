@@ -154,7 +154,7 @@ export function GridSupplyEditor({
 
       <div className="mt-4 space-y-2">
         {supplies.map((supply) => (
-          <div key={supply.id} className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 sm:flex-row sm:items-center sm:justify-between">
+          <div id={`grid-supply-${supply.id}`} key={supply.id} className="scroll-mt-4 flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-bold text-[var(--text)]">{supply.id === soleDefaultId ? 'Incoming grid connection' : supply.name}</p>
@@ -164,7 +164,9 @@ export function GridSupplyEditor({
             </div>
             <div className="flex flex-wrap gap-2">
               {!supply.isDefault ? <Button variant="ghost" disabled={locked || busy} onClick={() => void makeDefault(supply.id)}>Set default</Button> : null}
-              <Button variant="secondary" disabled={locked || busy} onClick={() => { setError(''); setDraft(structuredClone(supply)); }}>Edit details</Button>
+              <Button variant="secondary" disabled={locked || busy} onClick={() => { setError(''); setDraft(structuredClone(supply)); }}>
+                {supply.nmi?.trim() ? 'Edit details' : 'Add NMI'}
+              </Button>
               {supplies.length > 1 ? <Button variant="ghost" className="text-[var(--red)]" disabled={locked || busy} onClick={() => setRemoveId(supply.id)}>Remove</Button> : null}
             </div>
           </div>

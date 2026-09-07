@@ -328,6 +328,7 @@ export async function copyFieldInstallationForJob(
     customerName: string | null;
     maas: boolean | null;
     workType: string | null;
+    existingDeviceId: string | null;
     meteringSolutionType: string | null;
     plannedMeterType: string | null;
     customJobNumber: string | null;
@@ -368,6 +369,7 @@ export async function copyFieldInstallationForJob(
     customerName: planning.customerName,
     maas: planning.maas,
     serviceType: planning.workType,
+    existingDeviceId: planning.existingDeviceId,
     meteringSolutionType: planning.meteringSolutionType,
     plannedMeterType: planning.plannedMeterType,
     customJobNumber: planning.customJobNumber,

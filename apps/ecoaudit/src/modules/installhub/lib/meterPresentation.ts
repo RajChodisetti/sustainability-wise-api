@@ -96,6 +96,35 @@ export function showsWattwatchersCommissioningSections(
   return deviceType === 'A3RM' || deviceType === 'A6M';
 }
 
+export function meterChannelWithModelValidSensor(
+  deviceType: Meter['deviceType'],
+  channel: WattwatcherChannel,
+): WattwatcherChannel {
+  if (deviceType === 'A6M') {
+    const next = { ...channel };
+    delete next.rogowskiSize;
+    return next;
+  }
+  if (deviceType === 'A3RM') {
+    const next = { ...channel };
+    delete next.ctRatio;
+    return next;
+  }
+  return channel;
+}
+
+export function meterChannelAfterDeviceTypeChange(
+  currentType: Meter['deviceType'],
+  nextType: Meter['deviceType'],
+  channel: WattwatcherChannel,
+): WattwatcherChannel {
+  if (currentType === nextType) return meterChannelWithModelValidSensor(nextType, channel);
+  const next = { ...channel };
+  delete next.rogowskiSize;
+  delete next.ctRatio;
+  return next;
+}
+
 export function suggestedDeviceDisplayName(input: {
   siteName: string;
   zoneName: string;

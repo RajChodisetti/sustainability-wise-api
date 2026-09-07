@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   assignmentApprovalSignature,
   assignmentCollectionConcurrencySignature,
+  meterChannelAfterDeviceTypeChange,
+  meterChannelWithModelValidSensor,
   meterStructuralConcurrencySignature,
   nextMeterChannelId,
   renamedMeterCapabilities,
@@ -34,6 +36,33 @@ test('only Wattwatchers device models show Wattwatchers commissioning sections',
   assert.equal(showsWattwatchersCommissioningSections('A3RM'), true);
   assert.equal(showsWattwatchersCommissioningSections('A6M'), true);
   assert.equal(showsWattwatchersCommissioningSections('Other'), false);
+});
+
+test('meter model changes and normalization discard incompatible hidden sensor metadata', () => {
+  const stale = {
+    id: 'channel-1',
+    ordinal: 1,
+    purpose: 'SUB_CIRCUIT' as const,
+    rogowskiSize: '3000A – 9cm',
+    ctRatio: '120A',
+  };
+
+  assert.deepEqual(
+    meterChannelAfterDeviceTypeChange('A6M', 'A3RM', stale),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT' },
+  );
+  assert.deepEqual(
+    meterChannelWithModelValidSensor('A6M', stale),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', ctRatio: '120A' },
+  );
+  assert.deepEqual(
+    meterChannelWithModelValidSensor('A3RM', stale),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', rogowskiSize: '3000A – 9cm' },
+  );
+  assert.deepEqual(
+    meterChannelWithModelValidSensor('A6M', { ...stale, ctRatio: '' }),
+    { id: 'channel-1', ordinal: 1, purpose: 'SUB_CIRCUIT', ctRatio: '' },
+  );
 });
 
 test('unassigned-channel guidance uses human channel ordinals, never raw IDs', () => {

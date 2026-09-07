@@ -7,6 +7,7 @@ import {
   createZone,
 } from '@/modules/installhub/lib/model';
 import {
+  ZONE_CODE_MAX_LENGTH,
   availableZoneCode,
   defaultCustomNameForType,
   defaultMeterCustomName,
@@ -48,17 +49,39 @@ function emptyTree() {
 
 test('zone codes are derived deterministically and disambiguated', () => {
   const tree = emptyTree();
+  tree.installation.siteCode = 'GOLD';
   const second = createZone(tree.installation.id, { zoneName: 'Plant Room', zoneDescription: '' });
   const first = createZone(tree.installation.id, { zoneName: 'Plant Room', zoneDescription: '' });
   second.id = 'z2';
   first.id = 'z1';
   tree.zones = [second, first];
-  const codes = resolvedZoneCodes(tree.zones);
-  assert.equal(codes.get('z1'), 'PLANT-ROOM');
-  assert.equal(codes.get('z2'), 'PLANT-ROOM-2');
-  assert.equal(availableZoneCode(tree, 'Plant Room'), 'PLANT-ROOM-3');
-  assert.equal(isZoneCodeAvailable(tree, 'PLANT-ROOM'), false);
+  const codes = resolvedZoneCodes(tree);
+  assert.equal(codes.get('z1'), 'PLA-GOLD-01');
+  assert.equal(codes.get('z2'), 'PLA-GOLD-02');
+  assert.equal(availableZoneCode(tree, 'Plant Room'), 'PLA-GOLD-03');
+  assert.equal(isZoneCodeAvailable(tree, 'PLA-GOLD-01'), false);
   assert.equal(isZoneCodeAvailable(tree, 'ROOF'), true);
+});
+
+test('zone-code derivation preserves saved codes and uses a two-character base-36 sequence', () => {
+  const tree = emptyTree();
+  tree.installation.siteCode = 'LONGSITE';
+  tree.zones = Array.from({ length: 10 }, (_, index) => {
+    const zone = createZone(tree.installation.id, {
+      zoneName: 'Plant Room',
+      zoneDescription: '',
+    });
+    zone.id = `z${String(index + 1).padStart(2, '0')}`;
+    if (index === 0) zone.zoneCode = 'LEGACY';
+    return zone;
+  });
+
+  const codes = resolvedZoneCodes(tree);
+  assert.equal(codes.get('z01'), 'LEGACY');
+  assert.equal(codes.get('z02'), 'PLA-LONGSITE-01');
+  assert.equal(codes.get('z10'), 'PLA-LONGSITE-09');
+  assert.equal(availableZoneCode(tree, 'Plant Room'), 'PLA-LONGSITE-0A');
+  assert.ok([...codes.values()].every((code) => code.length <= ZONE_CODE_MAX_LENGTH));
 });
 
 test('type defaults advance only while the editable custom name is pristine', () => {

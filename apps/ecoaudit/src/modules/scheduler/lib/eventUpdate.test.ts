@@ -93,6 +93,8 @@ test('calendar drop confirms assignment details without expanding technician lan
   assert.match(boardSource, /Confirm job assignment/);
   assert.match(boardSource, /AssignmentSummaryRow label="Technician"/);
   assert.match(boardSource, /AssignmentSummaryRow label="Job"/);
+  assert.match(boardSource, /scheduler-pending-title/);
+  assert.match(boardSource, /onConfirm\(normalizedTitle, parsedEstimatedDurationMinutes\)/);
   assert.match(boardSource, /AssignmentSummaryRow label="Date & time"/);
   assert.match(boardSource, /Estimated time to complete \(minutes, optional\)/);
   assert.match(boardSource, /estimatedDurationUpdate\(/);
@@ -156,7 +158,7 @@ test('calendar job pool hides raw internal job IDs', () => {
   assert.doesNotMatch(poolSource, /font-mono[^>]*>\{job\.id\}<\/p>/);
 });
 
-test('new Field App jobs collect planning inputs but omit job comments and installation outcomes', () => {
+test('new Field App jobs collect editable titles, notes, NMI, and multiple COMMS replacement meters', () => {
   const modalSource = readFileSync(
     new URL('../components/EventFormModal.tsx', import.meta.url),
     'utf8',
@@ -170,10 +172,15 @@ test('new Field App jobs collect planning inputs but omit job comments and insta
   assert.match(modalSource, /M5 — Other/);
   assert.match(modalSource, /scheduler-metering-solution/);
   assert.match(modalSource, /scheduler-maas/);
-  assert.doesNotMatch(modalSource, /scheduler-job-comments/);
+  assert.match(modalSource, /scheduler-job-comments/);
+  assert.match(modalSource, /scheduler-replacement-meters/);
+  assert.match(modalSource, /existingDeviceIds: details\.existingDeviceIds/);
+  assert.match(modalSource, /knownMeters=\{selectedExistingSite\?\.knownMeters \?\? \[\]\}/);
   assert.doesNotMatch(modalSource, /scheduler-custom-job-number|customJobNumber/);
   assert.match(modalSource, /titleSuffix: fieldJobTitleSuffix/);
   assert.match(modalSource, /schedulerFieldJobTitlePreview\(/);
+  assert.match(modalSource, /id="scheduler-field-job-title"/);
+  assert.doesNotMatch(modalSource, /<Input readOnly value=\{schedulerFieldJobTitlePreview/);
   assert.doesNotMatch(modalSource, / - XXX/);
   assert.doesNotMatch(modalSource, /scheduler-planned-meter-type/);
   assert.doesNotMatch(modalSource, /scheduler-(?:fergus-job|quote-number|customer-name)/);
@@ -206,7 +213,18 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
   assert.match(modalSource, /existingSiteId,/);
   assert.match(modalSource, /clientId: selectedClientId/);
   assert.match(modalSource, /schedulerSiteOptionLabel\(site\)/);
-  assert.match(modalSource, /latest electrical site state is carried/);
+  assert.match(
+    modalSource,
+    /installHubJobDetails\.workType === COMMS_FAULT_WORK_TYPE/,
+  );
+  assert.match(
+    modalSource,
+    /For this M2 Field\s+App job, the latest zones, switchboards, site assets, active devices,\s+channels, and electrical mappings are copied into the new job/,
+  );
+  assert.match(
+    modalSource,
+    /This Field App job\s+starts with a fresh installation workspace; prior zones, devices, channels,\s+and electrical mappings are not copied/,
+  );
   assert.ok(
     (modalSource.match(/clearSchedulerFieldJobPlanning\(current\)/g) ?? []).length >= 3,
     'every existing-site entry path clears Field planning values',

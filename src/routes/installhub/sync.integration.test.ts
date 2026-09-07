@@ -204,6 +204,7 @@ test('fresh canonical push round-trips identity/CAS and upload confirmation repl
     const firstTree = firstPull.json().installations[0] as Record<string, unknown>;
     const firstInstallation = firstTree.installation as Record<string, unknown>;
     assert.equal(firstInstallation.scheduleEventId, freshScheduleEventId);
+    assert.equal(firstInstallation.scheduleTitle, 'Scheduled route installation');
     assert.equal(firstInstallation.scheduledStartAt, '2026-08-20T09:00:00.000Z');
     assert.equal(firstInstallation.scheduledEndAt, '2026-08-20T10:30:00.000Z');
     assert.equal(firstInstallation.deadlineAt, '2026-08-21T17:00:00.000Z');

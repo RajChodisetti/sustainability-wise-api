@@ -123,13 +123,13 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
 
   const zone = query.data?.zones.find((item) => item.id === zoneId);
   useEffect(() => {
-    if (!zone) return;
+    if (!zone || !query.data) return;
     setName(zone.zoneName);
     setDescription(zone.zoneDescription);
     setZoneCode(
       zone.zoneCode
-      || resolvedZoneCodes(query.data?.zones || []).get(zone.id)
-      || availableZoneCode(query.data!, zone.zoneName, zone.id),
+      || resolvedZoneCodes(query.data).get(zone.id)
+      || availableZoneCode(query.data, zone.zoneName, zone.id),
     );
     setZoneCodePristine(!zone.zoneCode);
   }, [query.data, zone]);
@@ -177,7 +177,7 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
           const target = tree.zones.find((item) => item.id === zoneId);
           if (!target) throw new Error('Zone not found.');
           const previousZoneCode = target.zoneCode
-            || resolvedZoneCodes(tree.zones).get(target.id);
+            || resolvedZoneCodes(tree).get(target.id);
           target.zoneName = normalizedName;
           target.zoneDescription = description.trim();
           target.zoneCode = normalizedCode;
@@ -234,7 +234,7 @@ export function InstallHubZoneFormPage({ mode }: { mode: 'new' | 'edit' }) {
             }}
           />
           <FieldHint id="zone-code-hint">
-            Auto-derived from the zone name and used in generated asset IDs. You can edit it before saving.
+            Generated from the first three zone characters, site code, and a two-character sequence. You can edit it before saving.
           </FieldHint>
           <FieldError id="zone-code-error" message={zoneCodeError} />
           <FieldLabel>Description</FieldLabel>
