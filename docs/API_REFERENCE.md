@@ -924,6 +924,23 @@ than falling back to mutable `updatedAt`.
   "alreadyExists": false
 }
 ```
+
+## Field electrical map
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/v1/installhub/installations/:installationId/electrical-map?format=png\|svg&recordVersionNumber=...` | Field inspector with installation access | Download a PNG (default) or SVG of the current diagnostic tree, or an exact saved version |
+
+The attachment uses the same server renderer and icon catalog as the Field App
+Complete report. It includes all known nodes even before completion, draws only
+a deterministic safe supply forest, and labels disconnected non-Grid roots
+`Upstream not shown`; malformed, competing, cyclic, or unresolved upstream
+relationships are omitted rather than inferred. Every confirmed non-self
+measurement relationship is overlaid deterministically as a blue dashed line;
+exact duplicate pairs collapse to one line, and self-measurement remains in the
+model without drawing a loop. Version and source provenance are returned in
+`X-InstallHub-*` headers.
+
 ## Field meter inventory
 
 Field inspector JWTs can call `GET /v1/installhub/inventory/me`, list their own

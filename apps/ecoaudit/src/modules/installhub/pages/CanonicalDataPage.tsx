@@ -415,7 +415,7 @@ export function InstallHubCanonicalDataPage() {
       ]} />
       <PageHeader
         title="Data & reconciliation"
-        subtitle="Physical locations, confirmed electrical relationships, To be confirmed records, and full asset coverage."
+        subtitle="Physical locations, a safe partial electrical map, To be confirmed relationships, and full asset coverage."
       />
 
       {localAdvisory ? (
@@ -425,7 +425,7 @@ export function InstallHubCanonicalDataPage() {
       <div className="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
           ['Physical zones', tree.zones.length],
-          ['Resolved electrical nodes', resolvedElectrical?.nodes.length || 0],
+          ['Electrical map items', resolvedElectrical?.nodes.length || 0],
           ['All site assets', tree.siteAssets.length],
           ['To be confirmed', reconciliationTotal],
         ].map(([label, value]) => <Card key={label}><p className="text-xs font-bold uppercase tracking-wide text-[var(--muted)]">{label}</p><p className="mt-2 text-3xl font-extrabold text-[var(--text)]">{value}</p></Card>)}
@@ -589,7 +589,7 @@ export function InstallHubCanonicalDataPage() {
           title={electricalLayoutDirty ? 'Save or reset the electrical map layout before closing this section.' : undefined}
           onClick={() => setElectricalOpen((open) => !open)}
         >
-          <span><span className="block font-extrabold text-[var(--text)]">Electrical system overview</span><span className="mt-1 block text-xs text-[var(--text-sub)]">A client-friendly visual of the confirmed site supply · {resolvedElectrical?.nodes.length || 0} items</span></span>
+          <span><span className="block font-extrabold text-[var(--text)]">Electrical system overview</span><span className="mt-1 block text-xs text-[var(--text-sub)]">A safe partial site map using every known item and only trustworthy connections · {resolvedElectrical?.nodes.length || 0} items</span></span>
           <Icon name="chevron-down" size={18} className={electricalOpen ? 'rotate-180' : ''} />
         </button>
         {electricalOpen ? <div id="canonical-electrical-map">
@@ -606,7 +606,7 @@ export function InstallHubCanonicalDataPage() {
               tree.installation.status === 'Completed' ? (
                 <><strong>Saved site view:</strong> this arrangement is pinned to this completed record. New work at the same site starts from the latest electrical state and can save the next site view.</>
               ) : (
-                <><strong>Site hierarchy:</strong> straight lines show confirmed supply paths from the grid through each level. Drag any symbol to move it, then save the site layout. Arrange items also enables keyboard movement.</>
+                <><strong>Site hierarchy:</strong> solid lines show confirmed supply paths. A non-Grid root is a partial branch whose upstream is not yet known. Drag any symbol to move it, then save the site layout. Arrange items also enables keyboard movement.</>
               )
             ) : (
               <><strong>Supply and measurement stay separate:</strong> FED_FROM builds the electrical parent/child hierarchy. MEASURES shows which installed meter board measures a target and never changes that target’s supply parent.</>
@@ -635,7 +635,7 @@ export function InstallHubCanonicalDataPage() {
                   }
                 }}
               />
-            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No resolved electrical nodes match this search.</p>
+            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No electrical map items match this search.</p>
           ) : electricalView === 'HIERARCHY' ? (
             visibleHierarchyRows.length ? (
               <>
@@ -677,7 +677,7 @@ export function InstallHubCanonicalDataPage() {
                         </div>
                       </div>
                       <div className="mt-3 grid gap-2 border-t border-[var(--border)] pt-3 sm:grid-cols-2">
-                        <p className="text-xs text-[var(--text-sub)]"><strong className="text-[var(--text)]">FED_FROM:</strong> {row.parent ? `${row.parent.displayCode ? `${row.parent.displayCode} — ` : ''}${row.parent.name}` : row.node.kind === 'GRID' ? 'Grid root' : row.node.kind === 'VIRTUAL_RESIDUAL' ? 'Derived from its canonical residual parent' : 'No confirmed supply edge'}</p>
+                        <p className="text-xs text-[var(--text-sub)]"><strong className="text-[var(--text)]">FED_FROM:</strong> {row.parent ? `${row.parent.displayCode ? `${row.parent.displayCode} — ` : ''}${row.parent.name}` : row.node.kind === 'GRID' ? 'Grid root' : row.node.kind === 'VIRTUAL_RESIDUAL' ? 'Derived from its canonical residual parent' : 'Branch root — upstream not shown'}</p>
                         <p className="text-xs text-[var(--text-sub)]"><strong className="text-[var(--text)]">MEASURES:</strong> {row.measuredBy.length ? row.measuredBy.map((source) => `${source.displayCode ? `${source.displayCode} — ` : ''}${source.name}`).join(', ') : 'No confirmed measurement edge to this target'}</p>
                         <p className="text-xs text-[var(--text-sub)]"><strong className="text-[var(--text)]">Physical zone:</strong> {tree.zones.find((zone) => zone.id === row.node.physicalLocationId)?.zoneName || 'Site-wide / derived'}</p>
                       </div>
@@ -688,13 +688,13 @@ export function InstallHubCanonicalDataPage() {
               </ol>
               <ResultPager page={hierarchyPage} pageSize={HIERARCHY_PAGE_SIZE} total={visibleHierarchyRows.length} onPage={setHierarchyPage} />
               </>
-            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No resolved electrical relationships match this search.</p>
+            ) : <p className="mt-4 text-sm text-[var(--text-sub)]">No electrical relationships match this search.</p>
           ) : (
             <>
               <div className="mt-4 overflow-x-auto">
                 <table className="w-full min-w-[960px] text-left text-sm">
                   <thead><tr className="border-b border-[var(--border)] text-xs uppercase tracking-wide text-[var(--muted)]"><th className="px-3 py-3">Node</th><th className="px-3 py-3">FED_FROM source</th><th className="px-3 py-3">MEASURES source</th><th className="px-3 py-3">Physical zone</th><th className="px-3 py-3">Coverage</th></tr></thead>
-                  <tbody>{pageItems(filteredElectricalRows, electricalPage, TABLE_PAGE_SIZE).map((row) => <tr key={row.node.id} className="border-b border-[var(--border)]"><td className="px-3 py-3"><Link className="font-bold text-[var(--primary)] hover:underline" href={electricalNodeHref(tree, row.node)}>{row.node.displayCode ? `${row.node.displayCode} — ` : ''}{row.node.name}</Link><span className="mt-1 block break-all font-mono text-xs text-[var(--muted)]">{row.node.kind} · {row.node.id}</span></td><td className="px-3 py-3">{row.parent ? `${row.parent.displayCode ? `${row.parent.displayCode} — ` : ''}${row.parent.name}` : '—'}</td><td className="px-3 py-3">{row.measuredBy.length ? row.measuredBy.map((source) => `${source.displayCode ? `${source.displayCode} — ` : ''}${source.name}`).join(', ') : '—'}</td><td className="px-3 py-3">{tree.zones.find((zone) => zone.id === row.node.physicalLocationId)?.zoneName || '—'}</td><td className="px-3 py-3">{coverageLabel(row.node.coverageState)}</td></tr>)}</tbody>
+                  <tbody>{pageItems(filteredElectricalRows, electricalPage, TABLE_PAGE_SIZE).map((row) => <tr key={row.node.id} className="border-b border-[var(--border)]"><td className="px-3 py-3"><Link className="font-bold text-[var(--primary)] hover:underline" href={electricalNodeHref(tree, row.node)}>{row.node.displayCode ? `${row.node.displayCode} — ` : ''}{row.node.name}</Link><span className="mt-1 block break-all font-mono text-xs text-[var(--muted)]">{row.node.kind} · {row.node.id}</span></td><td className="px-3 py-3">{row.parent ? `${row.parent.displayCode ? `${row.parent.displayCode} — ` : ''}${row.parent.name}` : row.node.kind === 'GRID' ? 'Grid root' : 'Branch root — upstream not shown'}</td><td className="px-3 py-3">{row.measuredBy.length ? row.measuredBy.map((source) => `${source.displayCode ? `${source.displayCode} — ` : ''}${source.name}`).join(', ') : '—'}</td><td className="px-3 py-3">{tree.zones.find((zone) => zone.id === row.node.physicalLocationId)?.zoneName || '—'}</td><td className="px-3 py-3">{coverageLabel(row.node.coverageState)}</td></tr>)}</tbody>
                 </table>
               </div>
               <ResultPager page={electricalPage} pageSize={TABLE_PAGE_SIZE} total={filteredElectricalRows.length} onPage={setElectricalPage} />
@@ -707,7 +707,7 @@ export function InstallHubCanonicalDataPage() {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h3 id="unresolved-electrical-heading" className="text-xs font-extrabold text-[var(--text-sub)]">To be confirmed</h3>
-                  <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Deferred records kept outside the map · {unresolvedElectrical.length}</p>
+                  <p className="mt-1 text-[11px] leading-4 text-[var(--muted)]">Connections still omitted; known items remain in the partial map · {unresolvedElectrical.length}</p>
                 </div>
                 <span className="rounded-full bg-[var(--surface)] px-2 py-1 text-xs font-bold text-[var(--text-sub)]" aria-label={`${unresolvedElectrical.length} To be confirmed records`}>{unresolvedElectrical.length}</span>
               </div>

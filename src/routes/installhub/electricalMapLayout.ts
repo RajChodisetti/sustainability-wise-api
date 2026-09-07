@@ -165,48 +165,12 @@ type ClientElectricalMapView = {
   }>;
 };
 
-/** Mirrors the portal's confirmed, grid-reachable client map projection. */
+/**
+ * Every structurally valid canonical node belongs on the client map, even when
+ * its upstream relationship is still TBC or invalid. Edges remain the sole
+ * authority for confirmed relationships; including a disconnected node must
+ * never invent a connection to the Grid or another asset.
+ */
 export function clientElectricalMapNodeIds(view: ClientElectricalMapView): Set<string> {
-  const excluded = new Set(view.unresolved.flatMap((item) => (
-    item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET'
-      ? [item.subjectId]
-      : []
-  )));
-  for (const node of view.nodes) {
-    if (
-      node.kind === 'SITE_ASSET'
-      && (node.coverageState === 'TBC' || node.coverageState === 'INVALID')
-    ) excluded.add(node.id);
-  }
-  const included = new Set(
-    view.nodes
-      .filter((node) => node.kind === 'GRID' && !excluded.has(node.id))
-      .map((node) => node.id),
-  );
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of view.edges) {
-      if (
-        edge.relationship !== 'FED_FROM'
-        || !included.has(edge.sourceNodeId)
-        || included.has(edge.targetNodeId)
-        || excluded.has(edge.targetNodeId)
-      ) continue;
-      included.add(edge.targetNodeId);
-      changed = true;
-    }
-    for (const node of view.nodes) {
-      if (
-        node.kind !== 'VIRTUAL_RESIDUAL'
-        || !node.parentNodeId
-        || !included.has(node.parentNodeId)
-        || included.has(node.id)
-        || excluded.has(node.id)
-      ) continue;
-      included.add(node.id);
-      changed = true;
-    }
-  }
-  return included;
+  return new Set(view.nodes.map((node) => node.id));
 }

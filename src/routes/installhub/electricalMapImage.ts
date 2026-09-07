@@ -494,6 +494,14 @@ function buildVisualMarkers(report: InstallHubCanonicalReport): Map<string, Visu
     node.id,
     node.name || node.displayCode || node.id,
   ]));
+  const suppliedNodeIds = new Set(report.supplyEdges.map((edge) => edge.targetNodeId));
+  const parentedResidualIds = new Set(report.electricalNodes.flatMap((node) => (
+    node.kind === 'VIRTUAL_RESIDUAL'
+    && node.parentNodeId
+    && nodeNames.has(node.parentNodeId)
+      ? [node.id]
+      : []
+  )));
   const sortedMeters = report.meters.slice().sort((left, right) => (
     left.installedOnBoardId.localeCompare(right.installedOnBoardId)
       || left.name.localeCompare(right.name)
@@ -559,16 +567,27 @@ function buildVisualMarkers(report: InstallHubCanonicalReport): Map<string, Visu
     const meters = metersByBoard.get(node.id) ?? [];
     const dimensions = markerDimensions(node, meters.length);
     const zone = node.physicalLocationId ? zoneNames.get(node.physicalLocationId) ?? '' : '';
-    let subtitle = [node.typeLabel, zone].filter(Boolean).join(' · ');
+    const upstreamUnknown = node.kind !== 'GRID'
+      && !suppliedNodeIds.has(node.id)
+      && !parentedResidualIds.has(node.id);
+    let subtitle = [upstreamUnknown ? 'Upstream not shown' : '', node.typeLabel, zone]
+      .filter(Boolean)
+      .join(' · ');
     if (node.kind === 'GRID') subtitle = 'Incoming electrical supply';
     if (node.kind === 'SITE_ASSET') {
-      subtitle = [node.typeLabel ? `Load · ${node.typeLabel}` : 'Electrical load', zone]
+      subtitle = [
+        upstreamUnknown ? 'Upstream not shown' : '',
+        node.typeLabel ? `Load · ${node.typeLabel}` : 'Electrical load',
+        zone,
+      ]
         .filter(Boolean)
         .join(' · ');
     }
     if (node.kind === 'VIRTUAL_RESIDUAL') {
       const parentName = node.parentNodeId ? nodeNames.get(node.parentNodeId) : undefined;
-      subtitle = parentName ? `Calculated on ${parentName}` : 'Calculated residual load';
+      subtitle = parentName
+        ? `Calculated on ${parentName}`
+        : 'Upstream not shown · Calculated residual load';
     }
     const measurementRows = measuredBy.get(node.id);
     let measurement = '';
@@ -611,6 +630,107 @@ function stableNodeOrder(left: DiagramNode, right: DiagramNode): number {
   return nodeKindRank(left) - nodeKindRank(right)
     || (left.displayCode || left.name).localeCompare(right.displayCode || right.name)
     || left.id.localeCompare(right.id);
+}
+
+/**
+ * Select a deterministic, non-invented supply forest from the canonical read
+ * model. Historical/corrupt payloads can contain duplicate parents, cycles,
+ * self-links or a stale edge for a relationship already marked unresolved.
+ * Those edges are unsafe to draw; the known node remains as a disconnected
+ * root so the partial map still preserves the captured infrastructure.
+ */
+export function safeElectricalMapSupplyEdges(
+  report: InstallHubCanonicalReport,
+): InstallHubCanonicalReport['supplyEdges'] {
+  const nodeById = new Map(report.electricalNodes.map((node) => [node.id, node]));
+  const unresolvedSupplyTargets = new Set(report.unresolvedRelationships.flatMap((item) => (
+    item.relation === 'SUPPLY'
+    && (item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET')
+      ? [item.subjectId]
+      : []
+  )));
+  const sourceRank = (nodeId: string): number => {
+    const kind = nodeById.get(nodeId)?.kind;
+    return kind === 'GRID' ? 0 : kind === 'BOARD' ? 1 : 2;
+  };
+  const candidates = report.supplyEdges
+    .filter((edge) => {
+      const source = nodeById.get(edge.sourceNodeId);
+      const target = nodeById.get(edge.targetNodeId);
+      return edge.relationship === 'FED_FROM'
+        && edge.sourceNodeId !== edge.targetNodeId
+        && (source?.kind === 'GRID' || source?.kind === 'BOARD')
+        && (target?.kind === 'BOARD' || target?.kind === 'SITE_ASSET')
+        && !unresolvedSupplyTargets.has(edge.targetNodeId);
+    })
+    .sort((left, right) => (
+      left.targetNodeId.localeCompare(right.targetNodeId)
+      || sourceRank(left.sourceNodeId) - sourceRank(right.sourceNodeId)
+      || left.sourceNodeId.localeCompare(right.sourceNodeId)
+    ));
+  const uniqueByPair = new Map<string, InstallHubCanonicalReport['supplyEdges'][number]>();
+  for (const edge of candidates) {
+    const pair = `${edge.sourceNodeId}\0${edge.targetNodeId}`;
+    if (!uniqueByPair.has(pair)) uniqueByPair.set(pair, edge);
+  }
+  const byTarget = new Map<string, InstallHubCanonicalReport['supplyEdges']>();
+  for (const edge of uniqueByPair.values()) {
+    const entries = byTarget.get(edge.targetNodeId) ?? [];
+    entries.push(edge);
+    byTarget.set(edge.targetNodeId, entries);
+  }
+  const unambiguous = [...byTarget.values()]
+    .filter((edges) => new Set(edges.map((edge) => edge.sourceNodeId)).size === 1)
+    .map((edges) => edges[0]);
+  const parentByTarget = new Map(
+    unambiguous.map((edge) => [edge.targetNodeId, edge.sourceNodeId]),
+  );
+  const cyclicNodeIds = new Set<string>();
+  for (const nodeId of [...parentByTarget.keys()].sort((left, right) => left.localeCompare(right))) {
+    const path: string[] = [];
+    const pathIndex = new Map<string, number>();
+    let current: string | undefined = nodeId;
+    while (current && !pathIndex.has(current)) {
+      pathIndex.set(current, path.length);
+      path.push(current);
+      current = parentByTarget.get(current);
+    }
+    if (current && pathIndex.has(current)) {
+      for (const cyclic of path.slice(pathIndex.get(current)!)) cyclicNodeIds.add(cyclic);
+    }
+  }
+  return unambiguous.filter((edge) => !cyclicNodeIds.has(edge.targetNodeId));
+}
+
+/**
+ * Keep the confirmed measurement overlay readable in a static export. The
+ * canonical view has already rejected unresolved assignments; this final
+ * boundary removes malformed endpoints, unsafe asset coverage, self-loops and
+ * duplicate source/target pairs before drawing every remaining relationship.
+ */
+export function safeElectricalMapMeasurementEdges(
+  report: InstallHubCanonicalReport,
+): InstallHubCanonicalReport['measurementEdges'] {
+  const nodeById = new Map(report.electricalNodes.map((node) => [node.id, node]));
+  const uniqueByPair = new Map<string, InstallHubCanonicalReport['measurementEdges'][number]>();
+  for (const edge of [...report.measurementEdges].sort((left, right) => (
+    left.sourceNodeId.localeCompare(right.sourceNodeId)
+      || left.targetNodeId.localeCompare(right.targetNodeId)
+  ))) {
+    const source = nodeById.get(edge.sourceNodeId);
+    const target = nodeById.get(edge.targetNodeId);
+    if (
+      edge.relationship !== 'MEASURES'
+      || edge.sourceNodeId === edge.targetNodeId
+      || !source
+      || !target
+      || (target.kind === 'SITE_ASSET'
+        && (target.coverageState === 'TBC' || target.coverageState === 'INVALID'))
+    ) continue;
+    const pair = `${edge.sourceNodeId}\0${edge.targetNodeId}`;
+    if (!uniqueByPair.has(pair)) uniqueByPair.set(pair, edge);
+  }
+  return [...uniqueByPair.values()];
 }
 
 function hierarchyTree(
@@ -1294,6 +1414,7 @@ function renderLegend(width: number, height: number): string {
     <line x1="${itemX}" y1="${connectionsY - 5}" x2="${itemX + 34}" y2="${connectionsY - 5}" stroke="#B87333" stroke-width="3.5" stroke-linecap="round"/>${svgText('Supplied from', itemX + 42, connectionsY, { size: 8.6, weight: 600, color: '#334155' })}
     ${svgIcon('node-meter', itemX + 145, connectionsY - 17, 21)}${svgText('Meter / channel / load', itemX + 171, connectionsY, { size: 8.6, weight: 600, color: '#334155' })}
     <line x1="${itemX + 357}" y1="${connectionsY - 5}" x2="${itemX + 391}" y2="${connectionsY - 5}" stroke="#64748B" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round"/>${svgText('Calculated residual', itemX + 400, connectionsY, { size: 8.6, weight: 600, color: '#334155' })}
+    <line x1="${itemX + 570}" y1="${connectionsY - 5}" x2="${itemX + 604}" y2="${connectionsY - 5}" stroke="#2563EB" stroke-width="2.25" stroke-dasharray="6 7" stroke-linecap="round" opacity="0.82"/>${svgText('Meter measures', itemX + 613, connectionsY, { size: 8.6, weight: 600, color: '#334155' })}
     ${svgText('METERING COVERAGE', labelX, coverageY, { size: 8, weight: 800, color: '#1E3A8A', letterSpacing: 0.6 })}${coveragePills}
   </g>`;
 }
@@ -1335,16 +1456,19 @@ export function buildElectricalMapSvg(
     edges: [...inputReport.supplyEdges, ...inputReport.measurementEdges],
     unresolved: inputReport.unresolvedRelationships,
   });
-  const report: InstallHubCanonicalReport = {
+  const knownReport: InstallHubCanonicalReport = {
     ...inputReport,
     electricalNodes: inputReport.electricalNodes.filter((node) => clientNodeIds.has(node.id)),
-    supplyEdges: inputReport.supplyEdges.filter((edge) => (
-      clientNodeIds.has(edge.sourceNodeId) && clientNodeIds.has(edge.targetNodeId)
-    )),
+    supplyEdges: inputReport.supplyEdges,
     measurementEdges: inputReport.measurementEdges.filter((edge) => (
       clientNodeIds.has(edge.sourceNodeId) && clientNodeIds.has(edge.targetNodeId)
     )),
     meters: inputReport.meters.filter((meter) => clientNodeIds.has(meter.installedOnBoardId)),
+  };
+  const report: InstallHubCanonicalReport = {
+    ...knownReport,
+    supplyEdges: safeElectricalMapSupplyEdges(knownReport),
+    measurementEdges: safeElectricalMapMeasurementEdges(knownReport),
   };
   const depths = diagramDepths(report);
   const markers = buildVisualMarkers(report);
@@ -1367,7 +1491,7 @@ export function buildElectricalMapSvg(
   const connector = (
     sourceNodeId: string,
     targetNodeId: string,
-    relationship: 'supply' | 'residual',
+    relationship: 'supply' | 'residual' | 'measurement',
   ): string => {
     const source = layout.positions.get(sourceNodeId);
     const target = layout.positions.get(targetNodeId);
@@ -1378,6 +1502,10 @@ export function buildElectricalMapSvg(
       ? routeAutomaticEdge(sourceNodeId, targetNodeId, layout.positions)
       : routeStraightEdge(source, target, sourceNode, targetNode);
     const connectorStyle = route.samples.length === 2 ? 'straight' : 'obstacle-avoiding';
+    if (relationship === 'measurement') {
+      const attributes = `data-measurement-source="${escapeXml(sourceNodeId)}" data-measurement-target="${escapeXml(targetNodeId)}" data-connector-style="${connectorStyle}" data-route-points="${routePointsAttribute(route.samples)}" d="${route.path}" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
+      return `<g data-measurement-overlay="1"><path data-measurement-underlay="1" d="${route.path}" fill="none" stroke="#F8FBFF" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/><path ${attributes} stroke="#2563EB" stroke-width="2.25" stroke-dasharray="6 7" opacity="0.82"/></g>`;
+    }
     const stroke = relationship === 'supply'
       ? ' stroke="#B87333" stroke-width="3.5"'
       : ' stroke="#64748B" stroke-width="2.3" stroke-dasharray="2 7"';
@@ -1390,6 +1518,9 @@ export function buildElectricalMapSvg(
   const residualLines = residualEdges
     .map((edge) => connector(edge.sourceNodeId, edge.targetNodeId, 'residual'))
     .join('');
+  const measurementLines = report.measurementEdges
+    .map((edge) => connector(edge.sourceNodeId, edge.targetNodeId, 'measurement'))
+    .join('');
   const nodes = report.electricalNodes.map((node) => renderVisualMarker(
     markers.get(node.id)!,
     layout.positions.get(node.id)!,
@@ -1401,9 +1532,9 @@ export function buildElectricalMapSvg(
     ${svgText(fitText(siteName, width - MARGIN_X * 2 - 380, 22, 900), MARGIN_X, 31, { size: 22, weight: 900, color: '#142F70' })}
     ${svgText('Electrical site overview', MARGIN_X, 53, { size: 12, weight: 500, color: '#64748B' })}
     ${svgText(headerSummary(report), width - MARGIN_X, 31, { size: 10.5, weight: 700, color: '#1E3A8A', anchor: 'end' })}
-    ${svgText('Confirmed infrastructure - every switchboard, meter and connected load is represented', width - MARGIN_X, 50, { size: 9, weight: 500, color: '#94A3B8', anchor: 'end' })}
+    ${svgText('Known infrastructure · confirmed connections only · unresolved items stay disconnected', width - MARGIN_X, 50, { size: 9, weight: 500, color: '#94A3B8', anchor: 'end' })}
     ${renderLayoutBackdrop(layout)}
-    ${supplyLines}${residualLines}${nodes}
+    ${supplyLines}${residualLines}${measurementLines}${nodes}
     ${renderLegend(width, height)}
   </svg>`;
 }
@@ -1412,7 +1543,30 @@ export async function renderElectricalMapPngDataUri(
   report: InstallHubCanonicalReport,
   siteName: string,
 ): Promise<string> {
-  return (await renderElectricalMapImages(report, siteName)).overviewDataUri;
+  const overview = await renderElectricalMapPngBuffer(report, siteName);
+  return `data:image/png;base64,${overview.toString('base64')}`;
+}
+
+/**
+ * Render the bounded overview used by both PDF reports and the authenticated
+ * mobile download route. Detail tiles remain a PDF-only concern.
+ */
+export async function renderElectricalMapPngBuffer(
+  report: InstallHubCanonicalReport,
+  siteName: string,
+): Promise<Buffer> {
+  const svg = buildElectricalMapSvg(report, siteName);
+  const source = svgSourceDimensions(svg);
+  const plan = planElectricalMapRender(source.width, source.height);
+  const overviewSvg = rewriteSvgViewport(
+    svg,
+    plan.overviewWidth,
+    plan.overviewHeight,
+    `0 0 ${plan.sourceWidth} ${plan.sourceHeight}`,
+  );
+  return sharp(Buffer.from(overviewSvg))
+    .png({ compressionLevel: 9 })
+    .toBuffer();
 }
 
 export async function renderElectricalMapImages(

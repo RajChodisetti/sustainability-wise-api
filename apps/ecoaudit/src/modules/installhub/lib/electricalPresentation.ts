@@ -92,60 +92,103 @@ export function unresolvedElectricalRecords(
 }
 
 /**
- * Restricts the map to topology that has a complete, confirmed path from a
- * grid root. Records whose source or coverage is TBC/invalid, and descendants
- * that depend on those records, stay in the separate unresolved-record tray.
+ * Builds the safe partial map used by every client presentation. Known items
+ * remain visible even when their upstream or metering relationship is not yet
+ * available. Only endpoint-valid, unambiguous, acyclic supply edges and safe
+ * measurement overlays are drawn; omitted relationships remain available in
+ * the separate reconciliation tray.
+ *
+ * The historical function name is retained because it is an internal import
+ * used by the map, hierarchy, and table views.
  */
 export function resolvedElectricalTopology(
   model?: ElectricalTreeReadModel,
 ): ElectricalTreeReadModel | undefined {
   if (!model) return undefined;
   const unresolved = mapExcludedElectricalRecords(model);
-  const excludedSubjectIds = new Set(
+  const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
+  const nodeIds = new Set(nodeById.keys());
+  const unresolvedSupplyTargets = new Set(
     unresolved.flatMap((item) => (
-      item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET'
+      item.relation === 'SUPPLY'
+      && (item.subjectType === 'BOARD' || item.subjectType === 'SITE_ASSET')
         ? [item.subjectId]
         : []
     )),
   );
-  const includedNodeIds = new Set(
-    model.nodes
-      .filter((node) => node.kind === 'GRID' && !excludedSubjectIds.has(node.id))
-      .map((node) => node.id),
+  const unsafeMeasurementTargets = new Set(
+    model.nodes.flatMap((node) => (
+      node.kind === 'SITE_ASSET'
+      && (node.coverageState === 'TBC' || node.coverageState === 'INVALID')
+        ? [node.id]
+        : []
+    )),
   );
 
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const edge of model.edges) {
-      if (
-        edge.relationship !== 'FED_FROM'
-        || !includedNodeIds.has(edge.sourceNodeId)
-        || includedNodeIds.has(edge.targetNodeId)
-        || excludedSubjectIds.has(edge.targetNodeId)
-      ) continue;
-      includedNodeIds.add(edge.targetNodeId);
-      changed = true;
+  // Exact duplicate pairs are harmless legacy noise. Different sources for
+  // one target are genuinely ambiguous, however, so omit every candidate for
+  // that target instead of choosing one. Likewise, omit every edge inside a
+  // directed cycle. The known nodes remain visible as branch roots.
+  const candidates = [...model.edges]
+    .filter((item) => item.relationship === 'FED_FROM')
+    .sort((left, right) => left.id.localeCompare(right.id)
+      || left.sourceNodeId.localeCompare(right.sourceNodeId)
+      || left.targetNodeId.localeCompare(right.targetNodeId))
+    .filter((edge) => {
+      const source = nodeById.get(edge.sourceNodeId);
+      const target = nodeById.get(edge.targetNodeId);
+      return edge.sourceNodeId !== edge.targetNodeId
+        && (source?.kind === 'GRID' || source?.kind === 'BOARD')
+        && (target?.kind === 'BOARD' || target?.kind === 'SITE_ASSET')
+        && !unresolvedSupplyTargets.has(edge.targetNodeId);
+    });
+  const uniqueByPair = new Map<string, ElectricalEdge>();
+  for (const edge of candidates) {
+    const pair = `${edge.sourceNodeId}\0${edge.targetNodeId}`;
+    if (!uniqueByPair.has(pair)) uniqueByPair.set(pair, edge);
+  }
+  const candidatesByTarget = new Map<string, ElectricalEdge[]>();
+  for (const edge of uniqueByPair.values()) {
+    const entries = candidatesByTarget.get(edge.targetNodeId) ?? [];
+    entries.push(edge);
+    candidatesByTarget.set(edge.targetNodeId, entries);
+  }
+  const unambiguous = [...candidatesByTarget.values()]
+    .filter((edges) => new Set(edges.map((edge) => edge.sourceNodeId)).size === 1)
+    .map((edges) => edges[0]!);
+  const parentByTarget = new Map(
+    unambiguous.map((edge) => [edge.targetNodeId, edge.sourceNodeId]),
+  );
+  const cyclicNodeIds = new Set<string>();
+  for (const nodeId of [...parentByTarget.keys()].sort()) {
+    const path: string[] = [];
+    const pathIndex = new Map<string, number>();
+    let currentId: string | undefined = nodeId;
+    while (currentId && !pathIndex.has(currentId)) {
+      pathIndex.set(currentId, path.length);
+      path.push(currentId);
+      currentId = parentByTarget.get(currentId);
     }
-    for (const node of model.nodes) {
-      if (
-        node.kind !== 'VIRTUAL_RESIDUAL'
-        || !node.parentNodeId
-        || !includedNodeIds.has(node.parentNodeId)
-        || includedNodeIds.has(node.id)
-        || excludedSubjectIds.has(node.id)
-      ) continue;
-      includedNodeIds.add(node.id);
-      changed = true;
+    if (currentId && pathIndex.has(currentId)) {
+      for (const cyclicId of path.slice(pathIndex.get(currentId)!)) {
+        cyclicNodeIds.add(cyclicId);
+      }
     }
   }
+  const acceptedSupplyEdges = new Set(
+    unambiguous.filter((edge) => !cyclicNodeIds.has(edge.targetNodeId)),
+  );
 
   return {
     ...model,
-    nodes: model.nodes.filter((node) => includedNodeIds.has(node.id)),
+    nodes: [...model.nodes],
     edges: model.edges.filter((edge) => (
-      includedNodeIds.has(edge.sourceNodeId)
-      && includedNodeIds.has(edge.targetNodeId)
+      nodeIds.has(edge.sourceNodeId)
+      && nodeIds.has(edge.targetNodeId)
+      && (edge.relationship === 'FED_FROM'
+        ? edge.sourceNodeId !== edge.targetNodeId
+          && acceptedSupplyEdges.has(edge)
+        : !unsafeMeasurementTargets.has(edge.targetNodeId))
     )),
     unresolved: [],
   };

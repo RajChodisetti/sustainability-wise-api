@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import sharp from 'sharp';
 import {
   ELECTRICAL_MAP_ICON_NAMES,
   ELECTRICAL_MAP_ICON_VIEW_BOX,
@@ -55,7 +54,48 @@ test('canonical switchboard and site-asset codes select deterministic generated 
   assert.equal(electricalMapIconForNode({ kind: 'BOARD', name: 'MSSB1 Main Switchboard' }), 'board-mssb');
 });
 
+test('server symbols retain the portal canonical registry, palette and representative geometry', () => {
+  assert.deepEqual(ELECTRICAL_MAP_ICON_NAMES, [
+    'node-grid', 'node-meter', 'node-residual',
+    'board-msb', 'board-mssb', 'board-db', 'board-hvac-db', 'board-lighting-db',
+    'board-pv-db', 'board-mcc', 'board-other',
+    'load-pv', 'load-hvac', 'load-hvac-indoor', 'load-hvac-condenser',
+    'load-lighting', 'load-ev-charger', 'load-vehicle-hoist', 'load-forklift',
+    'load-exhaust-fan', 'load-power-outlet', 'load-hot-water', 'load-refrigeration',
+    'load-compressed-air', 'load-other',
+  ]);
+
+  const grid = electricalMapIconSvgDefinition('node-grid').body;
+  assert.ok(grid.includes('<rect x="3" y="3" width="58" height="58" rx="15" fill="#FFF7ED"/>'));
+  assert.ok(grid.includes('d="M18 52 27 12h10l9 40M23 34h18M20 43h24M27 12l-9 13h28L37 12"'));
+  assert.ok(grid.includes('d="m34 22-7 10h6l-2 9 7-11h-6l2-8Z" fill="#9A551D" fill-opacity="0.14"'));
+  assert.ok(grid.includes('<line x1="14" y1="53" x2="50" y2="53"/>'));
+  assert.ok(!grid.includes('M18 52L32 11'), 'the retired server-only grid artwork must not return');
+
+  const meter = electricalMapIconSvgDefinition('node-meter').body;
+  assert.ok(meter.includes('<rect x="14" y="8" width="36" height="48" rx="5"/>'));
+  assert.ok(meter.includes('<circle cx="23" cy="45" r="3"/>'));
+  assert.ok(meter.includes('stroke="#0F766E"'));
+
+  const lightingBoard = electricalMapIconSvgDefinition('board-lighting-db').body;
+  assert.ok(lightingBoard.includes('<rect x="9" y="7" width="46" height="50" rx="4" fill="#FFFFFF" fill-opacity="0.94" stroke="#1D4ED8" stroke-width="2.4"/>'));
+  assert.ok(lightingBoard.includes('<path d="M9 18h46" fill="none" stroke="#1D4ED8" stroke-width="1.4"/>'));
+  assert.ok(lightingBoard.includes('>LIGHT</text>'));
+  assert.ok(lightingBoard.includes('data-board-phase-fallback="true"'));
+  assert.ok(lightingBoard.includes('<line x1="23" y1="27" x2="50" y2="27" stroke="#1D4ED8" stroke-width="1.4"/>'));
+  assert.ok(lightingBoard.includes('data-breaker-phase="L2" x="31" y="34" width="8" height="6" rx="1.2" fill="#DBEAFE" stroke="#1D4ED8" stroke-width="0.9"'));
+  assert.ok(lightingBoard.includes('data-phase-port="L3" data-channel-port="true" data-channel-phase="L3" cx="51" cy="47" r="1.6"'));
+  assert.ok(!lightingBoard.includes('x="10" y="8" width="44" height="48"'));
+
+  const hotWater = electricalMapIconSvgDefinition('load-hot-water').body;
+  assert.ok(hotWater.includes('<rect x="15" y="6" width="34" height="51" rx="12"/>'));
+  assert.ok(hotWater.includes('d="M32 18s9 9 9 16a9 9 0 0 1-18 0c0-7 9-16 9-16Z" fill="#166534" fill-opacity="0.14"'));
+  assert.deepEqual(ELECTRICAL_MAP_NODE_LEGEND.at(-1), ['node-residual', 'Calculated residual']);
+  assert.deepEqual(ELECTRICAL_MAP_LOAD_LEGEND[9], ['load-exhaust-fan', 'Exhaust / air fan']);
+});
+
 test('every icon is a unique deterministic inline SVG schematic', async () => {
+  const { default: sharp } = await import('sharp');
   assert.equal(ELECTRICAL_MAP_ICON_NAMES.length, 25);
   const imageHashOwner = new Map<string, string>();
   for (const name of ELECTRICAL_MAP_ICON_NAMES) {
@@ -63,7 +103,11 @@ test('every icon is a unique deterministic inline SVG schematic', async () => {
     assert.equal(definition.name, name);
     assert.equal(definition.viewBox, ELECTRICAL_MAP_ICON_VIEW_BOX);
     assert.match(definition.body, new RegExp(`data-schematic-icon="${name}"`));
-    assert.match(definition.body, /stroke-width="2\.4" stroke-linecap="round" stroke-linejoin="round"/);
+    if (name.startsWith('board-')) {
+      assert.match(definition.body, /stroke="#1D4ED8" stroke-width="2\.4"/);
+    } else {
+      assert.match(definition.body, /stroke-width="2\.4" stroke-linecap="round" stroke-linejoin="round"/);
+    }
     assert.doesNotMatch(definition.body, /<image\b|data:image\/|<foreignObject\b|<filter\b|<linearGradient\b/);
 
     const svg = electricalMapIconSvg(name);

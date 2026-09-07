@@ -1035,7 +1035,7 @@ export function ElectricalTreeCanvas({
   }
 
   if (!layout.nodes.length) {
-    return <p className="mt-4 text-sm text-[var(--text-sub)]">No confirmed electrical items are available for the visual map.</p>;
+    return <p className="mt-4 text-sm text-[var(--text-sub)]">No electrical items are available for the visual map.</p>;
   }
 
   return (
@@ -1046,7 +1046,7 @@ export function ElectricalTreeCanvas({
           <div className="min-w-0">
             <p className="text-[10px] font-extrabold uppercase tracking-[0.14em] text-[var(--primary)]">Electrical system overview</p>
             <h3 id="electrical-tree-heading" className="mt-1 text-base font-extrabold text-[var(--text)]">{tree.installation.siteName}</h3>
-            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid at the top · switchboards and equipment aligned by supply level · click or tap one symbol for a compact summary{onSaveLayout ? ' · press and hold before dragging it' : ''}</p>
+            <p id="electrical-tree-instructions" className="mt-1 text-xs text-[var(--text-sub)]">Grid and partial branch roots at the top · only confirmed connections are drawn · click or tap one symbol for a compact summary{onSaveLayout ? ' · press and hold before dragging it' : ''}</p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] font-bold text-[var(--text-sub)]" aria-label="Electrical map summary">
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.boards} switchboard{mapSummary.boards === 1 ? '' : 's'}</span>
               <span className="rounded-full border border-[var(--border)] bg-white px-2 py-1">{mapSummary.meters} meter{mapSummary.meters === 1 ? '' : 's'}</span>
@@ -1165,6 +1165,8 @@ export function ElectricalTreeCanvas({
                 || electricalMapNodeInteractionSummary(tree, model, item.node.id);
               const boardChannels = boardChannelsById.get(item.node.id);
               const coverage = item.node.coverageState ? COVERAGE_PRESENTATION[item.node.coverageState] : undefined;
+              const partialBranchRoot = item.node.kind !== 'GRID'
+                && !item.parentId;
               const primaryLabel = item.node.kind === 'SITE_ASSET' || item.node.kind === 'BOARD'
                 ? 'Symbol'
                 : item.node.typeLabel
@@ -1183,6 +1185,7 @@ export function ElectricalTreeCanvas({
                   ? `${interaction.downstreamLoadCount} downstream loads and ${interaction.activeChannelCount} active meter channels`
                   : '',
                 coverage ? `Coverage: ${coverage.label}` : '',
+                partialBranchRoot ? 'Branch root: upstream not shown' : '',
                 interaction.meters.length ? `Meters: ${interaction.meters.map((meter) => `${meter.name}${meter.serialNumber ? `, serial ${meter.serialNumber}` : ''}${meter.assignedChannels.length ? `, ${meter.assignedChannels.map((channel) => channel.label).join(', ')}` : ''}`).join('; ')}` : '',
                 assignedAssetLabels.length ? `Measures assigned assets: ${assignedAssetLabels.join('; ')}` : '',
               ].filter(Boolean).join('. ');
@@ -1262,6 +1265,11 @@ export function ElectricalTreeCanvas({
                   }}
                 >
                   <span className="flex h-full w-full flex-col items-center justify-start pt-1 text-center">
+                    {partialBranchRoot ? (
+                      <span className="absolute left-0 top-0 z-10 rounded-full border border-[#A16207]/30 bg-[#FEF3C7] px-2 py-0.5 text-[7px] font-extrabold uppercase tracking-wide text-[#854D0E] shadow-sm">
+                        Upstream unknown
+                      </span>
+                    ) : null}
                     {coverage && item.node.kind === 'SITE_ASSET' ? (
                       <span className={`absolute right-0 top-0 z-10 rounded-full border border-white px-2 py-0.5 text-[7px] font-extrabold uppercase tracking-wide shadow-sm ${coverage.className}`}>{coverage.label}</span>
                     ) : null}
@@ -1348,7 +1356,8 @@ export function ElectricalTreeCanvas({
               width={layout.width}
               height={layout.height}
             >
-              {layout.edges.filter((edge) => edge.relationship === 'MEASURES' && (
+              {layout.edges.filter((edge) => edge.relationship === 'MEASURES'
+                && edge.sourceNodeId !== edge.targetNodeId && (
                 edge.sourceNodeId === selectedNode?.id || edge.targetNodeId === selectedNode?.id
               )).map((edge) => {
                 const source = layoutById.get(edge.sourceNodeId);
@@ -1449,7 +1458,7 @@ export function ElectricalTreeCanvas({
               <div className="min-h-0 overflow-y-auto px-3 py-2.5 text-xs leading-4 text-[var(--text-sub)]">
                 <dl className="space-y-1.5">
                   <div><dt className="inline font-extrabold text-[var(--text)]">Location: </dt><dd className="inline">{nodeZone(tree, infoCardNode)}</dd></div>
-                  <div><dt className="inline font-extrabold text-[var(--text)]">{infoCardNode.kind === 'VIRTUAL_RESIDUAL' ? 'Calculated from' : 'Supplied from'}: </dt><dd className="inline">{infoCardParent ? <button type="button" className="font-bold text-[var(--primary)] underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(infoCardParent.id)}>{nodeTitle(infoCardParent)}</button> : 'Grid root'}</dd></div>
+                  <div><dt className="inline font-extrabold text-[var(--text)]">{infoCardNode.kind === 'VIRTUAL_RESIDUAL' ? 'Calculated from' : 'Supplied from'}: </dt><dd className="inline">{infoCardParent ? <button type="button" className="font-bold text-[var(--primary)] underline-offset-2 hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]" onClick={() => revealNode(infoCardParent.id)}>{nodeTitle(infoCardParent)}</button> : infoCardNode.kind === 'GRID' ? 'Grid root' : 'Branch root — upstream not shown'}</dd></div>
                   <div><dt className="inline font-extrabold text-[var(--text)]">Load: </dt><dd className="inline">{infoCardInteraction.loadLabels.length ? compactList(infoCardInteraction.loadLabels, 2) : infoCardNode.typeLabel || 'No confirmed load label'}</dd></div>
                 </dl>
                 <p className="mt-2 border-y border-[var(--border)] py-2 font-bold text-[var(--text)]">{infoCardInteraction.downstreamLoadCount} load{infoCardInteraction.downstreamLoadCount === 1 ? '' : 's'} · {infoCardInteraction.meterCount} meter{infoCardInteraction.meterCount === 1 ? '' : 's'} · {infoCardInteraction.assignedChannelCount} mapped channel{infoCardInteraction.assignedChannelCount === 1 ? '' : 's'}</p>
@@ -1472,7 +1481,7 @@ export function ElectricalTreeCanvas({
         <div id="electrical-tree-key" className="border-t border-[var(--border)] bg-white px-4 py-4" aria-labelledby="electrical-tree-key-heading">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h4 id="electrical-tree-key-heading" className="text-sm font-extrabold text-[var(--text)]">How to read this map</h4>
-            <p className="text-[11px] text-[var(--text-sub)]">Every schematic symbol represents one confirmed item · select one for a compact summary</p>
+            <p className="text-[11px] text-[var(--text-sub)]">Every schematic symbol represents one known item · only trustworthy connections are drawn</p>
           </div>
           <div className="mt-3 grid gap-4 lg:grid-cols-[0.8fr_1.5fr_1.2fr]">
             <section aria-labelledby="electrical-node-symbols-heading">
@@ -1506,6 +1515,7 @@ export function ElectricalTreeCanvas({
                   <li className="flex items-center gap-2"><span className="h-0 w-9 shrink-0 border-t-[3px] border-[#B66A2C]" /><span><strong className="text-[var(--text)]">Supplied from</strong> · straight confirmed connection</span></li>
                   <li className="flex items-center gap-2"><span className="h-0 w-9 shrink-0 border-t-[3px] border-dashed border-[var(--primary)] opacity-60" /><span><strong className="text-[var(--text)]">Meter link</strong> · appears when a connected item is selected</span></li>
                   <li className="flex items-center gap-2"><span className="h-0 w-9 shrink-0 border-t-2 border-dotted border-[var(--text-sub)]" /><span><strong className="text-[var(--text)]">Calculated remainder</strong> · virtual, not a physical cable</span></li>
+                  <li className="flex items-center gap-2"><span className="rounded-full border border-[#A16207]/30 bg-[#FEF3C7] px-2 py-0.5 text-[8px] font-extrabold uppercase text-[#854D0E]">Upstream unknown</span><span><strong className="text-[var(--text)]">Partial branch root</strong> · known item, connection not shown</span></li>
                 </ul>
               </div>
               <div aria-labelledby="electrical-status-heading">
@@ -1518,7 +1528,7 @@ export function ElectricalTreeCanvas({
               </div>
             </section>
           </div>
-          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> click or tap a symbol to show the one compact summary card; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Press and hold a symbol before dragging it, then save the layout for reports; Arrange items also enables keyboard movement.' : ''} Items still to be confirmed stay outside this client view.</p>
+          <p className="mt-3 border-t border-[var(--border)] pt-3 text-[10px] leading-4 text-[var(--text-sub)]"><strong className="text-[var(--text)]">Explore:</strong> click or tap a symbol to show the one compact summary card; use arrow, Home, and End keys between items; drag the background or use Touch pan to move the view; double-click to fit.{onSaveLayout ? ' Press and hold a symbol before dragging it, then save the layout for reports; Arrange items also enables keyboard movement.' : ''} To be confirmed items remain visible when possible; their unverified connections are omitted.</p>
         </div>
       </section>
     </div>

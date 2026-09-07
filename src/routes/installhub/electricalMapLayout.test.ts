@@ -51,7 +51,7 @@ test('electrical map layout validation rejects stale, duplicate and out-of-canva
   assert.equal(validStoredElectricalMapLayout({ version: 2 }), undefined);
 });
 
-test('client electrical map IDs include only confirmed grid-reachable items', () => {
+test('client electrical map IDs retain every known node while relationships stay edge-driven', () => {
   const nodeIds = clientElectricalMapNodeIds({
     nodes: [
       { id: 'grid', kind: 'GRID' },
@@ -71,5 +71,12 @@ test('client electrical map IDs include only confirmed grid-reachable items', ()
       { subjectType: 'BOARD', subjectId: 'orphan-board' },
     ],
   });
-  assert.deepEqual([...nodeIds].sort(), ['asset', 'board', 'grid', 'residual']);
+  assert.deepEqual([...nodeIds].sort(), [
+    'asset',
+    'board',
+    'grid',
+    'orphan-board',
+    'residual',
+    'tbc-asset',
+  ]);
 });

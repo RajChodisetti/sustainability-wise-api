@@ -56,7 +56,11 @@ import {
   type InstallHubCanonicalReport,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
-import { renderElectricalMapImages } from './electricalMapImage.js';
+import {
+  buildElectricalMapSvg,
+  renderElectricalMapImages,
+  renderElectricalMapPngBuffer,
+} from './electricalMapImage.js';
 import {
   INSTALLHUB_REPORT_DEFINITION_BY_TYPE,
   INSTALLHUB_REPORT_MANIFEST_VERSION,
@@ -162,6 +166,38 @@ export function requestedRecordVersion(value: unknown): number | undefined {
     throw badRequest('recordVersionNumber must be a positive integer');
   }
   return result;
+}
+
+export type InstallHubElectricalMapDownloadFormat = 'png' | 'svg';
+
+export function requestedElectricalMapDownloadFormat(
+  value: unknown,
+): InstallHubElectricalMapDownloadFormat {
+  if (value === undefined || value === null || value === '') return 'png';
+  if (value === 'png' || value === 'svg') return value;
+  throw badRequest('format must be png or svg');
+}
+
+export async function buildElectricalMapDownloadArtifact(input: {
+  report: InstallHubCanonicalReport;
+  siteName: string;
+  format: InstallHubElectricalMapDownloadFormat;
+}): Promise<{
+  body: Buffer;
+  contentType: 'image/png' | 'image/svg+xml';
+  filename: string;
+}> {
+  const sourceSuffix = input.report.recordVersionNumber == null
+    ? `revision-${input.report.treeRevision}`
+    : `version-${input.report.recordVersionNumber}`;
+  const filename = `${sanitizeStorageSegment(input.siteName)}-electrical-map-${sourceSuffix}.${input.format}`;
+  return {
+    body: input.format === 'svg'
+      ? Buffer.from(buildElectricalMapSvg(input.report, input.siteName), 'utf8')
+      : await renderElectricalMapPngBuffer(input.report, input.siteName),
+    contentType: input.format === 'svg' ? 'image/svg+xml' : 'image/png',
+    filename,
+  };
 }
 
 export function requestedLiveMode(value: unknown): boolean {
@@ -1041,7 +1077,98 @@ const protectedPdfRoute = [
   requireRole('inspector'),
 ];
 
+export type InstallHubElectricalMapDownloadDependencies = {
+  loadInstallation: typeof loadInstallation;
+  loadCurrentTree: typeof loadCanonicalInstallationTree;
+  loadRecordVersion: typeof loadCanonicalRecordVersion;
+  buildArtifact: typeof buildElectricalMapDownloadArtifact;
+};
+
+const electricalMapDownloadDependencies: InstallHubElectricalMapDownloadDependencies = {
+  loadInstallation,
+  loadCurrentTree: loadCanonicalInstallationTree,
+  loadRecordVersion: loadCanonicalRecordVersion,
+  buildArtifact: buildElectricalMapDownloadArtifact,
+};
+
+/** Exported for route-level tests with isolated persistence dependencies. */
+export function registerInstallHubElectricalMapDownloadRoute(
+  app: FastifyInstance,
+  dependencies: InstallHubElectricalMapDownloadDependencies = electricalMapDownloadDependencies,
+): void {
+  app.get('/installations/:installationId/electrical-map', {
+    schema: {
+      tags: ['Field App Complete PDF'],
+      summary: 'Download the current or versioned Field App Complete electrical map',
+      description:
+        'Returns an authenticated PNG or SVG built from every known electrical node and confirmed relationships only. Unresolved items remain visible as disconnected roots; no relationship is inferred for them.',
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['installationId'],
+        properties: {
+          installationId: { type: 'string' },
+        },
+      },
+      querystring: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          format: { type: 'string', enum: ['png', 'svg'], default: 'png' },
+          recordVersionNumber: {
+            anyOf: [
+              { type: 'integer', minimum: 1 },
+              { type: 'string', pattern: '^[1-9][0-9]*$' },
+            ],
+          },
+        },
+      },
+    },
+    preHandler: protectedPdfRoute,
+  }, async (request, reply) => {
+    const { installationId } = request.params as { installationId: string };
+    const query = request.query as {
+      format?: unknown;
+      recordVersionNumber?: unknown;
+    };
+    const format = requestedElectricalMapDownloadFormat(query.format);
+    const recordVersionNumber = requestedRecordVersion(query.recordVersionNumber);
+    const installation = await dependencies.loadInstallation(installationId);
+    assertInstallationAccess(installation, request.user);
+
+    const pinned = recordVersionNumber === undefined
+      ? null
+      : await dependencies.loadRecordVersion({ installationId, versionNumber: recordVersionNumber });
+    if (recordVersionNumber !== undefined && !pinned) {
+      throw notFound('Installation record version');
+    }
+    const liveTree = pinned ? null : await dependencies.loadCurrentTree(installationId);
+    if (!pinned && !liveTree) throw notFound('Installation');
+    const report = pinned
+      ? pinnedCanonicalReport(pinned.snapshot)
+      : liveDiagnosticCanonicalReport(liveTree!);
+    const siteName = pinned?.snapshot.installationTree.installation.siteName
+      ?? liveTree!.installation.siteName;
+    const artifact = await dependencies.buildArtifact({ report, siteName, format });
+
+    reply
+      .header('Cache-Control', 'private, no-store')
+      .header('Content-Disposition', `attachment; filename="${artifact.filename}"`)
+      .header('Content-Type', artifact.contentType)
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('X-InstallHub-Map-Source', report.reportSource)
+      .header('X-InstallHub-Tree-Revision', String(report.treeRevision));
+    if (report.recordVersionNumber !== null) {
+      reply.header('X-InstallHub-Record-Version', String(report.recordVersionNumber));
+    }
+    return reply.send(artifact.body);
+  });
+}
+
 export async function installhubPdfRoutes(app: FastifyInstance): Promise<void> {
+  registerInstallHubElectricalMapDownloadRoute(app);
+
   app.post('/installations/:installationId/forms/:formId/report/pdf/jobs', {
     schema: {
       tags: ['Field App Complete PDF'],

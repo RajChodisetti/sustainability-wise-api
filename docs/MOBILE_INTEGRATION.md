@@ -438,6 +438,31 @@ media included in a snapshot keeps its exact registry identity and is
 immutable. Metadata-stage pushes are intentionally excluded. File and version
 reads apply the same creator/assigned-inspector/elevated access rule as pull.
 
+### Electrical-map image download
+
+| Method and route | Purpose |
+|---|---|
+| `GET /v1/installhub/installations/:installationId/electrical-map?format=png\|svg&recordVersionNumber=...` | Download the current or exact-version electrical map for native preview/share |
+
+Use an `installhub` inspector-or-higher Bearer token; creator, assigned
+inspector, or elevated installation access is required. `format` defaults to
+`png`. Leave out `recordVersionNumber` for the current diagnostic tree, or send
+a positive saved version number for that exact immutable snapshot. The response
+is an attachment with `image/png` or `image/svg+xml`, `Cache-Control: private,
+no-store`, `X-InstallHub-Map-Source`, `X-InstallHub-Tree-Revision`, and (for a
+saved version) `X-InstallHub-Record-Version`.
+
+The route remains available while capture is partial: readiness, optional
+mapping issues, and missing upstream data do not block it. It displays every
+known node using the report renderer and shared electrical icon catalog. Only
+safe confirmed supply edges are drawn; unresolved or unknown endpoints,
+competing parents, self-links, and cycles stay disconnected and are never
+replaced with inferred wiring. Disconnected roots are labelled `Upstream not
+shown`. The static image draws every confirmed non-self measurement relationship
+as a blue dashed overlay with a white readability halo; exact duplicate pairs
+collapse to one line. Main-supply self-measurement remains valid model data but
+is not drawn as a visual loop.
+
 ### Form and installation-pack PDF jobs
 
 | Method and route | Purpose |

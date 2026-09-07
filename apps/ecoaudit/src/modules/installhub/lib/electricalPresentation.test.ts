@@ -118,7 +118,7 @@ test('electrical hierarchy uses FED_FROM for nesting and MEASURES only as an ove
   assert.deepEqual(filterElectricalHierarchyRows(rows, 'Chiller').map((row) => row.node.id), ['grid-1', 'board-1', 'asset-1']);
 });
 
-test('resolved electrical topology excludes TBC subjects and dependent islands from the map', () => {
+test('resolved electrical topology keeps a safe partial forest while omitting unsafe relationships', () => {
   const model: ElectricalTreeReadModel = {
     installationId: 'installation-1',
     treeRevision: 2,
@@ -128,6 +128,9 @@ test('resolved electrical topology excludes TBC subjects and dependent islands f
       { id: 'asset-resolved', kind: 'SITE_ASSET', name: 'Resolved asset' },
       { id: 'board-tbc', kind: 'BOARD', name: 'TBC board' },
       { id: 'board-invalid', kind: 'BOARD', name: 'Invalid board' },
+      { id: 'board-ambiguous', kind: 'BOARD', name: 'Ambiguous board' },
+      { id: 'board-cycle-a', kind: 'BOARD', name: 'Cycle A' },
+      { id: 'board-cycle-b', kind: 'BOARD', name: 'Cycle B' },
       { id: 'asset-dependent', kind: 'SITE_ASSET', name: 'Depends on TBC board' },
       { id: 'asset-metering-tbc', kind: 'SITE_ASSET', name: 'Metering TBC', coverageState: 'TBC' },
       { id: 'virtual-resolved', kind: 'VIRTUAL_RESIDUAL', name: 'Resolved residual', parentNodeId: 'board-resolved' },
@@ -135,12 +138,19 @@ test('resolved electrical topology excludes TBC subjects and dependent islands f
     ],
     edges: [
       { id: 'supply-1', sourceNodeId: 'grid-1', targetNodeId: 'board-resolved', relationship: 'FED_FROM' },
+      { id: 'supply-1', sourceNodeId: 'grid-1', targetNodeId: 'board-tbc', relationship: 'FED_FROM' },
       { id: 'supply-2', sourceNodeId: 'board-resolved', targetNodeId: 'asset-resolved', relationship: 'FED_FROM' },
+      { id: 'supply-2-duplicate', sourceNodeId: 'board-resolved', targetNodeId: 'asset-resolved', relationship: 'FED_FROM' },
+      { id: 'ambiguous-a', sourceNodeId: 'grid-1', targetNodeId: 'board-ambiguous', relationship: 'FED_FROM' },
+      { id: 'ambiguous-b', sourceNodeId: 'board-resolved', targetNodeId: 'board-ambiguous', relationship: 'FED_FROM' },
+      { id: 'cycle-a', sourceNodeId: 'board-cycle-b', targetNodeId: 'board-cycle-a', relationship: 'FED_FROM' },
+      { id: 'cycle-b', sourceNodeId: 'board-cycle-a', targetNodeId: 'board-cycle-b', relationship: 'FED_FROM' },
       { id: 'stale-supply', sourceNodeId: 'grid-1', targetNodeId: 'board-tbc', relationship: 'FED_FROM' },
       { id: 'invalid-supply', sourceNodeId: 'grid-1', targetNodeId: 'board-invalid', relationship: 'FED_FROM' },
       { id: 'dependent-supply', sourceNodeId: 'board-tbc', targetNodeId: 'asset-dependent', relationship: 'FED_FROM' },
       { id: 'metering-tbc-supply', sourceNodeId: 'board-resolved', targetNodeId: 'asset-metering-tbc', relationship: 'FED_FROM' },
       { id: 'measure-resolved', sourceNodeId: 'board-resolved', targetNodeId: 'asset-resolved', relationship: 'MEASURES' },
+      { id: 'measure-main-self', sourceNodeId: 'board-resolved', targetNodeId: 'board-resolved', relationship: 'MEASURES' },
       { id: 'measure-unresolved-island', sourceNodeId: 'board-tbc', targetNodeId: 'asset-dependent', relationship: 'MEASURES' },
     ],
     unresolved: [
@@ -168,13 +178,29 @@ test('resolved electrical topology excludes TBC subjects and dependent islands f
     'grid-1',
     'board-resolved',
     'asset-resolved',
+    'board-tbc',
+    'board-invalid',
+    'board-ambiguous',
+    'board-cycle-a',
+    'board-cycle-b',
+    'asset-dependent',
+    'asset-metering-tbc',
     'virtual-resolved',
+    'virtual-unresolved',
   ]);
   assert.deepEqual(resolved?.edges.map((edge) => edge.id), [
     'supply-1',
     'supply-2',
+    'dependent-supply',
+    'metering-tbc-supply',
     'measure-resolved',
+    'measure-main-self',
+    'measure-unresolved-island',
   ]);
+  assert.equal(resolved?.edges.filter((edge) => edge.id === 'supply-1').length, 1);
+  assert.equal(resolved?.edges.filter((edge) => edge.relationship === 'FED_FROM' && edge.sourceNodeId === 'board-resolved' && edge.targetNodeId === 'asset-resolved').length, 1);
+  assert.equal(resolved?.edges.some((edge) => edge.targetNodeId === 'board-ambiguous'), false);
+  assert.equal(resolved?.edges.some((edge) => edge.id === 'cycle-a' || edge.id === 'cycle-b'), false);
   assert.deepEqual(resolved?.unresolved, []);
   assert.equal(model.unresolved.length, 2, 'the source model remains unchanged');
   assert.deepEqual(unresolvedElectricalRecords(model).map((item) => item.id), [

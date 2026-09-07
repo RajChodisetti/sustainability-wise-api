@@ -1,20 +1,104 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import Fastify from 'fastify';
+import { signAccessToken } from '../../auth/jwt.js';
 import {
   assertAuthoritativeCanonicalSnapshot,
   assertPinnedOrExplicitLive,
   assertPinnedSnapshotProvenance,
+  buildElectricalMapDownloadArtifact,
   installHubChannelLoadLabel,
+  installhubPdfRoutes,
   liveDiagnosticCanonicalReport,
+  registerInstallHubElectricalMapDownloadRoute,
   installHubReportVariantKey,
   pinnedCanonicalReport,
   pinnedPhotoMatchesManifest,
+  requestedElectricalMapDownloadFormat,
   requestedLiveMode,
   requestedReportDetailMode,
   requestedRecordVersion,
+  type InstallHubElectricalMapDownloadDependencies,
 } from './pdf.js';
 import type { CanonicalInstallationTree } from './canonical.js';
 import { buildCanonicalSnapshotPayload } from './treeService.js';
+
+const electricalMapUrl = '/v1/installhub/installations/installation-1/electrical-map';
+
+function bearer(input: {
+  userId: string;
+  app: 'ecoaudit' | 'installhub';
+  role: 'admin' | 'inspector' | 'viewer';
+}): { authorization: string } {
+  return { authorization: `Bearer ${signAccessToken(input)}` };
+}
+
+async function withPdfRouteApp(
+  run: (app: ReturnType<typeof Fastify>) => Promise<void>,
+): Promise<void> {
+  const app = Fastify();
+  await app.register(installhubPdfRoutes, { prefix: '/v1/installhub' });
+  await app.ready();
+  try {
+    await run(app);
+  } finally {
+    await app.close();
+  }
+}
+
+async function withElectricalMapRouteApp(
+  dependencies: InstallHubElectricalMapDownloadDependencies,
+  run: (app: ReturnType<typeof Fastify>) => Promise<void>,
+): Promise<void> {
+  const app = Fastify();
+  await app.register(async (scoped) => {
+    registerInstallHubElectricalMapDownloadRoute(scoped, dependencies);
+  }, { prefix: '/v1/installhub' });
+  await app.ready();
+  try {
+    await run(app);
+  } finally {
+    await app.close();
+  }
+}
+
+function electricalMapRouteTree(input: {
+  recordVersionNumber?: number;
+  treeRevision?: number;
+  siteName?: string;
+} = {}): CanonicalInstallationTree {
+  return {
+    treeSchemaVersion: 2,
+    installation: {
+      id: 'installation-1',
+      externalKey: 'external-1',
+      siteCode: 'SITE',
+      timezone: 'Australia/Sydney',
+      clientName: 'Example Client',
+      siteName: input.siteName ?? 'Example Site',
+      siteAddress: '1 Example Street',
+      inspectorName: 'Inspector',
+      auditDate: '2026-09-07',
+      status: 'Draft',
+      treeSchemaVersion: 2,
+      treeRevision: input.treeRevision ?? 11,
+      recordVersionNumber: input.recordVersionNumber ?? 0,
+    },
+    gridSupplies: [{
+      id: 'grid-1',
+      installationId: 'installation-1',
+      name: 'Grid',
+      isDefault: true,
+    }],
+    zones: [],
+    electricalAssets: [],
+    siteAssets: [],
+    meterDevices: [],
+    measurementAssignments: [],
+    formSubmissions: [],
+    serverDerived: { virtualMeterDefinitions: [] },
+  };
+}
 
 test('pinned reports require exact registry identity and checksum', () => {
   const manifest = {
@@ -48,6 +132,199 @@ test('authoritative reports require a version and live diagnostics are explicit'
     recordVersionNumber: 7,
     liveMode: true,
   }));
+});
+
+test('electrical-map downloads accept only PNG/SVG and positive record versions', () => {
+  assert.equal(requestedElectricalMapDownloadFormat(undefined), 'png');
+  assert.equal(requestedElectricalMapDownloadFormat('png'), 'png');
+  assert.equal(requestedElectricalMapDownloadFormat('svg'), 'svg');
+  assert.throws(() => requestedElectricalMapDownloadFormat('jpeg'));
+  assert.throws(() => requestedRecordVersion('0'));
+  assert.throws(() => requestedRecordVersion('-1'));
+});
+
+test('electrical-map SVG artifacts use bounded source-aware attachment names', async () => {
+  const report = liveDiagnosticCanonicalReport(electricalMapRouteTree({
+    treeRevision: 23,
+    siteName: 'Map / Site',
+  }));
+  const artifact = await buildElectricalMapDownloadArtifact({
+    report,
+    siteName: 'Map / Site',
+    format: 'svg',
+  });
+  assert.equal(artifact.contentType, 'image/svg+xml');
+  assert.equal(artifact.filename, 'map-site-electrical-map-revision-23.svg');
+  assert.match(artifact.body.toString('utf8'), /^<svg /);
+  assert.match(artifact.body.toString('utf8'), /data-node-id="grid-1"/);
+});
+
+test('electrical-map download route enforces authentication, app, role, format and version boundaries', async () => {
+  await withPdfRouteApp(async (app) => {
+    const unauthenticated = await app.inject({ method: 'GET', url: electricalMapUrl });
+    assert.equal(unauthenticated.statusCode, 401, unauthenticated.body);
+
+    const wrongApp = await app.inject({
+      method: 'GET',
+      url: electricalMapUrl,
+      headers: bearer({ userId: 'eco-admin', app: 'ecoaudit', role: 'admin' }),
+    });
+    assert.equal(wrongApp.statusCode, 403, wrongApp.body);
+
+    const viewer = await app.inject({
+      method: 'GET',
+      url: electricalMapUrl,
+      headers: bearer({ userId: 'field-viewer', app: 'installhub', role: 'viewer' }),
+    });
+    assert.equal(viewer.statusCode, 403, viewer.body);
+
+    const adminHeaders = bearer({ userId: 'field-admin', app: 'installhub', role: 'admin' });
+    const invalidFormat = await app.inject({
+      method: 'GET',
+      url: `${electricalMapUrl}?format=jpeg`,
+      headers: adminHeaders,
+    });
+    assert.equal(invalidFormat.statusCode, 400, invalidFormat.body);
+
+    const invalidVersion = await app.inject({
+      method: 'GET',
+      url: `${electricalMapUrl}?recordVersionNumber=0`,
+      headers: adminHeaders,
+    });
+    assert.equal(invalidVersion.statusCode, 400, invalidVersion.body);
+  });
+});
+
+test('electrical-map route authorizes an assigned inspector and serves the live partial map', async () => {
+  const liveTree = electricalMapRouteTree({ treeRevision: 19, siteName: 'Live Site' });
+  let currentTreeLoads = 0;
+  let artifactInput: Parameters<InstallHubElectricalMapDownloadDependencies['buildArtifact']>[0]
+    | undefined;
+  const installation = {
+    createdByUserId: 'field-owner',
+    assignedInspectorUserId: 'field-assignee',
+  } as Awaited<ReturnType<InstallHubElectricalMapDownloadDependencies['loadInstallation']>>;
+  const dependencies: InstallHubElectricalMapDownloadDependencies = {
+    loadInstallation: async () => installation,
+    loadCurrentTree: async () => {
+      currentTreeLoads += 1;
+      return liveTree;
+    },
+    loadRecordVersion: async () => null,
+    buildArtifact: async (input) => {
+      artifactInput = input;
+      return {
+        body: Buffer.from('live-map'),
+        contentType: 'image/png',
+        filename: 'live-site-electrical-map-revision-19.png',
+      };
+    },
+  };
+
+  await withElectricalMapRouteApp(dependencies, async (app) => {
+    const denied = await app.inject({
+      method: 'GET',
+      url: electricalMapUrl,
+      headers: bearer({ userId: 'other-inspector', app: 'installhub', role: 'inspector' }),
+    });
+    assert.equal(denied.statusCode, 403, denied.body);
+    assert.equal(currentTreeLoads, 0);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: electricalMapUrl,
+      headers: bearer({ userId: 'field-assignee', app: 'installhub', role: 'inspector' }),
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.rawPayload.toString('utf8'), 'live-map');
+    assert.equal(response.headers['content-type'], 'image/png');
+    assert.equal(
+      response.headers['content-disposition'],
+      'attachment; filename="live-site-electrical-map-revision-19.png"',
+    );
+    assert.equal(response.headers['cache-control'], 'private, no-store');
+    assert.equal(response.headers['x-content-type-options'], 'nosniff');
+    assert.equal(response.headers['x-installhub-map-source'], 'diagnostic-live');
+    assert.equal(response.headers['x-installhub-tree-revision'], '19');
+    assert.equal(response.headers['x-installhub-record-version'], undefined);
+    assert.equal(currentTreeLoads, 1);
+    assert.equal(artifactInput?.format, 'png');
+    assert.equal(artifactInput?.siteName, 'Live Site');
+    assert.equal(artifactInput?.report.reportSource, 'diagnostic-live');
+    assert.equal(artifactInput?.report.authoritative, false);
+  });
+});
+
+test('electrical-map route loads the exact requested version without requiring current readiness', async () => {
+  const pinnedTree = electricalMapRouteTree({
+    recordVersionNumber: 7,
+    treeRevision: 17,
+    siteName: 'Pinned Site',
+  });
+  const snapshot = buildCanonicalSnapshotPayload({ tree: pinnedTree, mediaManifest: [] });
+  const recordVersionLoads: Array<{ installationId: string; versionNumber?: number }> = [];
+  let currentTreeLoads = 0;
+  let artifactInput: Parameters<InstallHubElectricalMapDownloadDependencies['buildArtifact']>[0]
+    | undefined;
+  const installation = {
+    createdByUserId: 'field-owner',
+    assignedInspectorUserId: null,
+  } as Awaited<ReturnType<InstallHubElectricalMapDownloadDependencies['loadInstallation']>>;
+  const dependencies: InstallHubElectricalMapDownloadDependencies = {
+    loadInstallation: async () => installation,
+    loadCurrentTree: async () => {
+      currentTreeLoads += 1;
+      return electricalMapRouteTree();
+    },
+    loadRecordVersion: async (input) => {
+      recordVersionLoads.push({
+        installationId: input.installationId,
+        versionNumber: input.versionNumber,
+      });
+      return input.versionNumber === 7
+        ? { versionNumber: 7, createdAt: '2026-09-07T00:00:00.000Z', snapshot }
+        : null;
+    },
+    buildArtifact: async (input) => {
+      artifactInput = input;
+      return {
+        body: Buffer.from('<svg id="pinned-map"/>'),
+        contentType: 'image/svg+xml',
+        filename: 'pinned-site-electrical-map-version-7.svg',
+      };
+    },
+  };
+
+  await withElectricalMapRouteApp(dependencies, async (app) => {
+    const response = await app.inject({
+      method: 'GET',
+      url: `${electricalMapUrl}?format=svg&recordVersionNumber=7`,
+      headers: bearer({ userId: 'field-owner', app: 'installhub', role: 'inspector' }),
+    });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.rawPayload.toString('utf8'), '<svg id="pinned-map"/>');
+    assert.equal(response.headers['content-type'], 'image/svg+xml');
+    assert.equal(response.headers['x-installhub-map-source'], 'canonical-version');
+    assert.equal(response.headers['x-installhub-tree-revision'], '17');
+    assert.equal(response.headers['x-installhub-record-version'], '7');
+    assert.equal(currentTreeLoads, 0);
+    assert.deepEqual(recordVersionLoads, [{
+      installationId: 'installation-1',
+      versionNumber: 7,
+    }]);
+    assert.equal(artifactInput?.format, 'svg');
+    assert.equal(artifactInput?.siteName, 'Pinned Site');
+    assert.equal(artifactInput?.report.reportSource, 'canonical-version');
+    assert.equal(artifactInput?.report.recordVersionNumber, 7);
+
+    const missing = await app.inject({
+      method: 'GET',
+      url: `${electricalMapUrl}?recordVersionNumber=8`,
+      headers: bearer({ userId: 'field-owner', app: 'installhub', role: 'inspector' }),
+    });
+    assert.equal(missing.statusCode, 404, missing.body);
+    assert.equal(currentTreeLoads, 0);
+  });
 });
 
 test('installation-pack detail mode and durable variant normalize deterministically', () => {

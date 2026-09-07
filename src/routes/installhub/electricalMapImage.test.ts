@@ -15,7 +15,10 @@ import {
   ELECTRICAL_MAP_DETAIL_TILE_VERTICAL_OVERLAP_PX,
   planElectricalMapRender,
   renderElectricalMapImages,
+  renderElectricalMapPngBuffer,
   renderElectricalMapPngDataUri,
+  safeElectricalMapMeasurementEdges,
+  safeElectricalMapSupplyEdges,
 } from './electricalMapImage.js';
 import type { InstallHubCanonicalReport } from './reportHtml.js';
 
@@ -237,6 +240,86 @@ function largeSupportedReport(assetCount = 125): InstallHubCanonicalReport {
   return tallMultiBoardReport(assetCount);
 }
 
+test('safe supply forest drops ambiguous, self, cyclic, unresolved and missing-endpoint edges', () => {
+  const input = report();
+  input.electricalNodes.push({
+    id: 'cycle-a',
+    kind: 'BOARD',
+    name: 'Cycle A',
+  }, {
+    id: 'cycle-b',
+    kind: 'BOARD',
+    name: 'Cycle B',
+  }, {
+    id: 'ambiguous-board',
+    kind: 'BOARD',
+    name: 'Ambiguous board',
+  }, {
+    id: 'tbc-board',
+    kind: 'BOARD',
+    name: 'TBC board',
+  });
+  input.supplyEdges = [
+    { sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+    { sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+    { sourceNodeId: 'board-1', targetNodeId: 'asset-1', relationship: 'FED_FROM' },
+    { sourceNodeId: 'cycle-a', targetNodeId: 'cycle-b', relationship: 'FED_FROM' },
+    { sourceNodeId: 'cycle-b', targetNodeId: 'cycle-a', relationship: 'FED_FROM' },
+    { sourceNodeId: 'board-1', targetNodeId: 'ambiguous-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'grid-1', targetNodeId: 'ambiguous-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'tbc-board', targetNodeId: 'tbc-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'missing', targetNodeId: 'tbc-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'grid-1', targetNodeId: 'tbc-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'asset-1', targetNodeId: 'tbc-board', relationship: 'FED_FROM' },
+    { sourceNodeId: 'board-1', targetNodeId: 'grid-1', relationship: 'FED_FROM' },
+  ];
+  input.unresolvedRelationships.push({
+    id: 'unresolved-tbc-board',
+    subjectType: 'BOARD',
+    subjectId: 'tbc-board',
+    relation: 'SUPPLY',
+    missingEnd: 'SOURCE',
+    reason: 'TBC',
+  });
+
+  assert.deepEqual(safeElectricalMapSupplyEdges(input), [
+    { sourceNodeId: 'board-1', targetNodeId: 'asset-1', relationship: 'FED_FROM' },
+    { sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+  ]);
+});
+
+test('static measurement overlay keeps unique confirmed non-self relationships only', () => {
+  const input = report();
+  input.electricalNodes.push({
+    id: 'invalid-asset',
+    kind: 'SITE_ASSET',
+    name: 'Unresolved load',
+    coverageState: 'INVALID',
+  });
+  input.measurementEdges = [
+    ...input.measurementEdges,
+    ...input.measurementEdges,
+    { sourceNodeId: 'board-1', targetNodeId: 'board-1', relationship: 'MEASURES' },
+    { sourceNodeId: 'missing-board', targetNodeId: 'asset-1', relationship: 'MEASURES' },
+    { sourceNodeId: 'board-1', targetNodeId: 'missing-load', relationship: 'MEASURES' },
+    { sourceNodeId: 'board-1', targetNodeId: 'invalid-asset', relationship: 'MEASURES' },
+    { sourceNodeId: 'grid-1', targetNodeId: 'board-1', relationship: 'FED_FROM' },
+  ];
+
+  assert.deepEqual(safeElectricalMapMeasurementEdges(input), [{
+    sourceNodeId: 'board-1',
+    targetNodeId: 'asset-1',
+    relationship: 'MEASURES',
+  }]);
+
+  const svg = buildElectricalMapSvg(input, 'Static measurement map');
+  assert.equal((svg.match(/data-measurement-overlay="1"/g) ?? []).length, 1);
+  assert.equal((svg.match(/data-measurement-underlay="1"/g) ?? []).length, 1);
+  assert.match(svg, /data-measurement-source="board-1" data-measurement-target="asset-1"/);
+  assert.match(svg, /data-measurement-source="board-1"[^>]*stroke="#2563EB" stroke-width="2.25" stroke-dasharray="6 7" opacity="0.82"/);
+  assert.doesNotMatch(svg, /data-measurement-source="board-1" data-measurement-target="board-1"/);
+});
+
 type MarkerPlacement = {
   kind: string;
   id: string;
@@ -288,7 +371,7 @@ function assertMarkersDoNotOverlap(svg: string): void {
 }
 
 type ConnectorPlacement = {
-  relationship: 'supply' | 'residual';
+  relationship: 'supply' | 'residual' | 'measurement';
   sourceId: string;
   targetId: string;
   points: Array<{ x: number; y: number }>;
@@ -296,7 +379,7 @@ type ConnectorPlacement = {
 
 function connectorPlacements(svg: string): ConnectorPlacement[] {
   const connectors: ConnectorPlacement[] = [];
-  for (const relationship of ['supply', 'residual'] as const) {
+  for (const relationship of ['supply', 'residual', 'measurement'] as const) {
     const pattern = new RegExp(
       `<path data-${relationship}-source="([^"]+)" data-${relationship}-target="([^"]+)"[^>]*data-route-points="([^"]+)"`,
       'g',
@@ -444,7 +527,7 @@ test('hierarchical visual markers do not overlap across representative topologie
   }
 });
 
-test('electrical supply uses short box-clipped copper paths and measurement stays local', () => {
+test('electrical supply and static measurement overlays use bounded deterministic paths', () => {
   for (const input of [
     deepHierarchyReport(),
     tallMultiBoardReport(6),
@@ -460,8 +543,9 @@ test('electrical supply uses short box-clipped copper paths and measurement stay
     assert.match(svg, /data-connector-style="straight"/);
     assert.doesNotMatch(svg, /data-connector-style="(?:curved|radial)"/);
     assert.doesNotMatch(svg, /data-supply-source="[^"]+"[^>]* d="[^"]+ C/);
-    assert.doesNotMatch(svg, /data-measurement-source=|data-measurement-self-loop=/);
-    assert.doesNotMatch(svg, /stroke="#2563EB"[^>]*stroke-dasharray/);
+    assert.match(svg, /data-measurement-source=/);
+    assert.match(svg, /stroke="#2563EB"[^>]*stroke-dasharray="6 7"/);
+    assert.doesNotMatch(svg, /data-measurement-self-loop=/);
     assertAutomaticConnectorsAreClearAndBounded(svg);
   }
 });
@@ -480,7 +564,8 @@ test('the compact key explains supply, local metering, residuals and coverage', 
   ]) {
     assert.ok(svg.includes(label), `the diagram key must name ${label}`);
   }
-  assert.doesNotMatch(svg, /NODE SYMBOLS|LOAD SYMBOLS|Meter measures/);
+  assert.doesNotMatch(svg, /NODE SYMBOLS|LOAD SYMBOLS/);
+  assert.match(svg, /Meter measures/);
   assert.match(svg, /data-node-kind="SITE_ASSET"[\s\S]{0,1500}?fill="#DCFCE7"/);
 });
 
@@ -525,8 +610,9 @@ test('electrical map SVG is deterministic, levelled, centered and visually expla
   assert.match(first, /Load · AC \/ HVAC/);
   assert.match(first, /stroke="#B87333" stroke-width="3.5"/);
   assert.match(first, /data-supply-source="grid-1"[^>]*d="M[^"]+ L/);
-  assert.doesNotMatch(first, /data-meter-module=|data-measurement-source=|data-measurement-self-loop=/);
-  assert.doesNotMatch(first, /stroke="#2563EB"[^>]*stroke-dasharray/);
+  assert.doesNotMatch(first, /data-meter-module=|data-measurement-self-loop=/);
+  assert.match(first, /data-measurement-source="board-1" data-measurement-target="asset-1"/);
+  assert.match(first, /stroke="#2563EB"[^>]*stroke-dasharray="6 7"/);
   assert.match(first, /stroke="#64748B"[^>]*stroke-dasharray="2 7"/);
   assert.match(first, /Supplied from/);
   assert.match(first, /Calculated residual/);
@@ -684,27 +770,39 @@ test('an incomplete saved layout falls back wholly to deterministic auto-arrange
   assert.doesNotMatch(first, /data-saved-layout-backdrop/);
 });
 
-test('saved PDF arrangements use the same confirmed client node set as the portal', () => {
+test('partial forests retain known disconnected nodes without inventing upstream edges', () => {
   const saved = report();
   saved.electricalNodes.push({
+    id: 'orphan-board',
+    kind: 'BOARD',
+    name: 'Detached distribution board',
+    typeCode: 'DB',
+    displayCode: 'SITE-DB-099',
+    physicalLocationId: 'zone-1',
+  }, {
     id: 'invalid-asset',
     kind: 'SITE_ASSET',
-    name: 'Broken legacy load',
+    name: 'Partially captured load',
     typeCode: 'OTHER',
     coverageState: 'INVALID',
+    physicalLocationId: 'zone-1',
   });
   saved.supplyEdges.push({
-    sourceNodeId: 'board-1',
+    sourceNodeId: 'orphan-board',
     targetNodeId: 'invalid-asset',
+    relationship: 'FED_FROM',
+  }, {
+    sourceNodeId: 'missing-upstream',
+    targetNodeId: 'orphan-board',
     relationship: 'FED_FROM',
   });
   saved.unresolvedRelationships.push({
-    id: 'unresolved-invalid-asset',
-    subjectType: 'SITE_ASSET',
-    subjectId: 'invalid-asset',
+    id: 'unresolved-orphan-board',
+    subjectType: 'BOARD',
+    subjectId: 'orphan-board',
     relation: 'SUPPLY',
-    missingEnd: 'TARGET',
-    reason: 'INVALID',
+    missingEnd: 'SOURCE',
+    reason: 'ORPHAN',
   });
   saved.electricalMapLayout = {
     version: 1,
@@ -717,10 +815,16 @@ test('saved PDF arrangements use the same confirmed client node set as the porta
     ],
   };
 
-  const svg = buildElectricalMapSvg(saved, 'Confirmed client map');
-  assert.match(svg, /data-layout-source="saved"/);
-  assert.doesNotMatch(svg, /data-node-id="invalid-asset"/);
-  assert.equal(markerPlacements(svg).length, saved.electricalMapLayout.nodes.length);
+  const svg = buildElectricalMapSvg(saved, 'Partial client map');
+  assert.match(svg, /data-layout-source="auto"/);
+  assert.match(svg, /data-node-id="orphan-board"/);
+  assert.match(svg, /data-node-id="invalid-asset"/);
+  assert.match(svg, /data-supply-source="orphan-board"[^>]*data-supply-target="invalid-asset"/);
+  assert.doesNotMatch(svg, /data-supply-source="missing-upstream"/);
+  assert.match(svg, /Upstream not shown/);
+  assert.match(svg, /confirmed connections only/);
+  assert.equal(markerPlacements(svg).length, saved.electricalNodes.length);
+  assertMarkersDoNotOverlap(svg);
 });
 
 test('electrical map rasterizes to a deterministic PNG data URI', async () => {
@@ -728,6 +832,9 @@ test('electrical map rasterizes to a deterministic PNG data URI', async () => {
   const second = await renderElectricalMapPngDataUri(report(), 'Example site');
   assert.equal(second, first);
   assert.match(first, /^data:image\/png;base64,iVBOR/);
+  const buffer = await renderElectricalMapPngBuffer(report(), 'Example site');
+  assert.equal(buffer.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(first, `data:image/png;base64,${buffer.toString('base64')}`);
 });
 
 test('deep hierarchies retain one overview and add overlapping bounded-width detail tiles', async () => {
@@ -908,6 +1015,7 @@ test('main-supply self measurement stays local without a diagram loop', () => {
   });
   const svg = buildElectricalMapSvg(selfMeasured, 'Main supply');
   assert.match(svg, /data-meter-satellite="meter-1"/);
-  assert.doesNotMatch(svg, /data-measurement-self-loop=|data-measurement-source=/);
-  assert.doesNotMatch(svg, /stroke="#2563EB"[^>]*stroke-dasharray/);
+  assert.match(svg, /data-measurement-source="board-1" data-measurement-target="asset-1"/);
+  assert.doesNotMatch(svg, /data-measurement-self-loop=|data-measurement-source="board-1" data-measurement-target="board-1"/);
+  assert.match(svg, /stroke="#2563EB"[^>]*stroke-dasharray="6 7"/);
 });

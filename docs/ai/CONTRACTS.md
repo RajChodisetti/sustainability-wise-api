@@ -64,6 +64,35 @@ EcoAudit photo ZIP paths follow the mobile report inventory hierarchy. The
 come from zone and equipment records, never entity UUIDs. Duplicate captions get
 deterministic numeric suffixes and all path segments are archive-safe.
 
+### Field App Complete electrical-map download
+
+```text
+GET /v1/installhub/installations/:installationId/electrical-map
+    ?format=png|svg
+    &recordVersionNumber=<positive integer>
+```
+
+The route requires an `installhub` Bearer token, inspector-or-higher role, and
+creator, assigned-inspector, or elevated access to the installation. `format`
+defaults to `png`. Omitting `recordVersionNumber` renders one captured current
+tree as `diagnostic-live`; supplying it renders that exact immutable snapshot
+as `canonical-version`, or returns 404 when the version does not exist. The
+download is an attachment with `image/png` or `image/svg+xml`, `private,
+no-store`, tree-revision/source headers, and a record-version header for a
+versioned map.
+
+Map download is diagnostic and is not gated by completion or report readiness.
+It includes every known canonical node, while drawing only a deterministic safe
+`FED_FROM` forest: both endpoints must exist, unresolved supply targets remain
+disconnected, distinct competing parents are all omitted, exact duplicate
+pairs collapse to one, and self/cyclic supply edges are omitted. A disconnected
+non-Grid root is labelled `Upstream not shown`; no replacement relationship is
+invented. Every confirmed, endpoint-valid, non-self `MEASURES` relationship is
+drawn deterministically as a blue dashed overlay with a white readability halo;
+exact duplicate source/target pairs collapse to one line. Valid main-supply
+self-measurement remains part of the canonical/report model, but the renderer
+suppresses its self-loop line.
+
 ### Field App Complete PDF jobs
 
 Field App Complete queues reports through:
