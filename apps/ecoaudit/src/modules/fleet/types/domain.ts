@@ -147,6 +147,9 @@ export type DeviceObservation = {
   /** Actual customer/site placement, when an exact relationship is known. */
   currentPlacement?: FleetDevicePlacement | null;
   placementConflict?: boolean;
+  /** Whether this Fleet device is referenced by at least one imported Excel Meter Register row. */
+  inMeterRegister?: boolean;
+  meterRegisterEntryCount?: number;
 };
 
 export type PaginatedResponse<T> = {

@@ -11,6 +11,7 @@ import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { FleetStatusBadge, ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
 import { useFleetClients, useFleetDevices } from '@/modules/fleet/hooks/useFleet';
+import { groupFleetDevices, type DeviceGroupBy } from '@/modules/fleet/lib/deviceList';
 import { formatDate, formatDateTime, formatNumber } from '@/modules/fleet/lib/format';
 import { FLEET_STATUSES, type FleetStatus } from '@/modules/fleet/types/domain';
 
@@ -27,6 +28,14 @@ export default function DevicesPage() {
     initialMaas === 'true' || initialMaas === 'false' ? initialMaas : '',
   );
   const [model, setModel] = useState(searchParams.get('model') ?? '');
+  const initialMeterRegister = searchParams.get('meterRegister');
+  const [meterRegister, setMeterRegister] = useState<'' | 'true' | 'false'>(
+    initialMeterRegister === 'true' || initialMeterRegister === 'false' ? initialMeterRegister : '',
+  );
+  const initialGroupBy = searchParams.get('groupBy');
+  const [groupBy, setGroupBy] = useState<DeviceGroupBy>(
+    initialGroupBy === 'client' || initialGroupBy === 'site' ? initialGroupBy : '',
+  );
   const [offset, setOffset] = useState(0);
 
   const clientsQuery = useFleetClients();
@@ -36,6 +45,8 @@ export default function DevicesPage() {
     clientId,
     maas,
     model: model.trim(),
+    meterRegister,
+    groupBy,
     limit: pageSize,
     offset,
     sort: 'label',
@@ -47,6 +58,7 @@ export default function DevicesPage() {
   const run = devicesQuery.data?.run;
   const firstItem = total === 0 ? 0 : offset + 1;
   const lastItem = Math.min(offset + pageSize, total);
+  const deviceGroups = groupFleetDevices(devices, groupBy);
 
   function resetPage() {
     setOffset(0);
@@ -58,6 +70,8 @@ export default function DevicesPage() {
     setClientId('');
     setMaas('');
     setModel('');
+    setMeterRegister('');
+    setGroupBy('');
     setOffset(0);
   }
 
@@ -83,7 +97,7 @@ export default function DevicesPage() {
       ) : null}
 
       <Card className="mb-5 !p-4 sm:!p-5">
-        <fieldset className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <fieldset className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <legend className="sr-only">Device filters</legend>
           <label className="block text-xs font-bold text-[var(--text-sub)]">
             Search device
@@ -132,6 +146,22 @@ export default function DevicesPage() {
               placeholder="Exact model name"
             />
           </label>
+          <label className="block text-xs font-bold text-[var(--text-sub)]">
+            Excel Meter Register
+            <Select className="mt-1.5" value={meterRegister} onChange={(event) => { setMeterRegister(event.target.value as typeof meterRegister); resetPage(); }}>
+              <option value="">All devices</option>
+              <option value="true">Excel devices only</option>
+              <option value="false">Not in Excel</option>
+            </Select>
+          </label>
+          <label className="block text-xs font-bold text-[var(--text-sub)]">
+            Group devices by
+            <Select className="mt-1.5" value={groupBy} onChange={(event) => { setGroupBy(event.target.value as DeviceGroupBy); resetPage(); }}>
+              <option value="">No grouping</option>
+              <option value="client">Client</option>
+              <option value="site">Site</option>
+            </Select>
+          </label>
           <div className="flex items-end">
             <Button variant="ghost" className="shrink-0" onClick={clearFilters}>Clear</Button>
           </div>
@@ -169,7 +199,15 @@ export default function DevicesPage() {
                 </tr>
               </thead>
               <tbody>
-                {devices.map((device) => {
+                {deviceGroups.flatMap((group) => [
+                  ...(groupBy ? [(
+                    <tr key={`group-${group.key}`} className="bg-[var(--surface2)]">
+                      <th colSpan={7} scope="rowgroup" className="px-4 py-3 text-left text-sm font-extrabold text-[var(--text)]">
+                        {group.label} <span className="ml-1 font-semibold text-[var(--text-sub)]">({formatNumber(group.devices.length)} on this page)</span>
+                      </th>
+                    </tr>
+                  )] : []),
+                  ...group.devices.map((device) => {
                   const placement = device.currentPlacement;
                   const accounts = device.fleetAccounts ?? [];
                   return (
@@ -182,6 +220,11 @@ export default function DevicesPage() {
                         {device.label || device.deviceId}
                       </Link>
                       {device.label ? <p className="mt-1 max-w-52 break-all text-xs text-[var(--muted)]">{device.deviceId}</p> : null}
+                      {device.inMeterRegister ? (
+                        <span className="mt-2 inline-flex rounded-full bg-[var(--primary-soft)] px-2 py-0.5 text-xs font-bold text-[var(--primary)]">
+                          Excel · {formatNumber(device.meterRegisterEntryCount ?? 1)} {device.meterRegisterEntryCount === 1 ? 'row' : 'rows'}
+                        </span>
+                      ) : null}
                     </td>
                     <td className={`${tableCellClass} min-w-44`}>
                       {placement ? (
@@ -247,7 +290,8 @@ export default function DevicesPage() {
                     </td>
                   </tr>
                   );
-                })}
+                  }),
+                ])}
               </tbody>
             </table>
           </div>

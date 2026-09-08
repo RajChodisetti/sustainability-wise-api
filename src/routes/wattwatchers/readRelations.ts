@@ -24,6 +24,7 @@ import {
 } from '../../db/schema/wattwatchers.js';
 import {
   matchedRegisterRoles,
+  meterRegisterEntryCounts,
   resolveDevicePlacement,
   sortDevicePlacements,
   type DevicePlacement,
@@ -101,6 +102,24 @@ export async function loadFleetAccountsByDevice(
     result.set(row.internalDeviceId, list);
   }
   return result;
+}
+
+export async function loadMeterRegisterEntryCountsByDevice(
+  internalDeviceIds: string[],
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (internalDeviceIds.length === 0) return result;
+  const rows = await db.select({
+    entryId: wwMeterRegisterEntries.id,
+    existingDeviceId: wwMeterRegisterEntries.existingWattwatchersDeviceId,
+    newDeviceId: wwMeterRegisterEntries.newWattwatchersDeviceId,
+    currentDeviceId: wwMeterRegisterEntries.currentWattwatchersDeviceId,
+  }).from(wwMeterRegisterEntries).where(or(
+    inArray(wwMeterRegisterEntries.existingWattwatchersDeviceId, internalDeviceIds),
+    inArray(wwMeterRegisterEntries.newWattwatchersDeviceId, internalDeviceIds),
+    inArray(wwMeterRegisterEntries.currentWattwatchersDeviceId, internalDeviceIds),
+  ));
+  return meterRegisterEntryCounts(rows, internalDeviceIds);
 }
 
 export async function loadPlacementsByDevice(
@@ -409,8 +428,11 @@ export async function loadDeviceAssociations(
     jobCompletionDate: wwMeterRegisterEntries.jobCompletionDate,
     jobCompletedBy: wwMeterRegisterEntries.jobCompletedBySnapshot,
     existingDeviceIdentifier: wwMeterRegisterEntries.existingDeviceIdentifier,
+    existingDeviceClassification: wwMeterRegisterEntries.existingDeviceClassification,
     newDeviceIdentifier: wwMeterRegisterEntries.newDeviceIdentifier,
+    newDeviceClassification: wwMeterRegisterEntries.newDeviceClassification,
     currentDeviceIdentifier: wwMeterRegisterEntries.currentDeviceIdentifier,
+    currentDeviceClassification: wwMeterRegisterEntries.currentDeviceClassification,
     existingWattwatchersDeviceId: wwMeterRegisterEntries.existingWattwatchersDeviceId,
     newWattwatchersDeviceId: wwMeterRegisterEntries.newWattwatchersDeviceId,
     currentWattwatchersDeviceId: wwMeterRegisterEntries.currentWattwatchersDeviceId,
@@ -555,8 +577,11 @@ export async function loadDeviceAssociations(
         jobCompletionDate: row.jobCompletionDate,
         jobCompletedBy: row.jobCompletedBy,
         existingDeviceIdentifier: row.existingDeviceIdentifier,
+        existingDeviceClassification: row.existingDeviceClassification,
         newDeviceIdentifier: row.newDeviceIdentifier,
+        newDeviceClassification: row.newDeviceClassification,
         currentDeviceIdentifier: row.currentDeviceIdentifier,
+        currentDeviceClassification: row.currentDeviceClassification,
         maas: row.maas,
         dataEnabled: row.dataEnabled,
         productName: row.productName,

@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  filterDevicesByMeterRegister,
   matchedRegisterRoles,
+  meterRegisterEntryCounts,
   resolveDevicePlacement,
+  sortDevicesByPlacementGroup,
   sortDevicePlacements,
   summarizeDeviceStatuses,
   type DevicePlacement,
@@ -180,4 +183,55 @@ test('Meter Register evidence retains every matching device role', () => {
     newWattwatchersDeviceId: 'device-2',
     currentWattwatchersDeviceId: 'device-2',
   }, 'device-2'), ['new', 'current']);
+});
+
+test('Meter Register device counts deduplicate one row matched through multiple roles', () => {
+  const counts = meterRegisterEntryCounts([
+    {
+      entryId: 'entry-1',
+      existingDeviceId: 'device-1',
+      newDeviceId: 'device-2',
+      currentDeviceId: 'device-2',
+    },
+    {
+      entryId: 'entry-2',
+      existingDeviceId: null,
+      newDeviceId: 'device-2',
+      currentDeviceId: 'device-2',
+    },
+  ], ['device-1', 'device-2']);
+  assert.equal(counts.get('device-1'), 1);
+  assert.equal(counts.get('device-2'), 2);
+});
+
+test('device list Meter Register filtering keeps Excel and non-Excel devices distinct', () => {
+  const rows = [
+    { deviceId: 'excel', inMeterRegister: true },
+    { deviceId: 'provider-only', inMeterRegister: false },
+  ];
+  assert.deepEqual(filterDevicesByMeterRegister(rows, true).map((row) => row.deviceId), ['excel']);
+  assert.deepEqual(filterDevicesByMeterRegister(rows, false).map((row) => row.deviceId), ['provider-only']);
+  assert.equal(filterDevicesByMeterRegister(rows, null), rows);
+});
+
+test('device list grouping sorts by client or site and leaves unlinked devices last', () => {
+  const rows = [
+    { deviceId: 'unlinked', inMeterRegister: false, currentPlacement: null },
+    { deviceId: 'beta', label: 'Second', inMeterRegister: true, currentPlacement: placement({
+      source: 'meter_register',
+      businessClient: { id: 'client-b', name: 'Beta' },
+      site: { id: 'site-b', name: 'Head Office', address: '2 Test St' },
+    }) },
+    { deviceId: 'alpha', label: 'First', inMeterRegister: true, currentPlacement: placement({
+      source: 'meter_register',
+      businessClient: { id: 'client-a', name: 'Alpha' },
+      site: { id: 'site-a', name: 'Warehouse', address: '1 Test St' },
+    }) },
+  ];
+  assert.deepEqual(sortDevicesByPlacementGroup(rows, 'client').map((row) => row.deviceId), [
+    'alpha', 'beta', 'unlinked',
+  ]);
+  assert.deepEqual(sortDevicesByPlacementGroup(rows, 'site').map((row) => row.deviceId), [
+    'beta', 'alpha', 'unlinked',
+  ]);
 });

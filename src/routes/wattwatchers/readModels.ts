@@ -52,6 +52,13 @@ export type DeviceStatusSummary = {
   reportOffline: number;
 };
 
+type DeviceListPlacementRow = {
+  deviceId: string;
+  label?: string | null;
+  inMeterRegister: boolean;
+  currentPlacement?: DevicePlacementReference | null;
+};
+
 type StatusSummaryInput = {
   /**
    * Collection rows can contain a forward-compatible provider status. Only
@@ -147,6 +154,40 @@ export function summarizeDeviceStatuses(rows: StatusSummaryInput[]): DeviceStatu
   };
 }
 
+export function filterDevicesByMeterRegister<T extends DeviceListPlacementRow>(
+  rows: T[],
+  meterRegister: boolean | null,
+): T[] {
+  return meterRegister === null
+    ? rows
+    : rows.filter((row) => row.inMeterRegister === meterRegister);
+}
+
+export function sortDevicesByPlacementGroup<T extends DeviceListPlacementRow>(
+  rows: T[],
+  groupBy: 'client' | 'site' | null,
+): T[] {
+  if (!groupBy) return rows;
+  const groupKey = (row: T): string | null => {
+    const placement = row.currentPlacement;
+    if (!placement) return null;
+    if (groupBy === 'client') {
+      return `${placement.businessClient.name}\u0000${placement.businessClient.id}`;
+    }
+    if (!placement.site) return null;
+    return `${placement.site.name}\u0000${placement.businessClient.name}\u0000${placement.site.id}`;
+  };
+  return [...rows].sort((left, right) => {
+    const leftGroup = groupKey(left);
+    const rightGroup = groupKey(right);
+    if (leftGroup && !rightGroup) return -1;
+    if (!leftGroup && rightGroup) return 1;
+    const groupOrder = (leftGroup ?? '').localeCompare(rightGroup ?? '');
+    if (groupOrder !== 0) return groupOrder;
+    return (left.label ?? left.deviceId).localeCompare(right.label ?? right.deviceId);
+  });
+}
+
 export function matchedRegisterRoles(
   row: {
     existingWattwatchersDeviceId: string | null;
@@ -160,4 +201,28 @@ export function matchedRegisterRoles(
   if (row.newWattwatchersDeviceId === internalDeviceId) roles.push('new');
   if (row.currentWattwatchersDeviceId === internalDeviceId) roles.push('current');
   return roles;
+}
+
+export function meterRegisterEntryCounts(
+  rows: Array<{
+    entryId: string;
+    existingDeviceId: string | null;
+    newDeviceId: string | null;
+    currentDeviceId: string | null;
+  }>,
+  requestedDeviceIds: Iterable<string>,
+): Map<string, number> {
+  const requestedIds = new Set(requestedDeviceIds);
+  const entryIdsByDevice = new Map<string, Set<string>>();
+  for (const row of rows) {
+    for (const deviceId of [row.existingDeviceId, row.newDeviceId, row.currentDeviceId]) {
+      if (!deviceId || !requestedIds.has(deviceId)) continue;
+      const entryIds = entryIdsByDevice.get(deviceId) ?? new Set<string>();
+      entryIds.add(row.entryId);
+      entryIdsByDevice.set(deviceId, entryIds);
+    }
+  }
+  return new Map(
+    [...entryIdsByDevice].map(([deviceId, entryIds]) => [deviceId, entryIds.size]),
+  );
 }

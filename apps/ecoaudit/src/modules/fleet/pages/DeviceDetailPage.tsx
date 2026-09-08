@@ -3,11 +3,12 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { Button, LinkButton } from '@/components/ui/Button';
+import { LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, StatCard } from '@/components/ui/Card';
 import { usePortalAuth } from '@/contexts/PortalAuthContext';
 import { fleetConnectionErrorMessage } from '@/modules/fleet/api/client';
 import { FleetStatusBadge, ProcessStatusBadge } from '@/modules/fleet/components/FleetStatusBadge';
+import { DeviceMeterRegisterDetails } from '@/modules/fleet/components/DeviceMeterRegisterDetails';
 import { MeterRegisterEditDialog } from '@/modules/fleet/components/MeterRegisterEditDialog';
 import { tableCellClass, tableClass, tableHeadClass } from '@/modules/fleet/components/Table';
 import { useFleetDevice } from '@/modules/fleet/hooks/useFleet';
@@ -597,61 +598,15 @@ export default function DeviceDetailPage() {
         {registerEvidence.length === 0 ? (
           <p className="p-5 text-sm text-[var(--text-sub)]">No Master Register evidence is linked to this device.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className={tableClass}>
-              <caption className="sr-only">Imported Meter Register evidence for this device</caption>
-              <thead><tr><th className={tableHeadClass} scope="col">Source row / role</th><th className={tableHeadClass} scope="col">Source customer / client</th><th className={tableHeadClass} scope="col">Source site address</th><th className={tableHeadClass} scope="col">Job</th><th className={tableHeadClass} scope="col">MaaS / data</th><th className={tableHeadClass} scope="col">Device identifiers</th>{wwUser?.role === 'admin' ? <th className={tableHeadClass} scope="col">Mapped record</th> : null}</tr></thead>
-              <tbody>
-                {registerEvidence.map((evidence) => (
-                  <tr key={evidence.id}>
-                    <td className={`${tableCellClass} min-w-40`}>
-                      <p className="font-bold">
-                        {[evidence.sourceWorkbook, evidence.sourceSheet].filter(Boolean).join(' · ') || 'Imported register'}
-                      </p>
-                      <p className="mt-1 text-xs text-[var(--text-sub)]">Row {evidence.sourceRow ?? '—'}</p>
-                      <p className="mt-1 text-xs text-[var(--text-sub)]">{evidence.matchedRoles?.map(humanize).join(', ') || 'Matched device'}</p>
-                    </td>
-                    <td className={`${tableCellClass} min-w-44`}>
-                      <p className="font-semibold">{evidence.customerName || 'Not recorded'}</p>
-                      {evidence.clientName || evidence.fleetAccountName ? (
-                        <p className="mt-1 text-xs text-[var(--text-sub)]">
-                          Source client: {evidence.clientName || evidence.fleetAccountName}
-                        </p>
-                      ) : null}
-                    </td>
-                    <td className={`${tableCellClass} min-w-64 whitespace-normal`}>{evidence.siteAddress || 'Not recorded'}</td>
-                    <td className={`${tableCellClass} min-w-44`}>
-                      <p>{evidence.jobNumber || 'Not recorded'}</p>
-                      <p className="mt-1 text-xs text-[var(--text-sub)]">Completed {formatDate(evidence.jobCompletionDate)}{evidence.jobCompletedBy ? ` · ${evidence.jobCompletedBy}` : ''}</p>
-                    </td>
-                    <td className={`${tableCellClass} whitespace-nowrap`}>
-                      MaaS: {evidence.maas === null || evidence.maas === undefined ? '—' : evidence.maas ? 'Yes' : 'No'}<br />
-                      Data: {evidence.dataEnabled === null || evidence.dataEnabled === undefined ? '—' : evidence.dataEnabled ? 'Yes' : 'No'}
-                    </td>
-                    <td className={`${tableCellClass} min-w-56 break-all text-xs leading-5`}>
-                      Existing: {evidence.existingDeviceIdentifier || '—'}<br />
-                      New: {evidence.newDeviceIdentifier || '—'}<br />
-                      Current: {evidence.currentDeviceIdentifier || '—'}
-                    </td>
-                    {wwUser?.role === 'admin' ? (
-                      <td className={`${tableCellClass} min-w-40`}>
-                        <p className="text-xs text-[var(--text-sub)]">
-                          {evidence.record ? `Revision ${evidence.record.revision}` : 'Not mapped'}
-                        </p>
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          className="mt-2 !min-h-9 !px-3 !py-1.5 !text-xs"
-                          onClick={() => setEditingRegisterEvidence(evidence)}
-                        >
-                          {evidence.record ? 'Edit details' : 'Complete details'}
-                        </Button>
-                      </td>
-                    ) : null}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-5 p-5">
+            {registerEvidence.map((evidence) => (
+              <DeviceMeterRegisterDetails
+                key={evidence.id}
+                evidence={evidence}
+                isAdmin={wwUser?.role === 'admin'}
+                onEdit={() => setEditingRegisterEvidence(evidence)}
+              />
+            ))}
           </div>
         )}
       </Card>

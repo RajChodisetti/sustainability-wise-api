@@ -21,12 +21,17 @@ import {
   loadBusinessSiteGraph,
   loadDeviceAssociations,
   loadFleetAccountsByDevice,
+  loadMeterRegisterEntryCountsByDevice,
   loadPlacementsByDevice,
   placementSummary,
   searchBusinessSites,
   type FleetDeviceReference,
 } from './readRelations.js';
-import { summarizeDeviceStatuses } from './readModels.js';
+import {
+  filterDevicesByMeterRegister,
+  sortDevicesByPlacementGroup,
+  summarizeDeviceStatuses,
+} from './readModels.js';
 import { availabilityPercent, type FleetStatus } from './status.js';
 
 type FleetFilters = { clientId?: string; maas?: string };
@@ -464,6 +469,7 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
   }, async (request, reply) => {
     const query = request.query as FleetFilters & {
       status?: string; q?: string; model?: string; reportOffline?: string;
+      meterRegister?: string; groupBy?: string;
       limit?: string; offset?: string; sort?: string; direction?: string;
     };
     const run = await selectedRun();
@@ -492,9 +498,10 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
       label: device.label,
       model: device.model,
     }));
-    const [fleetAccountMap, placementMap] = await Promise.all([
+    const [fleetAccountMap, placementMap, meterRegisterEntryCountMap] = await Promise.all([
       loadFleetAccountsByDevice(deviceReferences.map((device) => device.internalDeviceId)),
       loadPlacementsByDevice(deviceReferences),
+      loadMeterRegisterEntryCountsByDevice(deviceReferences.map((device) => device.internalDeviceId)),
     ]);
     const referenceByDeviceId = new Map(
       deviceReferences.map((device) => [device.deviceId, device]),
@@ -574,9 +581,19 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         fleetAccounts: reference
           ? fleetAccountMap.get(reference.internalDeviceId) ?? []
           : [],
+        inMeterRegister: reference
+          ? meterRegisterEntryCountMap.has(reference.internalDeviceId)
+          : false,
+        meterRegisterEntryCount: reference
+          ? meterRegisterEntryCountMap.get(reference.internalDeviceId) ?? 0
+          : 0,
         ...placementSummary(placements),
       };
     });
+    if (query.meterRegister !== undefined && query.meterRegister !== '') {
+      const meterRegister = parseBoolean(query.meterRegister, 'meterRegister');
+      enrichedData = filterDevicesByMeterRegister(enrichedData, meterRegister);
+    }
     if (query.q) {
       const search = query.q.toLowerCase().trim();
       enrichedData = enrichedData.filter((row) => [
@@ -591,6 +608,10 @@ export async function wattwatchersReadRoutes(app: FastifyInstance): Promise<void
         ...row.fleetAccounts.flatMap((account) => [account.name, account.code]),
       ].some((value) => value?.toLowerCase().includes(search)));
     }
+    enrichedData = sortDevicesByPlacementGroup(
+      enrichedData,
+      query.groupBy === 'client' || query.groupBy === 'site' ? query.groupBy : null,
+    );
     return reply.send({
       run: runReference(run),
       data: enrichedData.slice(offset, offset + limit),

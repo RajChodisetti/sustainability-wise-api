@@ -53,6 +53,8 @@ export type DeviceListParams = FleetQueryFilters & {
   q?: string;
   model?: string;
   reportOffline?: '' | 'true' | 'false';
+  meterRegister?: '' | 'true' | 'false';
+  groupBy?: '' | 'client' | 'site';
   limit?: number;
   offset?: number;
   sort?: 'lastHeardAt' | 'communicationAge' | 'label';
