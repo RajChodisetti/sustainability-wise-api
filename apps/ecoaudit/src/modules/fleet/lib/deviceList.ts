@@ -14,6 +14,7 @@ export function groupFleetDevices(
 ): DeviceListGroup[] {
   if (!groupBy) return [{ key: 'all', label: null, devices }];
   const groups: DeviceListGroup[] = [];
+  const groupsByKey = new Map<string, DeviceListGroup>();
   for (const device of devices) {
     const placement = device.currentPlacement;
     const key = groupBy === 'client'
@@ -26,11 +27,13 @@ export function groupFleetDevices(
       : placement?.site
         ? `${placement.site.name} · ${placement.businessClient.name}`
         : 'Site not linked';
-    const current = groups.at(-1);
-    if (current?.key === key) {
+    const current = groupsByKey.get(key);
+    if (current) {
       current.devices.push(device);
     } else {
-      groups.push({ key, label, devices: [device] });
+      const group = { key, label, devices: [device] };
+      groups.push(group);
+      groupsByKey.set(key, group);
     }
   }
   return groups;
