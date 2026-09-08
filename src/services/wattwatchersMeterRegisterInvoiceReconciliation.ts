@@ -235,6 +235,8 @@ export function buildWattwatchersMeterRegisterInvoiceReconciliationSql(input: {
 
   const sql = `\\set ON_ERROR_STOP on
 BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '5min';
 SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-invoice-reconcile-v1'));
 
 CREATE TEMP TABLE ww_meter_register_invoice_reconcile_stage (
@@ -413,7 +415,15 @@ BEGIN
 END $$;
 
 SELECT
-  ${expectedCount}::integer AS matched_count,
+  (SELECT count(*) FROM ww_meter_register_invoice_reconcile_state) AS matched_count,
+  (
+    SELECT count(*) FROM ww_meter_register_invoice_reconcile_state
+    WHERE reconciliation_state = 'pending'
+  ) AS initially_pending_count,
+  (
+    SELECT count(*) FROM ww_meter_register_invoice_reconcile_state
+    WHERE reconciliation_state = 'applied'
+  ) AS initially_applied_count,
   (SELECT count(*) FROM ww_meter_register_invoice_reconcile_updated) AS updated_count,
   (
     SELECT count(*)
@@ -423,6 +433,19 @@ SELECT
     WHERE stage.invoice_issued_date IS NOT NULL
   ) AS invoice_date_updated_count,
   ${expectedDateCount}::integer AS expected_invoice_date_count,
+  (
+    SELECT count(*)
+    FROM ww_meter_register_invoice_reconcile_stage stage
+    JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+    WHERE record.revision = stage.expected_revision + 1
+      AND record.manually_corrected_at IS NULL
+      AND record.updated_by_user_id IS NULL
+      AND record.details ->> 'xeroInvoiceNumber' = stage.invoice_number
+      AND (
+        stage.invoice_issued_date IS NULL
+        OR record.details ->> 'invoiceIssuedDate' = stage.invoice_issued_date::text
+      )
+  ) AS verified_count,
   ${input.mode === 'apply' ? 'true' : 'false'}::boolean AS apply_mode;
 
 ${finish}

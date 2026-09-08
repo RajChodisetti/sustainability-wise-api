@@ -76,6 +76,8 @@ test('builds a guarded, transaction-scoped dry-run that only fills blank operati
   assert.equal(built.invoiceDateUpdateCount, 1);
   assert.match(built.sql, /^\\set ON_ERROR_STOP on\nBEGIN;/u);
   assert.match(built.sql, /pg_advisory_xact_lock/u);
+  assert.match(built.sql, /SET LOCAL lock_timeout = '5s'/u);
+  assert.match(built.sql, /SET LOCAL statement_timeout = '5min'/u);
   assert.match(built.sql, /entry\.source_row_sha256 = stage\.master_source_row_sha256/u);
   assert.match(built.sql, /entry\.current_device_identifier = stage\.current_device_identifier/u);
   assert.match(built.sql, /record\.revision = stage\.expected_revision/u);
@@ -88,6 +90,9 @@ test('builds a guarded, transaction-scoped dry-run that only fills blank operati
   assert.match(built.sql, /partially applied/u);
   assert.match(built.sql, /AS invoice_date_updated_count/u);
   assert.match(built.sql, /AS expected_invoice_date_count/u);
+  assert.match(built.sql, /AS initially_pending_count/u);
+  assert.match(built.sql, /AS initially_applied_count/u);
+  assert.match(built.sql, /AS verified_count/u);
   assert.match(built.sql, /ROLLBACK;\n$/u);
 
   assert.doesNotMatch(built.sql, /UPDATE\s+ww_meter_register_entries/u);
