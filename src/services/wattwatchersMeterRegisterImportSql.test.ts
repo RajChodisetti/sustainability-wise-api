@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { normalizeWattwatchersMeterRegister } from './wattwatchersMeterRegisterImport.js';
 import {
   assertMasterRegisterArtifactDigests,
@@ -9,10 +11,20 @@ import {
   MASTER_REGISTER_WORKBOOK_SHA256,
   type WattwatchersMeterRegisterExpectedSummary,
 } from './wattwatchersMeterRegisterImportSql.js';
+import {
+  computeWattwatchersMeterRegisterDatabaseUrlIdentity,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 
 const CONFIRMED_ID = 'DD65335309637';
 const CANDIDATE_ID = 'AB12345678901';
 const SOURCE_SHA = 'a'.repeat(64);
+const QA_TARGET = {
+  target: 'qa',
+  database: 'sw_ecoaudit_fixes',
+  databaseUser: 'sw_lane',
+  databaseIdentitySha256: `sha256:${'b'.repeat(64)}`,
+  phase: 'operational',
+} as const;
 
 function fixtureRows() {
   return normalizeWattwatchersMeterRegister([
@@ -55,18 +67,32 @@ test('builds an append-only dry-run that materializes editable Meter Register re
   const built = buildWattwatchersMeterRegisterImportSql({
     rows: fixtureRows(),
     mode: 'dry-run',
+    ...QA_TARGET,
     expected: EXPECTED,
   });
 
   assert.match(built.importId, /^wwmri_[a-f0-9]{32}$/u);
   assert.match(built.sql, /^\\set ON_ERROR_STOP on\nBEGIN;/u);
+  assert.match(built.sql, /current_database\(\) IS DISTINCT FROM 'sw_ecoaudit_fixes'/u);
+  assert.match(built.sql, /current_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /session_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /sha256:b{64}/u);
+  assert.match(built.sql, /SET LOCAL search_path = pg_catalog, public, pg_temp/u);
+  assert.match(built.sql, /to_regclass\('public\.ww_meter_register_records'\)/u);
+  assert.match(built.sql, /to_regprocedure\([\s\S]*sw_business_site_address_fingerprint/u);
   assert.match(built.sql, /pg_advisory_xact_lock/u);
-  assert.match(built.sql, /INSERT INTO ww_meter_register_imports/u);
-  assert.match(built.sql, /INSERT INTO ww_meter_register_entries/u);
-  assert.match(built.sql, /CREATE TEMP TABLE ww_meter_register_operational_stage/u);
-  assert.match(built.sql, /INSERT INTO business_clients/u);
-  assert.match(built.sql, /INSERT INTO business_sites/u);
-  assert.match(built.sql, /INSERT INTO ww_meter_register_records/u);
+  assert.match(built.sql, /INSERT INTO public\.ww_meter_register_imports/u);
+  assert.match(built.sql, /INSERT INTO public\.ww_meter_register_entries/u);
+  assert.match(built.sql, /CREATE TEMP TABLE pg_temp\.ww_meter_register_operational_stage/u);
+  assert.match(built.sql, /INSERT INTO public\.business_clients/u);
+  assert.match(built.sql, /INSERT INTO public\.business_sites/u);
+  assert.match(built.sql, /INSERT INTO public\.ww_meter_register_records/u);
+  assert.match(built.sql, /mixed or partial preexisting state/u);
+  assert.match(built.sql, /operational_record_count = 2/u);
+  assert.match(built.sql, /AS operational_record_count/u);
+  assert.match(built.sql, /'dry-run' AS apply_mode/u);
+  assert.match(built.sql, /'rollback' AS transaction_action/u);
+  assert.match(built.sql, /AS table_oids/u);
   assert.match(built.sql, /ON CONFLICT \(entry_id\) DO NOTHING/u);
   assert.match(built.sql, /Every imported Meter Register current identifier must have an operational record/u);
   assert.match(built.sql, /sustainability-wise:meter-register-entry:/u);
@@ -83,10 +109,102 @@ test('builds an append-only dry-run that materializes editable Meter Register re
   assert.match(built.sql, /12550/u);
   assert.match(built.sql, /ROLLBACK;\n$/u);
 
-  assert.doesNotMatch(built.sql, /INSERT INTO (?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
-  assert.doesNotMatch(built.sql, /UPDATE\s+(?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
-  assert.doesNotMatch(built.sql, /UPDATE\s+ww_meter_register_entries/u);
+  assert.doesNotMatch(built.sql, /INSERT INTO (?:public\.)?(?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
+  assert.doesNotMatch(built.sql, /UPDATE\s+(?:public\.)?(?:ww_devices|ww_device_clients|ih_inventory_meters|business_jobs)/u);
+  assert.doesNotMatch(built.sql, /UPDATE\s+(?:public\.)?ww_meter_register_entries/u);
   assert.doesNotMatch(built.sql, /DELETE FROM|TRUNCATE|DROP TABLE/u);
+});
+
+test('builds a source-only bootstrap that runs after migrations without requiring operational rows', () => {
+  const built = buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'apply',
+    ...QA_TARGET,
+    phase: 'source',
+    expected: EXPECTED,
+  });
+
+  assert.match(built.sql, /INSERT INTO public\.ww_meter_register_imports/u);
+  assert.match(built.sql, /INSERT INTO public\.ww_meter_register_entries/u);
+  assert.match(built.sql, /NULL::integer AS operational_record_count/u);
+  assert.match(built.sql, /SET LOCAL search_path = pg_catalog, pg_temp/u);
+  assert.match(built.sql, /'apply' AS apply_mode/u);
+  assert.match(built.sql, /'commit' AS transaction_action/u);
+  assert.match(built.sql, /metadata_count = 0[\s\S]*source_entry_count = 0/u);
+  assert.match(built.sql, /metadata_count = 1[\s\S]*source_entry_count = 2/u);
+  assert.doesNotMatch(built.sql, /INSERT INTO public\.ww_meter_register_records/u);
+  assert.doesNotMatch(built.sql, /CREATE TEMP TABLE pg_temp\.ww_meter_register_operational_stage/u);
+  assert.doesNotMatch(built.sql, /to_regprocedure/u);
+  assert.match(built.sql, /COMMIT;\n$/u);
+});
+
+test('binds production to the canonical database and rejects crossed or malformed identities', () => {
+  const production = buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'dry-run',
+    phase: 'source',
+    target: 'production',
+    database: 'sustainability_wise',
+    databaseUser: 'sw_api',
+    databaseIdentitySha256: `sha256:${'c'.repeat(64)}`,
+    expected: EXPECTED,
+  });
+  assert.match(
+    production.sql,
+    /current_database\(\) IS DISTINCT FROM 'sustainability_wise'/u,
+  );
+  assert.match(production.sql, /current_user IS DISTINCT FROM 'sw_api'/u);
+  assert.match(production.sql, /session_user IS DISTINCT FROM 'sw_api'/u);
+  assert.doesNotMatch(production.sql, /sw_ecoaudit_fixes/u);
+
+  assert.throws(() => buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'dry-run',
+    phase: 'source',
+    target: 'qa',
+    database: 'sustainability_wise',
+    databaseUser: 'sw_lane',
+    databaseIdentitySha256: `sha256:${'b'.repeat(64)}`,
+    expected: EXPECTED,
+  }), /target qa must bind database sw_ecoaudit_fixes/u);
+  assert.throws(() => buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'dry-run',
+    ...QA_TARGET,
+    databaseIdentitySha256: 'b'.repeat(64),
+    expected: EXPECTED,
+  }), /prefixed SHA-256 digest/u);
+  assert.throws(() => buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'dry-run',
+    ...QA_TARGET,
+    databaseUser: 'sw_api',
+    expected: EXPECTED,
+  }), /target qa must bind database user sw_lane/u);
+  assert.throws(() => buildWattwatchersMeterRegisterImportSql({
+    rows: fixtureRows(),
+    mode: 'dry-run',
+    phase: 'source',
+    target: 'production',
+    database: 'sustainability_wise',
+    databaseUser: 'sw_lane',
+    databaseIdentitySha256: `sha256:${'c'.repeat(64)}`,
+    expected: EXPECTED,
+  }), /target production must bind database user sw_api/u);
+});
+
+test('regenerates byte-identical SQL for the same source, target, phase, and mode', () => {
+  const input = {
+    rows: fixtureRows(),
+    mode: 'dry-run' as const,
+    ...QA_TARGET,
+    expected: EXPECTED,
+  };
+  const first = buildWattwatchersMeterRegisterImportSql(input);
+  const second = buildWattwatchersMeterRegisterImportSql(input);
+  assert.equal(second.sql, first.sql);
+  assert.equal(second.importId, first.importId);
+  assert.deepEqual(second.summary, first.summary);
 });
 
 test('uses a stable import identity for the same workbook bytes and sheet across filename changes', () => {
@@ -104,11 +222,13 @@ test('uses a stable import identity for the same workbook bytes and sheet across
   const left = buildWattwatchersMeterRegisterImportSql({
     rows: original,
     mode: 'apply',
+    ...QA_TARGET,
     expected: EXPECTED,
   });
   const right = buildWattwatchersMeterRegisterImportSql({
     rows: renamed,
     mode: 'apply',
+    ...QA_TARGET,
     expected: EXPECTED,
   });
 
@@ -147,6 +267,7 @@ test('emits split installation labels while retaining their exact source evidenc
   const built = buildWattwatchersMeterRegisterImportSql({
     rows,
     mode: 'dry-run',
+    ...QA_TARGET,
     expected: {
       sourceRowCount: 2,
       rowsWithoutCurrentIdentifier: 0,
@@ -171,6 +292,7 @@ test('fails before SQL generation when a checksum-bound source invariant changes
   assert.throws(() => buildWattwatchersMeterRegisterImportSql({
     rows: fixtureRows(),
     mode: 'dry-run',
+    ...QA_TARGET,
     expected: { ...EXPECTED, sourceRowCount: 3 },
   }), /sourceRowCount changed/u);
 });
@@ -190,12 +312,67 @@ test('requires the exact approved workbook and deterministic extract bytes', () 
   }), /extract bytes do not match/u);
 });
 
-test('writes PII-bearing SQL only to a newly created private output file', async () => {
-  const script = await readFile(
-    new URL('../../scripts/wattwatchers-meter-register-import.ts', import.meta.url),
-    'utf8',
+test('writes PII-bearing SQL atomically and reads protected inputs without following symlinks', async () => {
+  const scriptUrl = new URL(
+    '../../scripts/wattwatchers-meter-register-import.ts',
+    import.meta.url,
   );
-  assert.match(script, /open\(outputPath, 'wx', 0o600\)/u);
+  const script = await readFile(scriptUrl, 'utf8');
+  assert.match(script, /constants\.O_NOFOLLOW/u);
+  assert.match(script, /open\(temporaryPath, 'wx', 0o600\)/u);
   assert.match(script, /await output\.sync\(\)/u);
-  assert.doesNotMatch(script, /writeFile\(outputPath/u);
+  assert.match(script, /await link\(temporaryPath, path\)/u);
+  assert.match(script, /await syncDirectory\(path\)/u);
+  assert.match(script, /sqlSha256/u);
+  assert.match(script, /databaseIdentitySha256/u);
+  assert.doesNotMatch(script, /readFile\(options\.(?:input|workbook)Path/u);
+
+  const databaseUrl =
+    'postgresql://sw_lane:not-logged@127.0.0.1:5432/sw_ecoaudit_fixes?sslmode=disable';
+  const databaseIdentity = computeWattwatchersMeterRegisterDatabaseUrlIdentity(databaseUrl);
+  const common = [
+    '--target', 'qa',
+    '--database-identity-sha256', databaseIdentity.sha256,
+    '--phase', 'source',
+    '--workbook', '/private/tmp/workbook.xlsx',
+    '--input', '/private/tmp/extract.json',
+    '--output', '/private/tmp/import.sql',
+  ];
+  const run = (args: string[], url = databaseUrl) => spawnSync(process.execPath, [
+    '--import',
+    'tsx',
+    fileURLToPath(scriptUrl),
+    ...args,
+  ], {
+    encoding: 'utf8',
+    env: { ...process.env, DATABASE_URL: url },
+  });
+
+  for (const [args, expectedError] of [
+    [[...common, '--unknown', 'value'], /invalid or duplicate options/u],
+    [[...common, '--target', 'qa'], /invalid or duplicate options/u],
+    [[...common, '--database', 'sw_ecoaudit_fixes'], /invalid or duplicate options/u],
+    [common.filter((value, index) => index < 4 || index > 5), /phase must be explicitly/u],
+    [[...common.slice(0, 1), 'production', ...common.slice(2)], /target production must bind database sustainability_wise/u],
+    [[...common.slice(0, 3), `sha256:${'0'.repeat(64)}`, ...common.slice(4)], /identity does not match/u],
+  ] as const) {
+    const result = run([...args]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, expectedError);
+    assert.doesNotMatch(result.stderr, /not-logged/u);
+  }
+
+  const crossedUserUrl =
+    'postgresql://sw_api:not-logged@127.0.0.1:5432/sw_ecoaudit_fixes?sslmode=disable';
+  const crossedUserIdentity =
+    computeWattwatchersMeterRegisterDatabaseUrlIdentity(crossedUserUrl);
+  const crossedUserArgs = [
+    ...common.slice(0, 3),
+    crossedUserIdentity.sha256,
+    ...common.slice(4),
+  ];
+  const crossedUserResult = run(crossedUserArgs, crossedUserUrl);
+  assert.notEqual(crossedUserResult.status, 0);
+  assert.match(crossedUserResult.stderr, /target qa must bind database user sw_lane/u);
+  assert.doesNotMatch(crossedUserResult.stderr, /not-logged/u);
 });

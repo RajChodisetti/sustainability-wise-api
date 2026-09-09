@@ -5,8 +5,17 @@ import {
   type MeterRegisterImportSummary,
   type NormalizedMeterRegisterRow,
 } from './wattwatchersMeterRegisterImport.js';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetDatabase,
+  assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  type WattwatchersMeterRegisterReconciliationDatabase,
+  type WattwatchersMeterRegisterReconciliationDatabaseUser,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 
 export type WattwatchersMeterRegisterImportMode = 'dry-run' | 'apply';
+export type WattwatchersMeterRegisterImportPhase = 'source' | 'operational';
 
 export const MASTER_REGISTER_WORKBOOK_SHA256 =
   '4bb6e835928eb34bdee30d9e71f94c38d641b078a75c52a58c8450a60acd6c34';
@@ -187,18 +196,24 @@ function stageRowSql(row: NormalizedMeterRegisterRow, importId: string): string 
  * contain operator corrections, so repeated imports never overwrite them.
  */
 function operationalProjectionSql(): string {
-  return `SELECT pg_advisory_xact_lock(hashtextextended(
-  'sustainability-wise:meter-register-entry:' || entry_locks.entry_id,
-  0
-))
-FROM (
-  SELECT stage.entry_id
-  FROM ww_meter_register_stage stage
-  WHERE stage.current_device_identifier IS NOT NULL
-  ORDER BY stage.entry_id
-) entry_locks;
+  return `DO $$
+DECLARE
+  locked_entry_id text;
+BEGIN
+  FOR locked_entry_id IN
+    SELECT stage.entry_id
+    FROM pg_temp.ww_meter_register_stage stage
+    WHERE stage.current_device_identifier IS NOT NULL
+    ORDER BY stage.entry_id
+  LOOP
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+      'sustainability-wise:meter-register-entry:' || locked_entry_id,
+      0
+    ));
+  END LOOP;
+END $$;
 
-CREATE TEMP TABLE ww_meter_register_operational_stage ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_operational_stage ON COMMIT DROP AS
 SELECT
   stage.entry_id,
   stage.operational_client_name AS business_client_name,
@@ -211,7 +226,7 @@ SELECT
   stage.operational_placeholder_site AS placeholder_site,
   CASE WHEN stage.operational_placeholder_site THEN stage.entry_id ELSE '' END
     AS site_identity_discriminator,
-  sw_business_site_address_fingerprint(
+  public.sw_business_site_address_fingerprint(
     stage.operational_site_address,
     NULL,
     stage.operational_site_state,
@@ -219,27 +234,33 @@ SELECT
     'AU'
   ) AS address_fingerprint,
   stage.operational_details AS details
-FROM ww_meter_register_stage stage
+FROM pg_temp.ww_meter_register_stage stage
 WHERE stage.current_device_identifier IS NOT NULL
   AND NOT EXISTS (
     SELECT 1
-    FROM ww_meter_register_records existing
+    FROM public.ww_meter_register_records existing
     WHERE existing.entry_id = stage.entry_id
   );
 
-ALTER TABLE ww_meter_register_operational_stage ADD PRIMARY KEY (entry_id);
+ALTER TABLE pg_temp.ww_meter_register_operational_stage ADD PRIMARY KEY (entry_id);
 
-SELECT pg_advisory_xact_lock(hashtextextended(
-  'sustainability-wise:client:' || client_locks.business_client_normalized_key,
-  0
-))
-FROM (
-  SELECT DISTINCT stage.business_client_normalized_key
-  FROM ww_meter_register_operational_stage stage
-  ORDER BY stage.business_client_normalized_key
-) client_locks;
+DO $$
+DECLARE
+  locked_client_key text;
+BEGIN
+  FOR locked_client_key IN
+    SELECT DISTINCT stage.business_client_normalized_key
+    FROM pg_temp.ww_meter_register_operational_stage stage
+    ORDER BY stage.business_client_normalized_key
+  LOOP
+    PERFORM pg_advisory_xact_lock(hashtextextended(
+      'sustainability-wise:client:' || locked_client_key,
+      0
+    ));
+  END LOOP;
+END $$;
 
-INSERT INTO business_clients (
+INSERT INTO public.business_clients (
   id, company_key, name, normalized_key, created_at, updated_at
 )
 SELECT DISTINCT ON (stage.business_client_normalized_key)
@@ -249,17 +270,17 @@ SELECT DISTINCT ON (stage.business_client_normalized_key)
   stage.business_client_normalized_key,
   now(),
   now()
-FROM ww_meter_register_operational_stage stage
+FROM pg_temp.ww_meter_register_operational_stage stage
 WHERE NOT EXISTS (
   SELECT 1
-  FROM business_clients existing
+  FROM public.business_clients existing
   WHERE existing.company_key = 'sustainability-wise'
     AND existing.normalized_key = stage.business_client_normalized_key
 )
 ORDER BY stage.business_client_normalized_key, stage.entry_id
 ON CONFLICT (id) DO NOTHING;
 
-CREATE TEMP TABLE ww_meter_register_operational_client_map ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_operational_client_map ON COMMIT DROP AS
 WITH RECURSIVE client_roots AS (
   SELECT
     keys.business_client_normalized_key,
@@ -269,11 +290,11 @@ WITH RECURSIVE client_roots AS (
     0 AS depth
   FROM (
     SELECT DISTINCT stage.business_client_normalized_key
-    FROM ww_meter_register_operational_stage stage
+    FROM pg_temp.ww_meter_register_operational_stage stage
   ) keys
   JOIN LATERAL (
     SELECT client.id, client.merged_into_client_id
-    FROM business_clients client
+    FROM public.business_clients client
     WHERE client.company_key = 'sustainability-wise'
       AND client.normalized_key = keys.business_client_normalized_key
     ORDER BY
@@ -292,7 +313,7 @@ WITH RECURSIVE client_roots AS (
     client_chain.visited_ids || next_client.id,
     client_chain.depth + 1
   FROM client_chain
-  JOIN business_clients next_client
+  JOIN public.business_clients next_client
     ON next_client.id = client_chain.merged_into_client_id
    AND next_client.company_key = 'sustainability-wise'
   WHERE client_chain.merged_into_client_id IS NOT NULL
@@ -309,15 +330,15 @@ ORDER BY
   client_chain.depth DESC,
   client_chain.business_client_id;
 
-ALTER TABLE ww_meter_register_operational_client_map
+ALTER TABLE pg_temp.ww_meter_register_operational_client_map
   ADD PRIMARY KEY (business_client_normalized_key);
 
 DO $$
 BEGIN
   IF EXISTS (
     SELECT 1
-    FROM ww_meter_register_operational_stage stage
-    LEFT JOIN ww_meter_register_operational_client_map client_map
+    FROM pg_temp.ww_meter_register_operational_stage stage
+    LEFT JOIN pg_temp.ww_meter_register_operational_client_map client_map
       ON client_map.business_client_normalized_key = stage.business_client_normalized_key
     WHERE client_map.business_client_id IS NULL
   ) THEN
@@ -325,21 +346,27 @@ BEGIN
   END IF;
 END $$;
 
-SELECT pg_advisory_xact_lock(hashtextextended(site_locks.lock_key, 0))
-FROM (
-  SELECT DISTINCT
-    'sustainability-wise:site:' || client_map.business_client_id
-      || ':' || stage.address_fingerprint AS lock_key
-  FROM ww_meter_register_operational_stage stage
-  JOIN ww_meter_register_operational_client_map client_map
-    ON client_map.business_client_normalized_key = stage.business_client_normalized_key
-  ORDER BY lock_key
-) site_locks;
+DO $$
+DECLARE
+  locked_site_key text;
+BEGIN
+  FOR locked_site_key IN
+    SELECT DISTINCT
+      'sustainability-wise:site:' || client_map.business_client_id
+        || ':' || stage.address_fingerprint AS lock_key
+    FROM pg_temp.ww_meter_register_operational_stage stage
+    JOIN pg_temp.ww_meter_register_operational_client_map client_map
+      ON client_map.business_client_normalized_key = stage.business_client_normalized_key
+    ORDER BY lock_key
+  LOOP
+    PERFORM pg_advisory_xact_lock(hashtextextended(locked_site_key, 0));
+  END LOOP;
+END $$;
 
 WITH resolved AS (
   SELECT stage.*, client_map.business_client_id
-  FROM ww_meter_register_operational_stage stage
-  JOIN ww_meter_register_operational_client_map client_map
+  FROM pg_temp.ww_meter_register_operational_stage stage
+  JOIN pg_temp.ww_meter_register_operational_client_map client_map
     ON client_map.business_client_normalized_key = stage.business_client_normalized_key
 ), canonical_sites AS (
   SELECT DISTINCT ON (
@@ -356,7 +383,7 @@ WITH resolved AS (
     resolved.site_identity_discriminator,
     resolved.entry_id
 )
-INSERT INTO business_sites (
+INSERT INTO public.business_sites (
   id, client_id, name, address, state, country_code,
   address_source, geocode_status, address_fingerprint, timezone,
   created_at, updated_at
@@ -396,7 +423,7 @@ SELECT
 FROM canonical_sites
 WHERE NOT EXISTS (
   SELECT 1
-  FROM business_sites existing
+  FROM public.business_sites existing
   WHERE (
     canonical_sites.placeholder_site
     AND existing.id = 'bs_wwmr_' || md5(
@@ -422,15 +449,15 @@ WITH resolved AS (
         client_map.business_client_id || chr(31) || 'entry:' || stage.entry_id
       )
     ELSE NULL END AS placeholder_business_site_id
-  FROM ww_meter_register_operational_stage stage
-  JOIN ww_meter_register_operational_client_map client_map
+  FROM pg_temp.ww_meter_register_operational_stage stage
+  JOIN pg_temp.ww_meter_register_operational_client_map client_map
     ON client_map.business_client_normalized_key = stage.business_client_normalized_key
 ), linked AS (
   SELECT resolved.*, site.id AS resolved_business_site_id
   FROM resolved
   JOIN LATERAL (
     SELECT candidate.id
-    FROM business_sites candidate
+    FROM public.business_sites candidate
     WHERE (
       resolved.placeholder_site
       AND candidate.client_id = resolved.resolved_business_client_id
@@ -446,7 +473,7 @@ WITH resolved AS (
     LIMIT 1
   ) site ON true
 )
-INSERT INTO ww_meter_register_records (
+INSERT INTO public.ww_meter_register_records (
   entry_id, business_client_id, business_site_id, customer_name,
   details, revision, updated_by_user_id, created_at, updated_at
 )
@@ -467,12 +494,20 @@ DO $$
 BEGIN
   IF EXISTS (
     SELECT 1
-    FROM ww_meter_register_stage stage
-    LEFT JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+    FROM pg_temp.ww_meter_register_stage stage
+    LEFT JOIN public.ww_meter_register_records record ON record.entry_id = stage.entry_id
     WHERE stage.current_device_identifier IS NOT NULL
       AND record.entry_id IS NULL
   ) THEN
     RAISE EXCEPTION 'Every imported Meter Register current identifier must have an operational record';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_temp.ww_meter_register_stage stage
+    JOIN public.ww_meter_register_records record ON record.entry_id = stage.entry_id
+    WHERE stage.current_device_identifier IS NULL
+  ) THEN
+    RAISE EXCEPTION 'A Meter Register operational record has no current identifier';
   END IF;
 END $$;`;
 }
@@ -480,6 +515,11 @@ END $$;`;
 export type BuildWattwatchersMeterRegisterImportSqlInput = {
   rows: NormalizedMeterRegisterRow[];
   mode: WattwatchersMeterRegisterImportMode;
+  phase: WattwatchersMeterRegisterImportPhase;
+  target: WattwatchersMeterRegisterReconciliationTarget;
+  database: WattwatchersMeterRegisterReconciliationDatabase;
+  databaseUser: WattwatchersMeterRegisterReconciliationDatabaseUser;
+  databaseIdentitySha256: string;
   expected?: WattwatchersMeterRegisterExpectedSummary;
 };
 
@@ -490,16 +530,25 @@ export type BuiltWattwatchersMeterRegisterImportSql = {
 };
 
 /**
- * Build an append-only, transaction-protected import. The SQL links only IDs
- * confirmed by the workbook's authoritative WW inventory to existing Fleet
- * devices; it never creates or updates Fleet, Field, Scheduler, or finance
- * records.
+ * Build a transaction-protected import. The source phase appends immutable
+ * workbook evidence and links only source-confirmed IDs to existing Fleet
+ * devices. The operational phase creates only missing Meter Register business
+ * clients, sites, and editable records; neither phase creates or updates Fleet
+ * devices, Field, Scheduler, or finance records.
  */
 export function buildWattwatchersMeterRegisterImportSql(
   input: BuildWattwatchersMeterRegisterImportSqlInput,
 ): BuiltWattwatchersMeterRegisterImportSql {
   if (input.mode !== 'dry-run' && input.mode !== 'apply') {
     throw new Error('Meter Register import mode must be dry-run or apply');
+  }
+  if (input.phase !== 'source' && input.phase !== 'operational') {
+    throw new Error('Meter Register import phase must be source or operational');
+  }
+  assertWattwatchersMeterRegisterReconciliationTargetDatabase(input);
+  assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser(input);
+  if (!/^sha256:[a-f0-9]{64}$/u.test(input.databaseIdentitySha256)) {
+    throw new Error('Meter Register import database identity must be a prefixed SHA-256 digest');
   }
   const source = assertSingleSource(input.rows);
   const summary = summarizeWattwatchersMeterRegister(input.rows);
@@ -508,12 +557,135 @@ export function buildWattwatchersMeterRegisterImportSql(
   const importId = stableId('wwmri_', source.sourceNamespace);
   const values = input.rows.map((row) => stageRowSql(row, importId)).join(',\n');
   const finish = input.mode === 'apply' ? 'COMMIT;' : 'ROLLBACK;';
+  const expectedOperationalRecordCount =
+    summary.sourceRowCount - summary.rowsWithoutCurrentIdentifier;
+  // Current business-site triggers call their public helper functions without
+  // schema qualification. Keep pg_catalog first, but explicitly admit public
+  // only for the operational phase that invokes those triggers.
+  const importSearchPath = input.phase === 'operational'
+    ? 'pg_catalog, public, pg_temp'
+    : WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH;
+  const requiredTables = [
+    'ww_devices',
+    'ww_meter_register_imports',
+    'ww_meter_register_entries',
+    ...(input.phase === 'operational'
+      ? ['business_clients', 'business_sites', 'ww_meter_register_records']
+      : []),
+  ];
+  const missingRequiredRelationsSql = requiredTables
+    .map((table) => `to_regclass('public.${table}') IS NULL`)
+    .join('\n      OR ');
+  const requiredRelationRegclassesSql = requiredTables
+    .map((table) => `to_regclass('public.${table}')`)
+    .join(',\n      ');
+  const missingRequiredFunctionSql = input.phase === 'operational'
+    ? `\n      OR to_regprocedure(\n        'public.sw_business_site_address_fingerprint(text,text,text,text,text)'\n      ) IS NULL`
+    : '';
+  const operationalRecordCountSql = input.phase === 'operational'
+    ? `(\n      SELECT count(*)::integer\n      FROM pg_temp.ww_meter_register_stage stage\n      JOIN public.ww_meter_register_records record ON record.entry_id = stage.entry_id\n      WHERE stage.current_device_identifier IS NOT NULL\n    )`
+    : 'NULL::integer';
+  const pendingPreexistingStateSql = input.phase === 'operational'
+    ? `metadata_count = 1\n        AND source_entry_count = ${summary.sourceRowCount}\n        AND import_entry_count = ${summary.sourceRowCount}\n        AND operational_record_count = 0`
+    : `metadata_count = 0\n        AND source_entry_count = 0\n        AND import_entry_count = 0`;
+  const appliedPreexistingStateSql = input.phase === 'operational'
+    ? `metadata_count = 1\n        AND source_entry_count = ${summary.sourceRowCount}\n        AND import_entry_count = ${summary.sourceRowCount}\n        AND operational_record_count = ${expectedOperationalRecordCount}`
+    : `metadata_count = 1\n        AND source_entry_count = ${summary.sourceRowCount}\n        AND import_entry_count = ${summary.sourceRowCount}`;
+  const operationalProjection = input.phase === 'operational'
+    ? operationalProjectionSql()
+    : '';
+  const operationalRecordResultSql = input.phase === 'operational'
+    ? `(SELECT count(*)::integer
+       FROM pg_temp.ww_meter_register_stage stage
+       JOIN public.ww_meter_register_records record ON record.entry_id = stage.entry_id
+       WHERE stage.current_device_identifier IS NOT NULL)`
+    : 'NULL::integer';
 
   const sql = `\\set ON_ERROR_STOP on
 BEGIN;
-SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-import'));
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '10min';
+SET LOCAL search_path = ${importSearchPath};
 
-CREATE TEMP TABLE ww_meter_register_stage (
+DO $$
+BEGIN
+  IF current_database() IS DISTINCT FROM ${sqlText(input.database)} THEN
+    RAISE EXCEPTION 'Meter Register import target/database fence failed';
+  END IF;
+  IF current_user IS DISTINCT FROM ${sqlText(input.databaseUser)}
+      OR session_user IS DISTINCT FROM ${sqlText(input.databaseUser)} THEN
+    RAISE EXCEPTION 'Meter Register import database-role fence failed';
+  END IF;
+  IF current_schema() IS DISTINCT FROM 'pg_catalog'
+      OR current_setting('search_path') IS DISTINCT FROM ${sqlText(
+        importSearchPath,
+      )} THEN
+    RAISE EXCEPTION 'Meter Register import schema/search_path fence failed';
+  END IF;
+  IF ${missingRequiredRelationsSql}${missingRequiredFunctionSql} THEN
+    RAISE EXCEPTION 'Meter Register import required public tables/functions are missing';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM unnest(ARRAY[
+      ${requiredRelationRegclassesSql}
+    ]) required(table_oid)
+    JOIN pg_catalog.pg_class table_class ON table_class.oid = required.table_oid
+    JOIN pg_catalog.pg_namespace table_schema
+      ON table_schema.oid = table_class.relnamespace
+    WHERE table_schema.nspname IS DISTINCT FROM 'public'
+       OR table_class.relkind IS DISTINCT FROM 'r'
+  ) THEN
+    RAISE EXCEPTION 'Meter Register import required relations are not public base tables';
+  END IF;
+END $$;
+
+SELECT pg_advisory_xact_lock(hashtext(${sqlText(
+    `wattwatchers-meter-register-import:${input.target}`,
+  )}));
+
+CREATE TEMP TABLE pg_temp.ww_meter_register_import_provenance (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  target_name text NOT NULL,
+  database_name text NOT NULL,
+  database_user text NOT NULL,
+  database_identity_sha256 text NOT NULL,
+  search_path text NOT NULL,
+  import_phase text NOT NULL,
+  import_id text NOT NULL,
+  source_workbook text NOT NULL,
+  source_sheet text NOT NULL,
+  workbook_sha256 text NOT NULL,
+  extract_sha256 text NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO pg_temp.ww_meter_register_import_provenance (
+  target_name,
+  database_name,
+  database_user,
+  database_identity_sha256,
+  search_path,
+  import_phase,
+  import_id,
+  source_workbook,
+  source_sheet,
+  workbook_sha256,
+  extract_sha256
+) VALUES (
+  ${sqlText(input.target)},
+  ${sqlText(input.database)},
+  ${sqlText(input.databaseUser)},
+  ${sqlText(input.databaseIdentitySha256)},
+  ${sqlText(importSearchPath)},
+  ${sqlText(input.phase)},
+  ${sqlText(importId)},
+  ${sqlText(source.sourceWorkbook)},
+  ${sqlText(source.sourceSheet)},
+  ${sqlText(source.workbookSha256)},
+  ${sqlText(MASTER_REGISTER_EXTRACT_SHA256)}
+);
+
+CREATE TEMP TABLE pg_temp.ww_meter_register_stage (
   entry_id text NOT NULL,
   import_id text NOT NULL,
   source_key text NOT NULL,
@@ -571,25 +743,25 @@ CREATE TEMP TABLE ww_meter_register_stage (
   operational_details jsonb NOT NULL
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_stage VALUES
+INSERT INTO pg_temp.ww_meter_register_stage VALUES
 ${values};
 
 DO $$
 BEGIN
-  IF (SELECT count(*) FROM ww_meter_register_stage) <> ${expected.sourceRowCount} THEN
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_stage) <> ${expected.sourceRowCount} THEN
     RAISE EXCEPTION 'Meter Register source row count changed';
   END IF;
   IF (SELECT count(*) FROM (
-    SELECT existing_device_identifier AS identifier FROM ww_meter_register_stage
+    SELECT existing_device_identifier AS identifier FROM pg_temp.ww_meter_register_stage
     UNION ALL
-    SELECT new_device_identifier FROM ww_meter_register_stage
+    SELECT new_device_identifier FROM pg_temp.ww_meter_register_stage
   ) identifiers WHERE identifier IS NOT NULL) <> ${expected.deviceValueCount} THEN
     RAISE EXCEPTION 'Meter Register device value count changed';
   END IF;
   IF (SELECT count(DISTINCT identifier) FROM (
-    SELECT existing_device_identifier AS identifier FROM ww_meter_register_stage
+    SELECT existing_device_identifier AS identifier FROM pg_temp.ww_meter_register_stage
     UNION ALL
-    SELECT new_device_identifier FROM ww_meter_register_stage
+    SELECT new_device_identifier FROM pg_temp.ww_meter_register_stage
   ) identifiers WHERE identifier IS NOT NULL) <> ${expected.uniqueIdentifierCount} THEN
     RAISE EXCEPTION 'Meter Register unique identifier count changed';
   END IF;
@@ -598,11 +770,11 @@ BEGIN
     FROM (
       SELECT existing_device_identifier AS identifier,
              existing_device_classification AS classification
-      FROM ww_meter_register_stage
+      FROM pg_temp.ww_meter_register_stage
       WHERE existing_device_identifier IS NOT NULL
       UNION ALL
       SELECT new_device_identifier, new_device_classification
-      FROM ww_meter_register_stage
+      FROM pg_temp.ww_meter_register_stage
       WHERE new_device_identifier IS NOT NULL
     ) classified
     GROUP BY identifier
@@ -614,21 +786,87 @@ BEGIN
     SELECT 1
     FROM (
       SELECT existing_device_identifier AS identifier
-      FROM ww_meter_register_stage
+      FROM pg_temp.ww_meter_register_stage
       WHERE existing_device_classification = 'confirmed_wattwatchers'
       UNION
       SELECT new_device_identifier
-      FROM ww_meter_register_stage
+      FROM pg_temp.ww_meter_register_stage
       WHERE new_device_classification = 'confirmed_wattwatchers'
     ) confirmed
-    LEFT JOIN ww_devices device ON device.device_id = confirmed.identifier
+    LEFT JOIN public.ww_devices device ON device.device_id = confirmed.identifier
     WHERE device.id IS NULL
   ) THEN
     RAISE EXCEPTION 'A source-confirmed Wattwatchers identifier is missing from Fleet';
   END IF;
 END $$;
 
-INSERT INTO ww_meter_register_imports (
+CREATE TEMP TABLE pg_temp.ww_meter_register_import_preflight (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  preexisting_state text NOT NULL CHECK (preexisting_state IN ('pending', 'applied')),
+  metadata_count integer NOT NULL,
+  source_entry_count integer NOT NULL,
+  import_entry_count integer NOT NULL,
+  operational_record_count integer
+) ON COMMIT DROP;
+
+WITH counts AS (
+  SELECT
+    (
+      SELECT count(*)::integer
+      FROM public.ww_meter_register_imports imported
+      WHERE imported.id = ${sqlText(importId)}
+         OR (
+           imported.workbook_sha256 = ${sqlText(source.workbookSha256)}
+           AND imported.source_sheet = ${sqlText(source.sourceSheet)}
+         )
+    ) AS metadata_count,
+    (
+      SELECT count(*)::integer
+      FROM public.ww_meter_register_entries imported
+      JOIN pg_temp.ww_meter_register_stage stage ON stage.source_key = imported.source_key
+    ) AS source_entry_count,
+    (
+      SELECT count(*)::integer
+      FROM public.ww_meter_register_entries imported
+      WHERE imported.import_id = ${sqlText(importId)}
+    ) AS import_entry_count,
+    ${operationalRecordCountSql} AS operational_record_count
+), classified AS (
+  SELECT
+    CASE
+      WHEN ${pendingPreexistingStateSql}
+        THEN 'pending'
+      WHEN ${appliedPreexistingStateSql}
+        THEN 'applied'
+      ELSE NULL
+    END AS preexisting_state,
+    counts.*
+  FROM counts
+)
+INSERT INTO pg_temp.ww_meter_register_import_preflight (
+  preexisting_state,
+  metadata_count,
+  source_entry_count,
+  import_entry_count,
+  operational_record_count
+)
+SELECT
+  preexisting_state,
+  metadata_count,
+  source_entry_count,
+  import_entry_count,
+  operational_record_count
+FROM classified
+WHERE preexisting_state IS NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_temp.ww_meter_register_import_preflight) THEN
+    RAISE EXCEPTION 'Meter Register import is in a mixed or partial preexisting state';
+  END IF;
+END $$;
+
+INSERT INTO public.ww_meter_register_imports (
   id, source_workbook, source_sheet, workbook_sha256,
   source_row_count, device_value_count, unique_identifier_count,
   confirmed_wattwatchers_identifier_count,
@@ -655,7 +893,7 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1
-    FROM ww_meter_register_imports imported
+    FROM public.ww_meter_register_imports imported
     WHERE imported.id = ${sqlText(importId)}
       AND imported.source_sheet = ${sqlText(source.sourceSheet)}
       AND imported.workbook_sha256 = ${sqlText(source.workbookSha256)}
@@ -670,7 +908,7 @@ BEGIN
   END IF;
 END $$;
 
-INSERT INTO ww_meter_register_entries (
+INSERT INTO public.ww_meter_register_entries (
   id, import_id, source_key, source_row, source_row_sha256,
   status_snapshot, customer_name_snapshot, client_name_snapshot,
   site_address_snapshot, site_state_snapshot, service_type_snapshot,
@@ -741,34 +979,34 @@ SELECT
   stage.source_payload,
   now(),
   now()
-FROM ww_meter_register_stage stage
-LEFT JOIN ww_devices existing_device
+FROM pg_temp.ww_meter_register_stage stage
+LEFT JOIN public.ww_devices existing_device
   ON stage.existing_device_classification = 'confirmed_wattwatchers'
  AND existing_device.device_id = stage.existing_device_identifier
-LEFT JOIN ww_devices new_device
+LEFT JOIN public.ww_devices new_device
   ON stage.new_device_classification = 'confirmed_wattwatchers'
  AND new_device.device_id = stage.new_device_identifier
-LEFT JOIN ww_devices current_device
+LEFT JOIN public.ww_devices current_device
   ON stage.current_device_classification = 'confirmed_wattwatchers'
  AND current_device.device_id = stage.current_device_identifier
 ON CONFLICT (source_key) DO NOTHING;
 
 DO $$
 BEGIN
-  IF (SELECT count(*) FROM ww_meter_register_entries WHERE import_id = ${sqlText(importId)}) <> ${summary.sourceRowCount} THEN
+  IF (SELECT count(*) FROM public.ww_meter_register_entries WHERE import_id = ${sqlText(importId)}) <> ${summary.sourceRowCount} THEN
     RAISE EXCEPTION 'Imported Meter Register row count is incomplete';
   END IF;
   IF EXISTS (
     SELECT 1
-    FROM ww_meter_register_stage stage
-    JOIN ww_meter_register_entries imported ON imported.source_key = stage.source_key
-    LEFT JOIN ww_devices existing_device
+    FROM pg_temp.ww_meter_register_stage stage
+    JOIN public.ww_meter_register_entries imported ON imported.source_key = stage.source_key
+    LEFT JOIN public.ww_devices existing_device
       ON stage.existing_device_classification = 'confirmed_wattwatchers'
      AND existing_device.device_id = stage.existing_device_identifier
-    LEFT JOIN ww_devices new_device
+    LEFT JOIN public.ww_devices new_device
       ON stage.new_device_classification = 'confirmed_wattwatchers'
      AND new_device.device_id = stage.new_device_identifier
-    LEFT JOIN ww_devices current_device
+    LEFT JOIN public.ww_devices current_device
       ON stage.current_device_classification = 'confirmed_wattwatchers'
      AND current_device.device_id = stage.current_device_identifier
     WHERE ROW(
@@ -873,7 +1111,7 @@ BEGIN
   END IF;
   IF EXISTS (
     SELECT 1
-    FROM ww_meter_register_entries imported
+    FROM public.ww_meter_register_entries imported
     WHERE imported.import_id = ${sqlText(importId)}
       AND (
         (imported.existing_device_classification = 'confirmed_wattwatchers')
@@ -888,16 +1126,16 @@ BEGIN
   END IF;
 END $$;
 
-${operationalProjectionSql()}
+${operationalProjection}
 
 WITH identifiers AS (
   SELECT existing_device_identifier AS identifier,
          existing_device_classification AS classification
-  FROM ww_meter_register_entries
+  FROM public.ww_meter_register_entries
   WHERE import_id = ${sqlText(importId)} AND existing_device_identifier IS NOT NULL
   UNION ALL
   SELECT new_device_identifier, new_device_classification
-  FROM ww_meter_register_entries
+  FROM public.ww_meter_register_entries
   WHERE import_id = ${sqlText(importId)} AND new_device_identifier IS NOT NULL
 ), unique_identifiers AS (
   SELECT identifier, min(classification) AS classification
@@ -905,13 +1143,36 @@ WITH identifiers AS (
   GROUP BY identifier
 )
 SELECT
-  (SELECT count(*) FROM ww_meter_register_entries WHERE import_id = ${sqlText(importId)}) AS source_rows,
+  (SELECT target_name FROM pg_temp.ww_meter_register_import_provenance) AS target_name,
+  current_database() AS database_name,
+  current_user AS database_user,
+  session_user AS session_user,
+  (SELECT database_identity_sha256 FROM pg_temp.ww_meter_register_import_provenance)
+    AS database_identity_sha256,
+  current_setting('search_path') AS search_path,
+  (SELECT import_phase FROM pg_temp.ww_meter_register_import_provenance) AS import_phase,
+  ${sqlText(input.mode)} AS apply_mode,
+  ${sqlText(input.mode === 'apply' ? 'commit' : 'rollback')} AS transaction_action,
+  (SELECT import_id FROM pg_temp.ww_meter_register_import_provenance) AS import_id,
+  (SELECT workbook_sha256 FROM pg_temp.ww_meter_register_import_provenance)
+    AS workbook_sha256,
+  (SELECT extract_sha256 FROM pg_temp.ww_meter_register_import_provenance) AS extract_sha256,
+  pg_catalog.jsonb_build_object(
+    'devices', to_regclass('public.ww_devices')::oid::text,
+    'imports', to_regclass('public.ww_meter_register_imports')::oid::text,
+    'entries', to_regclass('public.ww_meter_register_entries')::oid::text,
+    'records', to_regclass('public.ww_meter_register_records')::oid::text
+  ) AS table_oids,
+  (SELECT preexisting_state FROM pg_temp.ww_meter_register_import_preflight)
+    AS preexisting_state,
+  ${operationalRecordResultSql} AS operational_record_count,
+  (SELECT count(*) FROM public.ww_meter_register_entries WHERE import_id = ${sqlText(importId)}) AS source_rows,
   (SELECT count(*) FROM identifiers) AS device_values,
   count(*) AS unique_identifiers,
   count(*) FILTER (WHERE classification = 'confirmed_wattwatchers') AS confirmed_wattwatchers,
   count(*) FILTER (WHERE classification = 'candidate_wattwatchers') AS candidate_wattwatchers,
   count(*) FILTER (WHERE classification = 'other_hardware') AS other_hardware,
-  (SELECT count(*) FROM ww_meter_register_entries
+  (SELECT count(*) FROM public.ww_meter_register_entries
     WHERE import_id = ${sqlText(importId)} AND current_device_identifier IS NULL) AS rows_without_identifier
 FROM unique_identifiers;
 

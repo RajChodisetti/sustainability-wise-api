@@ -1885,4 +1885,13 @@ if (invokedPath === import.meta.url) {
   process.exitCode = await cli();
 }
 
-export { cli, parseEnv, parseStrictJson, runPreflight, sha256Fingerprint };
+export {
+  canonicalDatabaseIdentity,
+  cli,
+  identityFingerprint,
+  parseEnv,
+  parseStrictJson,
+  runPreflight,
+  sha256Fingerprint,
+  stableJson,
+};
