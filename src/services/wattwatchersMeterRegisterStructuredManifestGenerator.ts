@@ -12,6 +12,8 @@ import {
   METER_REGISTER_STRUCTURED_MASTER_SHEET,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA,
+  METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
   METER_REGISTER_STRUCTURED_QA_DATABASE,
   METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
@@ -26,14 +28,21 @@ import {
   type WattwatchersMeterRegisterStructuredManifest,
   wattwatchersMeterRegisterStructuredAuditedFieldCounts,
 } from './wattwatchersMeterRegisterStructuredReconciliation.js';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetBinding,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 import { MASTER_REGISTER_EXPECTED_SUMMARY } from './wattwatchersMeterRegisterImportSql.js';
 
 export {
   METER_REGISTER_STRUCTURED_QA_DATABASE,
+  METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA,
   METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
 };
 export const METER_REGISTER_STRUCTURED_OUTCOME_LEDGER_SCHEMA =
-  'wattwatchers-meter-register-structured-outcome-ledger/v1';
+  'wattwatchers-meter-register-structured-outcome-ledger/v2';
 export const METER_REGISTER_STRUCTURED_APPROVED_FIELD_COUNT = 1_440;
 
 export const METER_REGISTER_STRUCTURED_EXCLUSION_REASONS = [
@@ -48,6 +57,8 @@ type StructuredExclusionReason = typeof METER_REGISTER_STRUCTURED_EXCLUSION_REAS
 type LiveNonblankKind = 'already_matches' | 'conflicting_nonblank';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const identityFingerprintSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const tableOidSchema = z.string().regex(/^[1-9][0-9]*$/u);
 const approvedDeviceIdentifierSchema = z.string().regex(/^[A-Z0-9]{13}$/u);
 const nonblankCurrentIdentifierSchema = z.string().refine(
   (value) => value.trim().length > 0,
@@ -110,7 +121,19 @@ const immutableValuesSchema = z.object({
 }).strict();
 
 const snapshotRowSchema = z.object({
-  databaseName: z.literal(METER_REGISTER_STRUCTURED_QA_DATABASE),
+  databaseName: z.enum([
+    METER_REGISTER_STRUCTURED_QA_DATABASE,
+    METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
+  ]),
+  databaseUser: z.string().min(1),
+  databaseSchemaName: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  currentSchemaName: z.literal('pg_catalog'),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
   importId: z.string().min(1),
   sourceWorkbook: z.literal(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK),
   sourceSheet: z.literal(METER_REGISTER_STRUCTURED_MASTER_SHEET),
@@ -147,8 +170,21 @@ const snapshotRowSchema = z.object({
 });
 
 const snapshotSchema = z.object({
-  schema: z.literal(METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA),
-  database: z.literal(METER_REGISTER_STRUCTURED_QA_DATABASE),
+  schema: z.literal(METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA),
+  target: z.enum(['qa', 'production']),
+  database: z.enum([
+    METER_REGISTER_STRUCTURED_QA_DATABASE,
+    METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
+  ]),
+  databaseSchema: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  databaseUser: z.string().min(1),
+  databaseIdentitySha256: identityFingerprintSchema,
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
   source: z.object({
     workbook: z.literal(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK),
     sheet: z.literal(METER_REGISTER_STRUCTURED_MASTER_SHEET),
@@ -157,6 +193,14 @@ const snapshotSchema = z.object({
   rowCount: z.literal(MASTER_REGISTER_EXPECTED_SUMMARY.sourceRowCount),
   rows: z.array(snapshotRowSchema),
 }).strict().superRefine((snapshot, context) => {
+  try {
+    assertWattwatchersMeterRegisterReconciliationTargetBinding(snapshot);
+  } catch (error) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : 'invalid target binding',
+    });
+  }
   if (snapshot.rowCount !== snapshot.rows.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -303,11 +347,33 @@ const outcomeLedgerSchema = z.object({
   schema: z.literal(METER_REGISTER_STRUCTURED_OUTCOME_LEDGER_SCHEMA),
   sources: z.object({
     sourceAuditSha256: z.literal(METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256),
-    qaSnapshot: z.object({
-      schema: z.literal(METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA),
-      database: z.literal(METER_REGISTER_STRUCTURED_QA_DATABASE),
+    dbSnapshot: z.object({
+      target: z.enum(['qa', 'production']),
+      database: z.enum([
+        METER_REGISTER_STRUCTURED_QA_DATABASE,
+        METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
+      ]),
+      databaseSchema: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+      searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+      databaseUser: z.string().min(1),
+      databaseIdentitySha256: identityFingerprintSchema,
+      tableOids: z.object({
+        imports: tableOidSchema,
+        entries: tableOidSchema,
+        records: tableOidSchema,
+      }).strict(),
+      schema: z.literal(METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA),
       sha256: sha256Schema,
-    }).strict(),
+    }).strict().superRefine((binding, context) => {
+      try {
+        assertWattwatchersMeterRegisterReconciliationTargetBinding(binding);
+      } catch (error) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'invalid target binding',
+        });
+      }
+    }),
     manifestSha256: sha256Schema,
   }).strict(),
   expected: z.object({
@@ -544,16 +610,16 @@ export function assertWattwatchersMeterRegisterStructuredGeneratedArtifactsMatch
 
 export function assertWattwatchersMeterRegisterStructuredGeneratorDigests(input: {
   sourceAuditSha256: string;
-  qaSnapshotSha256: string;
-  expectedQaSnapshotSha256: string;
+  dbSnapshotSha256: string;
+  expectedDbSnapshotSha256: string;
 }): void {
   if (normalizeSha256(input.sourceAuditSha256, 'source audit digest')
       !== METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256) {
     throw new Error('Structured source audit bytes do not match the approved artifact');
   }
-  if (normalizeSha256(input.qaSnapshotSha256, 'QA snapshot digest')
-      !== normalizeSha256(input.expectedQaSnapshotSha256, 'expected QA snapshot digest')) {
-    throw new Error('QA database snapshot bytes do not match the independently captured digest');
+  if (normalizeSha256(input.dbSnapshotSha256, 'DB snapshot digest')
+      !== normalizeSha256(input.expectedDbSnapshotSha256, 'expected DB snapshot digest')) {
+    throw new Error('Database snapshot bytes do not match the independently captured digest');
   }
 }
 
@@ -661,11 +727,21 @@ function parseSnapshot(input: unknown): Snapshot {
   let currentIdentifierCount = 0;
   let previous: SnapshotRow | undefined;
   for (const row of snapshot.rows) {
+    if (row.databaseName !== snapshot.database
+      || row.databaseUser !== snapshot.databaseUser
+      || row.databaseSchemaName !== snapshot.databaseSchema
+      || row.currentSchemaName !== 'pg_catalog'
+      || row.searchPath !== snapshot.searchPath
+      || row.tableOids.imports !== snapshot.tableOids.imports
+      || row.tableOids.entries !== snapshot.tableOids.entries
+      || row.tableOids.records !== snapshot.tableOids.records) {
+      throw new Error('Database snapshot row target binding does not match its artifact binding');
+    }
     if (entryIds.has(row.entryId)) {
-      throw new Error('QA database snapshot contains a duplicate entry identifier');
+      throw new Error('Database snapshot contains a duplicate entry identifier');
     }
     if (sourceRows.has(row.sourceRow)) {
-      throw new Error('QA database snapshot contains a duplicate Master source row');
+      throw new Error('Database snapshot contains a duplicate Master source row');
     }
     entryIds.add(row.entryId);
     sourceRows.add(row.sourceRow);
@@ -673,16 +749,16 @@ function parseSnapshot(input: unknown): Snapshot {
     if (row.currentDeviceIdentifier !== null) currentIdentifierCount += 1;
     if (previous && (row.sourceRow < previous.sourceRow
       || row.sourceRow === previous.sourceRow && row.entryId <= previous.entryId)) {
-      throw new Error('QA database snapshot ordering contradicts the pinned query');
+      throw new Error('Database snapshot ordering contradicts the pinned query');
     }
     previous = row;
   }
   if (importIds.size !== 1) {
-    throw new Error('QA database snapshot must contain exactly one pinned import');
+    throw new Error('Database snapshot must contain exactly one pinned import');
   }
   if (currentIdentifierCount !== MASTER_REGISTER_EXPECTED_SUMMARY.sourceRowCount
       - MASTER_REGISTER_EXPECTED_SUMMARY.rowsWithoutCurrentIdentifier) {
-    throw new Error('QA database snapshot current-identifier coverage changed');
+    throw new Error('Database snapshot current-identifier coverage changed');
   }
   return snapshot;
 }
@@ -735,7 +811,7 @@ function assertInvoiceReconciliationPredecessor(
       || !isDatabaseBlank(row.immutableValues.invoiceNumber.payload)
       || !sameJsonValue(row.liveValues.invoiceNumber, invoice.value)) {
       throw new Error(
-        'Structured reconciliation requires all approved invoices in the fresh QA snapshot',
+        'Structured reconciliation requires all approved invoices in the fresh DB snapshot',
       );
     }
   }
@@ -760,7 +836,7 @@ function assertInvoiceReconciliationPredecessor(
     || !isDatabaseBlank(row.immutableValues.invoiceIssuedDate.payload)
     || !sameJsonValue(row.liveValues.invoiceIssuedDate, invoiceDate.value)) {
     throw new Error(
-      'Structured reconciliation requires the approved invoice date in the fresh QA snapshot',
+      'Structured reconciliation requires the approved invoice date in the fresh DB snapshot',
     );
   }
 }
@@ -800,7 +876,7 @@ function classifyCandidates(approved: ApprovedCandidate[], snapshot: Snapshot): 
     const row = rows[0]!;
     if (row.sourceRow !== candidate.master.source_row
       || row.sourceRowSha256 !== candidate.master.cached_values_sha256) {
-      throw new Error('QA database snapshot provenance contradicts the pinned source audit');
+      throw new Error('Database snapshot provenance contradicts the pinned source audit');
     }
     if (row.recordRevision === null) {
       return { approved: item, row, reason: 'missing_join', liveNonblankKind: null };
@@ -835,16 +911,24 @@ function classifyCandidates(approved: ApprovedCandidate[], snapshot: Snapshot): 
 export function generateWattwatchersMeterRegisterStructuredArtifacts(input: {
   sourceAudit: unknown;
   sourceAuditSha256: string;
-  qaSnapshot: unknown;
-  qaSnapshotSha256: string;
+  dbSnapshot: unknown;
+  dbSnapshotSha256: string;
+  expectedTarget: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
 }): GeneratedWattwatchersMeterRegisterStructuredArtifacts {
   const sourceAuditSha256 = normalizeSha256(input.sourceAuditSha256, 'source audit digest');
   if (sourceAuditSha256 !== METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256) {
     throw new Error('Structured source audit digest is not the approved artifact');
   }
-  const qaSnapshotSha256 = normalizeSha256(input.qaSnapshotSha256, 'QA snapshot digest');
+  const dbSnapshotSha256 = normalizeSha256(input.dbSnapshotSha256, 'DB snapshot digest');
   const approved = approvedSourceCandidates(input.sourceAudit);
-  const snapshot = parseSnapshot(input.qaSnapshot);
+  const snapshot = parseSnapshot(input.dbSnapshot);
+  if (snapshot.target !== input.expectedTarget) {
+    throw new Error('DB snapshot target does not match the explicitly requested target');
+  }
+  if (snapshot.databaseIdentitySha256 !== input.expectedDatabaseIdentitySha256) {
+    throw new Error('DB snapshot identity does not match the protected target identity');
+  }
   assertInvoiceReconciliationPredecessor(input.sourceAudit, snapshot);
   const classified = classifyCandidates(approved, snapshot);
 
@@ -902,7 +986,7 @@ export function generateWattwatchersMeterRegisterStructuredArtifacts(input: {
     });
 
   const manifest = parseWattwatchersMeterRegisterStructuredManifest({
-    schemaVersion: 2,
+    schemaVersion: 3,
     sources: {
       masterRegister: {
         workbook: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
@@ -920,10 +1004,16 @@ export function generateWattwatchersMeterRegisterStructuredArtifacts(input: {
         repositoryCommit: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
         auditedFieldCounts: wattwatchersMeterRegisterStructuredAuditedFieldCounts(),
       },
-      qaSnapshot: {
-        schema: METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
-        database: METER_REGISTER_STRUCTURED_QA_DATABASE,
-        sha256: qaSnapshotSha256,
+      dbSnapshot: {
+        schema: METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA,
+        target: snapshot.target,
+        database: snapshot.database,
+        databaseSchema: snapshot.databaseSchema,
+        searchPath: snapshot.searchPath,
+        databaseUser: snapshot.databaseUser,
+        databaseIdentitySha256: snapshot.databaseIdentitySha256,
+        tableOids: snapshot.tableOids,
+        sha256: dbSnapshotSha256,
       },
     },
     expected: {
@@ -976,10 +1066,16 @@ export function generateWattwatchersMeterRegisterStructuredArtifacts(input: {
     schema: METER_REGISTER_STRUCTURED_OUTCOME_LEDGER_SCHEMA,
     sources: {
       sourceAuditSha256,
-      qaSnapshot: {
-        schema: METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
-        database: METER_REGISTER_STRUCTURED_QA_DATABASE,
-        sha256: qaSnapshotSha256,
+      dbSnapshot: {
+        schema: METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA,
+        target: snapshot.target,
+        database: snapshot.database,
+        databaseSchema: snapshot.databaseSchema,
+        searchPath: snapshot.searchPath,
+        databaseUser: snapshot.databaseUser,
+        databaseIdentitySha256: snapshot.databaseIdentitySha256,
+        tableOids: snapshot.tableOids,
+        sha256: dbSnapshotSha256,
       },
       manifestSha256,
     },

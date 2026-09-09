@@ -4,11 +4,17 @@ import {
   readPrivateWattwatchersMeterRegisterReconciliationArtifact,
   writePrivateWattwatchersMeterRegisterInvoiceManifest,
 } from '../src/services/wattwatchersMeterRegisterInvoiceManifestGenerator.js';
+import {
+  parseWattwatchersMeterRegisterReconciliationTarget,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from '../src/services/wattwatchersMeterRegisterReconciliationTarget.js';
 
 type Options = {
   sourceAuditPath: string;
   dbSnapshotPath: string;
   expectedDbSnapshotSha256: string;
+  target: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
   outputPath: string;
 };
 
@@ -17,13 +23,16 @@ function parseOptions(argv: string[]): Options {
     '--source-audit',
     '--db-snapshot',
     '--snapshot-sha256',
+    '--target',
+    '--database-identity-sha256',
     '--output',
   ]);
   const parsed = new Map<string, string>();
-  if (argv.length !== 8) {
+  if (argv.length !== 12) {
     throw new Error(
       'Usage: --source-audit <protected.json> --db-snapshot <protected.json> '
-        + '--snapshot-sha256 <digest> --output <private-invoice-manifest.json>',
+        + '--snapshot-sha256 <digest> --target <qa|production> '
+        + '--database-identity-sha256 <digest> --output <private-invoice-manifest.json>',
     );
   }
   for (let index = 0; index < argv.length; index += 2) {
@@ -38,12 +47,22 @@ function parseOptions(argv: string[]): Options {
   const dbSnapshotPath = parsed.get('--db-snapshot');
   const expectedDbSnapshotSha256 = parsed.get('--snapshot-sha256');
   const outputPath = parsed.get('--output');
-  if (!sourceAuditPath || !dbSnapshotPath || !expectedDbSnapshotSha256 || !outputPath) {
+  const expectedDatabaseIdentitySha256 = parsed.get('--database-identity-sha256');
+  if (!sourceAuditPath || !dbSnapshotPath || !expectedDbSnapshotSha256 || !outputPath
+    || !expectedDatabaseIdentitySha256
+    || !/^sha256:[a-f0-9]{64}$/u.test(expectedDatabaseIdentitySha256)) {
     throw new Error(
       'Invoice manifest generator requires source audit, DB snapshot digest, and output',
     );
   }
-  return { sourceAuditPath, dbSnapshotPath, expectedDbSnapshotSha256, outputPath };
+  return {
+    sourceAuditPath,
+    dbSnapshotPath,
+    expectedDbSnapshotSha256,
+    target: parseWattwatchersMeterRegisterReconciliationTarget(parsed.get('--target')),
+    expectedDatabaseIdentitySha256,
+    outputPath,
+  };
 }
 
 async function main(): Promise<void> {
@@ -62,6 +81,8 @@ async function main(): Promise<void> {
     sourceAuditBytes,
     dbSnapshotBytes,
     expectedDbSnapshotSha256: options.expectedDbSnapshotSha256,
+    expectedTarget: options.target,
+    expectedDatabaseIdentitySha256: options.expectedDatabaseIdentitySha256,
   });
   await writePrivateWattwatchersMeterRegisterInvoiceManifest(
     options.outputPath,
@@ -69,6 +90,9 @@ async function main(): Promise<void> {
   );
   console.log(JSON.stringify({
     candidateCount: generated.manifest.expected.matchedCount,
+    target: generated.manifest.provenance.dbSnapshot.target,
+    database: generated.manifest.provenance.dbSnapshot.database,
+    databaseIdentitySha256: generated.manifest.provenance.dbSnapshot.databaseIdentitySha256,
     invoiceDateCount: generated.manifest.expected.invoiceDateUpdateCount,
     invoiceEvidenceCount: 95,
     sourceAuditSha256: generated.sourceAuditSha256,

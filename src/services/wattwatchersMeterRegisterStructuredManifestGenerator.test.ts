@@ -22,6 +22,7 @@ import {
   METER_REGISTER_STRUCTURED_MASTER_SHEET,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SCHEMA,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
@@ -33,6 +34,8 @@ import { MASTER_REGISTER_EXPECTED_SUMMARY } from './wattwatchersMeterRegisterImp
 
 const SNAPSHOT_SHA = 'e'.repeat(64);
 const IMPORT_ID = 'private-import';
+const DATABASE_IDENTITY_SHA256 = `sha256:${'9'.repeat(64)}`;
+const TABLE_OIDS = { imports: '1001', entries: '1002', records: '1003' };
 
 type JsonRecord = Record<string, unknown>;
 
@@ -158,6 +161,11 @@ function snapshotRow(input: {
 }): JsonRecord {
   return {
     databaseName: METER_REGISTER_STRUCTURED_QA_DATABASE,
+    databaseUser: 'sw_lane',
+    databaseSchemaName: 'public',
+    currentSchemaName: 'pg_catalog',
+    searchPath: 'pg_catalog, pg_temp',
+    tableOids: TABLE_OIDS,
     importId: IMPORT_ID,
     sourceWorkbook: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
     sourceSheet: METER_REGISTER_STRUCTURED_MASTER_SHEET,
@@ -271,7 +279,13 @@ function buildSnapshot(sourceAudit: JsonRecord): JsonRecord {
     || String(left.entryId).localeCompare(String(right.entryId)));
   return {
     schema: METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
+    target: 'qa',
     database: METER_REGISTER_STRUCTURED_QA_DATABASE,
+    databaseSchema: 'public',
+    searchPath: 'pg_catalog, pg_temp',
+    databaseUser: 'sw_lane',
+    databaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+    tableOids: TABLE_OIDS,
     source: {
       workbook: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
       sheet: METER_REGISTER_STRUCTURED_MASTER_SHEET,
@@ -282,21 +296,22 @@ function buildSnapshot(sourceAudit: JsonRecord): JsonRecord {
   };
 }
 
+function generateArtifacts(sourceAudit: JsonRecord, dbSnapshot: JsonRecord) {
+  return generateWattwatchersMeterRegisterStructuredArtifacts({
+    sourceAudit,
+    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    dbSnapshot,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+  });
+}
+
 test('maps all 1,440 source candidates into a complete selected/excluded ledger', () => {
   const sourceAudit = sourceAuditFixture();
   const snapshot = buildSnapshot(sourceAudit);
-  const generated = generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: snapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  });
-  const repeated = generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: snapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  });
+  const generated = generateArtifacts(sourceAudit, snapshot);
+  const repeated = generateArtifacts(sourceAudit, snapshot);
 
   assert.equal(generated.ledger.candidates.length, METER_REGISTER_STRUCTURED_APPROVED_FIELD_COUNT);
   assert.equal(generated.ledger.outcome.selectedRecordCount, 1);
@@ -317,8 +332,11 @@ test('maps all 1,440 source candidates into a complete selected/excluded ledger'
   assert.deepEqual(generated.manifestBytes, repeated.manifestBytes);
   assert.deepEqual(generated.ledgerBytes, repeated.ledgerBytes);
   assert.equal(generated.ledger.sources.manifestSha256, generated.manifestSha256);
-  assert.equal(generated.manifest.schemaVersion, 2);
-  assert.equal(generated.manifest.sources.qaSnapshot.sha256, SNAPSHOT_SHA);
+  assert.equal(generated.manifest.schemaVersion, 3);
+  assert.equal(generated.manifest.sources.dbSnapshot.sha256, SNAPSHOT_SHA);
+  assert.equal(generated.manifest.sources.dbSnapshot.target, 'qa');
+  assert.equal(generated.ledger.sources.dbSnapshot.databaseIdentitySha256,
+    DATABASE_IDENTITY_SHA256);
   assert.equal(parseWattwatchersMeterRegisterStructuredManifest(
     JSON.parse(generated.manifestBytes.toString('utf8')) as unknown,
   ).expected.recordUpdateCount, 1);
@@ -328,21 +346,62 @@ test('maps all 1,440 source candidates into a complete selected/excluded ledger'
   ));
 });
 
+test('generates fresh production artifacts and rejects QA/production reuse', () => {
+  const sourceAudit = sourceAuditFixture();
+  const snapshot = buildSnapshot(sourceAudit);
+  snapshot.target = 'production';
+  snapshot.database = METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE;
+  snapshot.databaseUser = 'sw_api';
+  snapshot.databaseIdentitySha256 = `sha256:${'8'.repeat(64)}`;
+  snapshot.tableOids = { imports: '2001', entries: '2002', records: '2003' };
+  for (const row of snapshot.rows as JsonRecord[]) {
+    row.databaseName = METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE;
+    row.databaseUser = 'sw_api';
+    row.tableOids = snapshot.tableOids;
+  }
+  const generated = generateWattwatchersMeterRegisterStructuredArtifacts({
+    sourceAudit,
+    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    dbSnapshot: snapshot,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedTarget: 'production',
+    expectedDatabaseIdentitySha256: snapshot.databaseIdentitySha256 as string,
+  });
+  assert.equal(generated.manifest.sources.dbSnapshot.target, 'production');
+  assert.equal(generated.ledger.sources.dbSnapshot.target, 'production');
+  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
+    sourceAudit,
+    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    dbSnapshot: snapshot,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: snapshot.databaseIdentitySha256 as string,
+  }), /target does not match/u);
+  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
+    sourceAudit,
+    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    dbSnapshot: snapshot,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedTarget: 'production',
+    expectedDatabaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+  }), /identity does not match/u);
+});
+
 test('fails closed on artifact tampering and source-row provenance mismatch', () => {
   assert.doesNotThrow(() => assertWattwatchersMeterRegisterStructuredGeneratorDigests({
     sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-    expectedQaSnapshotSha256: SNAPSHOT_SHA,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedDbSnapshotSha256: SNAPSHOT_SHA,
   }));
   assert.throws(() => assertWattwatchersMeterRegisterStructuredGeneratorDigests({
     sourceAuditSha256: '0'.repeat(64),
-    qaSnapshotSha256: SNAPSHOT_SHA,
-    expectedQaSnapshotSha256: SNAPSHOT_SHA,
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedDbSnapshotSha256: SNAPSHOT_SHA,
   }), /source audit bytes/u);
   assert.throws(() => assertWattwatchersMeterRegisterStructuredGeneratorDigests({
     sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-    expectedQaSnapshotSha256: '0'.repeat(64),
+    dbSnapshotSha256: SNAPSHOT_SHA,
+    expectedDbSnapshotSha256: '0'.repeat(64),
   }), /snapshot bytes/u);
 
   const sourceAudit = sourceAuditFixture();
@@ -354,15 +413,10 @@ test('fails closed on artifact tampering and source-row provenance mismatch', ()
     (candidateRow) => candidateRow.currentDeviceIdentifier === firstCandidate.device_id,
   )!;
   row.sourceRowSha256 = 'f'.repeat(64);
-  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: snapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }), /provenance contradicts/u);
+  assert.throws(() => generateArtifacts(sourceAudit, snapshot), /provenance contradicts/u);
 });
 
-test('requires the complete invoice and date predecessor in the fresh QA snapshot', () => {
+test('requires the complete invoice and date predecessor in the fresh DB snapshot', () => {
   const sourceAudit = sourceAuditFixture();
   const invoice = invoiceSourceCandidates(sourceAudit)[0]!;
 
@@ -371,24 +425,20 @@ test('requires the complete invoice and date predecessor in the fresh QA snapsho
     (row) => row.currentDeviceIdentifier === invoice.device_id,
   )!;
   (missingInvoiceRow.liveValues as JsonRecord).invoiceNumber = null;
-  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: missingInvoiceSnapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }), /all approved invoices in the fresh QA snapshot/u);
+  assert.throws(
+    () => generateArtifacts(sourceAudit, missingInvoiceSnapshot),
+    /all approved invoices in the fresh DB snapshot/u,
+  );
 
   const missingDateSnapshot = buildSnapshot(sourceAudit);
   const missingDateRow = (missingDateSnapshot.rows as JsonRecord[]).find(
     (row) => row.currentDeviceIdentifier === invoice.device_id,
   )!;
   (missingDateRow.liveValues as JsonRecord).invoiceIssuedDate = null;
-  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: missingDateSnapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }), /approved invoice date in the fresh QA snapshot/u);
+  assert.throws(
+    () => generateArtifacts(sourceAudit, missingDateSnapshot),
+    /approved invoice date in the fresh DB snapshot/u,
+  );
 });
 
 test('allows unrelated invalid identifiers globally but requires exact candidate IDs', () => {
@@ -399,21 +449,14 @@ test('allows unrelated invalid identifiers globally but requires exact candidate
   );
   unrelatedRows[0]!.currentDeviceIdentifier = 'MALFORMED-ID';
   unrelatedRows[1]!.currentDeviceIdentifier = 'OTHER/HARDWARE-7';
-  assert.doesNotThrow(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: snapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }));
+  assert.doesNotThrow(() => generateArtifacts(sourceAudit, snapshot));
 
   const invalidCandidateAudit = sourceAuditFixture();
   sourceCandidates(invalidCandidateAudit)[0]!.device_id = 'MALFORMED-ID';
-  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit: invalidCandidateAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: buildSnapshot(invalidCandidateAudit),
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }));
+  assert.throws(() => generateArtifacts(
+    invalidCandidateAudit,
+    buildSnapshot(invalidCandidateAudit),
+  ));
 });
 
 test('emits a safe empty manifest while retaining a complete outcome ledger', () => {
@@ -433,12 +476,7 @@ test('emits a safe empty manifest while retaining a complete outcome ledger', ()
   liveValues.serviceType = service.value;
   liveValues.meterType = meter.value;
 
-  const generated = generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: snapshot,
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  });
+  const generated = generateArtifacts(sourceAudit, snapshot);
   assert.equal(generated.manifest.candidates.length, 0);
   assert.equal(generated.manifest.expected.recordUpdateCount, 0);
   assert.equal(generated.ledger.outcome.selectedFieldCount, 0);
@@ -448,12 +486,7 @@ test('emits a safe empty manifest while retaining a complete outcome ledger', ()
 
 test('validates the complete ledger and byte-compares both regenerated artifacts', () => {
   const sourceAudit = sourceAuditFixture();
-  const generated = generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: buildSnapshot(sourceAudit),
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  });
+  const generated = generateArtifacts(sourceAudit, buildSnapshot(sourceAudit));
   assert.doesNotThrow(() => parseWattwatchersMeterRegisterStructuredOutcomeLedger(
     JSON.parse(generated.ledgerBytes.toString('utf8')) as unknown,
   ));
@@ -478,12 +511,10 @@ test('rejects duplicate source candidates without losing one from the ledger', (
   const sourceAudit = sourceAuditFixture();
   const candidates = sourceCandidates(sourceAudit);
   candidates[1] = structuredClone(candidates[0]!);
-  assert.throws(() => generateWattwatchersMeterRegisterStructuredArtifacts({
-    sourceAudit,
-    sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshot: buildSnapshot(sourceAudit),
-    qaSnapshotSha256: SNAPSHOT_SHA,
-  }), /duplicate device field/u);
+  assert.throws(
+    () => generateArtifacts(sourceAudit, buildSnapshot(sourceAudit)),
+    /duplicate device field/u,
+  );
 });
 
 test('writes both generated artifacts exclusively with mode 0600', async () => {
@@ -546,7 +577,9 @@ test('CLI requires private inputs and prints only aggregate evidence', async () 
   assert.match(script, /constants\.O_NOFOLLOW/u);
   assert.match(script, /--snapshot-sha256/u);
   assert.match(script, /writePrivateWattwatchersMeterRegisterStructuredArtifacts/u);
-  assert.match(script, /qaSnapshotSha256/u);
+  assert.match(script, /dbSnapshotSha256/u);
+  assert.match(script, /--target/u);
+  assert.match(script, /--database-identity-sha256/u);
   const consoleBlock = script.slice(script.indexOf('console.log(JSON.stringify({'));
   assert.doesNotMatch(consoleBlock, /currentDeviceIdentifier|entryId|\bvalue\b/u);
 
@@ -554,6 +587,8 @@ test('CLI requires private inputs and prints only aggregate evidence', async () 
     '--source-audit', '/private/tmp/audit.json',
     '--snapshot', '/private/tmp/snapshot.json',
     '--snapshot-sha256', '0'.repeat(64),
+    '--target', 'qa',
+    '--database-identity-sha256', DATABASE_IDENTITY_SHA256,
     '--manifest-output', '/private/tmp/manifest.json',
   ];
   for (const tail of [

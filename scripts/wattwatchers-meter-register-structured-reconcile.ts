@@ -12,6 +12,10 @@ import {
   buildWattwatchersMeterRegisterStructuredReconciliationSql,
   type WattwatchersMeterRegisterStructuredReconciliationMode,
 } from '../src/services/wattwatchersMeterRegisterStructuredReconciliation.js';
+import {
+  parseWattwatchersMeterRegisterReconciliationTarget,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from '../src/services/wattwatchersMeterRegisterReconciliationTarget.js';
 
 type Options = {
   manifestPath: string;
@@ -22,6 +26,8 @@ type Options = {
   expectedSourceAuditSha256: string;
   snapshotPath: string;
   expectedSnapshotSha256: string;
+  target: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
   masterWorkbookPath: string;
   worksWorkbookPath: string;
   outputPath: string;
@@ -37,6 +43,8 @@ const VALUE_OPTIONS = new Set([
   '--source-audit-sha256',
   '--snapshot',
   '--snapshot-sha256',
+  '--target',
+  '--database-identity-sha256',
   '--master-workbook',
   '--works-workbook',
   '--output',
@@ -73,6 +81,7 @@ function parseOptions(argv: string[]): Options {
   const expectedSourceAuditSha256 = parsed.get('--source-audit-sha256');
   const snapshotPath = parsed.get('--snapshot');
   const expectedSnapshotSha256 = parsed.get('--snapshot-sha256');
+  const expectedDatabaseIdentitySha256 = parsed.get('--database-identity-sha256');
   const masterWorkbookPath = parsed.get('--master-workbook');
   const worksWorkbookPath = parsed.get('--works-workbook');
   const outputPath = parsed.get('--output');
@@ -83,10 +92,15 @@ function parseOptions(argv: string[]): Options {
       'Usage: --manifest <private-manifest.json> --manifest-sha256 <digest> '
         + '--ledger <private-ledger.json> --ledger-sha256 <digest> '
         + '--source-audit <private-source-audit.json> --source-audit-sha256 <digest> '
-        + '--snapshot <private-qa-db-snapshot.json> --snapshot-sha256 <digest> '
+        + '--snapshot <private-db-snapshot.json> --snapshot-sha256 <digest> '
+        + '--target <qa|production> --database-identity-sha256 <digest> '
         + '--master-workbook <Master Register.xlsx> --works-workbook <SW Works Planning.xlsx> '
         + '--output <private-reconcile.sql> [--mode dry-run|apply]',
     );
+  }
+  if (!expectedDatabaseIdentitySha256
+    || !/^sha256:[a-f0-9]{64}$/u.test(expectedDatabaseIdentitySha256)) {
+    throw new Error('Structured reconciliation requires a database identity digest');
   }
 
   if (new Set([
@@ -110,6 +124,8 @@ function parseOptions(argv: string[]): Options {
     expectedSourceAuditSha256,
     snapshotPath,
     expectedSnapshotSha256,
+    target: parseWattwatchersMeterRegisterReconciliationTarget(parsed.get('--target')),
+    expectedDatabaseIdentitySha256,
     masterWorkbookPath,
     worksWorkbookPath,
     outputPath,
@@ -149,7 +165,7 @@ async function main(): Promise<void> {
     readPrivateFile(options.manifestPath, 'Structured reconciliation manifest'),
     readPrivateFile(options.ledgerPath, 'Structured outcome ledger'),
     readPrivateFile(options.sourceAuditPath, 'Structured source audit'),
-    readPrivateFile(options.snapshotPath, 'QA database snapshot'),
+    readPrivateFile(options.snapshotPath, 'Database snapshot'),
     readFile(options.masterWorkbookPath),
     readFile(options.worksWorkbookPath),
   ]);
@@ -157,14 +173,14 @@ async function main(): Promise<void> {
   const manifestSha256 = sha256(manifestBytes);
   const ledgerSha256 = sha256(ledgerBytes);
   const sourceAuditSha256 = sha256(sourceAuditBytes);
-  const qaSnapshotSha256 = sha256(snapshotBytes);
+  const dbSnapshotSha256 = sha256(snapshotBytes);
   assertWattwatchersMeterRegisterStructuredArtifactDigests({
     masterWorkbookSha256: sha256(masterWorkbookBytes),
     worksWorkbookSha256: sha256(worksWorkbookBytes),
     sourceAuditSha256,
     expectedSourceAuditSha256: options.expectedSourceAuditSha256,
-    qaSnapshotSha256,
-    expectedQaSnapshotSha256: options.expectedSnapshotSha256,
+    dbSnapshotSha256,
+    expectedDbSnapshotSha256: options.expectedSnapshotSha256,
     manifestSha256,
     expectedManifestSha256: options.expectedManifestSha256,
     ledgerSha256,
@@ -174,8 +190,10 @@ async function main(): Promise<void> {
   const generated = generateWattwatchersMeterRegisterStructuredArtifacts({
     sourceAudit: JSON.parse(sourceAuditBytes.toString('utf8')) as unknown,
     sourceAuditSha256,
-    qaSnapshot: JSON.parse(snapshotBytes.toString('utf8')) as unknown,
-    qaSnapshotSha256,
+    dbSnapshot: JSON.parse(snapshotBytes.toString('utf8')) as unknown,
+    dbSnapshotSha256,
+    expectedTarget: options.target,
+    expectedDatabaseIdentitySha256: options.expectedDatabaseIdentitySha256,
   });
   assertWattwatchersMeterRegisterStructuredGeneratedArtifactsMatch({
     generated,
@@ -186,6 +204,11 @@ async function main(): Promise<void> {
   const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
     manifest: generated.manifest,
     mode: options.mode,
+    expectedTarget: options.target,
+    expectedDatabaseIdentitySha256: options.expectedDatabaseIdentitySha256,
+    sourceAudit: JSON.parse(sourceAuditBytes.toString('utf8')) as unknown,
+    manifestSha256,
+    ledgerSha256,
   });
   const sqlBytes = Buffer.from(built.sql, 'utf8');
   const sqlSha256 = sha256(sqlBytes);
@@ -196,8 +219,11 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({
     mode: options.mode,
+    target: generated.manifest.sources.dbSnapshot.target,
+    database: generated.manifest.sources.dbSnapshot.database,
+    databaseIdentitySha256: generated.manifest.sources.dbSnapshot.databaseIdentitySha256,
     sourceAuditSha256,
-    qaSnapshotSha256,
+    dbSnapshotSha256,
     manifestSha256,
     ledgerSha256,
     sqlSha256,

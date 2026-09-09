@@ -9,6 +9,7 @@ import {
   METER_REGISTER_STRUCTURED_MASTER_SHEET,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
   METER_REGISTER_STRUCTURED_QA_DATABASE,
   METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
@@ -23,6 +24,15 @@ import {
 
 const SYNTHETIC_ENTRY_ID = `wwmre_${'a'.repeat(32)}`;
 const SYNTHETIC_DEVICE_ID = 'AB12345678901';
+const DATABASE_BINDING = {
+  target: 'qa' as const,
+  database: METER_REGISTER_STRUCTURED_QA_DATABASE,
+  databaseSchema: 'public' as const,
+  searchPath: 'pg_catalog, pg_temp' as const,
+  databaseUser: 'sw_lane',
+  databaseIdentitySha256: `sha256:${'9'.repeat(64)}`,
+  tableOids: { imports: '1001', entries: '1002', records: '1003' },
+};
 
 test('pins all 1,440 approved fields including status, comments, and invoice dates', () => {
   const counts = wattwatchersMeterRegisterStructuredAuditedFieldCounts();
@@ -125,7 +135,7 @@ function fieldCounts(fields: Record<string, unknown>[]) {
 function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()) {
   const fields = candidate.fields as Record<string, unknown>[];
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     sources: {
       masterRegister: {
         workbook: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
@@ -143,9 +153,9 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
         repositoryCommit: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
         auditedFieldCounts: wattwatchersMeterRegisterStructuredAuditedFieldCounts(),
       },
-      qaSnapshot: {
+      dbSnapshot: {
+        ...DATABASE_BINDING,
         schema: METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
-        database: METER_REGISTER_STRUCTURED_QA_DATABASE,
         sha256: '5'.repeat(64),
       },
     },
@@ -252,6 +262,11 @@ test('builds an all-or-none dry-run for multiple blank structured fields on one 
   const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
     manifest,
     mode: 'dry-run',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_BINDING.databaseIdentitySha256,
+    sourceAudit: sourceAuditFixture(manifest),
+    manifestSha256: 'a'.repeat(64),
+    ledgerSha256: 'b'.repeat(64),
   });
 
   assert.equal(built.recordUpdateCount, 1);
@@ -263,6 +278,12 @@ test('builds an all-or-none dry-run for multiple blank structured fields on one 
   assert.match(built.sql, /SET LOCAL lock_timeout = '5s'/u);
   assert.match(built.sql, /SET LOCAL statement_timeout = '5min'/u);
   assert.match(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
+  assert.match(built.sql, /SET LOCAL search_path = pg_catalog, pg_temp/u);
+  assert.match(built.sql, /current_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /session_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /to_regclass\('public\.ww_meter_register_records'\)::oid::text/u);
+  assert.match(built.sql, /JOIN public\.ww_meter_register_entries entry/u);
+  assert.match(built.sql, /UPDATE public\.ww_meter_register_records record/u);
   assert.match(built.sql, /entry\.source_row_sha256 = stage\.master_source_row_sha256/u);
   assert.match(built.sql, /entry\.current_device_identifier = stage\.current_device_identifier/u);
   assert.match(built.sql, /entry\.source_payload ->> field\.master_header/u);
@@ -334,6 +355,11 @@ test('apply SQL supports only the complete pending set or a zero-update applied 
   const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
     manifest,
     mode: 'apply',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_BINDING.databaseIdentitySha256,
+    sourceAudit: sourceAuditFixture(manifest),
+    manifestSha256: 'a'.repeat(64),
+    ledgerSha256: 'b'.repeat(64),
   });
   assert.match(built.sql, /pending_count = 1 AND applied_count = 0/u);
   assert.match(built.sql, /pending_count = 0 AND applied_count = 1/u);
@@ -351,6 +377,11 @@ test('builds a valid no-op SQL program for an empty selected manifest', () => {
   const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
     manifest,
     mode: 'apply',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_BINDING.databaseIdentitySha256,
+    sourceAudit: sourceAuditFixture(manifest),
+    manifestSha256: 'a'.repeat(64),
+    ledgerSha256: 'b'.repeat(64),
   });
   assert.equal(built.recordUpdateCount, 0);
   assert.equal(Object.values(built.fieldUpdateCounts).reduce((sum, value) => sum + value, 0), 0);
@@ -361,6 +392,47 @@ test('builds a valid no-op SQL program for an empty selected manifest', () => {
   assert.match(built.sql, /pending_count = 0 AND applied_count = 0/u);
   assert.match(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
   assert.match(built.sql, /COMMIT;\n$/u);
+});
+
+test('production structured SQL is fenced to its production-bound artifact', () => {
+  const fixture = fixtureManifest();
+  const manifest = parseWattwatchersMeterRegisterStructuredManifest({
+    ...fixture,
+    sources: {
+      ...fixture.sources,
+      dbSnapshot: {
+        ...fixture.sources.dbSnapshot,
+        target: 'production',
+        database: METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
+        databaseUser: 'sw_api',
+        databaseIdentitySha256: `sha256:${'8'.repeat(64)}`,
+        tableOids: { imports: '2001', entries: '2002', records: '2003' },
+      },
+    },
+  });
+  const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
+    manifest,
+    mode: 'dry-run',
+    expectedTarget: 'production',
+    expectedDatabaseIdentitySha256: manifest.sources.dbSnapshot.databaseIdentitySha256,
+    sourceAudit: sourceAuditFixture(manifest),
+    manifestSha256: 'a'.repeat(64),
+    ledgerSha256: 'b'.repeat(64),
+  });
+  assert.match(built.sql, /current_database\(\) <> 'sustainability_wise'/u);
+  assert.match(built.sql, /current_user IS DISTINCT FROM 'sw_api'/u);
+  assert.match(built.sql, /session_user IS DISTINCT FROM 'sw_api'/u);
+  assert.match(built.sql, /IS DISTINCT FROM '2003'/u);
+  assert.doesNotMatch(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
+  assert.throws(() => buildWattwatchersMeterRegisterStructuredReconciliationSql({
+    manifest,
+    mode: 'dry-run',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: manifest.sources.dbSnapshot.databaseIdentitySha256,
+    sourceAudit: sourceAuditFixture(manifest),
+    manifestSha256: 'a'.repeat(64),
+    ledgerSha256: 'b'.repeat(64),
+  }), /target does not match/u);
 });
 
 test('rejects unapproved mappings, decisions, value types, and invalid dates', () => {
@@ -415,8 +487,8 @@ test('binds both workbooks, the source audit, and independently approved live ma
     worksWorkbookSha256: METER_REGISTER_STRUCTURED_WORKS_WORKBOOK_SHA256,
     sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
     expectedSourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
-    qaSnapshotSha256: 'e'.repeat(64),
-    expectedQaSnapshotSha256: 'e'.repeat(64),
+    dbSnapshotSha256: 'e'.repeat(64),
+    expectedDbSnapshotSha256: 'e'.repeat(64),
     manifestSha256: 'f'.repeat(64),
     expectedManifestSha256: 'f'.repeat(64),
     ledgerSha256: 'd'.repeat(64),
@@ -433,7 +505,7 @@ test('binds both workbooks, the source audit, and independently approved live ma
   }), /manifest bytes/u);
   assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
     ...valid,
-    expectedQaSnapshotSha256: '0'.repeat(64),
+    expectedDbSnapshotSha256: '0'.repeat(64),
   }), /snapshot bytes/u);
   assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
     ...valid,
@@ -454,6 +526,8 @@ test('structured CLI regenerates protected inputs and writes atomic private SQL'
   assert.match(script, /constants\.O_NOFOLLOW/u);
   assert.match(script, /--source-audit-sha256/u);
   assert.match(script, /--snapshot-sha256/u);
+  assert.match(script, /--target/u);
+  assert.match(script, /--database-identity-sha256/u);
   assert.match(script, /--manifest-sha256/u);
   assert.match(script, /--ledger-sha256/u);
   assert.match(script, /generateWattwatchersMeterRegisterStructuredArtifacts/u);

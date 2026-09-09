@@ -16,6 +16,7 @@ import {
   buildWattwatchersMeterRegisterInvoiceManifest,
   generateWattwatchersMeterRegisterInvoiceManifest,
   METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
+  METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
   METER_REGISTER_RECONCILIATION_QA_DATABASE,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
@@ -23,6 +24,9 @@ import {
   readPrivateWattwatchersMeterRegisterReconciliationArtifact,
   writePrivateWattwatchersMeterRegisterInvoiceManifest,
 } from './wattwatchersMeterRegisterInvoiceManifestGenerator.js';
+
+const DATABASE_IDENTITY_SHA256 = `sha256:${'9'.repeat(64)}`;
+const TABLE_OIDS = { imports: '1001', entries: '1002', records: '1003' };
 
 function digest(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
@@ -159,7 +163,12 @@ function fixtureDbSnapshot(sourceAudit: ReturnType<typeof fixtureSourceAudit>) {
     const candidate = byMasterRow.get(sourceRow);
     const hasCurrentIdentifier = index < 1_857;
     return {
-      databaseName: METER_REGISTER_RECONCILIATION_QA_DATABASE,
+      databaseName: METER_REGISTER_RECONCILIATION_QA_DATABASE as string,
+      databaseUser: 'sw_lane',
+      databaseSchemaName: 'public',
+      currentSchemaName: 'pg_catalog',
+      searchPath: 'pg_catalog, pg_temp',
+      tableOids: TABLE_OIDS,
       importId: 'wwmri_synthetic',
       sourceWorkbook: METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
       sourceSheet: METER_REGISTER_RECONCILIATION_MASTER_SHEET,
@@ -181,7 +190,13 @@ function fixtureDbSnapshot(sourceAudit: ReturnType<typeof fixtureSourceAudit>) {
   });
   return {
     schema: METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
-    database: METER_REGISTER_RECONCILIATION_QA_DATABASE,
+    target: 'qa' as 'qa' | 'production',
+    database: METER_REGISTER_RECONCILIATION_QA_DATABASE as string,
+    databaseSchema: 'public' as const,
+    searchPath: 'pg_catalog, pg_temp' as const,
+    databaseUser: 'sw_lane',
+    databaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+    tableOids: TABLE_OIDS,
     source: {
       workbook: METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
       sheet: METER_REGISTER_RECONCILIATION_MASTER_SHEET,
@@ -203,6 +218,8 @@ function buildFixtureManifest(input = fixtures()) {
     ...input,
     sourceAuditSha256: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
     dbSnapshotSha256: digest(dbSnapshotBytes.toString('utf8')),
+    expectedTarget: input.dbSnapshot.target,
+    expectedDatabaseIdentitySha256: input.dbSnapshot.databaseIdentitySha256,
   });
 }
 
@@ -215,7 +232,9 @@ test('deterministically generates the exact CLI-compatible 92-invoice and one-da
   assert.equal(first.manifest.expected.invoiceNumberUpdateCount, 92);
   assert.equal(first.manifest.expected.invoiceDateUpdateCount, 1);
   assert.match(first.invoiceEvidenceSha256, /^[a-f0-9]{64}$/u);
-  assert.equal(first.manifest.schemaVersion, 2);
+  assert.equal(first.manifest.schemaVersion, 3);
+  assert.equal(first.manifest.provenance.dbSnapshot.target, 'qa');
+  assert.deepEqual(first.manifest.provenance.dbSnapshot.tableOids, TABLE_OIDS);
   assert.equal(first.manifest.provenance.sourceAudit.sha256,
     METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256);
   assert.equal(first.manifest.provenance.invoiceEvidence.rowCount, 95);
@@ -326,7 +345,45 @@ test('byte-level generation rejects any source audit other than the pinned prote
     sourceAuditBytes: Buffer.from(JSON.stringify(input.sourceAudit), 'utf8'),
     dbSnapshotBytes: Buffer.from(JSON.stringify(input.dbSnapshot), 'utf8'),
     expectedDbSnapshotSha256: digest(JSON.stringify(input.dbSnapshot)),
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_IDENTITY_SHA256,
   }), /approved SHA-256 digest/u);
+});
+
+test('binds production artifacts and rejects cross-environment snapshot reuse', () => {
+  const input = fixtures();
+  input.dbSnapshot.target = 'production';
+  input.dbSnapshot.database = METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE;
+  input.dbSnapshot.databaseUser = 'sw_api';
+  input.dbSnapshot.databaseIdentitySha256 = `sha256:${'8'.repeat(64)}`;
+  input.dbSnapshot.tableOids = { imports: '2001', entries: '2002', records: '2003' };
+  for (const row of input.dbSnapshot.rows) {
+    row.databaseName = METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE;
+    row.databaseUser = 'sw_api';
+    row.tableOids = input.dbSnapshot.tableOids;
+  }
+  const built = buildFixtureManifest(input);
+  assert.equal(built.manifest.provenance.dbSnapshot.target, 'production');
+  assert.equal(
+    built.manifest.provenance.dbSnapshot.database,
+    METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+  );
+  assert.throws(() => buildWattwatchersMeterRegisterInvoiceManifest({
+    sourceAudit: input.sourceAudit,
+    dbSnapshot: input.dbSnapshot,
+    sourceAuditSha256: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
+    dbSnapshotSha256: digest(JSON.stringify(input.dbSnapshot)),
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: input.dbSnapshot.databaseIdentitySha256,
+  }), /target does not match/u);
+  assert.throws(() => buildWattwatchersMeterRegisterInvoiceManifest({
+    sourceAudit: input.sourceAudit,
+    dbSnapshot: input.dbSnapshot,
+    sourceAuditSha256: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
+    dbSnapshotSha256: digest(JSON.stringify(input.dbSnapshot)),
+    expectedTarget: 'production',
+    expectedDatabaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+  }), /identity does not match/u);
 });
 
 test('byte-level generation rejects a snapshot that differs from its reviewed digest', () => {
@@ -405,6 +462,8 @@ test('CLI checks both private inputs and reports only counts and digests', async
   );
   assert.match(script, /readPrivateWattwatchersMeterRegisterReconciliationArtifact/u);
   assert.match(script, /--snapshot-sha256/u);
+  assert.match(script, /--target/u);
+  assert.match(script, /--database-identity-sha256/u);
   assert.match(script, /sourceAuditSha256/u);
   assert.match(script, /dbSnapshotSha256/u);
   assert.match(script, /invoiceEvidenceSha256/u);

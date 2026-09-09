@@ -4,21 +4,43 @@ import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import {
+  METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
   METER_REGISTER_RECONCILIATION_MASTER_SHEET,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK_SHA256,
 } from '../src/services/wattwatchersMeterRegisterInvoiceReconciliation.js';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetBinding,
+  computeWattwatchersMeterRegisterDatabaseUrlIdentity,
+  parseWattwatchersMeterRegisterReconciliationTarget,
+  wattwatchersMeterRegisterReconciliationDatabaseForTarget,
+  wattwatchersMeterRegisterReconciliationDatabaseUserForTarget,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES,
+  type WattwatchersMeterRegisterReconciliationDatabase,
+  type WattwatchersMeterRegisterReconciliationTarget,
+  type WattwatchersMeterRegisterReconciliationTargetBinding,
+} from '../src/services/wattwatchersMeterRegisterReconciliationTarget.js';
 import { MASTER_REGISTER_EXPECTED_SUMMARY } from '../src/services/wattwatchersMeterRegisterImportSql.js';
 
 export const METER_REGISTER_RECONCILIATION_SNAPSHOT_SCHEMA =
-  'wattwatchers-meter-register-reconciliation-db-snapshot/v1';
+  METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA;
 export const METER_REGISTER_RECONCILIATION_SNAPSHOT_TRANSACTION =
   'ISOLATION LEVEL REPEATABLE READ READ ONLY';
-export const METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE = 'sw_ecoaudit_fixes';
 
 export const METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL = `
 SELECT
   current_database() AS "databaseName",
+  current_user AS "databaseUser",
+  'public'::text AS "databaseSchemaName",
+  current_schema() AS "currentSchemaName",
+  current_setting('search_path') AS "searchPath",
+  jsonb_build_object(
+    'imports', to_regclass('public.ww_meter_register_imports')::oid::text,
+    'entries', to_regclass('public.ww_meter_register_entries')::oid::text,
+    'records', to_regclass('public.ww_meter_register_records')::oid::text
+  ) AS "tableOids",
   imported.id AS "importId",
   imported.source_workbook AS "sourceWorkbook",
   imported.source_sheet AS "sourceSheet",
@@ -107,13 +129,17 @@ SELECT
     'invoiceIssuedDate', record.details -> 'invoiceIssuedDate',
     'comments', record.details -> 'comments'
   ) AS "liveValues"
-FROM ww_meter_register_imports imported
-JOIN ww_meter_register_entries entry ON entry.import_id = imported.id
-LEFT JOIN ww_meter_register_records record ON record.entry_id = entry.id
+FROM public.ww_meter_register_imports imported
+JOIN public.ww_meter_register_entries entry ON entry.import_id = imported.id
+LEFT JOIN public.ww_meter_register_records record ON record.entry_id = entry.id
 WHERE imported.source_workbook = $1
   AND imported.source_sheet = $2
   AND imported.workbook_sha256 = $3
   AND current_database() = $4
+  AND current_user = $5
+  AND session_user = $5
+  AND current_schema() = 'pg_catalog'
+  AND current_setting('search_path') = 'pg_catalog, pg_temp'
 ORDER BY entry.source_row ASC, entry.id ASC
 `.trim();
 
@@ -136,6 +162,15 @@ type SnapshotTargetKey =
 
 export type WattwatchersMeterRegisterReconciliationSnapshotRow = {
   databaseName: string;
+  databaseUser: string;
+  databaseSchemaName: string;
+  currentSchemaName: string;
+  searchPath: string;
+  tableOids: {
+    imports: string;
+    entries: string;
+    records: string;
+  };
   importId: string;
   sourceWorkbook: string;
   sourceSheet: string;
@@ -156,7 +191,17 @@ export type WattwatchersMeterRegisterReconciliationSnapshotRow = {
 
 export type WattwatchersMeterRegisterReconciliationSnapshot = {
   schema: typeof METER_REGISTER_RECONCILIATION_SNAPSHOT_SCHEMA;
-  database: typeof METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE;
+  target: WattwatchersMeterRegisterReconciliationTarget;
+  database: WattwatchersMeterRegisterReconciliationDatabase;
+  databaseSchema: typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA;
+  searchPath: typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH;
+  databaseUser: string;
+  databaseIdentitySha256: string;
+  tableOids: {
+    imports: string;
+    entries: string;
+    records: string;
+  };
   source: {
     workbook: typeof METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK;
     sheet: typeof METER_REGISTER_RECONCILIATION_MASTER_SHEET;
@@ -168,10 +213,26 @@ export type WattwatchersMeterRegisterReconciliationSnapshot = {
 
 export function buildWattwatchersMeterRegisterReconciliationSnapshot(
   rows: WattwatchersMeterRegisterReconciliationSnapshotRow[],
+  target: WattwatchersMeterRegisterReconciliationTarget,
+  databaseIdentitySha256: string,
 ): WattwatchersMeterRegisterReconciliationSnapshot {
+  assertWattwatchersMeterRegisterReconciliationSnapshotRows(rows, target);
+  const first = rows[0];
+  if (!first) throw new Error('Meter Register snapshot cannot be built without rows');
+  const binding: WattwatchersMeterRegisterReconciliationTargetBinding = {
+    target,
+    database: first.databaseName as WattwatchersMeterRegisterReconciliationDatabase,
+    databaseSchema: first.databaseSchemaName as
+      typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+    searchPath: first.searchPath as typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+    databaseUser: first.databaseUser,
+    databaseIdentitySha256,
+    tableOids: first.tableOids,
+  };
+  assertWattwatchersMeterRegisterReconciliationTargetBinding(binding);
   return {
     schema: METER_REGISTER_RECONCILIATION_SNAPSHOT_SCHEMA,
-    database: METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE,
+    ...binding,
     source: {
       workbook: METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
       sheet: METER_REGISTER_RECONCILIATION_MASTER_SHEET,
@@ -184,6 +245,7 @@ export function buildWattwatchersMeterRegisterReconciliationSnapshot(
 
 export function assertWattwatchersMeterRegisterReconciliationSnapshotRows(
   rows: WattwatchersMeterRegisterReconciliationSnapshotRow[],
+  target: WattwatchersMeterRegisterReconciliationTarget,
 ): void {
   if (rows.length !== MASTER_REGISTER_EXPECTED_SUMMARY.sourceRowCount) {
     throw new Error('Meter Register snapshot row count does not match the pinned import');
@@ -191,9 +253,38 @@ export function assertWattwatchersMeterRegisterReconciliationSnapshotRows(
   const importIds = new Set<string>();
   let currentIdentifierCount = 0;
   let previous: WattwatchersMeterRegisterReconciliationSnapshotRow | undefined;
+  const expectedDatabase = wattwatchersMeterRegisterReconciliationDatabaseForTarget(target);
+  let rowTargetBinding: Omit<
+    WattwatchersMeterRegisterReconciliationTargetBinding,
+    'databaseIdentitySha256'
+  > | undefined;
   for (const row of rows) {
-    if (row.databaseName !== METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE) {
+    const rowBinding: Omit<
+      WattwatchersMeterRegisterReconciliationTargetBinding,
+      'databaseIdentitySha256'
+    > = {
+      target,
+      database: row.databaseName as WattwatchersMeterRegisterReconciliationDatabase,
+      databaseSchema: row.databaseSchemaName as
+        typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+      searchPath: row.searchPath as typeof WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+      databaseUser: row.databaseUser,
+      tableOids: row.tableOids,
+    };
+    assertWattwatchersMeterRegisterReconciliationTargetBinding({
+      ...rowBinding,
+      databaseIdentitySha256: `sha256:${'0'.repeat(64)}`,
+    });
+    if (row.databaseName !== expectedDatabase) {
       throw new Error('Meter Register snapshot came from an unapproved database');
+    }
+    if (row.currentSchemaName !== 'pg_catalog') {
+      throw new Error('Meter Register snapshot came from an unapproved current schema');
+    }
+    if (rowTargetBinding === undefined) {
+      rowTargetBinding = rowBinding;
+    } else if (JSON.stringify(rowBinding) !== JSON.stringify(rowTargetBinding)) {
+      throw new Error('Meter Register snapshot target binding changed between rows');
     }
     if (row.sourceWorkbook !== METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK
       || row.sourceSheet !== METER_REGISTER_RECONCILIATION_MASTER_SHEET
@@ -255,18 +346,62 @@ export async function writePrivateSnapshot(path: string, bytes: Uint8Array): Pro
   }
 }
 
-function outputOption(argv: string[]): string {
-  const indexes = argv.flatMap((value, index) => value === '--output' ? [index] : []);
-  if (indexes.length !== 1 || argv.length !== 2 || indexes[0] !== 0 || !argv[1]) {
-    throw new Error('Usage: --output <private-db-snapshot.json>');
+export function parseWattwatchersMeterRegisterSnapshotOptions(argv: string[]): {
+  target: WattwatchersMeterRegisterReconciliationTarget;
+  outputPath: string;
+  databaseIdentitySha256: string;
+} {
+  const allowed = new Set(['--target', '--database-identity-sha256', '--output']);
+  if (argv.length !== 6) {
+    throw new Error(
+      'Usage: --target <qa|production> --database-identity-sha256 <digest> '
+        + '--output <private-db-snapshot.json>',
+    );
   }
-  return argv[1];
+  const values = new Map<string, string>();
+  for (let index = 0; index < argv.length; index += 2) {
+    const name = argv[index];
+    const value = argv[index + 1];
+    if (!name || !allowed.has(name) || !value || values.has(name)) {
+      throw new Error('Snapshot exporter received invalid or duplicate options');
+    }
+    values.set(name, value);
+  }
+  const outputPath = values.get('--output');
+  if (!outputPath) throw new Error('--output is required');
+  const databaseIdentitySha256 = values.get('--database-identity-sha256');
+  if (!databaseIdentitySha256 || !/^sha256:[a-f0-9]{64}$/u.test(databaseIdentitySha256)) {
+    throw new Error(
+      '--database-identity-sha256 must be a prefixed lowercase SHA-256 digest',
+    );
+  }
+  return {
+    target: parseWattwatchersMeterRegisterReconciliationTarget(values.get('--target')),
+    outputPath,
+    databaseIdentitySha256,
+  };
 }
 
 async function main(): Promise<void> {
-  const outputPath = outputOption(process.argv.slice(2));
+  const options = parseWattwatchersMeterRegisterSnapshotOptions(process.argv.slice(2));
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required');
+  const databaseIdentity = computeWattwatchersMeterRegisterDatabaseUrlIdentity(databaseUrl);
+  if (databaseIdentity.sha256 !== options.databaseIdentitySha256) {
+    throw new Error('DATABASE_URL does not match --database-identity-sha256');
+  }
+  const expectedDatabase = wattwatchersMeterRegisterReconciliationDatabaseForTarget(
+    options.target,
+  );
+  if (databaseIdentity.database !== expectedDatabase) {
+    throw new Error(`DATABASE_URL database does not match target ${options.target}`);
+  }
+  const expectedDatabaseUser = wattwatchersMeterRegisterReconciliationDatabaseUserForTarget(
+    options.target,
+  );
+  if (databaseIdentity.databaseUser !== expectedDatabaseUser) {
+    throw new Error(`DATABASE_URL user does not match target ${options.target}`);
+  }
 
   const sql = postgres(databaseUrl, {
     max: 1,
@@ -280,27 +415,35 @@ async function main(): Promise<void> {
       async (transaction) => {
         await transaction`SET LOCAL lock_timeout = '5s'`;
         await transaction`SET LOCAL statement_timeout = '2min'`;
+        await transaction`SET LOCAL search_path = pg_catalog, pg_temp`;
         return transaction.unsafe<WattwatchersMeterRegisterReconciliationSnapshotRow[]>(
           METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL,
           [
             METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
             METER_REGISTER_RECONCILIATION_MASTER_SHEET,
             METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK_SHA256,
-            METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE,
+            expectedDatabase,
+            expectedDatabaseUser,
           ],
         );
       },
     );
-    assertWattwatchersMeterRegisterReconciliationSnapshotRows([...rows]);
-    const snapshot = buildWattwatchersMeterRegisterReconciliationSnapshot([...rows]);
+    assertWattwatchersMeterRegisterReconciliationSnapshotRows([...rows], options.target);
+    const snapshot = buildWattwatchersMeterRegisterReconciliationSnapshot(
+      [...rows],
+      options.target,
+      options.databaseIdentitySha256,
+    );
     const bytes = serializeWattwatchersMeterRegisterReconciliationSnapshot(snapshot);
     const snapshotSha256 = createHash('sha256').update(bytes).digest('hex');
-    await writePrivateSnapshot(outputPath, bytes);
+    await writePrivateSnapshot(options.outputPath, bytes);
     console.log(JSON.stringify({
       schema: snapshot.schema,
+      target: snapshot.target,
+      database: snapshot.database,
       rowCount: snapshot.rowCount,
       snapshotSha256,
-      outputPath,
+      outputPath: options.outputPath,
     }, null, 2));
   } finally {
     await sql.end({ timeout: 5 });

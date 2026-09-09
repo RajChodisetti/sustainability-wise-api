@@ -6,13 +6,21 @@ import test from 'node:test';
 import {
   assertWattwatchersMeterRegisterReconciliationSnapshotRows,
   buildWattwatchersMeterRegisterReconciliationSnapshot,
-  METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE,
   METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL,
   METER_REGISTER_RECONCILIATION_SNAPSHOT_TRANSACTION,
+  parseWattwatchersMeterRegisterSnapshotOptions,
   serializeWattwatchersMeterRegisterReconciliationSnapshot,
   type WattwatchersMeterRegisterReconciliationSnapshotRow,
   writePrivateSnapshot,
 } from './wattwatchers-meter-register-reconciliation-snapshot.js';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser,
+  computeWattwatchersMeterRegisterDatabaseUrlIdentity,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS,
+} from '../src/services/wattwatchersMeterRegisterReconciliationTarget.js';
+
+const DATABASE_IDENTITY_SHA256 = `sha256:${'9'.repeat(64)}`;
+const TABLE_OIDS = { imports: '1001', entries: '1002', records: '1003' };
 
 test('uses one deterministic read-only query with the minimal reconciliation projection', () => {
   assert.equal(
@@ -20,12 +28,16 @@ test('uses one deterministic read-only query with the minimal reconciliation pro
     'ISOLATION LEVEL REPEATABLE READ READ ONLY',
   );
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /^SELECT\n/u);
-  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /LEFT JOIN ww_meter_register_records/u);
+  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /LEFT JOIN public\.ww_meter_register_records/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /record\.revision AS "recordRevision"/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /record\.manually_corrected_at/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /record\.updated_by_user_id/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /current_database\(\) AS "databaseName"/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /current_database\(\) = \$4/u);
+  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /current_user = \$5/u);
+  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /session_user = \$5/u);
+  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /to_regclass\('public\.ww_meter_register_imports'\)::oid::text/u);
+  assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /current_setting\('search_path'\) = 'pg_catalog, pg_temp'/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /AS "immutableValues"/u);
   assert.match(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /AS "liveValues"/u);
   assert.doesNotMatch(METER_REGISTER_RECONCILIATION_SNAPSHOT_SQL, /record\.details AS/u);
@@ -47,9 +59,14 @@ test('uses one deterministic read-only query with the minimal reconciliation pro
   );
 });
 
-test('serializes rows deterministically and writes a private exclusive snapshot', async () => {
+test('writes private snapshot bytes atomically and exclusively', async () => {
   const row: WattwatchersMeterRegisterReconciliationSnapshotRow = {
-    databaseName: METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE,
+    databaseName: WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.database,
+    databaseUser: WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.databaseUser,
+    databaseSchemaName: 'public',
+    currentSchemaName: 'pg_catalog',
+    searchPath: 'pg_catalog, pg_temp',
+    tableOids: TABLE_OIDS,
     importId: 'import-id',
     sourceWorkbook: 'Master Register (1).xlsx',
     sourceSheet: 'Master Project Register',
@@ -97,13 +114,7 @@ test('serializes rows deterministically and writes a private exclusive snapshot'
       'comments',
     ].map((key) => [key, null])) as WattwatchersMeterRegisterReconciliationSnapshotRow['liveValues'],
   };
-  const bytes = serializeWattwatchersMeterRegisterReconciliationSnapshot(
-    buildWattwatchersMeterRegisterReconciliationSnapshot([row]),
-  );
-  const repeated = serializeWattwatchersMeterRegisterReconciliationSnapshot(
-    buildWattwatchersMeterRegisterReconciliationSnapshot([row]),
-  );
-  assert.deepEqual(bytes, repeated);
+  const bytes = Buffer.from(`${JSON.stringify(row)}\n`, 'utf8');
 
   const directory = await mkdtemp(join(tmpdir(), 'ww-meter-register-snapshot-'));
   const outputPath = join(directory, 'snapshot.json');
@@ -118,9 +129,14 @@ test('serializes rows deterministically and writes a private exclusive snapshot'
   }
 });
 
-test('fails closed unless the complete pinned QA import is present in deterministic order', () => {
+test('fails closed unless the complete pinned target import is present in deterministic order', () => {
   const base = {
-    databaseName: METER_REGISTER_RECONCILIATION_SNAPSHOT_DATABASE,
+    databaseName: WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.database,
+    databaseUser: WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.databaseUser,
+    databaseSchemaName: 'public',
+    currentSchemaName: 'pg_catalog',
+    searchPath: 'pg_catalog, pg_temp',
+    tableOids: TABLE_OIDS,
     importId: 'import-id',
     sourceWorkbook: 'Master Register (1).xlsx',
     sourceSheet: 'Master Project Register',
@@ -144,16 +160,106 @@ test('fails closed unless the complete pinned QA import is present in determinis
       ? `A${String(index).padStart(12, '0')}`
       : null,
   }));
-  assert.doesNotThrow(() => assertWattwatchersMeterRegisterReconciliationSnapshotRows(rows));
+  assert.doesNotThrow(() => assertWattwatchersMeterRegisterReconciliationSnapshotRows(rows, 'qa'));
+  const snapshot = buildWattwatchersMeterRegisterReconciliationSnapshot(
+    rows,
+    'qa',
+    DATABASE_IDENTITY_SHA256,
+  );
+  assert.equal(snapshot.target, 'qa');
+  assert.equal(snapshot.databaseIdentitySha256, DATABASE_IDENTITY_SHA256);
+  assert.deepEqual(
+    serializeWattwatchersMeterRegisterReconciliationSnapshot(snapshot),
+    serializeWattwatchersMeterRegisterReconciliationSnapshot(snapshot),
+  );
   assert.throws(
-    () => assertWattwatchersMeterRegisterReconciliationSnapshotRows(rows.slice(1)),
+    () => assertWattwatchersMeterRegisterReconciliationSnapshotRows(rows.slice(1), 'qa'),
     /row count/u,
   );
   assert.throws(
     () => assertWattwatchersMeterRegisterReconciliationSnapshotRows([
       { ...rows[0]!, databaseName: 'postgres' },
       ...rows.slice(1),
-    ]),
-    /unapproved database/u,
+    ], 'qa'),
+    /must bind database|unapproved database/u,
   );
+  assert.throws(
+    () => assertWattwatchersMeterRegisterReconciliationSnapshotRows([
+      {
+        ...rows[0]!,
+        databaseUser:
+          WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.production.databaseUser,
+      },
+      ...rows.slice(1),
+    ], 'qa'),
+    /database user/u,
+  );
+});
+
+test('requires an explicit target and binds a stable non-secret DATABASE_URL identity', () => {
+  assert.doesNotThrow(() => assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser({
+    target: 'qa',
+    databaseUser: 'sw_lane',
+  }));
+  assert.throws(() => assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser({
+    target: 'qa',
+    databaseUser: 'sw_api',
+  }), /database user sw_lane/u);
+  assert.throws(() => assertWattwatchersMeterRegisterReconciliationTargetDatabaseUser({
+    target: 'production',
+    databaseUser: 'sw_lane',
+  }), /database user sw_api/u);
+  assert.throws(
+    () => parseWattwatchersMeterRegisterSnapshotOptions([
+      '--database-identity-sha256', DATABASE_IDENTITY_SHA256,
+      '--output', '/private/tmp/snapshot.json',
+    ]),
+    /Usage|target/u,
+  );
+  assert.deepEqual(parseWattwatchersMeterRegisterSnapshotOptions([
+    '--target', 'production',
+    '--database-identity-sha256', DATABASE_IDENTITY_SHA256,
+    '--output', '/private/tmp/snapshot.json',
+  ]), {
+    target: 'production',
+    databaseIdentitySha256: DATABASE_IDENTITY_SHA256,
+    outputPath: '/private/tmp/snapshot.json',
+  });
+
+  const first = computeWattwatchersMeterRegisterDatabaseUrlIdentity(
+    'postgresql://meter_user:hidden@DB.EXAMPLE:5432/sustainability_wise?sslmode=require&application_name=reconcile',
+  );
+  const reordered = computeWattwatchersMeterRegisterDatabaseUrlIdentity(
+    'postgresql://meter_user:different@db.example:5432/sustainability_wise?application_name=reconcile&sslmode=require',
+  );
+  assert.equal(first.sha256, reordered.sha256);
+  assert.equal(first.database, 'sustainability_wise');
+  assert.equal(first.databaseUser, 'meter_user');
+  assert.throws(
+    () => computeWattwatchersMeterRegisterDatabaseUrlIdentity(
+      'postgresql://meter_user:hidden@db.example/sustainability_wise',
+    ),
+    /explicit numeric port/u,
+  );
+  assert.throws(
+    () => computeWattwatchersMeterRegisterDatabaseUrlIdentity(
+      'postgresql://meter_user:hidden@db.example:5432/sustainability_wise?sslmode=require&sslmode=verify-full',
+    ),
+    /unique/u,
+  );
+});
+
+test('DATABASE_URL identity exactly matches the release-preflight fingerprint contract', async () => {
+  const { canonicalDatabaseIdentity, identityFingerprint } = await import(
+    './release-preflight.mjs'
+  ) as {
+    canonicalDatabaseIdentity: (url: URL, parameters: Record<string, string>) => unknown;
+    identityFingerprint: (value: unknown) => string;
+  };
+  const url = new URL(
+    'postgresql://sw_api:hidden@db.example:5432/sustainability_wise?sslmode=verify-full&application_name=reconcile',
+  );
+  const parameters = Object.fromEntries(url.searchParams.entries());
+  const expected = identityFingerprint(canonicalDatabaseIdentity(url, parameters));
+  assert.equal(computeWattwatchersMeterRegisterDatabaseUrlIdentity(url.href).sha256, expected);
 });

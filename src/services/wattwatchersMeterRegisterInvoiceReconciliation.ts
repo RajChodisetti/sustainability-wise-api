@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetBinding,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS,
+  type WattwatchersMeterRegisterReconciliationTargetBinding,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 
 export type WattwatchersMeterRegisterInvoiceReconciliationMode = 'dry-run' | 'apply';
 
@@ -20,13 +29,34 @@ export const METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256 =
 export const METER_REGISTER_RECONCILIATION_SOURCE_COMMIT =
   'd29dccfc308c58417331aab4a45a4ab90876b415';
 export const METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA =
-  'wattwatchers-meter-register-reconciliation-db-snapshot/v1';
-export const METER_REGISTER_RECONCILIATION_QA_DATABASE = 'sw_ecoaudit_fixes';
+  'wattwatchers-meter-register-reconciliation-db-snapshot/v2';
+export const METER_REGISTER_RECONCILIATION_QA_DATABASE =
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.database;
+export const METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE =
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.production.database;
 export const METER_REGISTER_RECONCILIATION_INVOICE_EVIDENCE_COUNT = 95;
 export const METER_REGISTER_RECONCILIATION_CURRENT_INVOICE_EVIDENCE_COUNT = 93;
 export const METER_REGISTER_RECONCILIATION_XERO_DATE_INVOICE_EVIDENCE_COUNT = 6;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const identityFingerprintSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const tableOidSchema = z.string().regex(/^[1-9][0-9]*$/u);
+const targetBindingShape = {
+  target: z.enum(['qa', 'production']),
+  database: z.enum([
+    METER_REGISTER_RECONCILIATION_QA_DATABASE,
+    METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+  ]),
+  databaseSchema: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  databaseUser: z.string().min(1),
+  databaseIdentitySha256: identityFingerprintSchema,
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
+};
 const invoiceNumberSchema = z.string()
   .regex(/^INV-[A-Z0-9][A-Z0-9./_-]*$/u)
   .max(300)
@@ -164,7 +194,7 @@ const candidateSchema = z.object({
 });
 
 const manifestSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   provenance: z.object({
     sourceAudit: z.object({
       schema: z.literal(METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA),
@@ -172,10 +202,19 @@ const manifestSchema = z.object({
       repositoryCommit: z.literal(METER_REGISTER_RECONCILIATION_SOURCE_COMMIT),
     }).strict(),
     dbSnapshot: z.object({
+      ...targetBindingShape,
       schema: z.literal(METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA),
       sha256: sha256Schema,
-      database: z.literal(METER_REGISTER_RECONCILIATION_QA_DATABASE),
-    }).strict(),
+    }).strict().superRefine((binding, context) => {
+      try {
+        assertWattwatchersMeterRegisterReconciliationTargetBinding(binding);
+      } catch (error) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'invalid target binding',
+        });
+      }
+    }),
     invoiceEvidence: z.object({
       rowCount: z.number().int().nonnegative(),
       currentRowCount: z.number().int().nonnegative(),
@@ -421,11 +460,23 @@ function stageEvidenceRowSql(input: {
 export function buildWattwatchersMeterRegisterInvoiceReconciliationSql(input: {
   manifest: WattwatchersMeterRegisterInvoiceReconciliationManifest;
   mode: WattwatchersMeterRegisterInvoiceReconciliationMode;
+  expectedTarget: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
+  manifestSha256: string;
 }): BuiltWattwatchersMeterRegisterInvoiceReconciliationSql {
   if (input.mode !== 'dry-run' && input.mode !== 'apply') {
     throw new Error('Invoice reconciliation mode must be dry-run or apply');
   }
-  const { manifest } = input;
+  const manifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest(input.manifest);
+  assertApprovedWattwatchersMeterRegisterInvoiceReconciliationManifest(manifest);
+  if (manifest.provenance.dbSnapshot.target !== input.expectedTarget) {
+    throw new Error('Invoice manifest target does not match the explicitly requested target');
+  }
+  if (manifest.provenance.dbSnapshot.databaseIdentitySha256
+      !== input.expectedDatabaseIdentitySha256) {
+    throw new Error('Invoice manifest identity does not match the protected target identity');
+  }
+  const manifestSha256 = normalizeSha256(input.manifestSha256, 'manifest digest');
   const expectedCount = manifest.expected.matchedCount;
   const expectedDateCount = manifest.expected.invoiceDateUpdateCount;
   const expectedEvidenceCount = manifest.provenance.invoiceEvidence.rowCount;
@@ -444,22 +495,46 @@ export function buildWattwatchersMeterRegisterInvoiceReconciliationSql(input: {
     }))
   )).join(',\n');
   const finish = input.mode === 'apply' ? 'COMMIT;' : 'ROLLBACK;';
+  const targetBinding = manifest.provenance.dbSnapshot;
+  assertWattwatchersMeterRegisterReconciliationTargetBinding(targetBinding);
+  const importsTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.imports}`;
+  const entriesTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.entries}`;
+  const recordsTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.records}`;
 
   const sql = `\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '5min';
+SET LOCAL search_path = ${WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH};
 
 DO $$
 BEGIN
-  IF current_database() <> ${sqlText(METER_REGISTER_RECONCILIATION_QA_DATABASE)} THEN
-    RAISE EXCEPTION 'Invoice reconciliation may run only against the approved QA database';
+  IF current_database() <> ${sqlText(targetBinding.database)} THEN
+    RAISE EXCEPTION 'Invoice reconciliation target/database fence failed';
+  END IF;
+  IF current_user IS DISTINCT FROM ${sqlText(targetBinding.databaseUser)}
+      OR session_user IS DISTINCT FROM ${sqlText(targetBinding.databaseUser)} THEN
+    RAISE EXCEPTION 'Invoice reconciliation database-user fence failed';
+  END IF;
+  IF current_schema() IS DISTINCT FROM 'pg_catalog'
+      OR current_setting('search_path') IS DISTINCT FROM ${sqlText(targetBinding.searchPath)} THEN
+    RAISE EXCEPTION 'Invoice reconciliation schema/search_path fence failed';
+  END IF;
+  IF to_regclass(${sqlText(importsTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.imports)}
+      OR to_regclass(${sqlText(entriesTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.entries)}
+      OR to_regclass(${sqlText(recordsTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.records)} THEN
+    RAISE EXCEPTION 'Invoice reconciliation table OID fence failed';
   END IF;
 END $$;
 
-SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-invoice-reconcile-v1'));
+SELECT pg_advisory_xact_lock(hashtext(${sqlText(
+    `wattwatchers-meter-register-invoice-reconcile-v2:${targetBinding.target}`,
+  )}));
 
-CREATE TEMP TABLE ww_meter_register_invoice_reconcile_provenance (
+CREATE TEMP TABLE pg_temp.ww_meter_register_invoice_reconcile_provenance (
   singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
   source_audit_schema text NOT NULL,
   source_audit_sha256 text NOT NULL,
@@ -467,16 +542,32 @@ CREATE TEMP TABLE ww_meter_register_invoice_reconcile_provenance (
   db_snapshot_schema text NOT NULL,
   db_snapshot_sha256 text NOT NULL,
   database_name text NOT NULL,
+  target_name text NOT NULL,
+  database_schema text NOT NULL,
+  search_path text NOT NULL,
+  database_user text NOT NULL,
+  database_identity_sha256 text NOT NULL,
+  imports_table_oid text NOT NULL,
+  entries_table_oid text NOT NULL,
+  records_table_oid text NOT NULL,
   invoice_evidence_sha256 text NOT NULL
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_invoice_reconcile_provenance (
+INSERT INTO pg_temp.ww_meter_register_invoice_reconcile_provenance (
   source_audit_schema,
   source_audit_sha256,
   source_commit,
   db_snapshot_schema,
   db_snapshot_sha256,
   database_name,
+  target_name,
+  database_schema,
+  search_path,
+  database_user,
+  database_identity_sha256,
+  imports_table_oid,
+  entries_table_oid,
+  records_table_oid,
   invoice_evidence_sha256
 ) VALUES (
   ${sqlText(manifest.provenance.sourceAudit.schema)},
@@ -485,10 +576,18 @@ INSERT INTO ww_meter_register_invoice_reconcile_provenance (
   ${sqlText(manifest.provenance.dbSnapshot.schema)},
   ${sqlText(manifest.provenance.dbSnapshot.sha256)},
   ${sqlText(manifest.provenance.dbSnapshot.database)},
+  ${sqlText(manifest.provenance.dbSnapshot.target)},
+  ${sqlText(manifest.provenance.dbSnapshot.databaseSchema)},
+  ${sqlText(manifest.provenance.dbSnapshot.searchPath)},
+  ${sqlText(manifest.provenance.dbSnapshot.databaseUser)},
+  ${sqlText(manifest.provenance.dbSnapshot.databaseIdentitySha256)},
+  ${sqlText(manifest.provenance.dbSnapshot.tableOids.imports)},
+  ${sqlText(manifest.provenance.dbSnapshot.tableOids.entries)},
+  ${sqlText(manifest.provenance.dbSnapshot.tableOids.records)},
   ${sqlText(manifest.provenance.invoiceEvidence.sha256)}
 );
 
-CREATE TEMP TABLE ww_meter_register_invoice_reconcile_stage (
+CREATE TEMP TABLE pg_temp.ww_meter_register_invoice_reconcile_stage (
   ordinal integer PRIMARY KEY,
   entry_id text NOT NULL UNIQUE,
   master_source_row integer NOT NULL UNIQUE,
@@ -516,12 +615,12 @@ CREATE TEMP TABLE ww_meter_register_invoice_reconcile_stage (
   )
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_invoice_reconcile_stage VALUES
+INSERT INTO pg_temp.ww_meter_register_invoice_reconcile_stage VALUES
 ${values};
 
-CREATE TEMP TABLE ww_meter_register_invoice_reconcile_works_evidence_stage (
+CREATE TEMP TABLE pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage (
   ordinal integer PRIMARY KEY,
-  entry_id text NOT NULL REFERENCES ww_meter_register_invoice_reconcile_stage(entry_id),
+  entry_id text NOT NULL REFERENCES pg_temp.ww_meter_register_invoice_reconcile_stage(entry_id),
   works_source_row integer NOT NULL,
   works_row integer NOT NULL,
   works_audit_row_sha256 text NOT NULL,
@@ -542,36 +641,36 @@ CREATE TEMP TABLE ww_meter_register_invoice_reconcile_works_evidence_stage (
   CHECK (works_source_row = works_row)
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_invoice_reconcile_works_evidence_stage VALUES
+INSERT INTO pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage VALUES
 ${evidenceValues};
 
 DO $$
 DECLARE
   matched_count integer;
 BEGIN
-  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_stage) <> ${expectedCount} THEN
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_stage) <> ${expectedCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged count changed';
   END IF;
-  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_stage
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_stage
       WHERE invoice_issued_date IS NOT NULL) <> ${expectedDateCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged date count changed';
   END IF;
-  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage)
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage)
       <> ${expectedEvidenceCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged Works evidence count changed';
   END IF;
-  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage
       WHERE is_current_for_device) <> ${expectedCurrentEvidenceCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged current Works evidence count changed';
   END IF;
-  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage
       WHERE source_column = 'XERO Date') <> ${expectedXeroDateEvidenceCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged XERO Date evidence count changed';
   END IF;
   IF EXISTS (
     SELECT 1
-    FROM ww_meter_register_invoice_reconcile_stage stage
-    LEFT JOIN ww_meter_register_invoice_reconcile_works_evidence_stage evidence
+    FROM pg_temp.ww_meter_register_invoice_reconcile_stage stage
+    LEFT JOIN pg_temp.ww_meter_register_invoice_reconcile_works_evidence_stage evidence
       ON evidence.entry_id = stage.entry_id
     GROUP BY stage.entry_id, stage.invoice_number
     HAVING count(evidence.ordinal) = 0
@@ -582,10 +681,10 @@ BEGIN
   END IF;
 
   SELECT count(*) INTO matched_count
-  FROM ww_meter_register_invoice_reconcile_stage stage
-  JOIN ww_meter_register_entries entry ON entry.id = stage.entry_id
-  JOIN ww_meter_register_imports imported ON imported.id = entry.import_id
-  JOIN ww_meter_register_records record ON record.entry_id = entry.id
+  FROM pg_temp.ww_meter_register_invoice_reconcile_stage stage
+  JOIN ${entriesTable} entry ON entry.id = stage.entry_id
+  JOIN ${importsTable} imported ON imported.id = entry.import_id
+  JOIN ${recordsTable} record ON record.entry_id = entry.id
   WHERE imported.source_workbook = ${sqlText(METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK)}
     AND imported.source_sheet = ${sqlText(METER_REGISTER_RECONCILIATION_MASTER_SHEET)}
     AND imported.workbook_sha256 = ${sqlText(METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK_SHA256)}
@@ -612,7 +711,7 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TEMP TABLE ww_meter_register_invoice_reconcile_state ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_invoice_reconcile_state ON COMMIT DROP AS
 SELECT
   stage.*,
   record.revision AS actual_revision,
@@ -633,8 +732,8 @@ SELECT
       THEN 'applied'
     ELSE 'invalid'
   END AS reconciliation_state
-FROM ww_meter_register_invoice_reconcile_stage stage
-JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id;
+FROM pg_temp.ww_meter_register_invoice_reconcile_stage stage
+JOIN ${recordsTable} record ON record.entry_id = stage.entry_id;
 
 DO $$
 DECLARE
@@ -647,7 +746,7 @@ BEGIN
     count(*) FILTER (WHERE reconciliation_state = 'applied'),
     count(*) FILTER (WHERE reconciliation_state = 'invalid')
   INTO pending_count, applied_count, invalid_count
-  FROM ww_meter_register_invoice_reconcile_state;
+  FROM pg_temp.ww_meter_register_invoice_reconcile_state;
 
   IF invalid_count <> 0 THEN
     RAISE EXCEPTION 'Invoice reconciliation found % conflicting or stale records', invalid_count;
@@ -662,9 +761,9 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TEMP TABLE ww_meter_register_invoice_reconcile_updated ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_invoice_reconcile_updated ON COMMIT DROP AS
 WITH updated AS (
-  UPDATE ww_meter_register_records record
+  UPDATE ${recordsTable} record
   SET
     details = record.details || CASE
       WHEN state.invoice_issued_date IS NULL THEN
@@ -677,7 +776,7 @@ WITH updated AS (
     END,
     revision = record.revision + 1,
     updated_at = clock_timestamp()
-  FROM ww_meter_register_invoice_reconcile_state state
+  FROM pg_temp.ww_meter_register_invoice_reconcile_state state
   WHERE record.entry_id = state.entry_id
     AND state.reconciliation_state = 'pending'
     AND record.revision = state.expected_revision
@@ -699,10 +798,10 @@ DECLARE
   verified_count integer;
 BEGIN
   SELECT count(*) INTO pending_count
-  FROM ww_meter_register_invoice_reconcile_state
+  FROM pg_temp.ww_meter_register_invoice_reconcile_state
   WHERE reconciliation_state = 'pending';
   SELECT count(*) INTO updated_count
-  FROM ww_meter_register_invoice_reconcile_updated;
+  FROM pg_temp.ww_meter_register_invoice_reconcile_updated;
 
   IF updated_count <> pending_count THEN
     RAISE EXCEPTION
@@ -710,8 +809,8 @@ BEGIN
   END IF;
 
   SELECT count(*) INTO verified_count
-  FROM ww_meter_register_invoice_reconcile_stage stage
-  JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+  FROM pg_temp.ww_meter_register_invoice_reconcile_stage stage
+  JOIN ${recordsTable} record ON record.entry_id = stage.entry_id
   WHERE record.revision = stage.expected_revision + 1
     AND record.manually_corrected_at IS NULL
     AND record.updated_by_user_id IS NULL
@@ -728,28 +827,28 @@ BEGIN
 END $$;
 
 SELECT
-  (SELECT count(*) FROM ww_meter_register_invoice_reconcile_state) AS matched_count,
+  (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_state) AS matched_count,
   (
-    SELECT count(*) FROM ww_meter_register_invoice_reconcile_state
+    SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_state
     WHERE reconciliation_state = 'pending'
   ) AS initially_pending_count,
   (
-    SELECT count(*) FROM ww_meter_register_invoice_reconcile_state
+    SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_state
     WHERE reconciliation_state = 'applied'
   ) AS initially_applied_count,
-  (SELECT count(*) FROM ww_meter_register_invoice_reconcile_updated) AS updated_count,
+  (SELECT count(*) FROM pg_temp.ww_meter_register_invoice_reconcile_updated) AS updated_count,
   (
     SELECT count(*)
-    FROM ww_meter_register_invoice_reconcile_updated updated
-    JOIN ww_meter_register_invoice_reconcile_stage stage
+    FROM pg_temp.ww_meter_register_invoice_reconcile_updated updated
+    JOIN pg_temp.ww_meter_register_invoice_reconcile_stage stage
       ON stage.entry_id = updated.entry_id
     WHERE stage.invoice_issued_date IS NOT NULL
   ) AS invoice_date_updated_count,
   ${expectedDateCount}::integer AS expected_invoice_date_count,
   (
     SELECT count(*)
-    FROM ww_meter_register_invoice_reconcile_stage stage
-    JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+    FROM pg_temp.ww_meter_register_invoice_reconcile_stage stage
+    JOIN ${recordsTable} record ON record.entry_id = stage.entry_id
     WHERE record.revision = stage.expected_revision + 1
       AND record.manually_corrected_at IS NULL
       AND record.updated_by_user_id IS NULL
@@ -759,7 +858,18 @@ SELECT
         OR record.details ->> 'invoiceIssuedDate' = stage.invoice_issued_date::text
       )
   ) AS verified_count,
-  ${input.mode === 'apply' ? 'true' : 'false'}::boolean AS apply_mode;
+  ${input.mode === 'apply' ? 'true' : 'false'}::boolean AS apply_mode,
+  ${sqlText(targetBinding.target)}::text AS target_name,
+  current_database()::text AS database_name,
+  current_user::text AS database_user,
+  session_user::text AS database_session_user,
+  ${sqlText(targetBinding.databaseIdentitySha256)}::text AS database_identity_sha256,
+  ${sqlText(manifest.provenance.dbSnapshot.sha256)}::text AS db_snapshot_sha256,
+  ${sqlText(manifestSha256)}::text AS manifest_sha256,
+  ${sqlText(manifest.provenance.sourceAudit.sha256)}::text AS source_audit_sha256,
+  to_regclass(${sqlText(importsTable)})::oid::text AS imports_table_oid,
+  to_regclass(${sqlText(entriesTable)})::oid::text AS entries_table_oid,
+  to_regclass(${sqlText(recordsTable)})::oid::text AS records_table_oid;
 
 ${finish}
 `;

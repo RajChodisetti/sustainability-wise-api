@@ -1,4 +1,12 @@
 import { z } from 'zod';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetBinding,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS,
+  type WattwatchersMeterRegisterReconciliationTarget,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 
 export type WattwatchersMeterRegisterStructuredReconciliationMode = 'dry-run' | 'apply';
 
@@ -16,9 +24,14 @@ export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256 =
   '02d97966529d1dbf9cfe285e7943d25ff3e6de00c1fd72b00ef5cb0aaffac4f5';
 export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT =
   'd29dccfc308c58417331aab4a45a4ab90876b415';
-export const METER_REGISTER_STRUCTURED_QA_DATABASE = 'sw_ecoaudit_fixes';
+export const METER_REGISTER_STRUCTURED_QA_DATABASE =
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.database;
+export const METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE =
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.production.database;
+export const METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA =
+  'wattwatchers-meter-register-reconciliation-db-snapshot/v2';
 export const METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA =
-  'wattwatchers-meter-register-reconciliation-db-snapshot/v1';
+  METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA;
 
 export const METER_REGISTER_STRUCTURED_FIELD_CONTRACT = {
   status: {
@@ -122,6 +135,24 @@ const STRUCTURED_FIELD_KEYS = Object.keys(
 ) as WattwatchersMeterRegisterStructuredFieldKey[];
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const identityFingerprintSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const tableOidSchema = z.string().regex(/^[1-9][0-9]*$/u);
+const targetBindingShape = {
+  target: z.enum(['qa', 'production']),
+  database: z.enum([
+    METER_REGISTER_STRUCTURED_QA_DATABASE,
+    METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE,
+  ]),
+  databaseSchema: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  databaseUser: z.string().min(1),
+  databaseIdentitySha256: identityFingerprintSchema,
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
+};
 const isoDateSchema = z.string().date();
 const structuredFieldKeySchema = z.enum([
   'status',
@@ -292,7 +323,7 @@ const candidateSchema = z.object({
 });
 
 const manifestSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.literal(3),
   sources: z.object({
     masterRegister: z.object({
       workbook: z.literal(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK),
@@ -310,11 +341,20 @@ const manifestSchema = z.object({
       repositoryCommit: z.literal(METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT),
       auditedFieldCounts: auditedFieldCountSchema,
     }).strict(),
-    qaSnapshot: z.object({
-      schema: z.literal(METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA),
-      database: z.literal(METER_REGISTER_STRUCTURED_QA_DATABASE),
+    dbSnapshot: z.object({
+      ...targetBindingShape,
+      schema: z.literal(METER_REGISTER_STRUCTURED_DB_SNAPSHOT_SCHEMA),
       sha256: sha256Schema,
-    }).strict(),
+    }).strict().superRefine((binding, context) => {
+      try {
+        assertWattwatchersMeterRegisterReconciliationTargetBinding(binding);
+      } catch (error) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: error instanceof Error ? error.message : 'invalid target binding',
+        });
+      }
+    }),
   }).strict(),
   expected: z.object({
     recordUpdateCount: z.number().int().nonnegative(),
@@ -579,8 +619,8 @@ export function assertWattwatchersMeterRegisterStructuredArtifactDigests(input: 
   worksWorkbookSha256: string;
   sourceAuditSha256: string;
   expectedSourceAuditSha256: string;
-  qaSnapshotSha256: string;
-  expectedQaSnapshotSha256: string;
+  dbSnapshotSha256: string;
+  expectedDbSnapshotSha256: string;
   manifestSha256: string;
   expectedManifestSha256: string;
   ledgerSha256: string;
@@ -607,9 +647,9 @@ export function assertWattwatchersMeterRegisterStructuredArtifactDigests(input: 
       'Structured source audit bytes do not match the independently captured digest',
     );
   }
-  if (normalizeSha256(input.qaSnapshotSha256, 'QA snapshot digest')
-    !== normalizeSha256(input.expectedQaSnapshotSha256, 'expected QA snapshot digest')) {
-    throw new Error('QA database snapshot bytes do not match the independently captured digest');
+  if (normalizeSha256(input.dbSnapshotSha256, 'DB snapshot digest')
+    !== normalizeSha256(input.expectedDbSnapshotSha256, 'expected DB snapshot digest')) {
+    throw new Error('Database snapshot bytes do not match the independently captured digest');
   }
   if (normalizeSha256(input.manifestSha256, 'manifest digest')
     !== normalizeSha256(input.expectedManifestSha256, 'expected manifest digest')) {
@@ -657,7 +697,7 @@ function fieldStageRowSql(
 
 function countAssertionsSql(counts: WattwatchersMeterRegisterStructuredFieldCounts): string {
   return STRUCTURED_FIELD_KEYS.map((key) => `  IF (SELECT count(*)
-      FROM ww_meter_register_structured_field_stage
+      FROM pg_temp.ww_meter_register_structured_field_stage
       WHERE field_key = ${sqlText(key)}) <> ${counts[key]} THEN
     RAISE EXCEPTION 'Structured reconciliation ${key} staged count changed';
   END IF;`).join('\n');
@@ -674,8 +714,8 @@ function updatedCountsJsonSql(): string {
   return `jsonb_build_object(${STRUCTURED_FIELD_KEYS.flatMap((key) => [
     sqlText(key),
     `(SELECT count(*)
-      FROM ww_meter_register_structured_updated updated
-      JOIN ww_meter_register_structured_field_stage field
+      FROM pg_temp.ww_meter_register_structured_updated updated
+      JOIN pg_temp.ww_meter_register_structured_field_stage field
         ON field.entry_id = updated.entry_id
       WHERE field.field_key = ${sqlText(key)})`,
   ]).join(', ')})`;
@@ -706,22 +746,45 @@ function immutableTypedProjectionIsNonblankSql(
 export function buildWattwatchersMeterRegisterStructuredReconciliationSql(input: {
   manifest: WattwatchersMeterRegisterStructuredManifest;
   mode: WattwatchersMeterRegisterStructuredReconciliationMode;
+  expectedTarget: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
+  sourceAudit: unknown;
+  manifestSha256: string;
+  ledgerSha256: string;
 }): BuiltWattwatchersMeterRegisterStructuredReconciliationSql {
   if (input.mode !== 'dry-run' && input.mode !== 'apply') {
     throw new Error('Structured reconciliation mode must be dry-run or apply');
   }
-  const { manifest } = input;
+  const manifest = parseWattwatchersMeterRegisterStructuredManifest(input.manifest);
+  assertWattwatchersMeterRegisterStructuredManifestMatchesSourceAudit(
+    manifest,
+    input.sourceAudit,
+  );
+  if (manifest.sources.dbSnapshot.target !== input.expectedTarget) {
+    throw new Error('Structured manifest target does not match the explicitly requested target');
+  }
+  if (manifest.sources.dbSnapshot.databaseIdentitySha256
+      !== input.expectedDatabaseIdentitySha256) {
+    throw new Error('Structured manifest identity does not match the protected target identity');
+  }
+  const manifestSha256 = normalizeSha256(input.manifestSha256, 'manifest digest');
+  const ledgerSha256 = normalizeSha256(input.ledgerSha256, 'outcome ledger digest');
   const expectedRecordCount = manifest.expected.recordUpdateCount;
   const entryValues = manifest.candidates.map(entryStageRowSql).join(',\n');
   const fieldValues = manifest.candidates.flatMap((candidate) => candidate.fields.map(
     (field) => fieldStageRowSql(candidate, field),
   )).join(',\n');
   const finish = input.mode === 'apply' ? 'COMMIT;' : 'ROLLBACK;';
+  const targetBinding = manifest.sources.dbSnapshot;
+  assertWattwatchersMeterRegisterReconciliationTargetBinding(targetBinding);
+  const importsTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.imports}`;
+  const entriesTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.entries}`;
+  const recordsTable = `${targetBinding.databaseSchema}.${WATTWATCHERS_METER_REGISTER_RECONCILIATION_TABLE_NAMES.records}`;
   const entryInsertSql = entryValues
-    ? `INSERT INTO ww_meter_register_structured_entry_stage VALUES\n${entryValues};`
+    ? `INSERT INTO pg_temp.ww_meter_register_structured_entry_stage VALUES\n${entryValues};`
     : '';
   const fieldInsertSql = fieldValues
-    ? `INSERT INTO ww_meter_register_structured_field_stage VALUES\n${fieldValues};`
+    ? `INSERT INTO pg_temp.ww_meter_register_structured_field_stage VALUES\n${fieldValues};`
     : '';
   const immutableTypedProjectionIsNonblank = immutableTypedProjectionIsNonblankSql(
     'entry',
@@ -732,16 +795,36 @@ export function buildWattwatchersMeterRegisterStructuredReconciliationSql(input:
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '5min';
-SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-structured-reconcile-v1'));
+SET LOCAL search_path = ${WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH};
 
 DO $$
 BEGIN
-  IF current_database() <> ${sqlText(METER_REGISTER_STRUCTURED_QA_DATABASE)} THEN
-    RAISE EXCEPTION 'Structured reconciliation may run only against the approved QA database';
+  IF current_database() <> ${sqlText(targetBinding.database)} THEN
+    RAISE EXCEPTION 'Structured reconciliation target/database fence failed';
+  END IF;
+  IF current_user IS DISTINCT FROM ${sqlText(targetBinding.databaseUser)}
+      OR session_user IS DISTINCT FROM ${sqlText(targetBinding.databaseUser)} THEN
+    RAISE EXCEPTION 'Structured reconciliation database-user fence failed';
+  END IF;
+  IF current_schema() IS DISTINCT FROM 'pg_catalog'
+      OR current_setting('search_path') IS DISTINCT FROM ${sqlText(targetBinding.searchPath)} THEN
+    RAISE EXCEPTION 'Structured reconciliation schema/search_path fence failed';
+  END IF;
+  IF to_regclass(${sqlText(importsTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.imports)}
+      OR to_regclass(${sqlText(entriesTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.entries)}
+      OR to_regclass(${sqlText(recordsTable)})::oid::text
+        IS DISTINCT FROM ${sqlText(targetBinding.tableOids.records)} THEN
+    RAISE EXCEPTION 'Structured reconciliation table OID fence failed';
   END IF;
 END $$;
 
-CREATE TEMP TABLE ww_meter_register_structured_entry_stage (
+SELECT pg_advisory_xact_lock(hashtext(${sqlText(
+    `wattwatchers-meter-register-structured-reconcile-v2:${targetBinding.target}`,
+  )}));
+
+CREATE TEMP TABLE pg_temp.ww_meter_register_structured_entry_stage (
   ordinal integer PRIMARY KEY,
   entry_id text NOT NULL UNIQUE,
   master_source_row integer NOT NULL UNIQUE,
@@ -752,8 +835,8 @@ CREATE TEMP TABLE ww_meter_register_structured_entry_stage (
 
 ${entryInsertSql}
 
-CREATE TEMP TABLE ww_meter_register_structured_field_stage (
-  entry_id text NOT NULL REFERENCES ww_meter_register_structured_entry_stage(entry_id),
+CREATE TEMP TABLE pg_temp.ww_meter_register_structured_field_stage (
+  entry_id text NOT NULL REFERENCES pg_temp.ww_meter_register_structured_entry_stage(entry_id),
   field_key text NOT NULL,
   field_value jsonb NOT NULL,
   master_header text NOT NULL,
@@ -766,17 +849,17 @@ DO $$
 DECLARE
   matched_count integer;
 BEGIN
-  IF (SELECT count(*) FROM ww_meter_register_structured_entry_stage)
+  IF (SELECT count(*) FROM pg_temp.ww_meter_register_structured_entry_stage)
       <> ${expectedRecordCount} THEN
     RAISE EXCEPTION 'Structured reconciliation staged record count changed';
   END IF;
 ${countAssertionsSql(manifest.expected.fieldUpdateCounts)}
 
   SELECT count(*) INTO matched_count
-  FROM ww_meter_register_structured_entry_stage stage
-  JOIN ww_meter_register_entries entry ON entry.id = stage.entry_id
-  JOIN ww_meter_register_imports imported ON imported.id = entry.import_id
-  JOIN ww_meter_register_records record ON record.entry_id = entry.id
+  FROM pg_temp.ww_meter_register_structured_entry_stage stage
+  JOIN ${entriesTable} entry ON entry.id = stage.entry_id
+  JOIN ${importsTable} imported ON imported.id = entry.import_id
+  JOIN ${recordsTable} record ON record.entry_id = entry.id
   WHERE imported.source_workbook = ${sqlText(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK)}
     AND imported.source_sheet = ${sqlText(METER_REGISTER_STRUCTURED_MASTER_SHEET)}
     AND imported.workbook_sha256 = ${sqlText(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256)}
@@ -788,7 +871,7 @@ ${countAssertionsSql(manifest.expected.fieldUpdateCounts)}
     AND jsonb_typeof(record.details) = 'object'
     AND NOT EXISTS (
       SELECT 1
-      FROM ww_meter_register_structured_field_stage field
+      FROM pg_temp.ww_meter_register_structured_field_stage field
       WHERE field.entry_id = stage.entry_id
         AND (
           NULLIF(btrim(entry.source_payload ->> field.master_header), '') IS NOT NULL
@@ -803,10 +886,10 @@ ${countAssertionsSql(manifest.expected.fieldUpdateCounts)}
   END IF;
 END $$;
 
-CREATE TEMP TABLE ww_meter_register_structured_state ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_structured_state ON COMMIT DROP AS
 WITH patches AS (
   SELECT field.entry_id, jsonb_object_agg(field.field_key, field.field_value) AS patch
-  FROM ww_meter_register_structured_field_stage field
+  FROM pg_temp.ww_meter_register_structured_field_stage field
   GROUP BY field.entry_id
 )
 SELECT
@@ -816,7 +899,7 @@ SELECT
     WHEN record.revision = stage.expected_revision
       AND NOT EXISTS (
         SELECT 1
-        FROM ww_meter_register_structured_field_stage field
+        FROM pg_temp.ww_meter_register_structured_field_stage field
         WHERE field.entry_id = stage.entry_id
           AND NULLIF(btrim(record.details ->> field.field_key), '') IS NOT NULL
       )
@@ -824,15 +907,15 @@ SELECT
     WHEN record.revision = stage.expected_revision + 1
       AND NOT EXISTS (
         SELECT 1
-        FROM ww_meter_register_structured_field_stage field
+        FROM pg_temp.ww_meter_register_structured_field_stage field
         WHERE field.entry_id = stage.entry_id
           AND record.details -> field.field_key IS DISTINCT FROM field.field_value
       )
       THEN 'applied'
     ELSE 'invalid'
   END AS reconciliation_state
-FROM ww_meter_register_structured_entry_stage stage
-JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+FROM pg_temp.ww_meter_register_structured_entry_stage stage
+JOIN ${recordsTable} record ON record.entry_id = stage.entry_id
 JOIN patches ON patches.entry_id = stage.entry_id;
 
 DO $$
@@ -846,7 +929,7 @@ BEGIN
     count(*) FILTER (WHERE reconciliation_state = 'applied'),
     count(*) FILTER (WHERE reconciliation_state = 'invalid')
   INTO pending_count, applied_count, invalid_count
-  FROM ww_meter_register_structured_state;
+  FROM pg_temp.ww_meter_register_structured_state;
 
   IF invalid_count <> 0 THEN
     RAISE EXCEPTION 'Structured reconciliation found % conflicting or stale records', invalid_count;
@@ -861,15 +944,15 @@ BEGIN
   END IF;
 END $$;
 
-CREATE TEMP TABLE ww_meter_register_structured_updated ON COMMIT DROP AS
+CREATE TEMP TABLE pg_temp.ww_meter_register_structured_updated ON COMMIT DROP AS
 WITH updated AS (
-  UPDATE ww_meter_register_records record
+  UPDATE ${recordsTable} record
   SET
     details = record.details || state.patch,
     revision = record.revision + 1,
     updated_at = clock_timestamp()
-  FROM ww_meter_register_structured_state state
-  JOIN ww_meter_register_entries entry ON entry.id = state.entry_id
+  FROM pg_temp.ww_meter_register_structured_state state
+  JOIN ${entriesTable} entry ON entry.id = state.entry_id
   WHERE record.entry_id = state.entry_id
     AND state.reconciliation_state = 'pending'
     AND record.revision = state.expected_revision
@@ -877,7 +960,7 @@ WITH updated AS (
     AND record.updated_by_user_id IS NULL
     AND NOT EXISTS (
       SELECT 1
-      FROM ww_meter_register_structured_field_stage field
+      FROM pg_temp.ww_meter_register_structured_field_stage field
       WHERE field.entry_id = state.entry_id
         AND (
           NULLIF(btrim(record.details ->> field.field_key), '') IS NOT NULL
@@ -896,23 +979,23 @@ DECLARE
   verified_count integer;
 BEGIN
   SELECT count(*) INTO pending_count
-  FROM ww_meter_register_structured_state
+  FROM pg_temp.ww_meter_register_structured_state
   WHERE reconciliation_state = 'pending';
-  SELECT count(*) INTO updated_count FROM ww_meter_register_structured_updated;
+  SELECT count(*) INTO updated_count FROM pg_temp.ww_meter_register_structured_updated;
   IF updated_count <> pending_count THEN
     RAISE EXCEPTION
       'Structured reconciliation updated %, expected pending %', updated_count, pending_count;
   END IF;
 
   SELECT count(*) INTO verified_count
-  FROM ww_meter_register_structured_entry_stage stage
-  JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+  FROM pg_temp.ww_meter_register_structured_entry_stage stage
+  JOIN ${recordsTable} record ON record.entry_id = stage.entry_id
   WHERE record.revision = stage.expected_revision + 1
     AND record.manually_corrected_at IS NULL
     AND record.updated_by_user_id IS NULL
     AND NOT EXISTS (
       SELECT 1
-      FROM ww_meter_register_structured_field_stage field
+      FROM pg_temp.ww_meter_register_structured_field_stage field
       WHERE field.entry_id = stage.entry_id
         AND record.details -> field.field_key IS DISTINCT FROM field.field_value
     );
@@ -924,33 +1007,45 @@ BEGIN
 END $$;
 
 SELECT
-  (SELECT count(*) FROM ww_meter_register_structured_state) AS matched_record_count,
+  (SELECT count(*) FROM pg_temp.ww_meter_register_structured_state) AS matched_record_count,
   (
-    SELECT count(*) FROM ww_meter_register_structured_state
+    SELECT count(*) FROM pg_temp.ww_meter_register_structured_state
     WHERE reconciliation_state = 'pending'
   ) AS initially_pending_record_count,
   (
-    SELECT count(*) FROM ww_meter_register_structured_state
+    SELECT count(*) FROM pg_temp.ww_meter_register_structured_state
     WHERE reconciliation_state = 'applied'
   ) AS initially_applied_record_count,
-  (SELECT count(*) FROM ww_meter_register_structured_updated) AS updated_record_count,
+  (SELECT count(*) FROM pg_temp.ww_meter_register_structured_updated) AS updated_record_count,
   ${updatedCountsJsonSql()} AS updated_field_counts,
   ${expectedCountsJsonSql(manifest.expected.fieldUpdateCounts)} AS expected_field_counts,
   (
     SELECT count(*)
-    FROM ww_meter_register_structured_entry_stage stage
-    JOIN ww_meter_register_records record ON record.entry_id = stage.entry_id
+    FROM pg_temp.ww_meter_register_structured_entry_stage stage
+    JOIN ${recordsTable} record ON record.entry_id = stage.entry_id
     WHERE record.revision = stage.expected_revision + 1
       AND record.manually_corrected_at IS NULL
       AND record.updated_by_user_id IS NULL
       AND NOT EXISTS (
         SELECT 1
-        FROM ww_meter_register_structured_field_stage field
+        FROM pg_temp.ww_meter_register_structured_field_stage field
         WHERE field.entry_id = stage.entry_id
           AND record.details -> field.field_key IS DISTINCT FROM field.field_value
       )
   ) AS verified_record_count,
-  ${input.mode === 'apply' ? 'true' : 'false'}::boolean AS apply_mode;
+  ${input.mode === 'apply' ? 'true' : 'false'}::boolean AS apply_mode,
+  ${sqlText(targetBinding.target)}::text AS target_name,
+  current_database()::text AS database_name,
+  current_user::text AS database_user,
+  session_user::text AS database_session_user,
+  ${sqlText(targetBinding.databaseIdentitySha256)}::text AS database_identity_sha256,
+  ${sqlText(manifest.sources.dbSnapshot.sha256)}::text AS db_snapshot_sha256,
+  ${sqlText(manifestSha256)}::text AS manifest_sha256,
+  ${sqlText(ledgerSha256)}::text AS ledger_sha256,
+  ${sqlText(manifest.sources.sourceAudit.sha256)}::text AS source_audit_sha256,
+  to_regclass(${sqlText(importsTable)})::oid::text AS imports_table_oid,
+  to_regclass(${sqlText(entriesTable)})::oid::text AS entries_table_oid,
+  to_regclass(${sqlText(recordsTable)})::oid::text AS records_table_oid;
 
 ${finish}
 `;

@@ -13,6 +13,7 @@ import {
   METER_REGISTER_RECONCILIATION_MASTER_SHEET,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
   METER_REGISTER_RECONCILIATION_QA_DATABASE,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
@@ -26,9 +27,17 @@ import {
   type WattwatchersMeterRegisterInvoiceReconciliationCandidate,
   type WattwatchersMeterRegisterInvoiceReconciliationManifest,
 } from './wattwatchersMeterRegisterInvoiceReconciliation.js';
+import {
+  assertWattwatchersMeterRegisterReconciliationTargetBinding,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA,
+  WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH,
+  type WattwatchersMeterRegisterReconciliationTarget,
+  type WattwatchersMeterRegisterReconciliationTargetBinding,
+} from './wattwatchersMeterRegisterReconciliationTarget.js';
 
 export {
   METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
+  METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
   METER_REGISTER_RECONCILIATION_QA_DATABASE,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
   METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
@@ -36,6 +45,8 @@ export {
 } from './wattwatchersMeterRegisterInvoiceReconciliation.js';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+const identityFingerprintSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const tableOidSchema = z.string().regex(/^[1-9][0-9]*$/u);
 const invoiceNumberSchema = z.string()
   .regex(/^INV-[A-Z0-9][A-Z0-9./_-]*$/u)
   .max(300)
@@ -152,7 +163,19 @@ const liveValuesShape = Object.fromEntries(
 ) as Record<(typeof SNAPSHOT_TARGET_KEYS)[number], z.ZodUnknown>;
 
 const snapshotRowSchema = z.object({
-  databaseName: z.literal(METER_REGISTER_RECONCILIATION_QA_DATABASE),
+  databaseName: z.enum([
+    METER_REGISTER_RECONCILIATION_QA_DATABASE,
+    METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+  ]),
+  databaseSchemaName: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  currentSchemaName: z.literal('pg_catalog'),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  databaseUser: z.string().min(1),
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
   importId: z.string().min(1),
   sourceWorkbook: z.literal(METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK),
   sourceSheet: z.literal(METER_REGISTER_RECONCILIATION_MASTER_SHEET),
@@ -173,7 +196,20 @@ const snapshotRowSchema = z.object({
 
 const dbSnapshotSchema = z.object({
   schema: z.literal(METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA),
-  database: z.literal(METER_REGISTER_RECONCILIATION_QA_DATABASE),
+  target: z.enum(['qa', 'production']),
+  database: z.enum([
+    METER_REGISTER_RECONCILIATION_QA_DATABASE,
+    METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+  ]),
+  databaseSchema: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_DATABASE_SCHEMA),
+  searchPath: z.literal(WATTWATCHERS_METER_REGISTER_RECONCILIATION_SEARCH_PATH),
+  databaseUser: z.string().min(1),
+  databaseIdentitySha256: identityFingerprintSchema,
+  tableOids: z.object({
+    imports: tableOidSchema,
+    entries: tableOidSchema,
+    records: tableOidSchema,
+  }).strict(),
   source: z.object({
     workbook: z.literal(METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK),
     sheet: z.literal(METER_REGISTER_RECONCILIATION_MASTER_SHEET),
@@ -181,7 +217,18 @@ const dbSnapshotSchema = z.object({
   }).strict(),
   rowCount: z.number().int().nonnegative(),
   rows: z.array(snapshotRowSchema).length(METER_REGISTER_RECONCILIATION_SOURCE_ROW_COUNT),
-}).strict();
+}).strict().superRefine((snapshot, context) => {
+  try {
+    assertWattwatchersMeterRegisterReconciliationTargetBinding(
+      snapshot as WattwatchersMeterRegisterReconciliationTargetBinding,
+    );
+  } catch (error) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : 'invalid target binding',
+    });
+  }
+});
 
 type SourceAudit = z.infer<typeof sourceAuditSchema>;
 type InvoiceCandidate = z.infer<typeof invoiceCandidateSchema>;
@@ -380,6 +427,15 @@ function validateSnapshot(snapshot: DbSnapshot): void {
   let currentIdentifierCount = 0;
   let previousSourceRow = -1;
   for (const row of snapshot.rows) {
+    if (row.databaseName !== snapshot.database
+      || row.databaseSchemaName !== snapshot.databaseSchema
+      || row.searchPath !== snapshot.searchPath
+      || row.databaseUser !== snapshot.databaseUser
+      || row.tableOids.imports !== snapshot.tableOids.imports
+      || row.tableOids.entries !== snapshot.tableOids.entries
+      || row.tableOids.records !== snapshot.tableOids.records) {
+      throw new Error('DB snapshot row target binding does not match its artifact binding');
+    }
     if (row.importId !== row.entryImportId) {
       throw new Error('DB snapshot contains an entry/import provenance mismatch');
     }
@@ -443,6 +499,8 @@ export function buildWattwatchersMeterRegisterInvoiceManifest(input: {
   dbSnapshot: unknown;
   sourceAuditSha256: string;
   dbSnapshotSha256: string;
+  expectedTarget: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
 }): BuiltWattwatchersMeterRegisterInvoiceManifest {
   if (input.sourceAuditSha256 !== METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256) {
     throw new Error('Source audit provenance digest does not match the approved audit');
@@ -452,6 +510,12 @@ export function buildWattwatchersMeterRegisterInvoiceManifest(input: {
   }
   const sourceAudit = parseSchema(sourceAuditSchema, input.sourceAudit, 'Source audit');
   const snapshot = parseSchema(dbSnapshotSchema, input.dbSnapshot, 'DB snapshot');
+  if (snapshot.target !== input.expectedTarget) {
+    throw new Error('DB snapshot target does not match the explicitly requested target');
+  }
+  if (snapshot.databaseIdentitySha256 !== input.expectedDatabaseIdentitySha256) {
+    throw new Error('DB snapshot identity does not match the protected target identity');
+  }
   validateSnapshot(snapshot);
   const validatedSource = validateInvoiceSourceAudit(sourceAudit);
 
@@ -510,7 +574,7 @@ export function buildWattwatchersMeterRegisterInvoiceManifest(input: {
   ).filter((evidence) => evidence.sourceColumn === 'XERO Date').length;
 
   const manifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest({
-    schemaVersion: 2,
+    schemaVersion: 3,
     provenance: {
       sourceAudit: {
         schema: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
@@ -520,7 +584,13 @@ export function buildWattwatchersMeterRegisterInvoiceManifest(input: {
       dbSnapshot: {
         schema: METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
         sha256: input.dbSnapshotSha256,
-        database: METER_REGISTER_RECONCILIATION_QA_DATABASE,
+        target: snapshot.target,
+        database: snapshot.database,
+        databaseSchema: snapshot.databaseSchema,
+        searchPath: snapshot.searchPath,
+        databaseUser: snapshot.databaseUser,
+        databaseIdentitySha256: snapshot.databaseIdentitySha256,
+        tableOids: snapshot.tableOids,
       },
       invoiceEvidence: {
         rowCount: candidates.flatMap(
@@ -580,6 +650,8 @@ export function generateWattwatchersMeterRegisterInvoiceManifest(input: {
   sourceAuditBytes: Uint8Array;
   dbSnapshotBytes: Uint8Array;
   expectedDbSnapshotSha256: string;
+  expectedTarget: WattwatchersMeterRegisterReconciliationTarget;
+  expectedDatabaseIdentitySha256: string;
 }): GeneratedWattwatchersMeterRegisterInvoiceManifest {
   const sourceAuditSha256 = sha256(input.sourceAuditBytes);
   if (sourceAuditSha256 !== METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256) {
@@ -594,6 +666,8 @@ export function generateWattwatchersMeterRegisterInvoiceManifest(input: {
     dbSnapshot: parseJson(input.dbSnapshotBytes, 'DB snapshot'),
     sourceAuditSha256,
     dbSnapshotSha256,
+    expectedTarget: input.expectedTarget,
+    expectedDatabaseIdentitySha256: input.expectedDatabaseIdentitySha256,
   });
   return {
     ...built,

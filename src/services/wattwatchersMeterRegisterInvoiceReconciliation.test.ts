@@ -7,6 +7,7 @@ import {
   buildWattwatchersMeterRegisterInvoiceReconciliationSql,
   computeWattwatchersMeterRegisterInvoiceEvidenceSha256,
   METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
+  METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
   METER_REGISTER_RECONCILIATION_QA_DATABASE,
   METER_REGISTER_RECONCILIATION_MASTER_SHEET,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
@@ -20,6 +21,16 @@ import {
   type WattwatchersMeterRegisterInvoiceReconciliationCandidate,
   parseWattwatchersMeterRegisterInvoiceReconciliationManifest,
 } from './wattwatchersMeterRegisterInvoiceReconciliation.js';
+
+const DATABASE_BINDING = {
+  target: 'qa' as const,
+  database: METER_REGISTER_RECONCILIATION_QA_DATABASE,
+  databaseSchema: 'public' as const,
+  searchPath: 'pg_catalog, pg_temp' as const,
+  databaseUser: 'sw_lane',
+  databaseIdentitySha256: `sha256:${'9'.repeat(64)}`,
+  tableOids: { imports: '1001', entries: '1002', records: '1003' },
+};
 
 const SYNTHETIC_INVOICE = ['INV', 'SYNTHETIC001'].join('-');
 const SYNTHETIC_ENTRY_ID = `wwmre_${'a'.repeat(32)}`;
@@ -60,7 +71,7 @@ function fixtureCandidate(): WattwatchersMeterRegisterInvoiceReconciliationCandi
       auditRowSha256: 'c'.repeat(64),
       cachedValuesSha256: 'd'.repeat(64),
       formulaValuesSha256: 'e'.repeat(64),
-      sheet: METER_REGISTER_RECONCILIATION_WORKS_SHEET,
+      sheet: 'Works Planning' as const,
       sourceColumn: 'XERO Date',
     },
   };
@@ -73,7 +84,7 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
     sourceColumn: string;
   }>;
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     provenance: {
       sourceAudit: {
         schema: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
@@ -81,9 +92,9 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
         repositoryCommit: METER_REGISTER_RECONCILIATION_SOURCE_COMMIT,
       },
       dbSnapshot: {
+        ...DATABASE_BINDING,
         schema: METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
         sha256: 'f'.repeat(64),
-        database: METER_REGISTER_RECONCILIATION_QA_DATABASE,
       },
       invoiceEvidence: {
         rowCount: worksPlanningEvidence.length,
@@ -117,15 +128,85 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
   };
 }
 
+function approvedFixtureManifest() {
+  const candidates = Array.from({ length: 92 }, (_, index) => {
+    const invoiceNumber = `INV-SYNTH${String(index).padStart(4, '0')}`;
+    const evidenceRow = 100 + index;
+    const evidenceHash = index.toString(16).padStart(64, '0');
+    const baseEvidence = {
+      sourceRow: evidenceRow,
+      worksRow: evidenceRow,
+      auditRowSha256: evidenceHash,
+      cachedValuesSha256: evidenceHash,
+      formulaValuesSha256: evidenceHash,
+      sheet: 'Works Planning' as const,
+      isCurrentForDevice: true,
+      sourceColumn: index >= 1 && index <= 6 ? 'XERO Date' as const : 'XERO Inv #' as const,
+      value: invoiceNumber,
+    };
+    const worksPlanningEvidence = [baseEvidence];
+    if (index < 3) {
+      const extraRow = 300 + index;
+      const extraHash = (index + 200).toString(16).padStart(64, '0');
+      worksPlanningEvidence.push({
+        ...baseEvidence,
+        sourceRow: extraRow,
+        worksRow: extraRow,
+        auditRowSha256: extraHash,
+        cachedValuesSha256: extraHash,
+        formulaValuesSha256: extraHash,
+        isCurrentForDevice: index === 0,
+        sourceColumn: 'XERO Inv #',
+      });
+    }
+    return {
+      ...fixtureCandidate(),
+      entryId: `wwmre_${index.toString(16).padStart(32, '0')}`,
+      masterSourceRow: index + 4,
+      masterSourceRowSha256: (index + 400).toString(16).padStart(64, '0'),
+      currentDeviceIdentifier: `A${String(index).padStart(12, '0')}`,
+      worksPlanningEvidence,
+      invoiceNumber,
+      invoiceIssuedDate: index === 0 ? '2026-01-02' : null,
+      invoiceDateSourceColumn: index === 0 ? 'XERO Date' as const : null,
+      invoiceDateEvidence: index === 0 ? {
+        sourceRow: baseEvidence.sourceRow,
+        auditRowSha256: baseEvidence.auditRowSha256,
+        cachedValuesSha256: baseEvidence.cachedValuesSha256,
+        formulaValuesSha256: baseEvidence.formulaValuesSha256,
+        sheet: 'Works Planning' as const,
+        sourceColumn: 'XERO Date' as const,
+      } : null,
+    };
+  });
+  const fixture = fixtureManifest(candidates[0]);
+  fixture.candidates = candidates;
+  fixture.expected = {
+    matchedCount: 92,
+    invoiceNumberUpdateCount: 92,
+    invoiceDateUpdateCount: 1,
+  };
+  fixture.provenance.invoiceEvidence = {
+    rowCount: 95,
+    currentRowCount: 93,
+    xeroDateValueRowCount: 6,
+    sha256: computeWattwatchersMeterRegisterInvoiceEvidenceSha256(candidates),
+  };
+  return parseWattwatchersMeterRegisterInvoiceReconciliationManifest(fixture);
+}
+
 test('builds a guarded, transaction-scoped dry-run that only fills blank operational invoice fields', () => {
-  const manifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest(fixtureManifest());
+  const manifest = approvedFixtureManifest();
   const built = buildWattwatchersMeterRegisterInvoiceReconciliationSql({
     manifest,
     mode: 'dry-run',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_BINDING.databaseIdentitySha256,
+    manifestSha256: 'a'.repeat(64),
   });
 
-  assert.equal(built.matchedCount, 1);
-  assert.equal(built.invoiceNumberUpdateCount, 1);
+  assert.equal(built.matchedCount, 92);
+  assert.equal(built.invoiceNumberUpdateCount, 92);
   assert.equal(built.invoiceDateUpdateCount, 1);
   assert.match(built.sql, /^\\set ON_ERROR_STOP on\nBEGIN;/u);
   assert.match(built.sql, /pg_advisory_xact_lock/u);
@@ -135,6 +216,13 @@ test('builds a guarded, transaction-scoped dry-run that only fills blank operati
     built.sql,
     /IF current_database\(\) <> 'sw_ecoaudit_fixes' THEN/u,
   );
+  assert.match(built.sql, /SET LOCAL search_path = pg_catalog, pg_temp/u);
+  assert.match(built.sql, /current_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /session_user IS DISTINCT FROM 'sw_lane'/u);
+  assert.match(built.sql, /to_regclass\('public\.ww_meter_register_imports'\)::oid::text/u);
+  assert.match(built.sql, /IS DISTINCT FROM '1001'/u);
+  assert.match(built.sql, /JOIN public\.ww_meter_register_entries entry/u);
+  assert.match(built.sql, /UPDATE public\.ww_meter_register_records record/u);
   assert.match(built.sql, /invoice_reconcile_provenance/u);
   assert.match(built.sql, /source_audit_sha256/u);
   assert.match(built.sql, /db_snapshot_sha256/u);
@@ -168,14 +256,17 @@ test('builds a guarded, transaction-scoped dry-run that only fills blank operati
 });
 
 test('apply SQL accepts only all-pending or all-applied state and therefore has a zero-update rerun', () => {
-  const manifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest(fixtureManifest());
+  const manifest = approvedFixtureManifest();
   const built = buildWattwatchersMeterRegisterInvoiceReconciliationSql({
     manifest,
     mode: 'apply',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: DATABASE_BINDING.databaseIdentitySha256,
+    manifestSha256: 'a'.repeat(64),
   });
 
-  assert.match(built.sql, /pending_count = 1 AND applied_count = 0/u);
-  assert.match(built.sql, /pending_count = 0 AND applied_count = 1/u);
+  assert.match(built.sql, /pending_count = 92 AND applied_count = 0/u);
+  assert.match(built.sql, /pending_count = 0 AND applied_count = 92/u);
   assert.match(built.sql, /record\.revision = stage\.expected_revision \+ 1/u);
   assert.match(built.sql, /updated_count <> pending_count/u);
   assert.match(built.sql, /COMMIT;\n$/u);
@@ -291,9 +382,18 @@ test('duplicate entry, source-row, or current-device identity is rejected', () =
 
 test('manifest provenance and the complete Works evidence digest are fail-closed', () => {
   const wrongSnapshot = fixtureManifest();
-  wrongSnapshot.provenance.dbSnapshot.database = 'postgres';
   assert.throws(
-    () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(wrongSnapshot),
+    () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest({
+      ...wrongSnapshot,
+      provenance: {
+        ...wrongSnapshot.provenance,
+        dbSnapshot: {
+          ...wrongSnapshot.provenance.dbSnapshot,
+          database: METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+        },
+      },
+    }),
+    /must bind database/u,
   );
 
   const changedEvidence = fixtureManifest();
@@ -303,6 +403,43 @@ test('manifest provenance and the complete Works evidence digest are fail-closed
     () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(changedEvidence),
     /evidence digest/u,
   );
+});
+
+test('production SQL is generated only from a production-bound manifest', () => {
+  const fixture = approvedFixtureManifest();
+  const productionManifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest({
+    ...fixture,
+    provenance: {
+      ...fixture.provenance,
+      dbSnapshot: {
+        ...fixture.provenance.dbSnapshot,
+        target: 'production',
+        database: METER_REGISTER_RECONCILIATION_PRODUCTION_DATABASE,
+        databaseUser: 'sw_api',
+        databaseIdentitySha256: `sha256:${'8'.repeat(64)}`,
+        tableOids: { imports: '2001', entries: '2002', records: '2003' },
+      },
+    },
+  });
+  const built = buildWattwatchersMeterRegisterInvoiceReconciliationSql({
+    manifest: productionManifest,
+    mode: 'dry-run',
+    expectedTarget: 'production',
+    expectedDatabaseIdentitySha256: productionManifest.provenance.dbSnapshot.databaseIdentitySha256,
+    manifestSha256: 'a'.repeat(64),
+  });
+  assert.match(built.sql, /current_database\(\) <> 'sustainability_wise'/u);
+  assert.match(built.sql, /current_user IS DISTINCT FROM 'sw_api'/u);
+  assert.match(built.sql, /session_user IS DISTINCT FROM 'sw_api'/u);
+  assert.match(built.sql, /IS DISTINCT FROM '2003'/u);
+  assert.doesNotMatch(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
+  assert.throws(() => buildWattwatchersMeterRegisterInvoiceReconciliationSql({
+    manifest: productionManifest,
+    mode: 'dry-run',
+    expectedTarget: 'qa',
+    expectedDatabaseIdentitySha256: productionManifest.provenance.dbSnapshot.databaseIdentitySha256,
+    manifestSha256: 'a'.repeat(64),
+  }), /target does not match/u);
 });
 
 test('artifact digests bind both workbooks and the private manifest bytes', () => {
@@ -342,6 +479,8 @@ test('the executable CLI enforces approved 92/1 counts and private exclusive out
   assert.match(script, /--source-audit/u);
   assert.match(script, /--db-snapshot/u);
   assert.match(script, /--snapshot-sha256/u);
+  assert.match(script, /--target/u);
+  assert.match(script, /--database-identity-sha256/u);
   assert.match(script, /generateWattwatchersMeterRegisterInvoiceManifest/u);
   assert.match(script, /manifestBytes\.equals\(generated\.manifestBytes\)/u);
   assert.match(script, /writePrivateWattwatchersMeterRegisterReconciliationArtifact/u);
