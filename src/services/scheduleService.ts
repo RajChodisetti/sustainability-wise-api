@@ -255,6 +255,29 @@ export function installHubSchedulerAuditDate(
   );
 }
 
+export function installHubSchedulerEndParts(
+  scheduledEndAt: Date,
+  installationTimezone: string,
+): { jobEndDate: string; jobEndTime: string } {
+  const timezone = isValidIanaTimeZone(installationTimezone.trim())
+    ? installationTimezone.trim()
+    : DEFAULT_INSTALLHUB_TIMEZONE;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(scheduledEndAt);
+  const values = new Map(parts.map((part) => [part.type, part.value]));
+  return {
+    jobEndDate: `${values.get('year')}-${values.get('month')}-${values.get('day')}`,
+    jobEndTime: `${values.get('hour')}:${values.get('minute')}`,
+  };
+}
+
 function installHubSchedulerInspectorName(subject: UnifiedSchedulerSubject): string {
   return subject.displayName?.trim() || subject.email || 'Assigned inspector';
 }
@@ -289,14 +312,27 @@ export function deriveScheduledEndAt(
   return new Date(scheduledStartAt.getTime() + estimatedDurationMinutes * 60_000);
 }
 
-function rejectClientScheduledEndAt(value: unknown): void {
-  // Null is tolerated temporarily so an API-first rolling deploy remains
-  // compatible with the previous portal, which sent null for an empty field.
-  if (value !== undefined && value !== null) {
-    throw badRequest(
-      'scheduledEndAt is derived; refresh and provide estimatedDurationMinutes instead',
-    );
+function parseOptionalScheduledEndAt(value: unknown): Date | null {
+  if (value === undefined || value === null || value === '') return null;
+  return requireIsoDate(value, 'scheduledEndAt');
+}
+
+export function requestedScheduleEnd(
+  start: Date,
+  scheduledEndAt: unknown,
+  estimatedDurationMinutes: unknown,
+): { end: Date | null; estimatedDurationMinutes: number | null } {
+  const explicitEnd = parseOptionalScheduledEndAt(scheduledEndAt);
+  const estimate = parseEstimatedDurationMinutes(estimatedDurationMinutes);
+  if (explicitEnd && estimate !== null) {
+    throw badRequest('Provide scheduledEndAt or estimatedDurationMinutes, not both');
   }
+  const end = explicitEnd ?? deriveScheduledEndAt(start, estimate);
+  assertScheduleInterval(start, end);
+  return {
+    end,
+    estimatedDurationMinutes: explicitEnd ? null : estimate,
+  };
 }
 
 function parseSourceApp(value: unknown): ScheduleSourceApp {
@@ -579,6 +615,7 @@ async function alignLinkedSourceAssignment(
   subject: UnifiedSchedulerSubject,
   scheduledStartAt?: Date,
   strict = true,
+  scheduledEndAt?: Date | null,
 ): Promise<{ assignmentChanged: boolean; sourceProjectionChanged: boolean }> {
   if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') {
     return { assignmentChanged: false, sourceProjectionChanged: false };
@@ -660,6 +697,7 @@ async function alignLinkedSourceAssignment(
         inspectorName: ihInstallations.inspectorName,
         auditDate: ihInstallations.auditDate,
         jobEndDate: ihInstallations.jobEndDate,
+        jobEndTime: ihInstallations.jobEndTime,
         timezone: ihInstallations.timezone,
         treeRevision: ihInstallations.treeRevision,
       })
@@ -680,13 +718,21 @@ async function alignLinkedSourceAssignment(
       ? installHubSchedulerAuditDate(scheduledStartAt, current.timezone)
       : current.auditDate;
     const assignmentChanged = current.assignedInspectorUserId !== subject.fieldUserId;
-    if (current.jobEndDate && current.jobEndDate < auditDate) {
+    const endPlanning = scheduledEndAt === undefined
+      ? { jobEndDate: current.jobEndDate, jobEndTime: current.jobEndTime }
+      : scheduledEndAt === null
+        ? { jobEndDate: null, jobEndTime: null }
+        : installHubSchedulerEndParts(scheduledEndAt, current.timezone);
+    if (endPlanning.jobEndDate && endPlanning.jobEndDate < auditDate) {
       throw badRequest('Linked installation job end date cannot be before scheduled date');
     }
+    const endPlanningChanged = endPlanning.jobEndDate !== current.jobEndDate
+      || endPlanning.jobEndTime !== current.jobEndTime;
     if (
       !assignmentChanged
       && current.inspectorName === inspectorName
       && current.auditDate === auditDate
+      && !endPlanningChanged
     ) return { assignmentChanged: false, sourceProjectionChanged: false };
     const [updated] = await executor
       .update(ihInstallations)
@@ -694,6 +740,7 @@ async function alignLinkedSourceAssignment(
         assignedInspectorUserId: subject.fieldUserId,
         inspectorName,
         auditDate,
+        ...(scheduledEndAt === undefined ? {} : endPlanning),
         treeRevision: current.treeRevision + 1,
         updatedAt: new Date(),
         syncStatus: 'local',
@@ -1123,7 +1170,6 @@ export type CreateScheduleEventInput = {
   assigneeFieldUserId: string;
   scheduledStartAt: unknown;
   estimatedDurationMinutes?: unknown;
-  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown;
   deadlineAt: unknown;
   status?: unknown;
@@ -1164,11 +1210,11 @@ export async function createScheduleEvent(
   const sourceId = input.sourceId?.trim() || null;
   const start = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
   const deadline = requireIsoDate(input.deadlineAt, 'deadlineAt');
-  rejectClientScheduledEndAt(input.scheduledEndAt);
-  const estimatedDurationMinutes = parseEstimatedDurationMinutes(
+  const { end, estimatedDurationMinutes } = requestedScheduleEnd(
+    start,
+    input.scheduledEndAt,
     input.estimatedDurationMinutes,
   );
-  const end = deriveScheduledEndAt(start, estimatedDurationMinutes);
 
   if (typeof input.assigneeFieldUserId !== 'string' || !input.assigneeFieldUserId.trim()) {
     throw badRequest('assigneeFieldUserId is required');
@@ -1188,7 +1234,16 @@ export async function createScheduleEvent(
     // duplicate check so concurrent creates for the same source serialize;
     // the losing transaction then observes the winner's committed event and
     // rolls its assignment update back with the conflict.
-    await alignLinkedSourceAssignment(tx, sourceApp, sourceType, sourceId, assignee, start);
+    await alignLinkedSourceAssignment(
+      tx,
+      sourceApp,
+      sourceType,
+      sourceId,
+      assignee,
+      start,
+      true,
+      input.scheduledEndAt === undefined ? undefined : end,
+    );
     await assertNoActiveLinkedEvent(tx, sourceApp, sourceType, sourceId);
 
     const now = new Date();
@@ -1240,7 +1295,6 @@ export type CreateSchedulerDispatchInput = {
   assigneeFieldUserId?: string;
   scheduledStartAt: unknown;
   estimatedDurationMinutes?: unknown;
-  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown;
   deadlineAt: unknown;
   job: unknown;
@@ -1414,6 +1468,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
     'electricityNmi',
     'auditDate',
     'jobEndDate',
+    'jobEndTime',
     'timezone',
     'address',
   ]),
@@ -1507,6 +1562,15 @@ function optionalDispatchDate(job: DispatchJobInput, field: string): string | nu
   return value;
 }
 
+function optionalDispatchTime(job: DispatchJobInput, field: string): string | null {
+  const value = optionalDispatchString(job, field, 5);
+  if (value === null) return null;
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw badRequest(`job.${field} must use HH:mm in 24-hour time`);
+  }
+  return value;
+}
+
 export function dispatchSiteSelection(job: DispatchJobInput): {
   mode: 'new' | 'existing';
   existingSiteId: string | null;
@@ -1541,6 +1605,7 @@ export function validateDispatchJob(
   const jobEndDate = sourceApp === 'installhub'
     ? optionalDispatchDate(job, 'jobEndDate')
     : null;
+  if (sourceApp === 'installhub') optionalDispatchTime(job, 'jobEndTime');
   if (jobEndDate && auditDate && jobEndDate < auditDate) {
     throw badRequest('job.jobEndDate cannot be before job.auditDate');
   }
@@ -2121,6 +2186,9 @@ async function createDispatchedProductJob(
   const jobEndDate = sourceApp === 'installhub'
     ? optionalDispatchDate(job, 'jobEndDate')
     : null;
+  const jobEndTime = sourceApp === 'installhub'
+    ? optionalDispatchTime(job, 'jobEndTime')
+    : null;
   const inspectorName = assignee ? installHubSchedulerInspectorName(assignee) : '';
 
   if (sourceApp === 'ecoaudit') {
@@ -2240,6 +2308,7 @@ async function createDispatchedProductJob(
       INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
     ),
     jobEndDate,
+    jobEndTime,
     nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
   };
 
@@ -2358,6 +2427,7 @@ async function createDispatchedProductJob(
     inspectorName,
     auditDate,
     jobEndDate,
+    jobEndTime,
     status: 'Draft',
     createdByUserId: actor.fieldUserId,
     assignedInspectorUserId: assignee?.fieldUserId ?? null,
@@ -2465,11 +2535,11 @@ export async function createSchedulerDispatch(
   }
   const start = requireIsoDate(input.scheduledStartAt, 'scheduledStartAt');
   const deadline = requireIsoDate(input.deadlineAt, 'deadlineAt');
-  rejectClientScheduledEndAt(input.scheduledEndAt);
-  const estimatedDurationMinutes = parseEstimatedDurationMinutes(
+  const { end, estimatedDurationMinutes } = requestedScheduleEnd(
+    start,
+    input.scheduledEndAt,
     input.estimatedDurationMinutes,
   );
-  const end = deriveScheduledEndAt(start, estimatedDurationMinutes);
   const job = parseDispatchJob(input.job, sourceApp);
   validateDispatchJob(sourceApp, job);
 
@@ -2587,7 +2657,6 @@ export type UpdateScheduleEventInput = {
   assigneeFieldUserId?: string;
   scheduledStartAt?: unknown;
   estimatedDurationMinutes?: unknown;
-  /** @deprecated Client-provided end times are rejected. */
   scheduledEndAt?: unknown | null;
   deadlineAt?: unknown;
   status?: unknown;
@@ -2654,11 +2723,21 @@ export async function updateScheduleEvent(
   if (!isSchedulerAdmin(user)) {
     throw forbidden('Only admins can update schedule events');
   }
-  rejectClientScheduledEndAt(input.scheduledEndAt);
+  const scheduledEndWasProvided = input.scheduledEndAt !== undefined;
+  const requestedScheduledEnd = scheduledEndWasProvided
+    ? parseOptionalScheduledEndAt(input.scheduledEndAt)
+    : undefined;
   const estimatedDurationWasProvided = input.estimatedDurationMinutes !== undefined;
   const requestedEstimatedDurationMinutes = estimatedDurationWasProvided
     ? parseEstimatedDurationMinutes(input.estimatedDurationMinutes)
     : undefined;
+  if (
+    requestedScheduledEnd
+    && requestedEstimatedDurationMinutes !== undefined
+    && requestedEstimatedDurationMinutes !== null
+  ) {
+    throw badRequest('Provide scheduledEndAt or estimatedDurationMinutes, not both');
+  }
 
   const updated = await db.transaction(async (tx) => {
     // Source identity is immutable through this API. Read it without an event
@@ -2805,19 +2884,27 @@ export async function updateScheduleEvent(
       }, await loadActorSubject(tx, user));
     }
 
-    if (estimatedDurationWasProvided || scheduledStartChanged) {
+    if (scheduledEndWasProvided) {
+      patch.estimatedDurationMinutes = null;
+      patch.scheduledEndAt = requestedScheduledEnd ?? null;
+    } else if (estimatedDurationWasProvided || scheduledStartChanged) {
       const start = (patch.scheduledStartAt as Date | undefined) ?? existing.scheduledStartAt;
       const estimatedDurationMinutes = estimatedDurationWasProvided
         ? requestedEstimatedDurationMinutes!
         : existing.estimatedDurationMinutes;
       patch.estimatedDurationMinutes = estimatedDurationMinutes;
-      patch.scheduledEndAt = deriveScheduledEndAt(start, estimatedDurationMinutes);
+      if (estimatedDurationMinutes !== null) {
+        patch.scheduledEndAt = deriveScheduledEndAt(start, estimatedDurationMinutes);
+      } else if (estimatedDurationWasProvided) {
+        patch.scheduledEndAt = null;
+      }
     }
 
     const start = (patch.scheduledStartAt as Date | undefined) ?? existing.scheduledStartAt;
     const end = patch.scheduledEndAt !== undefined
       ? (patch.scheduledEndAt as Date | null)
       : existing.scheduledEndAt;
+    assertScheduleInterval(start, end);
     const scheduledEndChanged = (end?.getTime() ?? null)
       !== (existing.scheduledEndAt?.getTime() ?? null);
 
@@ -2827,7 +2914,8 @@ export async function updateScheduleEvent(
       nextStatus,
       assigneeChanged,
       scheduleChanged: input.scheduledStartAt !== undefined
-        || estimatedDurationWasProvided,
+        || estimatedDurationWasProvided
+        || scheduledEndWasProvided,
     });
     if (availabilityChanged) {
       await lockAndAssertAssigneeAvailable(
@@ -2842,7 +2930,7 @@ export async function updateScheduleEvent(
     const installHubScheduleProjectionRequired = existing.sourceApp === 'installhub'
       && existing.sourceType === 'installation'
       && nextStatusIsActive
-      && input.scheduledStartAt !== undefined;
+      && (input.scheduledStartAt !== undefined || scheduledEndWasProvided);
     if (
       isMobileScheduleNotificationTarget(existing)
       && (
@@ -2871,6 +2959,8 @@ export async function updateScheduleEvent(
         existing.sourceId,
         subject,
         start,
+        true,
+        scheduledEndWasProvided ? end : undefined,
       );
       productAssignmentRepaired = alignment.assignmentChanged;
       sourceProjectionRevisionAdvanced = alignment.sourceProjectionChanged;

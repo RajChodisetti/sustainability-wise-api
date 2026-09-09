@@ -18,7 +18,6 @@ import {
   calendarEventSurfaceClass,
   SOURCE_APP_LABEL,
 } from '@/modules/scheduler/lib/colors';
-import { formatEstimatedDuration } from '@/modules/scheduler/lib/estimatedDuration';
 import {
   calendarEventContentDensity,
   calendarEventLaneDensity,
@@ -89,7 +88,9 @@ export function ScheduleEventBlock({
   const laneIsTight = laneDensity === 'tight';
   const showMeta = contentDensity !== 'title' && laneDensity === 'full';
   const showAssignee = contentDensity === 'full' && laneDensity === 'full';
-  const estimatedDurationLabel = formatEstimatedDuration(event.estimatedDurationMinutes);
+  const endTimeLabel = event.scheduledEndAt
+    ? eventTimeLabel(event.scheduledEndAt)
+    : 'Not set';
   const detailsAccentClass = completed
     ? 'bg-emerald-600'
     : inProgress
@@ -236,7 +237,7 @@ export function ScheduleEventBlock({
       } ${completed ? 'ring-1 ring-emerald-600/35' : inProgress ? 'ring-1 ring-blue-500/35' : overdue ? 'ring-1 ring-amber-500/45' : ''} ${
         isDragging ? 'opacity-60 ring-2 ring-[var(--primary)]' : ''
       } ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
-      aria-label={`${event.title}, ${SOURCE_APP_LABEL[event.sourceApp]}, ${eventTimeLabel(event.scheduledStartAt)}${event.assigneeDisplayName ? `, assigned to ${event.assigneeDisplayName}` : ', unassigned'}, estimated time ${estimatedDurationLabel}, ${statusLabel.toLowerCase()}`}
+      aria-label={`${event.title}, ${SOURCE_APP_LABEL[event.sourceApp]}, starts ${eventTimeLabel(event.scheduledStartAt)}${event.scheduledEndAt ? `, ends ${endTimeLabel}` : ''}${event.assigneeDisplayName ? `, assigned to ${event.assigneeDisplayName}` : ', unassigned'}, ${statusLabel.toLowerCase()}`}
       aria-describedby={describedBy}
       onClick={(e) => {
         e.stopPropagation();
@@ -360,7 +361,7 @@ export function ScheduleEventBlock({
                 label="Assigned to"
                 value={event.assigneeDisplayName?.trim() || 'Unassigned'}
               />
-              <EventDetail label="Estimated time" value={estimatedDurationLabel} />
+              <EventDetail label="End time" value={endTimeLabel} />
             </dl>
           </div>
         </div>,

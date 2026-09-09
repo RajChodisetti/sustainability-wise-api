@@ -787,6 +787,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       assigneeFieldUserId: String(body.assigneeFieldUserId ?? ''),
       scheduledStartAt: body.scheduledStartAt,
       estimatedDurationMinutes: body.estimatedDurationMinutes,
+      scheduledEndAt: body.scheduledEndAt,
       deadlineAt: body.deadlineAt,
       status: body.status,
     });
@@ -818,8 +819,6 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
             minimum: 1,
             maximum: MAX_ESTIMATED_DURATION_MINUTES,
           },
-          // Rolling-deploy compatibility only. The handler deliberately
-          // ignores this deprecated field instead of persisting or inferring it.
           scheduledEndAt: { type: ['string', 'null'] },
           deadlineAt: { type: 'string' },
           job: { type: 'object', additionalProperties: true },
@@ -841,6 +840,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
       assigneeFieldUserId: String(body.assigneeFieldUserId ?? ''),
       scheduledStartAt: body.scheduledStartAt,
       estimatedDurationMinutes: body.estimatedDurationMinutes,
+      scheduledEndAt: body.scheduledEndAt,
       deadlineAt: body.deadlineAt,
       job: body.job,
       status: body.status,
@@ -867,6 +867,7 @@ export async function portalSchedulerRoutes(app: FastifyInstance): Promise<void>
         : undefined,
       scheduledStartAt: body.scheduledStartAt,
       estimatedDurationMinutes: body.estimatedDurationMinutes,
+      scheduledEndAt: body.scheduledEndAt,
       deadlineAt: body.deadlineAt,
       status: body.status,
     });

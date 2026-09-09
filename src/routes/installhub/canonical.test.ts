@@ -317,6 +317,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   historical.installation.inspectorName = '  Inspector  ';
   historical.installation.auditDate = '  2026-08-01  ';
   historical.installation.jobEndDate = '  2026-08-03  ';
+  historical.installation.jobEndTime = '  17:30  ';
   historical.gridSupplies[0].name = '';
   historical.zones[0].zoneName = '';
   historical.zones[0].zoneDescription = '  North plant room  ';
@@ -345,6 +346,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   assert.equal(projected.installation.inspectorName, 'Inspector');
   assert.equal(projected.installation.auditDate, '2026-08-01');
   assert.equal(projected.installation.jobEndDate, '2026-08-03');
+  assert.equal(projected.installation.jobEndTime, '17:30');
   assert.equal(projected.gridSupplies[0].name, 'Incoming grid connection');
   assert.equal(projected.zones[0].zoneName, 'Zone');
   assert.equal(projected.zones[0].zoneDescription, 'North plant room');
@@ -371,6 +373,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   assert.equal(normalized.installation.inspectorName, projected.installation.inspectorName);
   assert.equal(normalized.installation.auditDate, projected.installation.auditDate);
   assert.equal(normalized.installation.jobEndDate, projected.installation.jobEndDate);
+  assert.equal(normalized.installation.jobEndTime, projected.installation.jobEndTime);
   assert.equal(normalized.gridSupplies[0].name, projected.gridSupplies[0].name);
   assert.equal(normalized.zones[0].zoneName, projected.zones[0].zoneName);
   assert.equal(normalized.zones[0].zoneDescription, projected.zones[0].zoneDescription);
@@ -408,6 +411,22 @@ test('canonical job end date is optional and cannot precede the audit date', () 
   assert.throws(
     () => normalizeInstallationTreeV2(inverted),
     /installation\.jobEndDate cannot be before installation\.auditDate/,
+  );
+});
+
+test('canonical job end time is optional and uses 24-hour HH:mm format', () => {
+  const omitted = baseTree();
+  assert.equal(normalizeInstallationTreeV2(omitted).installation.jobEndTime, undefined);
+
+  const valid = baseTree();
+  valid.installation.jobEndTime = '17:30';
+  assert.equal(normalizeInstallationTreeV2(valid).installation.jobEndTime, '17:30');
+
+  const invalid = baseTree();
+  invalid.installation.jobEndTime = '25:00';
+  assert.throws(
+    () => normalizeInstallationTreeV2(invalid),
+    /installation\.jobEndTime must use HH:mm in 24-hour time/,
   );
 });
 

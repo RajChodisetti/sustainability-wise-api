@@ -15,7 +15,7 @@ export type ScheduleEvent = {
   assigneeEmail: string | null;
   scheduledStartAt: string;
   estimatedDurationMinutes: number | null;
-  /** Legacy/derived read compatibility. New scheduler writes use the estimate only. */
+  /** Explicit event finish; older rows may still be derived from estimatedDurationMinutes. */
   scheduledEndAt: string | null;
   deadlineAt: string;
   status: ScheduleStatus;
@@ -151,6 +151,8 @@ export type CreateScheduleEventInput = {
   sourceId?: string | null;
   assigneeFieldUserId: string;
   scheduledStartAt: string;
+  scheduledEndAt?: string | null;
+  /** @deprecated Retained for compatibility with older deployed clients. */
   estimatedDurationMinutes?: number | null;
   deadlineAt: string;
   status?: ScheduleStatus;
@@ -162,6 +164,8 @@ export type CreateSchedulerDispatchInput = {
   description?: string | null;
   assigneeFieldUserId?: string;
   scheduledStartAt: string;
+  scheduledEndAt?: string | null;
+  /** @deprecated Retained for compatibility with older deployed clients. */
   estimatedDurationMinutes?: number | null;
   deadlineAt: string;
   job: {
@@ -209,6 +213,7 @@ export type CreateSchedulerDispatchInput = {
     additionalMonitoringHardware?: string | null;
     auditDate?: string;
     jobEndDate?: string | null;
+    jobEndTime?: string | null;
     timezone?: string;
     /** Additive structured destination; legacy product clients keep using the free-text fields. */
     address?: {
@@ -231,6 +236,8 @@ export type UpdateScheduleEventInput = {
   description?: string | null;
   assigneeFieldUserId?: string;
   scheduledStartAt?: string;
+  scheduledEndAt?: string | null;
+  /** @deprecated Retained for compatibility with older deployed clients. */
   estimatedDurationMinutes?: number | null;
   deadlineAt?: string;
   status?: ScheduleStatus;

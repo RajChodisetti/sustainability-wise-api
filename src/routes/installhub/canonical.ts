@@ -75,6 +75,7 @@ export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
   'additionalMonitoringRequired',
   'additionalMonitoringHardware',
   'jobEndDate',
+  'jobEndTime',
 ] as const;
 
 export type InstallationSiteState =
@@ -217,6 +218,7 @@ export type CanonicalInstallation = {
   inspectorName: string;
   auditDate: string;
   jobEndDate?: string | null;
+  jobEndTime?: string | null;
   status: 'Draft' | 'Completed';
   treeSchemaVersion: 2;
   treeRevision: number;
@@ -610,6 +612,23 @@ function nullableCalendarDateProperty(
   const parsed = new Date(`${normalized}T00:00:00.000Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
     throw new CanonicalInputError(`installation.${key} must be a valid calendar date`);
+  }
+  return { [key]: normalized };
+}
+
+function nullableClockTimeProperty(
+  value: JsonRecord,
+  key: string,
+): Record<string, string | null> {
+  if (!hasOwn(value, key) || value[key] === undefined) return {};
+  if (value[key] === null || value[key] === '') return { [key]: null };
+  if (typeof value[key] !== 'string') {
+    throw new CanonicalInputError(`installation.${key} must be a string or null`);
+  }
+  const normalized = value[key].trim();
+  if (!normalized) return { [key]: null };
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(normalized)) {
+    throw new CanonicalInputError(`installation.${key} must use HH:mm in 24-hour time`);
   }
   return { [key]: normalized };
 }
@@ -1211,6 +1230,7 @@ export function projectCanonicalOptionalDefaults(
   tree.installation.inspectorName = tree.installation.inspectorName.trim();
   tree.installation.auditDate = tree.installation.auditDate.trim();
   tree.installation.jobEndDate = tree.installation.jobEndDate?.trim() || null;
+  tree.installation.jobEndTime = tree.installation.jobEndTime?.trim() || null;
   tree.gridSupplies = tree.gridSupplies.map((supply) => ({
     ...supply,
     name: supply.name.trim() || 'Incoming grid connection',
@@ -1457,6 +1477,7 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     inspectorName: stringValue(item.inspectorName ?? '', 'installation.inspectorName'),
     auditDate,
     ...nullableCalendarDateProperty(item, 'jobEndDate'),
+    ...nullableClockTimeProperty(item, 'jobEndTime'),
     status: enumValue(item.status, ['Draft', 'Completed'] as const, 'installation.status'),
     treeSchemaVersion: 2,
     treeRevision: requiredInteger(item.treeRevision, 'installation.treeRevision'),
@@ -3245,6 +3266,7 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       inspectorName: ordered.installation.inspectorName,
       auditDate: ordered.installation.auditDate,
       jobEndDate: ordered.installation.jobEndDate ?? null,
+      jobEndTime: ordered.installation.jobEndTime ?? null,
     },
     gridSupplies: byId(ordered.gridSupplies).map((item) => stripLifecycle(item)),
     zones: byId(ordered.zones).map((item) => stripLifecycle(item)),

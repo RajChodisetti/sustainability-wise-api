@@ -226,6 +226,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     additionalMonitoringRequired: false,
     additionalMonitoringHardware: 'Existing CTs',
     jobEndDate: '2026-07-25',
+    jobEndTime: '17:30',
     createdByUserId: 'authenticated-user',
     assignedInspectorUserId: null,
     status: 'Draft',
@@ -250,6 +251,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   assert.equal(preserved.sitePostcode, '2000');
   assert.equal(preserved.solarCapacityKw, 75);
   assert.equal(preserved.jobEndDate, '2026-07-25');
+  assert.equal(preserved.jobEndTime, '17:30');
   assert.equal('siteLatitude' in preserved, false);
 
   const cleared = installationValuesFromPayload({
@@ -260,6 +262,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     siteLocality: null,
     solarCapacityKw: null,
     jobEndDate: null,
+    jobEndTime: null,
   }, {
     userId: 'authenticated-user',
     role: 'inspector',
@@ -270,6 +273,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   assert.equal(cleared.siteLocality, null);
   assert.equal(cleared.solarCapacityKw, null);
   assert.equal(cleared.jobEndDate, null);
+  assert.equal(cleared.jobEndTime, null);
   assert.equal(cleared.siteLatitude, null);
   assert.equal(cleared.siteGeocodeStatus, 'unresolved');
 });
@@ -297,6 +301,13 @@ test('legacy InstallHub sync rejects an invalid or inverted job end date', () =>
     }),
     (error: unknown) => error instanceof AppError
       && error.detail === 'jobEndDate cannot be before auditDate',
+  );
+  assert.throws(
+    () => installationValuesFromPayload({ ...basePayload, jobEndTime: '24:15' }, {
+      userId: 'authenticated-user', role: 'inspector',
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'jobEndTime must use HH:mm in 24-hour time',
   );
 });
 

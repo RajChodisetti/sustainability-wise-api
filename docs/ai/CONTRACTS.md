@@ -352,16 +352,17 @@ require an idempotency key plus invoice revision, and may be voided only with
 retained actor, time, and reason evidence. An invoice with a posted refund
 cannot itself be voided until every posted refund is auditably reversed.
 
-## Scheduler estimated duration
+## Scheduler optional end time
 
-Scheduler assignment asks for an optional estimated duration in whole minutes,
-not a client-selected end timestamp. The canonical persisted value is nullable
-`portal_schedule_events.estimated_duration_minutes`, bounded from 1 through
-10,080 when present. Null means no estimate was supplied and must never trigger
-a default-hours assumption. For canonical writes, the calendar end is derived
-from the scheduled start plus the estimate. Historical `scheduled_end_at`
-values remain readable and are preserved by unrelated edits; no migration
-backfills or infers estimates from them.
+Current Scheduler authoring asks for an optional explicit end time and persists
+it as nullable `portal_schedule_events.scheduled_end_at`. When an end time is
+present it must be strictly after `scheduled_start_at`; null means the finish is
+not known and must not trigger a default-hours assumption. The nullable
+`estimated_duration_minutes` field remains accepted and returned for rolling
+compatibility with older deployed clients, is still bounded from 1 through
+10,080, and derives `scheduled_end_at` only for those legacy writes. A request
+must not provide both a non-null explicit end and an estimate. New clients write
+the explicit end and clear the estimate; no migration rewrites historical rows.
 
 ## Authentication and Ownership
 

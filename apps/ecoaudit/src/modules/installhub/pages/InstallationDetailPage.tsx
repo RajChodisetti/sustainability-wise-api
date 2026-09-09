@@ -618,7 +618,8 @@ export function InstallHubInstallationDetailPage() {
               <InstallationDetailItem label="Job Number #" value={optionalValue(installation.customJobNumber)} />
               <InstallationDetailItem label="Job Type" value={optionalValue(installation.serviceType)} />
               <InstallationDetailItem label="Scheduled / audit date" value={installation.auditDate} />
-              <InstallationDetailItem label="Job end date" value={optionalValue(installation.jobEndDate)} />
+            <InstallationDetailItem label="Job end date" value={optionalValue(installation.jobEndDate)} />
+            <InstallationDetailItem label="Job end time" value={optionalValue(installation.jobEndTime)} />
               <InstallationDetailItem label="Scope Notes" value={optionalValue(installation.jobComments)} wide />
             </dl>
           </section>

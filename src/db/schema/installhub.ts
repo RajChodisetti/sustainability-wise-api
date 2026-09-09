@@ -91,6 +91,7 @@ export const ihInstallations = pgTable('ih_installations', {
   inspectorName: text('inspector_name').notNull(),
   auditDate: text('audit_date').notNull(),
   jobEndDate: text('job_end_date'),
+  jobEndTime: text('job_end_time'),
   status: text('status').notNull().default('Draft'),
   createdByUserId: text('created_by_user_id'),
   assignedInspectorUserId: text('assigned_inspector_user_id'),

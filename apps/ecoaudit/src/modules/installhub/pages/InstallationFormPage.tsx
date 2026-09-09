@@ -71,6 +71,7 @@ type FormState = {
   inspectorName: string;
   auditDate: string;
   jobEndDate: string;
+  jobEndTime: string;
   siteCode: string;
   timezone: string;
 };
@@ -102,6 +103,7 @@ const emptyForm: FormState = {
   inspectorName: '',
   auditDate: todayIso(),
   jobEndDate: '',
+  jobEndTime: '',
   siteCode: '',
   timezone: 'Australia/Sydney',
 };
@@ -189,6 +191,7 @@ function formStateFromInstallation(installation: Installation): FormState {
     inspectorName: installation.inspectorName,
     auditDate: installation.auditDate,
     jobEndDate: installation.jobEndDate ?? '',
+    jobEndTime: installation.jobEndTime ?? '',
     siteCode: installation.siteCode || '',
     timezone: installation.timezone?.trim() || DEFAULT_INSTALLATION_TIMEZONE,
   };
@@ -364,11 +367,16 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       inspectorName: form.inspectorName.trim(),
       auditDate: form.auditDate || todayIso(),
       jobEndDate: optionalText(form.jobEndDate),
+      jobEndTime: optionalText(form.jobEndTime),
       timezone: form.timezone.trim() || DEFAULT_INSTALLATION_TIMEZONE,
       siteCode: form.siteCode,
     };
     if (normalizedForm.jobEndDate && normalizedForm.jobEndDate < normalizedForm.auditDate) {
       toast.error('Job end date cannot be before the scheduled / audit date.');
+      return;
+    }
+    if (normalizedForm.jobEndTime && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(normalizedForm.jobEndTime)) {
+      toast.error('Job end time must use 24-hour HH:mm format.');
       return;
     }
     let normalizedSiteCode: string;
@@ -766,6 +774,11 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
               <div>
                 <FieldLabel htmlFor="installation-job-end-date">Job end date (optional)</FieldLabel>
                 <Input id="installation-job-end-date" type="date" min={form.auditDate} value={form.jobEndDate} disabled={formLocked} onChange={(event) => updateForm({ jobEndDate: event.target.value })} />
+              </div>
+              <div>
+                <FieldLabel htmlFor="installation-job-end-time">Job end time (optional)</FieldLabel>
+                <Input id="installation-job-end-time" type="time" value={form.jobEndTime} disabled={formLocked} onChange={(event) => updateForm({ jobEndTime: event.target.value })} />
+                <FieldHint>Enter the planned local finish time for the job.</FieldHint>
               </div>
               <div>
                 <FieldLabel htmlFor="installation-site-code">Site code (optional)</FieldLabel>

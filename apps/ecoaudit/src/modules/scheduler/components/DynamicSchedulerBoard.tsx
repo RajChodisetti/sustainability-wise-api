@@ -32,11 +32,13 @@ import {
   useUpdateScheduleEvent,
 } from '@/modules/scheduler/hooks/useScheduler';
 import { appChipClass, SOURCE_APP_LABEL } from '@/modules/scheduler/lib/colors';
+import { toDatetimeLocalValue } from '@/modules/scheduler/lib/deadline';
 import {
-  estimatedDurationError,
-  estimatedDurationUpdate,
-  parseEstimatedDurationMinutes,
-} from '@/modules/scheduler/lib/estimatedDuration';
+  scheduledEndAtFromLocal,
+  scheduledEndError,
+  scheduledEndLocalParts,
+  scheduledEndUpdate,
+} from '@/modules/scheduler/lib/scheduledEnd';
 import { scheduledJobWeek } from '@/modules/scheduler/lib/jobsPool';
 import { schedulerSourceAppIsSelectable } from '@/modules/scheduler/lib/visibility';
 import {
@@ -124,7 +126,7 @@ export function DynamicSchedulerBoard({
     hour: number,
     assigneeFieldUserId: string,
     title: string,
-    estimatedDurationMinutes: number | null,
+    scheduledEndAt: string | null,
   ) {
     const start = slotDateTime(day, hour);
     const deadline = defaultDeadlineFromStart(start);
@@ -135,7 +137,7 @@ export function DynamicSchedulerBoard({
       title,
       assigneeFieldUserId,
       scheduledStartAt: start.toISOString(),
-      ...(estimatedDurationMinutes === null ? {} : { estimatedDurationMinutes }),
+      ...(scheduledEndAt === null ? {} : { scheduledEndAt }),
       deadlineAt: deadline.toISOString(),
       status: 'planned',
     });
@@ -202,7 +204,7 @@ export function DynamicSchedulerBoard({
 
   async function confirmPendingAssign(
     title: string,
-    estimatedDurationMinutes: number | null,
+    scheduledEndAt: string | null,
   ) {
     if (!pendingAssign || !pickAssignee) return;
     setBoardError(null);
@@ -214,7 +216,7 @@ export function DynamicSchedulerBoard({
           pendingAssign.hour,
           pickAssignee,
           title,
-          estimatedDurationMinutes,
+          scheduledEndAt,
         );
       } else {
         const start = slotDateTime(pendingAssign.day, pendingAssign.hour);
@@ -224,10 +226,7 @@ export function DynamicSchedulerBoard({
             title,
             scheduledStartAt: start.toISOString(),
             assigneeFieldUserId: pickAssignee,
-            ...estimatedDurationUpdate(
-              pendingAssign.event.estimatedDurationMinutes,
-              estimatedDurationMinutes,
-            ),
+            ...scheduledEndUpdate(pendingAssign.event.scheduledEndAt, scheduledEndAt),
           },
         });
       }
@@ -428,8 +427,8 @@ export function DynamicSchedulerBoard({
           busy={create.isPending || update.isPending}
           onPickAssignee={setPickAssignee}
           onCancel={() => setPendingAssign(null)}
-          onConfirm={(title, estimatedDurationMinutes) => {
-            void confirmPendingAssign(title, estimatedDurationMinutes);
+          onConfirm={(title, scheduledEndAt) => {
+            void confirmPendingAssign(title, scheduledEndAt);
           }}
         />
       ) : null}
@@ -477,23 +476,24 @@ function AssignStaffDialog({
   busy: boolean;
   onPickAssignee: (value: string) => void;
   onCancel: () => void;
-  onConfirm: (title: string, estimatedDurationMinutes: number | null) => void;
+  onConfirm: (title: string, scheduledEndAt: string | null) => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const cancelRef = useRef(onCancel);
   const busyRef = useRef(busy);
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState(() => (
-    pendingAssign.type === 'event' && pendingAssign.event.estimatedDurationMinutes !== null
-      ? String(pendingAssign.event.estimatedDurationMinutes)
+  const [endTime, setEndTime] = useState(() => (
+    pendingAssign.type === 'event'
+      ? scheduledEndLocalParts(pendingAssign.event.scheduledEndAt).time
       : ''
   ));
   const [title, setTitle] = useState(() => (
     pendingAssign.type === 'job' ? pendingAssign.job.label : pendingAssign.event.title
   ));
-  const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
-  const durationError = estimatedDurationError(estimatedDurationMinutes);
   const selectedPerson = staff.find((person) => person.fieldUserId === pickAssignee);
   const scheduledAt = slotDateTime(pendingAssign.day, pendingAssign.hour);
+  const scheduledAtLocal = toDatetimeLocalValue(scheduledAt.toISOString());
+  const endTimeError = scheduledEndError(scheduledAtLocal, '', endTime);
+  const scheduledEndAt = scheduledEndAtFromLocal(scheduledAtLocal, '', endTime);
   const scheduledAtLabel = scheduledAt.toLocaleString('en-AU', {
     weekday: 'long',
     day: 'numeric',
@@ -572,10 +572,10 @@ function AssignStaffDialog({
         <form
           onSubmit={(event) => {
             event.preventDefault();
-            if (parsedEstimatedDurationMinutes === undefined) return;
+            if (endTimeError) return;
             const normalizedTitle = title.trim();
             if (!normalizedTitle) return;
-            onConfirm(normalizedTitle, parsedEstimatedDurationMinutes);
+            onConfirm(normalizedTitle, scheduledEndAt);
           }}
         >
           <div className="mt-4">
@@ -605,31 +605,21 @@ function AssignStaffDialog({
                 </option>
               ))}
             </Select>
-            <FieldLabel htmlFor="scheduler-pending-estimated-duration">
-              Estimated time to complete (minutes, optional)
+            <FieldLabel htmlFor="scheduler-pending-end-time">
+              End time (optional)
             </FieldLabel>
             <Input
-              id="scheduler-pending-estimated-duration"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              autoComplete="off"
-              maxLength={5}
-              placeholder="e.g. 90"
-              value={estimatedDurationMinutes}
-              onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
-              aria-invalid={Boolean(durationError)}
-              aria-describedby={durationError
-                ? 'scheduler-pending-estimated-duration-error scheduler-pending-estimated-duration-hint'
-                : 'scheduler-pending-estimated-duration-hint'}
+              id="scheduler-pending-end-time"
+              type="time"
+              value={endTime}
+              onChange={(event) => setEndTime(event.target.value)}
+              aria-invalid={Boolean(endTimeError)}
+              aria-describedby="scheduler-pending-end-time-hint"
             />
-            <FieldHint id="scheduler-pending-estimated-duration-hint">
-              Leave blank if the duration is not known. The calendar uses this estimate only for planning.
+            <FieldHint id="scheduler-pending-end-time-hint">
+              Leave blank when the finish time is not known.
             </FieldHint>
-            <FieldError
-              id="scheduler-pending-estimated-duration-error"
-              message={durationError ?? undefined}
-            />
+            <FieldError message={endTimeError ?? undefined} />
           </div>
           <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button type="button" variant="secondary" disabled={busy} onClick={onCancel}>
@@ -637,7 +627,7 @@ function AssignStaffDialog({
             </Button>
             <Button
               type="submit"
-              disabled={!title.trim() || !pickAssignee || parsedEstimatedDurationMinutes === undefined || busy}
+              disabled={!title.trim() || !pickAssignee || Boolean(endTimeError) || busy}
             >
               {busy ? 'Saving assignment…' : 'Confirm assignment'}
             </Button>

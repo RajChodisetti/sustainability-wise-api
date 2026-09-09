@@ -3,17 +3,18 @@ import test from 'node:test';
 import {
   assertScheduleInterval,
   assertPortalSchedulerApp,
-  createScheduleEvent,
   deriveScheduledEndAt,
   dispatchSiteSelection,
   fieldScopeNumber,
   generatedFieldJobTitle,
   installHubSchedulerAuditDate,
+  installHubSchedulerEndParts,
   MAX_ESTIMATED_DURATION_MINUTES,
   parseDispatchJob,
   parseEstimatedDurationMinutes,
   randomFieldJobTitleSuffix,
   replacementMeterNumbersFromDispatch,
+  requestedScheduleEnd,
   schedulerSitePrefillOption,
   scheduleUpdateRequiresAvailabilityCheck,
   scheduleUpdateRequiresActiveProduct,
@@ -152,7 +153,7 @@ test('COMMS fault dispatch accepts multiple replacement meters and retains legac
   );
 });
 
-test('Field dispatch accepts an optional job end date on or after the scheduled date', () => {
+test('Field dispatch accepts optional job end date and 24-hour end time', () => {
   const baseJob = {
     clientName: 'Client Co',
     siteName: 'North Site',
@@ -163,6 +164,7 @@ test('Field dispatch accepts an optional job end date on or after the scheduled 
   assert.doesNotThrow(() => validateDispatchJob('installhub', {
     ...baseJob,
     jobEndDate: '2026-09-11',
+    jobEndTime: '17:30',
   }));
   assert.throws(
     () => validateDispatchJob('installhub', { ...baseJob, jobEndDate: '2026-09-08' }),
@@ -173,6 +175,11 @@ test('Field dispatch accepts an optional job end date on or after the scheduled 
     () => validateDispatchJob('installhub', { ...baseJob, jobEndDate: '2026-02-30' }),
     (error: unknown) => error instanceof AppError
       && error.detail === 'job.jobEndDate must be a valid calendar date',
+  );
+  assert.throws(
+    () => validateDispatchJob('installhub', { ...baseJob, jobEndTime: '25:00' }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.jobEndTime must use HH:mm in 24-hour time',
   );
 });
 
@@ -243,21 +250,23 @@ test('calendar end is derived only when an estimate exists', () => {
   );
 });
 
-test('client-provided end time is rejected before persistence', async () => {
-  await assert.rejects(
-    () => createScheduleEvent(ecoAdmin, {
-      sourceApp: 'installhub',
-      sourceType: 'installation',
-      sourceId: 'installation-id',
-      assigneeFieldUserId: 'field-user',
-      scheduledStartAt: '2026-08-20T09:00:00.000Z',
-      scheduledEndAt: '2026-08-20T10:00:00.000Z',
-      deadlineAt: '2026-08-22T17:00:00.000Z',
-    }),
+test('explicit Scheduler end time is accepted and replaces estimated duration', () => {
+  const start = new Date('2026-08-20T09:00:00.000Z');
+  assert.deepEqual(
+    requestedScheduleEnd(
+      start,
+      '2026-08-20T10:00:00.000Z',
+      undefined,
+    ),
+    {
+      end: new Date('2026-08-20T10:00:00.000Z'),
+      estimatedDurationMinutes: null,
+    },
+  );
+  assert.throws(
+    () => requestedScheduleEnd(start, '2026-08-20T10:00:00.000Z', 60),
     (error: unknown) => error instanceof AppError
-      && error.detail === (
-        'scheduledEndAt is derived; refresh and provide estimatedDurationMinutes instead'
-      ),
+      && error.detail === 'Provide scheduledEndAt or estimatedDurationMinutes, not both',
   );
 });
 
@@ -312,6 +321,18 @@ test('Field App compatibility date uses the installation timezone with a safe le
   assert.equal(
     installHubSchedulerAuditDate(morningInAustralia, 'legacy-invalid-timezone'),
     '2026-08-21',
+  );
+});
+
+test('Field App end planning stores local date and 24-hour time', () => {
+  const instant = new Date('2026-09-09T07:30:00.000Z');
+  assert.deepEqual(installHubSchedulerEndParts(instant, 'Australia/Sydney'), {
+    jobEndDate: '2026-09-09',
+    jobEndTime: '17:30',
+  });
+  assert.deepEqual(
+    installHubSchedulerEndParts(instant, 'legacy-invalid-timezone'),
+    { jobEndDate: '2026-09-09', jobEndTime: '17:30' },
   );
 });
 

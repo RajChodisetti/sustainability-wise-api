@@ -335,7 +335,8 @@ Field App Complete: nullable `customerName`, `maas`, `serviceType`,
 site-contact name/phone/email, `customJobNumber`, `fergusJobNumber`, `quoteNumber`, `jobComments`,
 `accessInformation`, `warrantyDevice`, `monitoringInstalled`,
 `hardwareInstalled`, `solarCapacityKw`, `additionalMonitoringRequired`, and
-`additionalMonitoringHardware`. Nullable booleans are tri-state: `null` means
+`additionalMonitoringHardware`, plus optional `jobEndDate` (`YYYY-MM-DD`) and
+`jobEndTime` (local 24-hour `HH:mm`). Nullable booleans are tri-state: `null` means
 unknown, and must not be converted to `false`. An older client that omits one of
 these additive fields preserves the current server value; an explicit `null`
 clears it. `solarCapacityKw` is nullable and, when present, must be finite and

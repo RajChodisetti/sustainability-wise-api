@@ -94,10 +94,10 @@ test('calendar drop confirms assignment details without expanding technician lan
   assert.match(boardSource, /AssignmentSummaryRow label="Technician"/);
   assert.match(boardSource, /AssignmentSummaryRow label="Job"/);
   assert.match(boardSource, /scheduler-pending-title/);
-  assert.match(boardSource, /onConfirm\(normalizedTitle, parsedEstimatedDurationMinutes\)/);
+  assert.match(boardSource, /onConfirm\(normalizedTitle, scheduledEndAt\)/);
   assert.match(boardSource, /AssignmentSummaryRow label="Date & time"/);
-  assert.match(boardSource, /Estimated time to complete \(minutes, optional\)/);
-  assert.match(boardSource, /estimatedDurationUpdate\(/);
+  assert.match(boardSource, /End time \(optional\)/);
+  assert.match(boardSource, /scheduledEndUpdate\(/);
   assert.doesNotMatch(gridSource, /expandedDayKey|StaffChipDrop|Technicians available on/);
   assert.doesNotMatch(gridSource, /Drop an event on a person/);
 });
@@ -153,7 +153,7 @@ test('calendar jobs use opaque adaptive cards and a solid status-accented previe
   assert.match(blockSource, /Scheduled/);
   assert.match(blockSource, /In progress/);
   assert.match(blockSource, /label="Assigned to"/);
-  assert.match(blockSource, /label="Estimated time"/);
+  assert.match(blockSource, /label="End time"/);
   assert.match(blockSource, /duration-200 ease-out/);
   assert.doesNotMatch(blockSource, /duration-500 ease-out/);
 });

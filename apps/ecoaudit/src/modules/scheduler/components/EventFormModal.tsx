@@ -31,10 +31,11 @@ import {
   toDatetimeLocalValue,
 } from '@/modules/scheduler/lib/deadline';
 import {
-  estimatedDurationError,
-  estimatedDurationUpdate,
-  parseEstimatedDurationMinutes,
-} from '@/modules/scheduler/lib/estimatedDuration';
+  scheduledEndAtFromLocal,
+  scheduledEndError,
+  scheduledEndLocalParts,
+  scheduledEndUpdate,
+} from '@/modules/scheduler/lib/scheduledEnd';
 import {
   scheduledStartUpdate,
   shouldCompleteLinkedProductJob,
@@ -218,6 +219,7 @@ function initialFormValues(
   defaultSourceApp: ScheduleSourceApp = 'installhub',
 ) {
   if (event) {
+    const end = scheduledEndLocalParts(event.scheduledEndAt);
     return {
       sourceApp: event.sourceApp,
       sourceType: event.sourceType,
@@ -235,10 +237,8 @@ function initialFormValues(
       description: event.description ?? '',
       assigneeFieldUserId: event.assigneeFieldUserId,
       startLocal: toDatetimeLocalValue(event.scheduledStartAt),
-      jobEndDate: '',
-      estimatedDurationMinutes: event.estimatedDurationMinutes === null
-        ? ''
-        : String(event.estimatedDurationMinutes),
+      jobEndDate: end.date,
+      jobEndTime: end.time,
       deadlineLocal: toDatetimeLocalValue(event.deadlineAt),
       status: event.status,
     };
@@ -273,7 +273,7 @@ function initialFormValues(
     assigneeFieldUserId: '',
     startLocal: toDatetimeLocalValue(start.toISOString()),
     jobEndDate: '',
-    estimatedDurationMinutes: '',
+    jobEndTime: '',
     deadlineLocal: toDatetimeLocalValue(deadline.toISOString()),
     status: 'planned' as ScheduleStatus,
   };
@@ -327,9 +327,7 @@ export function EventFormModal({
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
   const [startLocal, setStartLocal] = useState(initial.startLocal);
   const [jobEndDate, setJobEndDate] = useState(initial.jobEndDate);
-  const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState(
-    initial.estimatedDurationMinutes,
-  );
+  const [jobEndTime, setJobEndTime] = useState(initial.jobEndTime);
   const [deadlineLocal, setDeadlineLocal] = useState(initial.deadlineLocal);
   const [status, setStatus] = useState<ScheduleStatus>(initial.status);
   const [error, setError] = useState<string | null>(null);
@@ -358,19 +356,18 @@ export function EventFormModal({
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
     sourceApp === 'custom' || assignee.appMemberships.includes(sourceApp)
   )), [assignees.data, sourceApp]);
-  const parsedEstimatedDurationMinutes = parseEstimatedDurationMinutes(estimatedDurationMinutes);
-  const durationError = estimatedDurationError(estimatedDurationMinutes);
+  const endTimeError = scheduledEndError(startLocal, jobEndDate, jobEndTime);
 
   const canSubmit = useMemo(() => {
     if (!isAdmin) return false;
     if (!startLocal || !deadlineLocal) return false;
-    if (sourceApp === 'installhub' && jobEndDate && jobEndDate < startLocal.slice(0, 10)) {
+    if (jobEndDate && jobEndDate < startLocal.slice(0, 10)) {
       return false;
     }
+    if (endTimeError) return false;
     const canCreateUnassignedFieldJob = !editing
       && sourceApp === 'installhub';
     if (!assigneeFieldUserId && !canCreateUnassignedFieldJob) return false;
-    if (parsedEstimatedDurationMinutes === undefined) return false;
     if (sourceApp === 'custom') return Boolean(title.trim());
     if (!sourceCanCreateNew) return false;
     if (siteSelectionMode === 'existing' && !existingSiteId) return false;
@@ -401,8 +398,8 @@ export function EventFormModal({
     assigneeFieldUserId,
     startLocal,
     jobEndDate,
+    endTimeError,
     deadlineLocal,
-    parsedEstimatedDurationMinutes,
     sourceApp,
     title,
     sourceCanCreateNew,
@@ -650,10 +647,12 @@ export function EventFormModal({
   }
 
   async function handleSubmit() {
-    const submittedEstimatedDurationMinutes = parseEstimatedDurationMinutes(
-      estimatedDurationMinutes,
+    if (!canSubmit) return;
+    const submittedScheduledEndAt = scheduledEndAtFromLocal(
+      startLocal,
+      jobEndDate,
+      jobEndTime,
     );
-    if (!canSubmit || submittedEstimatedDurationMinutes === undefined) return;
     const completeLinkedJob = Boolean(event && shouldCompleteLinkedProductJob({
       currentStatus: event.status,
       nextStatus: status,
@@ -678,10 +677,7 @@ export function EventFormModal({
               startLocal,
               fromDatetimeLocalValue(startLocal),
             ),
-            ...estimatedDurationUpdate(
-              event.estimatedDurationMinutes,
-              submittedEstimatedDurationMinutes,
-            ),
+            ...scheduledEndUpdate(event.scheduledEndAt, submittedScheduledEndAt),
             deadlineAt: fromDatetimeLocalValue(deadlineLocal),
             // The product-completion endpoint closes every linked Scheduler
             // event transactionally. Do not claim calendar completion first.
@@ -712,9 +708,7 @@ export function EventFormModal({
           description: description.trim() || null,
           assigneeFieldUserId,
           scheduledStartAt: fromDatetimeLocalValue(startLocal),
-          ...(submittedEstimatedDurationMinutes === null
-            ? {}
-            : { estimatedDurationMinutes: submittedEstimatedDurationMinutes }),
+          scheduledEndAt: submittedScheduledEndAt,
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           job: {
             ...schedulerDispatchSiteSelectionPayload({
@@ -749,6 +743,7 @@ export function EventFormModal({
                   siteAddress: schedulerAddressDisplay(jobAddress),
                   titleSuffix: fieldJobTitleSuffix,
                   jobEndDate: optionalJobText(jobEndDate),
+                  jobEndTime: optionalJobText(jobEndTime),
                   ...installHubJobPayload(installHubJobDetails),
                 }
               : {}),
@@ -763,9 +758,7 @@ export function EventFormModal({
           sourceId: sourceApp === 'custom' ? null : sourceId,
           assigneeFieldUserId,
           scheduledStartAt: fromDatetimeLocalValue(startLocal),
-          ...(submittedEstimatedDurationMinutes === null
-            ? {}
-            : { estimatedDurationMinutes: submittedEstimatedDurationMinutes }),
+          scheduledEndAt: submittedScheduledEndAt,
           deadlineAt: fromDatetimeLocalValue(deadlineLocal),
           status: 'planned',
         });
@@ -1201,44 +1194,31 @@ export function EventFormModal({
               value={startLocal}
               onChange={(e) => setStartLocal(e.target.value)}
             />
-            {sourceApp === 'installhub' && !editing ? (
-              <>
-                <FieldLabel htmlFor="scheduler-job-end-date">Job end date (optional)</FieldLabel>
-                <Input
-                  id="scheduler-job-end-date"
-                  type="date"
-                  min={startLocal.slice(0, 10)}
-                  value={jobEndDate}
-                  onChange={(event) => setJobEndDate(event.target.value)}
-                  aria-invalid={Boolean(jobEndDate && jobEndDate < startLocal.slice(0, 10))}
-                />
-                <FieldError message={jobEndDate && jobEndDate < startLocal.slice(0, 10)
-                  ? 'Job end date cannot be before the start date.'
-                  : undefined} />
-              </>
-            ) : null}
-            <FieldLabel htmlFor="scheduler-estimated-duration">
-              Estimated time to complete (minutes, optional)
-            </FieldLabel>
+            <FieldLabel htmlFor="scheduler-job-end-date">End date (optional)</FieldLabel>
             <Input
-              id="scheduler-estimated-duration"
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              autoComplete="off"
-              maxLength={5}
-              placeholder="e.g. 90"
-              value={estimatedDurationMinutes}
-              onChange={(event) => setEstimatedDurationMinutes(event.target.value)}
-              aria-invalid={Boolean(durationError)}
-              aria-describedby={durationError
-                ? 'scheduler-estimated-duration-error scheduler-estimated-duration-hint'
-                : 'scheduler-estimated-duration-hint'}
+              id="scheduler-job-end-date"
+              type="date"
+              min={startLocal.slice(0, 10)}
+              value={jobEndDate}
+              onChange={(event) => setJobEndDate(event.target.value)}
+              aria-invalid={Boolean(jobEndDate && jobEndDate < startLocal.slice(0, 10))}
             />
-            <FieldHint id="scheduler-estimated-duration-hint">
-              Leave blank if the duration is not known. The calendar uses this estimate only for planning.
+            <FieldError message={jobEndDate && jobEndDate < startLocal.slice(0, 10)
+              ? 'End date cannot be before the start date.'
+              : undefined} />
+            <FieldLabel htmlFor="scheduler-job-end-time">End time (optional)</FieldLabel>
+            <Input
+              id="scheduler-job-end-time"
+              type="time"
+              value={jobEndTime}
+              onChange={(event) => setJobEndTime(event.target.value)}
+              aria-invalid={Boolean(endTimeError)}
+              aria-describedby="scheduler-job-end-time-hint"
+            />
+            <FieldHint id="scheduler-job-end-time-hint">
+              Leave blank when the finish time is not known. If the end date is blank, the start date is used.
             </FieldHint>
-            <FieldError id="scheduler-estimated-duration-error" message={durationError ?? undefined} />
+            <FieldError message={endTimeError ?? undefined} />
             <FieldLabel>Deadline</FieldLabel>
             <Input
               type="datetime-local"

@@ -105,6 +105,7 @@ test('new installation trees retain structured job planning fields and nullable 
     inspectorName: 'Installer One',
     auditDate: '2026-08-22',
     jobEndDate: '2026-08-24',
+    jobEndTime: '17:30',
   }, user);
 
   assert.deepEqual({
@@ -120,6 +121,7 @@ test('new installation trees retain structured job planning fields and nullable 
     solarCapacityKw: tree.installation.solarCapacityKw,
     additionalMonitoringRequired: tree.installation.additionalMonitoringRequired,
     jobEndDate: tree.installation.jobEndDate,
+    jobEndTime: tree.installation.jobEndTime,
   }, {
     customerName: 'Example Customer',
     maas: null,
@@ -133,6 +135,7 @@ test('new installation trees retain structured job planning fields and nullable 
     solarCapacityKw: 24.5,
     additionalMonitoringRequired: false,
     jobEndDate: '2026-08-24',
+    jobEndTime: '17:30',
   });
 });
 

@@ -462,6 +462,18 @@ function legacyNullableJobEndDate(
   return value;
 }
 
+function legacyNullableJobEndTime(
+  payload: JsonRecord,
+  existingValue?: string | null,
+): string | null {
+  const value = legacyNullableText(payload, 'jobEndTime', 5, existingValue);
+  if (value === null) return null;
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw badRequest('jobEndTime must use HH:mm in 24-hour time');
+  }
+  return value;
+}
+
 function legacyNullableBoolean(
   payload: JsonRecord,
   key: string,
@@ -819,6 +831,7 @@ export function installationValuesFromPayload(
   const siteCountryCode = legacyNullableSiteCountry(payload, existing?.siteCountryCode);
   const auditDate = requiredString(payload, 'auditDate');
   const jobEndDate = legacyNullableJobEndDate(payload, existing?.jobEndDate);
+  const jobEndTime = legacyNullableJobEndTime(payload, existing?.jobEndTime);
   if (jobEndDate && jobEndDate < auditDate) {
     throw badRequest('jobEndDate cannot be before auditDate');
   }
@@ -956,6 +969,7 @@ export function installationValuesFromPayload(
     inspectorName: requiredString(payload, 'inspectorName'),
     auditDate,
     jobEndDate,
+    jobEndTime,
     status: optionalString(payload, 'status') ?? existing?.status ?? 'Draft',
     createdByUserId: resolveSyncCreatedByUserId({
       existingRecord: Boolean(existing),
@@ -1999,6 +2013,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
               jobEndDate: incomingTree.installation.jobEndDate ?? null,
+              jobEndTime: incomingTree.installation.jobEndTime ?? null,
               siteCode: incomingTree.installation.siteCode,
               timezone: incomingTree.installation.timezone,
               treeSchemaVersion: 2,
@@ -2075,6 +2090,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
               jobEndDate: incomingTree.installation.jobEndDate ?? null,
+              jobEndTime: incomingTree.installation.jobEndTime ?? null,
               status: 'Draft',
               createdByUserId: request.user.userId,
               assignedInspectorUserId: null,
