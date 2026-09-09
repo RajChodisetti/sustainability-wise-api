@@ -5,12 +5,19 @@ import {
   assertApprovedWattwatchersMeterRegisterInvoiceReconciliationManifest,
   assertWattwatchersMeterRegisterInvoiceReconciliationDigests,
   buildWattwatchersMeterRegisterInvoiceReconciliationSql,
+  computeWattwatchersMeterRegisterInvoiceEvidenceSha256,
+  METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
+  METER_REGISTER_RECONCILIATION_QA_DATABASE,
   METER_REGISTER_RECONCILIATION_MASTER_SHEET,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
   METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
+  METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
+  METER_REGISTER_RECONCILIATION_SOURCE_COMMIT,
   METER_REGISTER_RECONCILIATION_WORKS_SHEET,
   METER_REGISTER_RECONCILIATION_WORKS_WORKBOOK,
   METER_REGISTER_RECONCILIATION_WORKS_WORKBOOK_SHA256,
+  type WattwatchersMeterRegisterInvoiceReconciliationCandidate,
   parseWattwatchersMeterRegisterInvoiceReconciliationManifest,
 } from './wattwatchersMeterRegisterInvoiceReconciliation.js';
 
@@ -18,15 +25,27 @@ const SYNTHETIC_INVOICE = ['INV', 'SYNTHETIC001'].join('-');
 const SYNTHETIC_ENTRY_ID = `wwmre_${'a'.repeat(32)}`;
 const SYNTHETIC_DEVICE_ID = 'AB12345678901';
 
-function fixtureCandidate() {
+function fixtureCandidate(): WattwatchersMeterRegisterInvoiceReconciliationCandidate {
+  const worksPlanningEvidence: WattwatchersMeterRegisterInvoiceReconciliationCandidate[
+    'worksPlanningEvidence'
+  ] = [{
+    sourceRow: 2,
+    worksRow: 2,
+    auditRowSha256: 'c'.repeat(64),
+    cachedValuesSha256: 'd'.repeat(64),
+    formulaValuesSha256: 'e'.repeat(64),
+    sheet: METER_REGISTER_RECONCILIATION_WORKS_SHEET,
+    isCurrentForDevice: true,
+    sourceColumn: 'XERO Inv #' as const,
+    value: SYNTHETIC_INVOICE,
+  }];
   return {
     entryId: SYNTHETIC_ENTRY_ID,
     masterSourceRow: 4,
     masterSourceRowSha256: 'b'.repeat(64),
     currentDeviceIdentifier: SYNTHETIC_DEVICE_ID,
     expectedRevision: 1,
-    worksPlanningSourceRow: 2,
-    worksPlanningSourceRowSha256: 'c'.repeat(64),
+    worksPlanningEvidence,
     matchKind: 'current_device',
     worksPlanningInvoiceEventCount: 1,
     reviewDecision: 'safe',
@@ -34,15 +53,49 @@ function fixtureCandidate() {
     masterInvoiceIssuedDateBlank: true,
     hasInvoiceConflict: false,
     invoiceNumber: SYNTHETIC_INVOICE,
-    invoiceNumberSourceColumn: 'XERO Inv #',
     invoiceIssuedDate: '2026-01-02',
     invoiceDateSourceColumn: 'XERO Date',
+    invoiceDateEvidence: {
+      sourceRow: 2,
+      auditRowSha256: 'c'.repeat(64),
+      cachedValuesSha256: 'd'.repeat(64),
+      formulaValuesSha256: 'e'.repeat(64),
+      sheet: METER_REGISTER_RECONCILIATION_WORKS_SHEET,
+      sourceColumn: 'XERO Date',
+    },
   };
 }
 
 function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()) {
+  const candidates = [candidate] as unknown as WattwatchersMeterRegisterInvoiceReconciliationCandidate[];
+  const worksPlanningEvidence = candidate.worksPlanningEvidence as Array<{
+    isCurrentForDevice: boolean;
+    sourceColumn: string;
+  }>;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    provenance: {
+      sourceAudit: {
+        schema: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA,
+        sha256: METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256,
+        repositoryCommit: METER_REGISTER_RECONCILIATION_SOURCE_COMMIT,
+      },
+      dbSnapshot: {
+        schema: METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA,
+        sha256: 'f'.repeat(64),
+        database: METER_REGISTER_RECONCILIATION_QA_DATABASE,
+      },
+      invoiceEvidence: {
+        rowCount: worksPlanningEvidence.length,
+        currentRowCount: worksPlanningEvidence.filter(
+          (evidence) => evidence.isCurrentForDevice,
+        ).length,
+        xeroDateValueRowCount: worksPlanningEvidence.filter(
+          (evidence) => evidence.sourceColumn === 'XERO Date',
+        ).length,
+        sha256: computeWattwatchersMeterRegisterInvoiceEvidenceSha256(candidates),
+      },
+    },
     sources: {
       masterRegister: {
         workbook: METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK,
@@ -60,7 +113,7 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
       invoiceNumberUpdateCount: 1,
       invoiceDateUpdateCount: candidate.invoiceIssuedDate === null ? 0 : 1,
     },
-    candidates: [candidate],
+    candidates,
   };
 }
 
@@ -78,6 +131,18 @@ test('builds a guarded, transaction-scoped dry-run that only fills blank operati
   assert.match(built.sql, /pg_advisory_xact_lock/u);
   assert.match(built.sql, /SET LOCAL lock_timeout = '5s'/u);
   assert.match(built.sql, /SET LOCAL statement_timeout = '5min'/u);
+  assert.match(
+    built.sql,
+    /IF current_database\(\) <> 'sw_ecoaudit_fixes' THEN/u,
+  );
+  assert.match(built.sql, /invoice_reconcile_provenance/u);
+  assert.match(built.sql, /source_audit_sha256/u);
+  assert.match(built.sql, /db_snapshot_sha256/u);
+  assert.match(built.sql, /invoice_evidence_sha256/u);
+  assert.match(built.sql, /invoice_reconcile_works_evidence_stage/u);
+  assert.match(built.sql, /works_cached_values_sha256/u);
+  assert.match(built.sql, /works_formula_values_sha256/u);
+  assert.match(built.sql, /staged Works evidence count changed/u);
   assert.match(built.sql, /entry\.source_row_sha256 = stage\.master_source_row_sha256/u);
   assert.match(built.sql, /entry\.current_device_identifier = stage\.current_device_identifier/u);
   assert.match(built.sql, /record\.revision = stage\.expected_revision/u);
@@ -160,26 +225,83 @@ test('populated Master values or explicit conflicts cannot enter the reconciliat
 });
 
 test('a misplaced invoice number cannot also be interpreted as a date', () => {
+  const candidate = fixtureCandidate();
   assert.throws(() => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
     fixtureManifest({
-      ...fixtureCandidate(),
-      invoiceNumberSourceColumn: 'XERO Date',
-      invoiceIssuedDate: '2026-01-02',
+      ...candidate,
+      worksPlanningEvidence: candidate.worksPlanningEvidence.map((evidence) => ({
+        ...evidence,
+        sourceColumn: 'XERO Date',
+      })),
     }),
   ));
 });
 
+test('invoice-date provenance must share a current invoice-evidence row', () => {
+  const candidate = fixtureCandidate();
+  const nonCurrentEvidence = {
+    ...candidate.worksPlanningEvidence[0]!,
+    sourceRow: 3,
+    worksRow: 3,
+    auditRowSha256: '1'.repeat(64),
+    cachedValuesSha256: '2'.repeat(64),
+    formulaValuesSha256: '3'.repeat(64),
+    isCurrentForDevice: false,
+  };
+  candidate.worksPlanningEvidence.push(nonCurrentEvidence);
+  candidate.invoiceDateEvidence = {
+    sourceRow: nonCurrentEvidence.sourceRow,
+    auditRowSha256: nonCurrentEvidence.auditRowSha256,
+    cachedValuesSha256: nonCurrentEvidence.cachedValuesSha256,
+    formulaValuesSha256: nonCurrentEvidence.formulaValuesSha256,
+    sheet: METER_REGISTER_RECONCILIATION_WORKS_SHEET,
+    sourceColumn: 'XERO Date',
+  };
+  assert.throws(
+    () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
+      fixtureManifest(candidate),
+    ),
+    /current invoice-evidence Works row/u,
+  );
+});
+
 test('duplicate entry, source-row, or current-device identity is rejected', () => {
   const candidate = fixtureCandidate();
-  const duplicate = { ...candidate, worksPlanningSourceRow: 3 };
+  const duplicate = {
+    ...candidate,
+    invoiceIssuedDate: null,
+    invoiceDateSourceColumn: null,
+    invoiceDateEvidence: null,
+    worksPlanningEvidence: candidate.worksPlanningEvidence.map((evidence) => ({
+      ...evidence,
+      sourceRow: 3,
+      worksRow: 3,
+    })),
+  };
   const manifest = fixtureManifest(candidate);
   manifest.expected.matchedCount = 2;
   manifest.expected.invoiceNumberUpdateCount = 2;
-  manifest.expected.invoiceDateUpdateCount = 2;
+  manifest.expected.invoiceDateUpdateCount = 1;
   manifest.candidates.push(duplicate);
   assert.throws(
     () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(manifest),
     /Duplicate reconciliation entryId/u,
+  );
+});
+
+test('manifest provenance and the complete Works evidence digest are fail-closed', () => {
+  const wrongSnapshot = fixtureManifest();
+  wrongSnapshot.provenance.dbSnapshot.database = 'postgres';
+  assert.throws(
+    () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(wrongSnapshot),
+  );
+
+  const changedEvidence = fixtureManifest();
+  changedEvidence.candidates[0]!.worksPlanningEvidence[0]!.cachedValuesSha256 = '0'.repeat(64);
+  changedEvidence.candidates[0]!.invoiceDateEvidence!.cachedValuesSha256 = '0'.repeat(64);
+  assert.throws(
+    () => parseWattwatchersMeterRegisterInvoiceReconciliationManifest(changedEvidence),
+    /evidence digest/u,
   );
 });
 
@@ -208,7 +330,7 @@ test('the executable CLI enforces approved 92/1 counts and private exclusive out
   const manifest = parseWattwatchersMeterRegisterInvoiceReconciliationManifest(fixtureManifest());
   assert.throws(
     () => assertApprovedWattwatchersMeterRegisterInvoiceReconciliationManifest(manifest),
-    /exactly 92 invoice numbers and one date/u,
+    /exactly 92 invoice numbers, one date/u,
   );
 
   const script = await readFile(
@@ -216,8 +338,13 @@ test('the executable CLI enforces approved 92/1 counts and private exclusive out
     'utf8',
   );
   assert.match(script, /const mode = value \?\? 'dry-run'/u);
-  assert.match(script, /manifestStat\.mode & 0o077/u);
-  assert.match(script, /open\(outputPath, 'wx', 0o600\)/u);
-  assert.match(script, /await output\.sync\(\)/u);
+  assert.match(script, /readPrivateWattwatchersMeterRegisterReconciliationArtifact/u);
+  assert.match(script, /--source-audit/u);
+  assert.match(script, /--db-snapshot/u);
+  assert.match(script, /--snapshot-sha256/u);
+  assert.match(script, /generateWattwatchersMeterRegisterInvoiceManifest/u);
+  assert.match(script, /manifestBytes\.equals\(generated\.manifestBytes\)/u);
+  assert.match(script, /writePrivateWattwatchersMeterRegisterReconciliationArtifact/u);
+  assert.match(script, /sqlSha256/u);
   assert.doesNotMatch(script, /console\.log\([^)]*(?:manifest\.candidates|candidate\.invoiceNumber)/u);
 });

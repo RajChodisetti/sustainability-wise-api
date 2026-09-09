@@ -9,6 +9,8 @@ import {
   METER_REGISTER_STRUCTURED_MASTER_SHEET,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
   METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256,
+  METER_REGISTER_STRUCTURED_QA_DATABASE,
+  METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SCHEMA,
   METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
@@ -22,10 +24,12 @@ import {
 const SYNTHETIC_ENTRY_ID = `wwmre_${'a'.repeat(32)}`;
 const SYNTHETIC_DEVICE_ID = 'AB12345678901';
 
-test('pins 1,072 structured detail fields plus 11 audited invoice dates', () => {
+test('pins all 1,440 approved fields including status, comments, and invoice dates', () => {
   const counts = wattwatchersMeterRegisterStructuredAuditedFieldCounts();
   const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
-  assert.equal(total - counts.invoiceIssuedDate, 1_072);
+  assert.equal(total, 1_440);
+  assert.equal(counts.status, 234);
+  assert.equal(counts.comments, 123);
   assert.equal(counts.invoiceIssuedDate, 11);
 });
 
@@ -41,6 +45,16 @@ function worksEvidence(sourceRow: number, hashCharacter: string) {
 
 function fixtureFields() {
   return [
+    {
+      key: 'status',
+      auditTargetField: 'status',
+      value: 'Installed',
+      auditDecision: 'safe_auto_fill',
+      auditDecisionRule: 'S2',
+      worksHeader: 'Status (from dropdown list)',
+      masterHeader: 'Status',
+      worksEvidence: [worksEvidence(2, 'd')],
+    },
     {
       key: 'serviceType',
       auditTargetField: 'service_type',
@@ -71,6 +85,16 @@ function fixtureFields() {
       masterHeader: 'MaaS (Yes/No)',
       worksEvidence: [worksEvidence(2, 'd')],
     },
+    {
+      key: 'comments',
+      auditTargetField: 'comments',
+      value: 'Synthetic source comment',
+      auditDecision: 'safe_auto_fill',
+      auditDecisionRule: 'S2',
+      worksHeader: 'Comments',
+      masterHeader: 'Comments',
+      worksEvidence: [worksEvidence(2, 'd')],
+    },
   ];
 }
 
@@ -78,7 +102,7 @@ function fixtureCandidate(fields: Record<string, unknown>[] = fixtureFields()) {
   return {
     entryId: SYNTHETIC_ENTRY_ID,
     masterSourceRow: 4,
-    masterSourceRowSha256: '1'.repeat(64),
+    masterSourceRowSha256: '3'.repeat(64),
     masterAuditRowSha256: '2'.repeat(64),
     masterCachedValuesSha256: '3'.repeat(64),
     masterFormulaValuesSha256: '4'.repeat(64),
@@ -101,7 +125,7 @@ function fieldCounts(fields: Record<string, unknown>[]) {
 function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()) {
   const fields = candidate.fields as Record<string, unknown>[];
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     sources: {
       masterRegister: {
         workbook: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK,
@@ -118,6 +142,11 @@ function fixtureManifest(candidate: Record<string, unknown> = fixtureCandidate()
         sha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
         repositoryCommit: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT,
         auditedFieldCounts: wattwatchersMeterRegisterStructuredAuditedFieldCounts(),
+      },
+      qaSnapshot: {
+        schema: METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA,
+        database: METER_REGISTER_STRUCTURED_QA_DATABASE,
+        sha256: '5'.repeat(64),
       },
     },
     expected: {
@@ -233,9 +262,13 @@ test('builds an all-or-none dry-run for multiple blank structured fields on one 
   assert.match(built.sql, /pg_advisory_xact_lock/u);
   assert.match(built.sql, /SET LOCAL lock_timeout = '5s'/u);
   assert.match(built.sql, /SET LOCAL statement_timeout = '5min'/u);
+  assert.match(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
   assert.match(built.sql, /entry\.source_row_sha256 = stage\.master_source_row_sha256/u);
   assert.match(built.sql, /entry\.current_device_identifier = stage\.current_device_identifier/u);
   assert.match(built.sql, /entry\.source_payload ->> field\.master_header/u);
+  assert.match(built.sql, /WHEN 'status' THEN NULLIF\(btrim\(entry\.status_snapshot\)/u);
+  assert.match(built.sql, /WHEN 'comments' THEN NULLIF\(btrim\(entry\.comments_snapshot\)/u);
+  assert.match(built.sql, /WHEN 'maas' THEN entry\.maas IS NOT NULL/u);
   assert.match(built.sql, /record\.manually_corrected_at IS NULL/u);
   assert.match(built.sql, /record\.updated_by_user_id IS NULL/u);
   assert.match(built.sql, /record\.details \|\| state\.patch/u);
@@ -257,7 +290,9 @@ test('builds an all-or-none dry-run for multiple blank structured fields on one 
 
 test('allows and individually binds multiple identical-value Works evidence rows', () => {
   const manifest = parseWattwatchersMeterRegisterStructuredManifest(fixtureManifest());
-  const evidence = manifest.candidates[0]!.fields[0]!.worksEvidence;
+  const evidence = manifest.candidates[0]!.fields.find(
+    (field) => field.key === 'serviceType',
+  )!.worksEvidence;
   assert.equal(evidence.length, 2);
   assert.equal(evidence[0]!.cachedValuesSha256, 'd'.repeat(64));
   assert.equal(evidence[1]!.cachedValuesSha256, 'e'.repeat(64));
@@ -271,7 +306,8 @@ test('requires every live field to be an exact subset of the pinned S2 source au
   ));
 
   const changedValue = structuredClone(manifest);
-  changedValue.candidates[0]!.fields[0]!.value = 'Altered service';
+  changedValue.candidates[0]!.fields.find((field) => field.key === 'serviceType')!.value =
+    'Altered service';
   assert.throws(
     () => assertWattwatchersMeterRegisterStructuredManifestMatchesSourceAudit(
       changedValue,
@@ -281,7 +317,9 @@ test('requires every live field to be an exact subset of the pinned S2 source au
   );
 
   const changedEvidence = structuredClone(manifest);
-  changedEvidence.candidates[0]!.fields[0]!.worksEvidence[1]!.cachedValuesSha256 = 'f'.repeat(64);
+  changedEvidence.candidates[0]!.fields.find(
+    (field) => field.key === 'serviceType',
+  )!.worksEvidence[1]!.cachedValuesSha256 = 'f'.repeat(64);
   assert.throws(
     () => assertWattwatchersMeterRegisterStructuredManifestMatchesSourceAudit(
       changedEvidence,
@@ -304,8 +342,29 @@ test('apply SQL supports only the complete pending set or a zero-update applied 
   assert.match(built.sql, /COMMIT;\n$/u);
 });
 
+test('builds a valid no-op SQL program for an empty selected manifest', () => {
+  const empty = fixtureManifest();
+  empty.candidates = [];
+  empty.expected.recordUpdateCount = 0;
+  empty.expected.fieldUpdateCounts = fieldCounts([]);
+  const manifest = parseWattwatchersMeterRegisterStructuredManifest(empty);
+  const built = buildWattwatchersMeterRegisterStructuredReconciliationSql({
+    manifest,
+    mode: 'apply',
+  });
+  assert.equal(built.recordUpdateCount, 0);
+  assert.equal(Object.values(built.fieldUpdateCounts).reduce((sum, value) => sum + value, 0), 0);
+  assert.doesNotMatch(
+    built.sql,
+    /INSERT INTO ww_meter_register_structured_(?:entry|field)_stage VALUES\s*;/u,
+  );
+  assert.match(built.sql, /pending_count = 0 AND applied_count = 0/u);
+  assert.match(built.sql, /current_database\(\) <> 'sw_ecoaudit_fixes'/u);
+  assert.match(built.sql, /COMMIT;\n$/u);
+});
+
 test('rejects unapproved mappings, decisions, value types, and invalid dates', () => {
-  const base = fixtureFields()[0]!;
+  const base = fixtureFields().find((field) => field.key === 'serviceType')!;
   for (const changed of [
     { ...base, auditTargetField: 'status' },
     { ...base, worksHeader: 'Status' },
@@ -318,7 +377,7 @@ test('rejects unapproved mappings, decisions, value types, and invalid dates', (
       fixtureManifest(fixtureCandidate([changed])),
     ));
   }
-  const dateField = fixtureFields()[1]!;
+  const dateField = fixtureFields().find((field) => field.key === 'jobCompletionDate')!;
   assert.throws(() => parseWattwatchersMeterRegisterStructuredManifest(
     fixtureManifest(fixtureCandidate([{ ...dateField, value: '2026-02-30' }])),
   ));
@@ -355,29 +414,51 @@ test('binds both workbooks, the source audit, and independently approved live ma
     masterWorkbookSha256: METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256,
     worksWorkbookSha256: METER_REGISTER_STRUCTURED_WORKS_WORKBOOK_SHA256,
     sourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    expectedSourceAuditSha256: METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256,
+    qaSnapshotSha256: 'e'.repeat(64),
+    expectedQaSnapshotSha256: 'e'.repeat(64),
     manifestSha256: 'f'.repeat(64),
     expectedManifestSha256: 'f'.repeat(64),
+    ledgerSha256: 'd'.repeat(64),
+    expectedLedgerSha256: 'd'.repeat(64),
   };
   assert.doesNotThrow(() => assertWattwatchersMeterRegisterStructuredArtifactDigests(valid));
   assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
     ...valid,
-    sourceAuditSha256: '0'.repeat(64),
+    expectedSourceAuditSha256: '0'.repeat(64),
   }), /source audit bytes/u);
   assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
     ...valid,
     expectedManifestSha256: '0'.repeat(64),
   }), /manifest bytes/u);
+  assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
+    ...valid,
+    expectedQaSnapshotSha256: '0'.repeat(64),
+  }), /snapshot bytes/u);
+  assert.throws(() => assertWattwatchersMeterRegisterStructuredArtifactDigests({
+    ...valid,
+    expectedLedgerSha256: '0'.repeat(64),
+  }), /ledger bytes/u);
 });
 
-test('structured CLI defaults dry-run and protects both input manifests and output SQL', async () => {
+test('structured CLI regenerates protected inputs and writes atomic private SQL', async () => {
   const script = await readFile(
     new URL('../../scripts/wattwatchers-meter-register-structured-reconcile.ts', import.meta.url),
     'utf8',
   );
   assert.match(script, /const mode = value \?\? 'dry-run'/u);
-  assert.match(script, /assertPrivateFile\(manifestPath/u);
-  assert.match(script, /assertPrivateFile\(sourceAuditPath/u);
-  assert.match(script, /open\(outputPath, 'wx', 0o600\)/u);
-  assert.match(script, /await output\.sync\(\)/u);
+  assert.match(script, /readPrivateFile\(options\.manifestPath/u);
+  assert.match(script, /readPrivateFile\(options\.ledgerPath/u);
+  assert.match(script, /readPrivateFile\(options\.sourceAuditPath/u);
+  assert.match(script, /readPrivateFile\(options\.snapshotPath/u);
+  assert.match(script, /constants\.O_NOFOLLOW/u);
+  assert.match(script, /--source-audit-sha256/u);
+  assert.match(script, /--snapshot-sha256/u);
+  assert.match(script, /--manifest-sha256/u);
+  assert.match(script, /--ledger-sha256/u);
+  assert.match(script, /generateWattwatchersMeterRegisterStructuredArtifacts/u);
+  assert.match(script, /assertWattwatchersMeterRegisterStructuredGeneratedArtifactsMatch/u);
+  assert.match(script, /writePrivateWattwatchersMeterRegisterStructuredArtifact/u);
+  assert.match(script, /sqlSha256/u);
   assert.doesNotMatch(script, /console\.log\([^)]*(?:candidate|field\.value)/u);
 });

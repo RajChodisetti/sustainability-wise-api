@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 export type WattwatchersMeterRegisterInvoiceReconciliationMode = 'dry-run' | 'apply';
@@ -12,6 +13,18 @@ export const METER_REGISTER_RECONCILIATION_WORKS_WORKBOOK_SHA256 =
   '900856dfc259c178235b55cd3255773d1037e40562b083dae1095543747cea9b';
 export const METER_REGISTER_RECONCILIATION_APPROVED_CANDIDATE_COUNT = 92;
 export const METER_REGISTER_RECONCILIATION_APPROVED_DATE_COUNT = 1;
+export const METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA =
+  'wattwatchers-spreadsheet-reconciliation/v1';
+export const METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256 =
+  '02d97966529d1dbf9cfe285e7943d25ff3e6de00c1fd72b00ef5cb0aaffac4f5';
+export const METER_REGISTER_RECONCILIATION_SOURCE_COMMIT =
+  'd29dccfc308c58417331aab4a45a4ab90876b415';
+export const METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA =
+  'wattwatchers-meter-register-reconciliation-db-snapshot/v1';
+export const METER_REGISTER_RECONCILIATION_QA_DATABASE = 'sw_ecoaudit_fixes';
+export const METER_REGISTER_RECONCILIATION_INVOICE_EVIDENCE_COUNT = 95;
+export const METER_REGISTER_RECONCILIATION_CURRENT_INVOICE_EVIDENCE_COUNT = 93;
+export const METER_REGISTER_RECONCILIATION_XERO_DATE_INVOICE_EVIDENCE_COUNT = 6;
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const invoiceNumberSchema = z.string()
@@ -22,6 +35,29 @@ const invoiceNumberSchema = z.string()
   });
 const isoDateSchema = z.string().date();
 
+const worksPlanningEvidenceSchema = z.object({
+  sourceRow: z.number().int().min(2),
+  worksRow: z.number().int().min(2),
+  auditRowSha256: sha256Schema,
+  cachedValuesSha256: sha256Schema,
+  formulaValuesSha256: sha256Schema,
+  sheet: z.literal(METER_REGISTER_RECONCILIATION_WORKS_SHEET),
+  isCurrentForDevice: z.boolean(),
+  sourceColumn: z.enum(['XERO Inv #', 'XERO Date']),
+  value: invoiceNumberSchema,
+}).strict().refine((evidence) => evidence.sourceRow === evidence.worksRow, {
+  message: 'Works Planning source row and works row must agree',
+});
+
+const invoiceDateEvidenceSchema = z.object({
+  sourceRow: z.number().int().min(2),
+  auditRowSha256: sha256Schema,
+  cachedValuesSha256: sha256Schema,
+  formulaValuesSha256: sha256Schema,
+  sheet: z.literal(METER_REGISTER_RECONCILIATION_WORKS_SHEET),
+  sourceColumn: z.literal('XERO Date'),
+}).strict();
+
 const candidateSchema = z.object({
   entryId: z.string().regex(/^wwmre_[a-f0-9]{32}$/u),
   masterSourceRow: z.number().int().min(4),
@@ -31,8 +67,7 @@ const candidateSchema = z.object({
       message: 'current device identifier must be trimmed uppercase text',
     }),
   expectedRevision: z.number().int().positive(),
-  worksPlanningSourceRow: z.number().int().min(2),
-  worksPlanningSourceRowSha256: sha256Schema,
+  worksPlanningEvidence: z.array(worksPlanningEvidenceSchema).min(1),
   matchKind: z.literal('current_device'),
   worksPlanningInvoiceEventCount: z.literal(1),
   reviewDecision: z.literal('safe'),
@@ -40,22 +75,25 @@ const candidateSchema = z.object({
   masterInvoiceIssuedDateBlank: z.boolean(),
   hasInvoiceConflict: z.literal(false),
   invoiceNumber: invoiceNumberSchema,
-  invoiceNumberSourceColumn: z.enum(['XERO Inv #', 'XERO Date']),
   invoiceIssuedDate: isoDateSchema.nullable(),
   invoiceDateSourceColumn: z.literal('XERO Date').nullable(),
+  invoiceDateEvidence: invoiceDateEvidenceSchema.nullable(),
 }).strict().superRefine((candidate, context) => {
-  if (candidate.invoiceIssuedDate === null && candidate.invoiceDateSourceColumn !== null) {
+  if (candidate.invoiceIssuedDate === null
+    && (candidate.invoiceDateSourceColumn !== null || candidate.invoiceDateEvidence !== null)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['invoiceDateSourceColumn'],
-      message: 'invoice date source column must be null when no date is supplied',
+      path: ['invoiceDateEvidence'],
+      message: 'invoice date provenance must be null when no date is supplied',
     });
   }
-  if (candidate.invoiceIssuedDate !== null && candidate.invoiceDateSourceColumn !== 'XERO Date') {
+  if (candidate.invoiceIssuedDate !== null
+    && (candidate.invoiceDateSourceColumn !== 'XERO Date'
+      || candidate.invoiceDateEvidence === null)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      path: ['invoiceDateSourceColumn'],
-      message: 'invoice date must come from XERO Date',
+      path: ['invoiceDateEvidence'],
+      message: 'invoice date must retain its XERO Date row provenance',
     });
   }
   if (candidate.invoiceIssuedDate !== null && !candidate.masterInvoiceIssuedDateBlank) {
@@ -65,8 +103,58 @@ const candidateSchema = z.object({
       message: 'an invoice date cannot replace a populated Master Register date',
     });
   }
-  if (candidate.invoiceNumberSourceColumn === 'XERO Date'
-    && candidate.invoiceIssuedDate !== null) {
+  const evidenceKeys = new Set<string>();
+  for (const evidence of candidate.worksPlanningEvidence) {
+    const evidenceKey = [
+      evidence.sourceRow,
+      evidence.sourceColumn,
+      evidence.auditRowSha256,
+      evidence.cachedValuesSha256,
+      evidence.formulaValuesSha256,
+      evidence.isCurrentForDevice,
+    ].join('\u001f');
+    if (evidenceKeys.has(evidenceKey)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['worksPlanningEvidence'],
+        message: 'Works Planning invoice evidence rows must be unique',
+      });
+    }
+    evidenceKeys.add(evidenceKey);
+    if (evidence.value !== candidate.invoiceNumber) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['worksPlanningEvidence'],
+        message: 'Works Planning evidence must agree with the candidate invoice number',
+      });
+    }
+  }
+  if (!candidate.worksPlanningEvidence.some((evidence) => evidence.isCurrentForDevice)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['worksPlanningEvidence'],
+      message: 'at least one Works Planning evidence row must match the current device',
+    });
+  }
+  if (candidate.invoiceDateEvidence !== null
+    && !candidate.worksPlanningEvidence.some((evidence) => (
+      evidence.isCurrentForDevice
+      && evidence.sourceRow === candidate.invoiceDateEvidence!.sourceRow
+      && evidence.auditRowSha256 === candidate.invoiceDateEvidence!.auditRowSha256
+      && evidence.cachedValuesSha256 === candidate.invoiceDateEvidence!.cachedValuesSha256
+      && evidence.formulaValuesSha256 === candidate.invoiceDateEvidence!.formulaValuesSha256
+    ))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['invoiceDateEvidence'],
+      message: 'invoice date must share a current invoice-evidence Works row',
+    });
+  }
+  if (candidate.invoiceDateEvidence !== null
+    && candidate.worksPlanningEvidence.some((evidence) => (
+      evidence.sourceRow === candidate.invoiceDateEvidence!.sourceRow
+      && evidence.sourceColumn === 'XERO Date'
+    ))) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['invoiceIssuedDate'],
@@ -76,7 +164,25 @@ const candidateSchema = z.object({
 });
 
 const manifestSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
+  provenance: z.object({
+    sourceAudit: z.object({
+      schema: z.literal(METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SCHEMA),
+      sha256: z.literal(METER_REGISTER_RECONCILIATION_SOURCE_AUDIT_SHA256),
+      repositoryCommit: z.literal(METER_REGISTER_RECONCILIATION_SOURCE_COMMIT),
+    }).strict(),
+    dbSnapshot: z.object({
+      schema: z.literal(METER_REGISTER_RECONCILIATION_DB_SNAPSHOT_SCHEMA),
+      sha256: sha256Schema,
+      database: z.literal(METER_REGISTER_RECONCILIATION_QA_DATABASE),
+    }).strict(),
+    invoiceEvidence: z.object({
+      rowCount: z.number().int().nonnegative(),
+      currentRowCount: z.number().int().nonnegative(),
+      xeroDateValueRowCount: z.number().int().nonnegative(),
+      sha256: sha256Schema,
+    }).strict(),
+  }).strict(),
   sources: z.object({
     masterRegister: z.object({
       workbook: z.literal(METER_REGISTER_RECONCILIATION_MASTER_WORKBOOK),
@@ -102,6 +208,10 @@ export type WattwatchersMeterRegisterInvoiceReconciliationCandidate = z.infer<
 >;
 export type WattwatchersMeterRegisterInvoiceReconciliationManifest = z.infer<
   typeof manifestSchema
+>;
+
+export type WattwatchersMeterRegisterInvoiceEvidence = z.infer<
+  typeof worksPlanningEvidenceSchema
 >;
 
 export type BuiltWattwatchersMeterRegisterInvoiceReconciliationSql = {
@@ -147,6 +257,47 @@ export function assertWattwatchersMeterRegisterInvoiceReconciliationDigests(inpu
   }
 }
 
+function compareWorksPlanningEvidence(
+  left: WattwatchersMeterRegisterInvoiceEvidence,
+  right: WattwatchersMeterRegisterInvoiceEvidence,
+): number {
+  if (left.isCurrentForDevice !== right.isCurrentForDevice) {
+    return left.isCurrentForDevice ? -1 : 1;
+  }
+  return left.sourceRow - right.sourceRow
+    || left.sourceColumn.localeCompare(right.sourceColumn, 'en')
+    || left.auditRowSha256.localeCompare(right.auditRowSha256, 'en');
+}
+
+export function computeWattwatchersMeterRegisterInvoiceEvidenceSha256(
+  candidates: readonly WattwatchersMeterRegisterInvoiceReconciliationCandidate[],
+): string {
+  const evidence = [...candidates]
+    .sort((left, right) => left.masterSourceRow - right.masterSourceRow
+      || left.currentDeviceIdentifier.localeCompare(right.currentDeviceIdentifier, 'en'))
+    .flatMap((candidate) => (
+      [...candidate.worksPlanningEvidence]
+        .sort(compareWorksPlanningEvidence)
+        .map((row) => ({
+          masterSourceRow: candidate.masterSourceRow,
+          deviceIdentifier: candidate.currentDeviceIdentifier,
+          evidence: [
+            row.sheet,
+            row.sourceRow,
+            row.auditRowSha256,
+            row.cachedValuesSha256,
+            row.formulaValuesSha256,
+            row.sourceColumn,
+            row.value,
+            row.isCurrentForDevice ? 'current' : 'non-current',
+          ].join('\u001f'),
+        }))
+    ));
+  return createHash('sha256')
+    .update(Buffer.from(JSON.stringify(evidence), 'utf8'))
+    .digest('hex');
+}
+
 export function parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
   input: unknown,
 ): WattwatchersMeterRegisterInvoiceReconciliationManifest {
@@ -154,6 +305,9 @@ export function parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
   const entryIds = new Set<string>();
   const masterRows = new Set<number>();
   const deviceIdentifiers = new Set<string>();
+  let invoiceEvidenceRowCount = 0;
+  let currentInvoiceEvidenceRowCount = 0;
+  let xeroDateInvoiceEvidenceRowCount = 0;
   for (const candidate of manifest.candidates) {
     if (entryIds.has(candidate.entryId)) {
       throw new Error(`Duplicate reconciliation entryId: ${candidate.entryId}`);
@@ -167,6 +321,13 @@ export function parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
     entryIds.add(candidate.entryId);
     masterRows.add(candidate.masterSourceRow);
     deviceIdentifiers.add(candidate.currentDeviceIdentifier);
+    invoiceEvidenceRowCount += candidate.worksPlanningEvidence.length;
+    currentInvoiceEvidenceRowCount += candidate.worksPlanningEvidence.filter(
+      (evidence) => evidence.isCurrentForDevice,
+    ).length;
+    xeroDateInvoiceEvidenceRowCount += candidate.worksPlanningEvidence.filter(
+      (evidence) => evidence.sourceColumn === 'XERO Date',
+    ).length;
   }
 
   const actualDateCount = manifest.candidates.filter(
@@ -176,6 +337,17 @@ export function parseWattwatchersMeterRegisterInvoiceReconciliationManifest(
     || manifest.expected.invoiceNumberUpdateCount !== manifest.candidates.length
     || manifest.expected.invoiceDateUpdateCount !== actualDateCount) {
     throw new Error('Invoice reconciliation manifest counts do not match its candidates');
+  }
+  if (manifest.provenance.invoiceEvidence.rowCount !== invoiceEvidenceRowCount
+    || manifest.provenance.invoiceEvidence.currentRowCount
+      !== currentInvoiceEvidenceRowCount
+    || manifest.provenance.invoiceEvidence.xeroDateValueRowCount
+      !== xeroDateInvoiceEvidenceRowCount) {
+    throw new Error('Invoice reconciliation evidence counts do not match its candidates');
+  }
+  if (manifest.provenance.invoiceEvidence.sha256
+    !== computeWattwatchersMeterRegisterInvoiceEvidenceSha256(manifest.candidates)) {
+    throw new Error('Invoice reconciliation evidence digest does not match its candidates');
   }
   return manifest;
 }
@@ -188,9 +360,16 @@ export function assertApprovedWattwatchersMeterRegisterInvoiceReconciliationMani
     || manifest.expected.invoiceNumberUpdateCount
       !== METER_REGISTER_RECONCILIATION_APPROVED_CANDIDATE_COUNT
     || manifest.expected.invoiceDateUpdateCount
-      !== METER_REGISTER_RECONCILIATION_APPROVED_DATE_COUNT) {
+      !== METER_REGISTER_RECONCILIATION_APPROVED_DATE_COUNT
+    || manifest.provenance.invoiceEvidence.rowCount
+      !== METER_REGISTER_RECONCILIATION_INVOICE_EVIDENCE_COUNT
+    || manifest.provenance.invoiceEvidence.currentRowCount
+      !== METER_REGISTER_RECONCILIATION_CURRENT_INVOICE_EVIDENCE_COUNT
+    || manifest.provenance.invoiceEvidence.xeroDateValueRowCount
+      !== METER_REGISTER_RECONCILIATION_XERO_DATE_INVOICE_EVIDENCE_COUNT) {
     throw new Error(
-      'Approved invoice reconciliation must contain exactly 92 invoice numbers and one date',
+      'Approved invoice reconciliation must contain exactly 92 invoice numbers, one date, '
+        + 'and the complete 95-row evidence set',
     );
   }
 }
@@ -203,6 +382,7 @@ function stageRowSql(
   candidate: WattwatchersMeterRegisterInvoiceReconciliationCandidate,
   ordinal: number,
 ): string {
+  const dateEvidence = candidate.invoiceDateEvidence;
   return `(${[
     ordinal,
     sqlText(candidate.entryId),
@@ -210,11 +390,31 @@ function stageRowSql(
     sqlText(candidate.masterSourceRowSha256),
     sqlText(candidate.currentDeviceIdentifier),
     candidate.expectedRevision,
-    candidate.worksPlanningSourceRow,
-    sqlText(candidate.worksPlanningSourceRowSha256),
     sqlText(candidate.invoiceNumber),
-    sqlText(candidate.invoiceNumberSourceColumn),
     candidate.invoiceIssuedDate === null ? 'NULL' : `${sqlText(candidate.invoiceIssuedDate)}::date`,
+    dateEvidence === null ? 'NULL' : dateEvidence.sourceRow,
+    dateEvidence === null ? 'NULL' : sqlText(dateEvidence.auditRowSha256),
+    dateEvidence === null ? 'NULL' : sqlText(dateEvidence.cachedValuesSha256),
+    dateEvidence === null ? 'NULL' : sqlText(dateEvidence.formulaValuesSha256),
+  ].join(', ')})`;
+}
+
+function stageEvidenceRowSql(input: {
+  candidate: WattwatchersMeterRegisterInvoiceReconciliationCandidate;
+  evidence: WattwatchersMeterRegisterInvoiceEvidence;
+  ordinal: number;
+}): string {
+  return `(${[
+    input.ordinal,
+    sqlText(input.candidate.entryId),
+    input.evidence.sourceRow,
+    input.evidence.worksRow,
+    sqlText(input.evidence.auditRowSha256),
+    sqlText(input.evidence.cachedValuesSha256),
+    sqlText(input.evidence.formulaValuesSha256),
+    input.evidence.isCurrentForDevice ? 'true' : 'false',
+    sqlText(input.evidence.sourceColumn),
+    sqlText(input.evidence.value),
   ].join(', ')})`;
 }
 
@@ -228,8 +428,20 @@ export function buildWattwatchersMeterRegisterInvoiceReconciliationSql(input: {
   const { manifest } = input;
   const expectedCount = manifest.expected.matchedCount;
   const expectedDateCount = manifest.expected.invoiceDateUpdateCount;
+  const expectedEvidenceCount = manifest.provenance.invoiceEvidence.rowCount;
+  const expectedCurrentEvidenceCount = manifest.provenance.invoiceEvidence.currentRowCount;
+  const expectedXeroDateEvidenceCount =
+    manifest.provenance.invoiceEvidence.xeroDateValueRowCount;
   const values = manifest.candidates.map((candidate, index) => (
     stageRowSql(candidate, index + 1)
+  )).join(',\n');
+  let evidenceOrdinal = 0;
+  const evidenceValues = manifest.candidates.flatMap((candidate) => (
+    candidate.worksPlanningEvidence.map((evidence) => stageEvidenceRowSql({
+      candidate,
+      evidence,
+      ordinal: evidenceOrdinal += 1,
+    }))
   )).join(',\n');
   const finish = input.mode === 'apply' ? 'COMMIT;' : 'ROLLBACK;';
 
@@ -237,7 +449,44 @@ export function buildWattwatchersMeterRegisterInvoiceReconciliationSql(input: {
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '5min';
+
+DO $$
+BEGIN
+  IF current_database() <> ${sqlText(METER_REGISTER_RECONCILIATION_QA_DATABASE)} THEN
+    RAISE EXCEPTION 'Invoice reconciliation may run only against the approved QA database';
+  END IF;
+END $$;
+
 SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-invoice-reconcile-v1'));
+
+CREATE TEMP TABLE ww_meter_register_invoice_reconcile_provenance (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  source_audit_schema text NOT NULL,
+  source_audit_sha256 text NOT NULL,
+  source_commit text NOT NULL,
+  db_snapshot_schema text NOT NULL,
+  db_snapshot_sha256 text NOT NULL,
+  database_name text NOT NULL,
+  invoice_evidence_sha256 text NOT NULL
+) ON COMMIT DROP;
+
+INSERT INTO ww_meter_register_invoice_reconcile_provenance (
+  source_audit_schema,
+  source_audit_sha256,
+  source_commit,
+  db_snapshot_schema,
+  db_snapshot_sha256,
+  database_name,
+  invoice_evidence_sha256
+) VALUES (
+  ${sqlText(manifest.provenance.sourceAudit.schema)},
+  ${sqlText(manifest.provenance.sourceAudit.sha256)},
+  ${sqlText(manifest.provenance.sourceAudit.repositoryCommit)},
+  ${sqlText(manifest.provenance.dbSnapshot.schema)},
+  ${sqlText(manifest.provenance.dbSnapshot.sha256)},
+  ${sqlText(manifest.provenance.dbSnapshot.database)},
+  ${sqlText(manifest.provenance.invoiceEvidence.sha256)}
+);
 
 CREATE TEMP TABLE ww_meter_register_invoice_reconcile_stage (
   ordinal integer PRIMARY KEY,
@@ -246,15 +495,55 @@ CREATE TEMP TABLE ww_meter_register_invoice_reconcile_stage (
   master_source_row_sha256 text NOT NULL,
   current_device_identifier text NOT NULL UNIQUE,
   expected_revision integer NOT NULL,
-  works_source_row integer NOT NULL,
-  works_source_row_sha256 text NOT NULL,
   invoice_number text NOT NULL,
-  invoice_number_source_column text NOT NULL,
-  invoice_issued_date date
+  invoice_issued_date date,
+  invoice_date_works_source_row integer,
+  invoice_date_works_audit_row_sha256 text,
+  invoice_date_works_cached_values_sha256 text,
+  invoice_date_works_formula_values_sha256 text,
+  CHECK (
+    (invoice_issued_date IS NULL
+      AND invoice_date_works_source_row IS NULL
+      AND invoice_date_works_audit_row_sha256 IS NULL
+      AND invoice_date_works_cached_values_sha256 IS NULL
+      AND invoice_date_works_formula_values_sha256 IS NULL)
+    OR
+    (invoice_issued_date IS NOT NULL
+      AND invoice_date_works_source_row IS NOT NULL
+      AND invoice_date_works_audit_row_sha256 IS NOT NULL
+      AND invoice_date_works_cached_values_sha256 IS NOT NULL
+      AND invoice_date_works_formula_values_sha256 IS NOT NULL)
+  )
 ) ON COMMIT DROP;
 
 INSERT INTO ww_meter_register_invoice_reconcile_stage VALUES
 ${values};
+
+CREATE TEMP TABLE ww_meter_register_invoice_reconcile_works_evidence_stage (
+  ordinal integer PRIMARY KEY,
+  entry_id text NOT NULL REFERENCES ww_meter_register_invoice_reconcile_stage(entry_id),
+  works_source_row integer NOT NULL,
+  works_row integer NOT NULL,
+  works_audit_row_sha256 text NOT NULL,
+  works_cached_values_sha256 text NOT NULL,
+  works_formula_values_sha256 text NOT NULL,
+  is_current_for_device boolean NOT NULL,
+  source_column text NOT NULL CHECK (source_column IN ('XERO Inv #', 'XERO Date')),
+  invoice_number text NOT NULL,
+  UNIQUE (
+    entry_id,
+    works_source_row,
+    source_column,
+    works_audit_row_sha256,
+    works_cached_values_sha256,
+    works_formula_values_sha256,
+    is_current_for_device
+  ),
+  CHECK (works_source_row = works_row)
+) ON COMMIT DROP;
+
+INSERT INTO ww_meter_register_invoice_reconcile_works_evidence_stage VALUES
+${evidenceValues};
 
 DO $$
 DECLARE
@@ -266,6 +555,30 @@ BEGIN
   IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_stage
       WHERE invoice_issued_date IS NOT NULL) <> ${expectedDateCount} THEN
     RAISE EXCEPTION 'Invoice reconciliation staged date count changed';
+  END IF;
+  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage)
+      <> ${expectedEvidenceCount} THEN
+    RAISE EXCEPTION 'Invoice reconciliation staged Works evidence count changed';
+  END IF;
+  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage
+      WHERE is_current_for_device) <> ${expectedCurrentEvidenceCount} THEN
+    RAISE EXCEPTION 'Invoice reconciliation staged current Works evidence count changed';
+  END IF;
+  IF (SELECT count(*) FROM ww_meter_register_invoice_reconcile_works_evidence_stage
+      WHERE source_column = 'XERO Date') <> ${expectedXeroDateEvidenceCount} THEN
+    RAISE EXCEPTION 'Invoice reconciliation staged XERO Date evidence count changed';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM ww_meter_register_invoice_reconcile_stage stage
+    LEFT JOIN ww_meter_register_invoice_reconcile_works_evidence_stage evidence
+      ON evidence.entry_id = stage.entry_id
+    GROUP BY stage.entry_id, stage.invoice_number
+    HAVING count(evidence.ordinal) = 0
+      OR count(*) FILTER (WHERE evidence.is_current_for_device) = 0
+      OR bool_or(evidence.invoice_number <> stage.invoice_number)
+  ) THEN
+    RAISE EXCEPTION 'Invoice reconciliation staged Works evidence no longer supports candidates';
   END IF;
 
   SELECT count(*) INTO matched_count

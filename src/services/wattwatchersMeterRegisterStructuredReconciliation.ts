@@ -16,8 +16,18 @@ export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256 =
   '02d97966529d1dbf9cfe285e7943d25ff3e6de00c1fd72b00ef5cb0aaffac4f5';
 export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT =
   'd29dccfc308c58417331aab4a45a4ab90876b415';
+export const METER_REGISTER_STRUCTURED_QA_DATABASE = 'sw_ecoaudit_fixes';
+export const METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA =
+  'wattwatchers-meter-register-reconciliation-db-snapshot/v1';
 
 export const METER_REGISTER_STRUCTURED_FIELD_CONTRACT = {
+  status: {
+    auditTargetField: 'status',
+    valueType: 'text',
+    sourceAuditCount: 234,
+    worksHeader: 'Status (from dropdown list)',
+    masterHeader: 'Status',
+  },
   serviceType: {
     auditTargetField: 'service_type',
     valueType: 'text',
@@ -95,6 +105,13 @@ export const METER_REGISTER_STRUCTURED_FIELD_CONTRACT = {
     worksHeader: 'XERO Date',
     masterHeader: 'Inv issued date',
   },
+  comments: {
+    auditTargetField: 'comments',
+    valueType: 'text',
+    sourceAuditCount: 123,
+    worksHeader: 'Comments',
+    masterHeader: 'Comments',
+  },
 } as const;
 
 export type WattwatchersMeterRegisterStructuredFieldKey =
@@ -107,6 +124,7 @@ const STRUCTURED_FIELD_KEYS = Object.keys(
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const isoDateSchema = z.string().date();
 const structuredFieldKeySchema = z.enum([
+  'status',
   'serviceType',
   'meteringSolutionType',
   'meterType',
@@ -118,9 +136,11 @@ const structuredFieldKeySchema = z.enum([
   'hardwareInstalled',
   'maas',
   'invoiceIssuedDate',
+  'comments',
 ]);
 
 const fieldCountSchema = z.object({
+  status: z.number().int().nonnegative(),
   serviceType: z.number().int().nonnegative(),
   meteringSolutionType: z.number().int().nonnegative(),
   meterType: z.number().int().nonnegative(),
@@ -132,9 +152,11 @@ const fieldCountSchema = z.object({
   hardwareInstalled: z.number().int().nonnegative(),
   maas: z.number().int().nonnegative(),
   invoiceIssuedDate: z.number().int().nonnegative(),
+  comments: z.number().int().nonnegative(),
 }).strict();
 
 const auditedFieldCountSchema = z.object({
+  status: z.literal(234),
   serviceType: z.literal(159),
   meteringSolutionType: z.literal(130),
   meterType: z.literal(131),
@@ -146,6 +168,7 @@ const auditedFieldCountSchema = z.object({
   hardwareInstalled: z.literal(97),
   maas: z.literal(42),
   invoiceIssuedDate: z.literal(11),
+  comments: z.literal(123),
 }).strict();
 
 const worksEvidenceSchema = z.object({
@@ -247,6 +270,13 @@ const candidateSchema = z.object({
   expectedManuallyCorrectedAt: z.null(),
   fields: z.array(structuredFieldSchema).min(1),
 }).strict().superRefine((candidate, context) => {
+  if (candidate.masterSourceRowSha256 !== candidate.masterCachedValuesSha256) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['masterSourceRowSha256'],
+      message: 'database source-row digest must equal the audited cached-values digest',
+    });
+  }
   const fieldKeys = new Set<WattwatchersMeterRegisterStructuredFieldKey>();
   for (const field of candidate.fields) {
     if (fieldKeys.has(field.key)) {
@@ -262,7 +292,7 @@ const candidateSchema = z.object({
 });
 
 const manifestSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   sources: z.object({
     masterRegister: z.object({
       workbook: z.literal(METER_REGISTER_STRUCTURED_MASTER_WORKBOOK),
@@ -280,12 +310,17 @@ const manifestSchema = z.object({
       repositoryCommit: z.literal(METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT),
       auditedFieldCounts: auditedFieldCountSchema,
     }).strict(),
+    qaSnapshot: z.object({
+      schema: z.literal(METER_REGISTER_STRUCTURED_QA_SNAPSHOT_SCHEMA),
+      database: z.literal(METER_REGISTER_STRUCTURED_QA_DATABASE),
+      sha256: sha256Schema,
+    }).strict(),
   }).strict(),
   expected: z.object({
-    recordUpdateCount: z.number().int().positive(),
+    recordUpdateCount: z.number().int().nonnegative(),
     fieldUpdateCounts: fieldCountSchema,
   }).strict(),
-  candidates: z.array(candidateSchema).min(1),
+  candidates: z.array(candidateSchema),
 }).strict();
 
 const sourceAuditMasterSchema = z.object({
@@ -543,8 +578,13 @@ export function assertWattwatchersMeterRegisterStructuredArtifactDigests(input: 
   masterWorkbookSha256: string;
   worksWorkbookSha256: string;
   sourceAuditSha256: string;
+  expectedSourceAuditSha256: string;
+  qaSnapshotSha256: string;
+  expectedQaSnapshotSha256: string;
   manifestSha256: string;
   expectedManifestSha256: string;
+  ledgerSha256: string;
+  expectedLedgerSha256: string;
 }): void {
   if (normalizeSha256(input.masterWorkbookSha256, 'Master Register workbook digest')
     !== METER_REGISTER_STRUCTURED_MASTER_WORKBOOK_SHA256) {
@@ -558,9 +598,26 @@ export function assertWattwatchersMeterRegisterStructuredArtifactDigests(input: 
     !== METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256) {
     throw new Error('Structured source audit bytes do not match the approved artifact');
   }
+  if (normalizeSha256(input.sourceAuditSha256, 'source audit digest')
+    !== normalizeSha256(
+      input.expectedSourceAuditSha256,
+      'expected source audit digest',
+    )) {
+    throw new Error(
+      'Structured source audit bytes do not match the independently captured digest',
+    );
+  }
+  if (normalizeSha256(input.qaSnapshotSha256, 'QA snapshot digest')
+    !== normalizeSha256(input.expectedQaSnapshotSha256, 'expected QA snapshot digest')) {
+    throw new Error('QA database snapshot bytes do not match the independently captured digest');
+  }
   if (normalizeSha256(input.manifestSha256, 'manifest digest')
     !== normalizeSha256(input.expectedManifestSha256, 'expected manifest digest')) {
     throw new Error('Structured reconciliation manifest bytes do not match the approved digest');
+  }
+  if (normalizeSha256(input.ledgerSha256, 'outcome ledger digest')
+    !== normalizeSha256(input.expectedLedgerSha256, 'expected outcome ledger digest')) {
+    throw new Error('Structured outcome ledger bytes do not match the approved digest');
   }
 }
 
@@ -624,6 +681,28 @@ function updatedCountsJsonSql(): string {
   ]).join(', ')})`;
 }
 
+function immutableTypedProjectionIsNonblankSql(
+  entryAlias: string,
+  fieldAlias: string,
+): string {
+  return `CASE ${fieldAlias}.field_key
+          WHEN 'status' THEN NULLIF(btrim(${entryAlias}.status_snapshot), '') IS NOT NULL
+          WHEN 'serviceType' THEN NULLIF(btrim(${entryAlias}.service_type_snapshot), '') IS NOT NULL
+          WHEN 'meteringSolutionType' THEN NULLIF(btrim(${entryAlias}.metering_solution_type_snapshot), '') IS NOT NULL
+          WHEN 'meterType' THEN NULLIF(btrim(${entryAlias}.meter_type_snapshot), '') IS NOT NULL
+          WHEN 'fergusJobNumber' THEN NULLIF(btrim(${entryAlias}.fergus_job_number_snapshot), '') IS NOT NULL
+          WHEN 'quoteNumber' THEN NULLIF(btrim(${entryAlias}.quote_number_snapshot), '') IS NOT NULL
+          WHEN 'purchaseOrderNumber' THEN NULLIF(btrim(${entryAlias}.purchase_order_number_snapshot), '') IS NOT NULL
+          WHEN 'jobCompletionDate' THEN ${entryAlias}.job_completion_date IS NOT NULL
+          WHEN 'jobCompletedBy' THEN NULLIF(btrim(${entryAlias}.job_completed_by_snapshot), '') IS NOT NULL
+          WHEN 'hardwareInstalled' THEN NULLIF(btrim(${entryAlias}.hardware_installed_snapshot), '') IS NOT NULL
+          WHEN 'maas' THEN ${entryAlias}.maas IS NOT NULL
+          WHEN 'invoiceIssuedDate' THEN ${entryAlias}.invoice_issued_date IS NOT NULL
+          WHEN 'comments' THEN NULLIF(btrim(${entryAlias}.comments_snapshot), '') IS NOT NULL
+          ELSE true
+        END`;
+}
+
 export function buildWattwatchersMeterRegisterStructuredReconciliationSql(input: {
   manifest: WattwatchersMeterRegisterStructuredManifest;
   mode: WattwatchersMeterRegisterStructuredReconciliationMode;
@@ -638,12 +717,29 @@ export function buildWattwatchersMeterRegisterStructuredReconciliationSql(input:
     (field) => fieldStageRowSql(candidate, field),
   )).join(',\n');
   const finish = input.mode === 'apply' ? 'COMMIT;' : 'ROLLBACK;';
+  const entryInsertSql = entryValues
+    ? `INSERT INTO ww_meter_register_structured_entry_stage VALUES\n${entryValues};`
+    : '';
+  const fieldInsertSql = fieldValues
+    ? `INSERT INTO ww_meter_register_structured_field_stage VALUES\n${fieldValues};`
+    : '';
+  const immutableTypedProjectionIsNonblank = immutableTypedProjectionIsNonblankSql(
+    'entry',
+    'field',
+  );
 
   const sql = `\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '5min';
 SELECT pg_advisory_xact_lock(hashtext('wattwatchers-meter-register-structured-reconcile-v1'));
+
+DO $$
+BEGIN
+  IF current_database() <> ${sqlText(METER_REGISTER_STRUCTURED_QA_DATABASE)} THEN
+    RAISE EXCEPTION 'Structured reconciliation may run only against the approved QA database';
+  END IF;
+END $$;
 
 CREATE TEMP TABLE ww_meter_register_structured_entry_stage (
   ordinal integer PRIMARY KEY,
@@ -654,8 +750,7 @@ CREATE TEMP TABLE ww_meter_register_structured_entry_stage (
   expected_revision integer NOT NULL
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_structured_entry_stage VALUES
-${entryValues};
+${entryInsertSql}
 
 CREATE TEMP TABLE ww_meter_register_structured_field_stage (
   entry_id text NOT NULL REFERENCES ww_meter_register_structured_entry_stage(entry_id),
@@ -665,8 +760,7 @@ CREATE TEMP TABLE ww_meter_register_structured_field_stage (
   PRIMARY KEY (entry_id, field_key)
 ) ON COMMIT DROP;
 
-INSERT INTO ww_meter_register_structured_field_stage VALUES
-${fieldValues};
+${fieldInsertSql}
 
 DO $$
 DECLARE
@@ -696,7 +790,10 @@ ${countAssertionsSql(manifest.expected.fieldUpdateCounts)}
       SELECT 1
       FROM ww_meter_register_structured_field_stage field
       WHERE field.entry_id = stage.entry_id
-        AND NULLIF(btrim(entry.source_payload ->> field.master_header), '') IS NOT NULL
+        AND (
+          NULLIF(btrim(entry.source_payload ->> field.master_header), '') IS NOT NULL
+          OR ${immutableTypedProjectionIsNonblank}
+        )
     );
 
   IF matched_count <> ${expectedRecordCount} THEN
@@ -772,6 +869,7 @@ WITH updated AS (
     revision = record.revision + 1,
     updated_at = clock_timestamp()
   FROM ww_meter_register_structured_state state
+  JOIN ww_meter_register_entries entry ON entry.id = state.entry_id
   WHERE record.entry_id = state.entry_id
     AND state.reconciliation_state = 'pending'
     AND record.revision = state.expected_revision
@@ -781,7 +879,11 @@ WITH updated AS (
       SELECT 1
       FROM ww_meter_register_structured_field_stage field
       WHERE field.entry_id = state.entry_id
-        AND NULLIF(btrim(record.details ->> field.field_key), '') IS NOT NULL
+        AND (
+          NULLIF(btrim(record.details ->> field.field_key), '') IS NOT NULL
+          OR NULLIF(btrim(entry.source_payload ->> field.master_header), '') IS NOT NULL
+          OR ${immutableTypedProjectionIsNonblank}
+        )
     )
   RETURNING record.entry_id
 )
