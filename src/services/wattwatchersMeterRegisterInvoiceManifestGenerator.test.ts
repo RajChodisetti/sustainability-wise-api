@@ -80,6 +80,7 @@ function fixtureSourceAudit() {
         audit_row_sha256: digest(`master-audit:${index}`),
         cached_values_sha256: digest(`master-cached:${index}`),
         formula_values_sha256: digest(`master-formula:${index}`),
+        import_source_row_sha256: digest(`master-import:${index}`),
         sheet: METER_REGISTER_RECONCILIATION_MASTER_SHEET,
         source_row: masterSourceRow,
       },
@@ -178,7 +179,8 @@ function fixtureDbSnapshot(sourceAudit: ReturnType<typeof fixtureSourceAudit>) {
       entryImportId: 'wwmri_synthetic',
       sourceKey: `synthetic:${sourceRow}`,
       sourceRow,
-      sourceRowSha256: candidate?.master.cached_values_sha256 ?? digest(`db-row:${sourceRow}`),
+      sourceRowSha256:
+        candidate?.master.import_source_row_sha256 ?? digest(`db-row:${sourceRow}`),
       currentDeviceIdentifier: candidate?.device_id
         ?? (hasCurrentIdentifier ? deviceId('ZZ', index) : null),
       recordRevision: hasCurrentIdentifier ? 1 : null,
@@ -325,7 +327,8 @@ test('rejects a populated invoice date on the sole approved date candidate', () 
 
 test('rejects changed Master provenance and an incomplete 95-row Works evidence set', () => {
   const changedMaster = fixtures();
-  changedMaster.sourceAudit.safe_invoice_fills[0]!.master.cached_values_sha256 = digest('changed');
+  changedMaster.sourceAudit.safe_invoice_fills[0]!.master.import_source_row_sha256 =
+    digest('changed');
   assert.throws(
     () => buildFixtureManifest(changedMaster),
     /changed source provenance/u,

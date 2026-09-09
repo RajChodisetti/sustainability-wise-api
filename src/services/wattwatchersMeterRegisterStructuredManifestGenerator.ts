@@ -216,6 +216,7 @@ const sourceAuditMasterSchema = z.object({
   audit_row_sha256: sha256Schema,
   cached_values_sha256: sha256Schema,
   formula_values_sha256: sha256Schema,
+  import_source_row_sha256: sha256Schema,
 }).strict();
 const sourceAuditEvidenceSchema = z.object({
   sheet: z.literal(METER_REGISTER_STRUCTURED_WORKS_SHEET),
@@ -648,6 +649,7 @@ function canonicalSourceCandidate(candidate: SourceAuditCandidate, key: Wattwatc
       auditRowSha256: candidate.master.audit_row_sha256,
       cachedValuesSha256: candidate.master.cached_values_sha256,
       formulaValuesSha256: candidate.master.formula_values_sha256,
+      importSourceRowSha256: candidate.master.import_source_row_sha256,
     },
     worksEvidence: candidate.works_evidence.map((evidence) => ({
       sheet: evidence.sheet,
@@ -709,6 +711,7 @@ function approvedSourceCandidates(sourceAuditInput: unknown): ApprovedCandidate[
       auditRowSha256: candidate.master.audit_row_sha256,
       cachedValuesSha256: candidate.master.cached_values_sha256,
       formulaValuesSha256: candidate.master.formula_values_sha256,
+      importSourceRowSha256: candidate.master.import_source_row_sha256,
     });
     const existing = sourceIdentity.get(candidate.device_id);
     if (existing !== undefined && existing !== identity) {
@@ -803,7 +806,7 @@ function assertInvoiceReconciliationPredecessor(
     const row = rows.length === 1 ? rows[0]! : null;
     if (!row
       || row.sourceRow !== invoice.master.source_row
-      || row.sourceRowSha256 !== invoice.master.cached_values_sha256
+      || row.sourceRowSha256 !== invoice.master.import_source_row_sha256
       || row.recordRevision === null
       || row.recordManuallyCorrectedAt !== null
       || row.recordUpdatedByUserId !== null
@@ -832,6 +835,7 @@ function assertInvoiceReconciliationPredecessor(
   if (!row
     || invoiceDate.master.source_row !== invoice.master.source_row
     || invoiceDate.master.cached_values_sha256 !== invoice.master.cached_values_sha256
+    || invoiceDate.master.import_source_row_sha256 !== invoice.master.import_source_row_sha256
     || !isDatabaseBlank(row.immutableValues.invoiceIssuedDate.snapshot)
     || !isDatabaseBlank(row.immutableValues.invoiceIssuedDate.payload)
     || !sameJsonValue(row.liveValues.invoiceIssuedDate, invoiceDate.value)) {
@@ -875,7 +879,7 @@ function classifyCandidates(approved: ApprovedCandidate[], snapshot: Snapshot): 
     }
     const row = rows[0]!;
     if (row.sourceRow !== candidate.master.source_row
-      || row.sourceRowSha256 !== candidate.master.cached_values_sha256) {
+      || row.sourceRowSha256 !== candidate.master.import_source_row_sha256) {
       throw new Error('Database snapshot provenance contradicts the pinned source audit');
     }
     if (row.recordRevision === null) {

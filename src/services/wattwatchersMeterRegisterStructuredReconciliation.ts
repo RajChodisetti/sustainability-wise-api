@@ -19,11 +19,11 @@ export const METER_REGISTER_STRUCTURED_WORKS_SHEET = 'Works Planning';
 export const METER_REGISTER_STRUCTURED_WORKS_WORKBOOK_SHA256 =
   '900856dfc259c178235b55cd3255773d1037e40562b083dae1095543747cea9b';
 export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SCHEMA =
-  'wattwatchers-spreadsheet-reconciliation/v1';
+  'wattwatchers-spreadsheet-reconciliation/v2';
 export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_SHA256 =
-  '02d97966529d1dbf9cfe285e7943d25ff3e6de00c1fd72b00ef5cb0aaffac4f5';
+  '79b3ffe4cc1622ea0a15bb5ca440c28d46d8a0b665340cd2a6dbba9b81f90e68';
 export const METER_REGISTER_STRUCTURED_SOURCE_AUDIT_COMMIT =
-  'd29dccfc308c58417331aab4a45a4ab90876b415';
+  '75d954c17e5fc0a00dbc4e44870e4a10aae8211a';
 export const METER_REGISTER_STRUCTURED_QA_DATABASE =
   WATTWATCHERS_METER_REGISTER_RECONCILIATION_TARGETS.qa.database;
 export const METER_REGISTER_STRUCTURED_PRODUCTION_DATABASE =
@@ -301,13 +301,6 @@ const candidateSchema = z.object({
   expectedManuallyCorrectedAt: z.null(),
   fields: z.array(structuredFieldSchema).min(1),
 }).strict().superRefine((candidate, context) => {
-  if (candidate.masterSourceRowSha256 !== candidate.masterCachedValuesSha256) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['masterSourceRowSha256'],
-      message: 'database source-row digest must equal the audited cached-values digest',
-    });
-  }
   const fieldKeys = new Set<WattwatchersMeterRegisterStructuredFieldKey>();
   for (const field of candidate.fields) {
     if (fieldKeys.has(field.key)) {
@@ -369,6 +362,7 @@ const sourceAuditMasterSchema = z.object({
   audit_row_sha256: sha256Schema,
   cached_values_sha256: sha256Schema,
   formula_values_sha256: sha256Schema,
+  import_source_row_sha256: sha256Schema,
 }).strict();
 
 const sourceAuditWorksEvidenceSchema = z.object({
@@ -454,6 +448,7 @@ function sourceAuditFingerprint(input: {
   key: WattwatchersMeterRegisterStructuredFieldKey;
   value: string | boolean;
   masterSourceRow: number;
+  masterSourceRowSha256: string;
   masterAuditRowSha256: string;
   masterCachedValuesSha256: string;
   masterFormulaValuesSha256: string;
@@ -468,6 +463,7 @@ function sourceAuditFingerprint(input: {
     masterHeader: contract.masterHeader,
     worksHeader: contract.worksHeader,
     masterSourceRow: input.masterSourceRow,
+    masterSourceRowSha256: input.masterSourceRowSha256,
     masterAuditRowSha256: input.masterAuditRowSha256,
     masterCachedValuesSha256: input.masterCachedValuesSha256,
     masterFormulaValuesSha256: input.masterFormulaValuesSha256,
@@ -506,6 +502,7 @@ function normalizedSourceAuditCandidate(candidate: SourceAuditCandidate): {
       key,
       value: field.value,
       masterSourceRow: candidate.master.source_row,
+      masterSourceRowSha256: candidate.master.import_source_row_sha256,
       masterAuditRowSha256: candidate.master.audit_row_sha256,
       masterCachedValuesSha256: candidate.master.cached_values_sha256,
       masterFormulaValuesSha256: candidate.master.formula_values_sha256,
@@ -554,6 +551,7 @@ export function assertWattwatchersMeterRegisterStructuredManifestMatchesSourceAu
         key: field.key,
         value: field.value,
         masterSourceRow: candidate.masterSourceRow,
+        masterSourceRowSha256: candidate.masterSourceRowSha256,
         masterAuditRowSha256: candidate.masterAuditRowSha256,
         masterCachedValuesSha256: candidate.masterCachedValuesSha256,
         masterFormulaValuesSha256: candidate.masterFormulaValuesSha256,

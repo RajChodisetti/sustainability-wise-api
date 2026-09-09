@@ -68,6 +68,7 @@ const masterRowEvidenceSchema = z.object({
   audit_row_sha256: sha256Schema,
   cached_values_sha256: sha256Schema,
   formula_values_sha256: sha256Schema,
+  import_source_row_sha256: sha256Schema,
   sheet: z.literal(METER_REGISTER_RECONCILIATION_MASTER_SHEET),
   source_row: z.number().int().min(4),
 }).strict();
@@ -474,7 +475,7 @@ function resolveEligibleSnapshotRow(
     throw new Error(`DB snapshot candidate ${candidateIndex + 1} does not resolve uniquely`);
   }
   const row = sourceRowMatches[0]!;
-  if (row.sourceRowSha256 !== candidate.master.cached_values_sha256) {
+  if (row.sourceRowSha256 !== candidate.master.import_source_row_sha256) {
     throw new Error(`DB snapshot candidate ${candidateIndex + 1} has changed source provenance`);
   }
   if (row.recordRevision === null || row.recordManuallyCorrectedAt !== null

@@ -72,6 +72,7 @@ function sourceAuditFixture(): JsonRecord {
           audit_row_sha256: rowDigest,
           cached_values_sha256: rowDigest,
           formula_values_sha256: rowDigest,
+          import_source_row_sha256: rowDigest,
         },
         works_evidence: [{
           sheet: METER_REGISTER_STRUCTURED_WORKS_SHEET,
@@ -106,6 +107,7 @@ function sourceAuditFixture(): JsonRecord {
         audit_row_sha256: rowDigest,
         cached_values_sha256: rowDigest,
         formula_values_sha256: rowDigest,
+        import_source_row_sha256: rowDigest,
       },
     };
   });
@@ -219,7 +221,7 @@ function buildSnapshot(sourceAudit: JsonRecord): JsonRecord {
     return snapshotRow({
       serial: index + 1,
       sourceRow: master.source_row as number,
-      sourceRowSha256: master.cached_values_sha256 as string,
+      sourceRowSha256: master.import_source_row_sha256 as string,
       currentDeviceIdentifier: candidate.device_id as string,
       recordRevision: candidate === missingRecord ? null : 4,
       updatedBy: candidate === manual ? 'operator' : null,
@@ -248,7 +250,7 @@ function buildSnapshot(sourceAudit: JsonRecord): JsonRecord {
     rows.push(snapshotRow({
       serial,
       sourceRow: master.source_row as number,
-      sourceRowSha256: master.cached_values_sha256 as string,
+      sourceRowSha256: master.import_source_row_sha256 as string,
       currentDeviceIdentifier: invoice.device_id as string,
       liveValues,
     }));

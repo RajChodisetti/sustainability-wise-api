@@ -189,6 +189,7 @@ function sourceAuditFixture(
           audit_row_sha256: candidate.masterAuditRowSha256,
           cached_values_sha256: candidate.masterCachedValuesSha256,
           formula_values_sha256: candidate.masterFormulaValuesSha256,
+          import_source_row_sha256: candidate.masterSourceRowSha256,
         },
         works_evidence: field.worksEvidence.map((evidence) => ({
           sheet: evidence.sheet,
@@ -229,6 +230,7 @@ function sourceAuditFixture(
           audit_row_sha256: digest,
           cached_values_sha256: digest,
           formula_values_sha256: digest,
+          import_source_row_sha256: digest,
         },
         works_evidence: [{
           sheet: METER_REGISTER_STRUCTURED_WORKS_SHEET,
