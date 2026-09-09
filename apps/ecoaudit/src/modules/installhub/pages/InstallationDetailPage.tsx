@@ -617,6 +617,8 @@ export function InstallHubInstallationDetailPage() {
             <dl className="mt-3 grid gap-x-5 gap-y-4 sm:grid-cols-2">
               <InstallationDetailItem label="Job Number #" value={optionalValue(installation.customJobNumber)} />
               <InstallationDetailItem label="Job Type" value={optionalValue(installation.serviceType)} />
+              <InstallationDetailItem label="Scheduled / audit date" value={installation.auditDate} />
+              <InstallationDetailItem label="Job end date" value={optionalValue(installation.jobEndDate)} />
               <InstallationDetailItem label="Scope Notes" value={optionalValue(installation.jobComments)} wide />
             </dl>
           </section>

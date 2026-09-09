@@ -235,6 +235,7 @@ function initialFormValues(
       description: event.description ?? '',
       assigneeFieldUserId: event.assigneeFieldUserId,
       startLocal: toDatetimeLocalValue(event.scheduledStartAt),
+      jobEndDate: '',
       estimatedDurationMinutes: event.estimatedDurationMinutes === null
         ? ''
         : String(event.estimatedDurationMinutes),
@@ -271,6 +272,7 @@ function initialFormValues(
     description: '',
     assigneeFieldUserId: '',
     startLocal: toDatetimeLocalValue(start.toISOString()),
+    jobEndDate: '',
     estimatedDurationMinutes: '',
     deadlineLocal: toDatetimeLocalValue(deadline.toISOString()),
     status: 'planned' as ScheduleStatus,
@@ -324,6 +326,7 @@ export function EventFormModal({
   const [description, setDescription] = useState(initial.description);
   const [assigneeFieldUserId, setAssigneeFieldUserId] = useState(initial.assigneeFieldUserId);
   const [startLocal, setStartLocal] = useState(initial.startLocal);
+  const [jobEndDate, setJobEndDate] = useState(initial.jobEndDate);
   const [estimatedDurationMinutes, setEstimatedDurationMinutes] = useState(
     initial.estimatedDurationMinutes,
   );
@@ -361,6 +364,9 @@ export function EventFormModal({
   const canSubmit = useMemo(() => {
     if (!isAdmin) return false;
     if (!startLocal || !deadlineLocal) return false;
+    if (sourceApp === 'installhub' && jobEndDate && jobEndDate < startLocal.slice(0, 10)) {
+      return false;
+    }
     const canCreateUnassignedFieldJob = !editing
       && sourceApp === 'installhub';
     if (!assigneeFieldUserId && !canCreateUnassignedFieldJob) return false;
@@ -394,6 +400,7 @@ export function EventFormModal({
     editing,
     assigneeFieldUserId,
     startLocal,
+    jobEndDate,
     deadlineLocal,
     parsedEstimatedDurationMinutes,
     sourceApp,
@@ -741,6 +748,7 @@ export function EventFormModal({
               ? {
                   siteAddress: schedulerAddressDisplay(jobAddress),
                   titleSuffix: fieldJobTitleSuffix,
+                  jobEndDate: optionalJobText(jobEndDate),
                   ...installHubJobPayload(installHubJobDetails),
                 }
               : {}),
@@ -1193,6 +1201,22 @@ export function EventFormModal({
               value={startLocal}
               onChange={(e) => setStartLocal(e.target.value)}
             />
+            {sourceApp === 'installhub' && !editing ? (
+              <>
+                <FieldLabel htmlFor="scheduler-job-end-date">Job end date (optional)</FieldLabel>
+                <Input
+                  id="scheduler-job-end-date"
+                  type="date"
+                  min={startLocal.slice(0, 10)}
+                  value={jobEndDate}
+                  onChange={(event) => setJobEndDate(event.target.value)}
+                  aria-invalid={Boolean(jobEndDate && jobEndDate < startLocal.slice(0, 10))}
+                />
+                <FieldError message={jobEndDate && jobEndDate < startLocal.slice(0, 10)
+                  ? 'Job end date cannot be before the start date.'
+                  : undefined} />
+              </>
+            ) : null}
             <FieldLabel htmlFor="scheduler-estimated-duration">
               Estimated time to complete (minutes, optional)
             </FieldLabel>

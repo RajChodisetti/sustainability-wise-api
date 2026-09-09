@@ -70,6 +70,7 @@ type FormState = {
   additionalMonitoringHardware: string;
   inspectorName: string;
   auditDate: string;
+  jobEndDate: string;
   siteCode: string;
   timezone: string;
 };
@@ -100,6 +101,7 @@ const emptyForm: FormState = {
   additionalMonitoringHardware: '',
   inspectorName: '',
   auditDate: todayIso(),
+  jobEndDate: '',
   siteCode: '',
   timezone: 'Australia/Sydney',
 };
@@ -186,6 +188,7 @@ function formStateFromInstallation(installation: Installation): FormState {
     additionalMonitoringHardware: installation.additionalMonitoringHardware ?? '',
     inspectorName: installation.inspectorName,
     auditDate: installation.auditDate,
+    jobEndDate: installation.jobEndDate ?? '',
     siteCode: installation.siteCode || '',
     timezone: installation.timezone?.trim() || DEFAULT_INSTALLATION_TIMEZONE,
   };
@@ -360,9 +363,14 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
       additionalMonitoringHardware: optionalText(form.additionalMonitoringHardware),
       inspectorName: form.inspectorName.trim(),
       auditDate: form.auditDate || todayIso(),
+      jobEndDate: optionalText(form.jobEndDate),
       timezone: form.timezone.trim() || DEFAULT_INSTALLATION_TIMEZONE,
       siteCode: form.siteCode,
     };
+    if (normalizedForm.jobEndDate && normalizedForm.jobEndDate < normalizedForm.auditDate) {
+      toast.error('Job end date cannot be before the scheduled / audit date.');
+      return;
+    }
     let normalizedSiteCode: string;
     try {
       normalizedSiteCode = canonicalSiteCodeForWrite(
@@ -754,6 +762,10 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
               <div>
                 <FieldLabel htmlFor="installation-date">Scheduled / audit date</FieldLabel>
                 <Input id="installation-date" type="date" value={form.auditDate} disabled={formLocked} onChange={(event) => updateForm({ auditDate: event.target.value })} />
+              </div>
+              <div>
+                <FieldLabel htmlFor="installation-job-end-date">Job end date (optional)</FieldLabel>
+                <Input id="installation-job-end-date" type="date" min={form.auditDate} value={form.jobEndDate} disabled={formLocked} onChange={(event) => updateForm({ jobEndDate: event.target.value })} />
               </div>
               <div>
                 <FieldLabel htmlFor="installation-site-code">Site code (optional)</FieldLabel>

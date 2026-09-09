@@ -117,6 +117,7 @@ export function createInstallationTree(
     additionalMonitoringHardware?: string | null;
     inspectorName: string;
     auditDate: string;
+    jobEndDate?: string | null;
     siteCode?: string;
     timezone?: string;
   },
@@ -163,6 +164,7 @@ export function createInstallationTree(
       additionalMonitoringHardware: input.additionalMonitoringHardware?.trim() || null,
       inspectorName: input.inspectorName.trim(),
       auditDate: input.auditDate || todayIso(),
+      jobEndDate: input.jobEndDate?.trim() || null,
       siteCode: canonicalSiteCode(siteName, input.siteCode),
       timezone: input.timezone?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       externalKey: null,

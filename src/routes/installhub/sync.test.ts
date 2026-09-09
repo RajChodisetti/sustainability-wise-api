@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { AppError } from '../../utils/errors.js';
 import {
   assertInstallHubSiteCodeWriteAllowed,
   assertLegacyInstallHubCompletionUsesCanonicalRoute,
@@ -224,6 +225,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     solarCapacityKw: 75,
     additionalMonitoringRequired: false,
     additionalMonitoringHardware: 'Existing CTs',
+    jobEndDate: '2026-07-25',
     createdByUserId: 'authenticated-user',
     assignedInspectorUserId: null,
     status: 'Draft',
@@ -247,6 +249,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   assert.equal(preserved.existingDeviceId, 'WW-DEVICE-100');
   assert.equal(preserved.sitePostcode, '2000');
   assert.equal(preserved.solarCapacityKw, 75);
+  assert.equal(preserved.jobEndDate, '2026-07-25');
   assert.equal('siteLatitude' in preserved, false);
 
   const cleared = installationValuesFromPayload({
@@ -256,6 +259,7 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
     existingDeviceId: null,
     siteLocality: null,
     solarCapacityKw: null,
+    jobEndDate: null,
   }, {
     userId: 'authenticated-user',
     role: 'inspector',
@@ -265,8 +269,35 @@ test('legacy InstallHub sync preserves omitted metadata and lets explicit null c
   assert.equal(cleared.existingDeviceId, null);
   assert.equal(cleared.siteLocality, null);
   assert.equal(cleared.solarCapacityKw, null);
+  assert.equal(cleared.jobEndDate, null);
   assert.equal(cleared.siteLatitude, null);
   assert.equal(cleared.siteGeocodeStatus, 'unresolved');
+});
+
+test('legacy InstallHub sync rejects an invalid or inverted job end date', () => {
+  const basePayload = {
+    id: 'installation-1',
+    clientName: 'Example Client',
+    siteName: 'Example Site',
+    siteAddress: '42 Example Road',
+    inspectorName: 'Installer One',
+    auditDate: '2026-07-22',
+    status: 'Draft',
+  };
+  assert.throws(
+    () => installationValuesFromPayload({ ...basePayload, jobEndDate: '2026-02-30' }, {
+      userId: 'authenticated-user', role: 'inspector',
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'jobEndDate must be a valid calendar date',
+  );
+  assert.throws(
+    () => installationValuesFromPayload({ ...basePayload, jobEndDate: '2026-07-21' }, {
+      userId: 'authenticated-user', role: 'inspector',
+    }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'jobEndDate cannot be before auditDate',
+  );
 });
 
 test('InstallHub address comparison invalidates only meaningful address changes', () => {

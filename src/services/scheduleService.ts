@@ -659,6 +659,7 @@ async function alignLinkedSourceAssignment(
         assignedInspectorUserId: ihInstallations.assignedInspectorUserId,
         inspectorName: ihInstallations.inspectorName,
         auditDate: ihInstallations.auditDate,
+        jobEndDate: ihInstallations.jobEndDate,
         timezone: ihInstallations.timezone,
         treeRevision: ihInstallations.treeRevision,
       })
@@ -679,6 +680,9 @@ async function alignLinkedSourceAssignment(
       ? installHubSchedulerAuditDate(scheduledStartAt, current.timezone)
       : current.auditDate;
     const assignmentChanged = current.assignedInspectorUserId !== subject.fieldUserId;
+    if (current.jobEndDate && current.jobEndDate < auditDate) {
+      throw badRequest('Linked installation job end date cannot be before scheduled date');
+    }
     if (
       !assignmentChanged
       && current.inspectorName === inspectorName
@@ -1409,6 +1413,7 @@ const DISPATCH_JOB_FIELDS: Record<Exclude<ScheduleSourceApp, 'custom'>, Readonly
     'additionalMonitoringHardware',
     'electricityNmi',
     'auditDate',
+    'jobEndDate',
     'timezone',
     'address',
   ]),
@@ -1532,7 +1537,13 @@ export function validateDispatchJob(
   job: DispatchJobInput,
 ): void {
   dispatchSiteSelection(job);
-  optionalDispatchDate(job, 'auditDate');
+  const auditDate = optionalDispatchDate(job, 'auditDate');
+  const jobEndDate = sourceApp === 'installhub'
+    ? optionalDispatchDate(job, 'jobEndDate')
+    : null;
+  if (jobEndDate && auditDate && jobEndDate < auditDate) {
+    throw badRequest('job.jobEndDate cannot be before job.auditDate');
+  }
   dispatchString(job, 'siteName');
   optionalDispatchString(job, 'clientName', 300);
   optionalDispatchString(job, 'clientId', 200);
@@ -2107,6 +2118,9 @@ async function createDispatchedProductJob(
   const now = new Date();
   const auditDate = optionalDispatchDate(job, 'auditDate')
     ?? scheduledStartAt.toISOString().slice(0, 10);
+  const jobEndDate = sourceApp === 'installhub'
+    ? optionalDispatchDate(job, 'jobEndDate')
+    : null;
   const inspectorName = assignee ? installHubSchedulerInspectorName(assignee) : '';
 
   if (sourceApp === 'ecoaudit') {
@@ -2225,6 +2239,7 @@ async function createDispatchedProductJob(
       'jobComments',
       INSTALLATION_METADATA_TEXT_LIMITS.jobComments,
     ),
+    jobEndDate,
     nmi: optionalDispatchString(job, 'electricityNmi', GRID_SUPPLY_NMI_MAX_LENGTH),
   };
 
@@ -2342,6 +2357,7 @@ async function createDispatchedProductJob(
     ),
     inspectorName,
     auditDate,
+    jobEndDate,
     status: 'Draft',
     createdByUserId: actor.fieldUserId,
     assignedInspectorUserId: assignee?.fieldUserId ?? null,

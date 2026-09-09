@@ -207,6 +207,7 @@ export async function loadCanonicalInstallationTree(
       additionalMonitoringHardware: installation.additionalMonitoringHardware,
       inspectorName: installation.inspectorName,
       auditDate: installation.auditDate,
+      jobEndDate: installation.jobEndDate,
       status: installation.status === 'Completed' ? 'Completed' : 'Draft',
       treeSchemaVersion: 2,
       treeRevision: installation.treeRevision,

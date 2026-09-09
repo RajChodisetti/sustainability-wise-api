@@ -290,6 +290,7 @@ export type Installation = {
   additionalMonitoringHardware?: string | null;
   inspectorName: string;
   auditDate: string;
+  jobEndDate?: string | null;
   siteCode?: string | null;
   timezone?: string | null;
   externalKey?: string | null;

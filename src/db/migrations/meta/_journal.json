@@ -414,6 +414,13 @@
       "when": 1788752400000,
       "tag": "0058_installhub_photo_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788926400000,
+      "tag": "0059_installhub_job_end_date",
+      "breakpoints": true
     }
   ]
 }

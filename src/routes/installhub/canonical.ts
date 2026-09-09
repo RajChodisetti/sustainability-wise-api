@@ -74,6 +74,7 @@ export const INSTALLATION_OPTIONAL_WRITE_FIELDS = [
   'solarCapacityKw',
   'additionalMonitoringRequired',
   'additionalMonitoringHardware',
+  'jobEndDate',
 ] as const;
 
 export type InstallationSiteState =
@@ -215,6 +216,7 @@ export type CanonicalInstallation = {
   additionalMonitoringHardware?: string | null;
   inspectorName: string;
   auditDate: string;
+  jobEndDate?: string | null;
   status: 'Draft' | 'Completed';
   treeSchemaVersion: 2;
   treeRevision: number;
@@ -587,6 +589,27 @@ function nullableBoundedTextProperty(
     throw new CanonicalInputError(
       `installation.${key} must contain at most ${maxLength} characters`,
     );
+  }
+  return { [key]: normalized };
+}
+
+function nullableCalendarDateProperty(
+  value: JsonRecord,
+  key: string,
+): Record<string, string | null> {
+  if (!hasOwn(value, key) || value[key] === undefined) return {};
+  if (value[key] === null || value[key] === '') return { [key]: null };
+  if (typeof value[key] !== 'string') {
+    throw new CanonicalInputError(`installation.${key} must be a string or null`);
+  }
+  const normalized = value[key].trim();
+  if (!normalized) return { [key]: null };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new CanonicalInputError(`installation.${key} must use YYYY-MM-DD`);
+  }
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
+    throw new CanonicalInputError(`installation.${key} must be a valid calendar date`);
   }
   return { [key]: normalized };
 }
@@ -1187,6 +1210,7 @@ export function projectCanonicalOptionalDefaults(
   }
   tree.installation.inspectorName = tree.installation.inspectorName.trim();
   tree.installation.auditDate = tree.installation.auditDate.trim();
+  tree.installation.jobEndDate = tree.installation.jobEndDate?.trim() || null;
   tree.gridSupplies = tree.gridSupplies.map((supply) => ({
     ...supply,
     name: supply.name.trim() || 'Incoming grid connection',
@@ -1326,6 +1350,7 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
     throw new CanonicalInputError('installation.siteCode is required');
   }
   const siteCode = item.siteCode;
+  const auditDate = stringValue(item.auditDate ?? '', 'installation.auditDate');
   // Persisted canonical-v2 rows predate the bounded site-code contract. The
   // authenticated sync boundary validates every new code or deliberate change;
   // the canonicalizer itself must remain able to read, hash, complete and
@@ -1430,7 +1455,8 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
       INSTALLATION_METADATA_TEXT_LIMITS.additionalMonitoringHardware,
     ),
     inspectorName: stringValue(item.inspectorName ?? '', 'installation.inspectorName'),
-    auditDate: stringValue(item.auditDate ?? '', 'installation.auditDate'),
+    auditDate,
+    ...nullableCalendarDateProperty(item, 'jobEndDate'),
     status: enumValue(item.status, ['Draft', 'Completed'] as const, 'installation.status'),
     treeSchemaVersion: 2,
     treeRevision: requiredInteger(item.treeRevision, 'installation.treeRevision'),
@@ -1469,6 +1495,11 @@ function normalizeInstallation(value: unknown): CanonicalInstallation {
   if ((normalized.siteLatitude == null) !== (normalized.siteLongitude == null)) {
     throw new CanonicalInputError(
       'installation.siteLatitude and siteLongitude must be supplied together',
+    );
+  }
+  if (normalized.jobEndDate && auditDate && normalized.jobEndDate < auditDate) {
+    throw new CanonicalInputError(
+      'installation.jobEndDate cannot be before installation.auditDate',
     );
   }
   if (
@@ -3213,6 +3244,7 @@ export function canonicalTreeMutationFingerprint(tree: CanonicalInstallationTree
       additionalMonitoringHardware: ordered.installation.additionalMonitoringHardware ?? null,
       inspectorName: ordered.installation.inspectorName,
       auditDate: ordered.installation.auditDate,
+      jobEndDate: ordered.installation.jobEndDate ?? null,
     },
     gridSupplies: byId(ordered.gridSupplies).map((item) => stripLifecycle(item)),
     zones: byId(ordered.zones).map((item) => stripLifecycle(item)),

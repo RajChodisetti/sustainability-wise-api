@@ -333,6 +333,7 @@ export async function copyFieldInstallationForJob(
     plannedMeterType: string | null;
     customJobNumber: string | null;
     jobComments: string | null;
+    jobEndDate: string | null;
     nmi: string | null;
   },
 ): Promise<string> {
@@ -395,6 +396,7 @@ export async function copyFieldInstallationForJob(
     jobComments: planning.jobComments,
     inspectorName: identity.inspectorName,
     auditDate: identity.auditDate,
+    jobEndDate: planning.jobEndDate,
     status: 'Draft',
     createdByUserId: identity.createdByUserId,
     assignedInspectorUserId: identity.assignedInspectorUserId,

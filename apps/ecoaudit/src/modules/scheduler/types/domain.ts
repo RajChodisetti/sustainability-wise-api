@@ -208,6 +208,7 @@ export type CreateSchedulerDispatchInput = {
     additionalMonitoringRequired?: boolean | null;
     additionalMonitoringHardware?: string | null;
     auditDate?: string;
+    jobEndDate?: string | null;
     timezone?: string;
     /** Additive structured destination; legacy product clients keep using the free-text fields. */
     address?: {

@@ -152,6 +152,30 @@ test('COMMS fault dispatch accepts multiple replacement meters and retains legac
   );
 });
 
+test('Field dispatch accepts an optional job end date on or after the scheduled date', () => {
+  const baseJob = {
+    clientName: 'Client Co',
+    siteName: 'North Site',
+    siteAddress: '1 Main Street',
+    auditDate: '2026-09-09',
+  };
+  assert.doesNotThrow(() => validateDispatchJob('installhub', baseJob));
+  assert.doesNotThrow(() => validateDispatchJob('installhub', {
+    ...baseJob,
+    jobEndDate: '2026-09-11',
+  }));
+  assert.throws(
+    () => validateDispatchJob('installhub', { ...baseJob, jobEndDate: '2026-09-08' }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.jobEndDate cannot be before job.auditDate',
+  );
+  assert.throws(
+    () => validateDispatchJob('installhub', { ...baseJob, jobEndDate: '2026-02-30' }),
+    (error: unknown) => error instanceof AppError
+      && error.detail === 'job.jobEndDate must be a valid calendar date',
+  );
+});
+
 test('Field topology copy is limited to explicit existing-site M2 dispatches', () => {
   assert.equal(shouldCopyExistingSiteFieldTopology({
     siteMode: 'existing',

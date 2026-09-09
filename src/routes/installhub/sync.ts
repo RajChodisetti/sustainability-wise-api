@@ -446,6 +446,22 @@ function legacyNullableText(
   return normalized;
 }
 
+function legacyNullableJobEndDate(
+  payload: JsonRecord,
+  existingValue?: string | null,
+): string | null {
+  const value = legacyNullableText(payload, 'jobEndDate', 10, existingValue);
+  if (value === null) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw badRequest('jobEndDate must use YYYY-MM-DD');
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw badRequest('jobEndDate must be a valid calendar date');
+  }
+  return value;
+}
+
 function legacyNullableBoolean(
   payload: JsonRecord,
   key: string,
@@ -801,6 +817,11 @@ export function installationValuesFromPayload(
   const siteState = legacyNullableSiteState(payload, existing?.siteState);
   const sitePostcode = legacyNullableSitePostcode(payload, existing?.sitePostcode);
   const siteCountryCode = legacyNullableSiteCountry(payload, existing?.siteCountryCode);
+  const auditDate = requiredString(payload, 'auditDate');
+  const jobEndDate = legacyNullableJobEndDate(payload, existing?.jobEndDate);
+  if (jobEndDate && jobEndDate < auditDate) {
+    throw badRequest('jobEndDate cannot be before auditDate');
+  }
   return {
     id,
     serverId: existing?.serverId ?? optionalString(payload, 'serverId') ?? randomUUID(),
@@ -933,7 +954,8 @@ export function installationValuesFromPayload(
       siteCountryCode,
     }),
     inspectorName: requiredString(payload, 'inspectorName'),
-    auditDate: requiredString(payload, 'auditDate'),
+    auditDate,
+    jobEndDate,
     status: optionalString(payload, 'status') ?? existing?.status ?? 'Draft',
     createdByUserId: resolveSyncCreatedByUserId({
       existingRecord: Boolean(existing),
@@ -1976,6 +1998,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
                 incomingTree.installation.additionalMonitoringHardware ?? null,
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
+              jobEndDate: incomingTree.installation.jobEndDate ?? null,
               siteCode: incomingTree.installation.siteCode,
               timezone: incomingTree.installation.timezone,
               treeSchemaVersion: 2,
@@ -2051,6 +2074,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               ...installHubGeocodeInvalidation(undefined, incomingTree.installation),
               inspectorName: incomingTree.installation.inspectorName,
               auditDate: incomingTree.installation.auditDate,
+              jobEndDate: incomingTree.installation.jobEndDate ?? null,
               status: 'Draft',
               createdByUserId: request.user.userId,
               assignedInspectorUserId: null,

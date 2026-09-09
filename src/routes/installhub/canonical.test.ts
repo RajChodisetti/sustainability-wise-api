@@ -316,6 +316,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   historical.installation.siteAddress = '  1 Test Street  ';
   historical.installation.inspectorName = '  Inspector  ';
   historical.installation.auditDate = '  2026-08-01  ';
+  historical.installation.jobEndDate = '  2026-08-03  ';
   historical.gridSupplies[0].name = '';
   historical.zones[0].zoneName = '';
   historical.zones[0].zoneDescription = '  North plant room  ';
@@ -343,6 +344,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   assert.equal(projected.installation.siteAddress, '1 Test Street');
   assert.equal(projected.installation.inspectorName, 'Inspector');
   assert.equal(projected.installation.auditDate, '2026-08-01');
+  assert.equal(projected.installation.jobEndDate, '2026-08-03');
   assert.equal(projected.gridSupplies[0].name, 'Incoming grid connection');
   assert.equal(projected.zones[0].zoneName, 'Zone');
   assert.equal(projected.zones[0].zoneDescription, 'North plant room');
@@ -368,6 +370,7 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   assert.equal(normalized.installation.siteAddress, projected.installation.siteAddress);
   assert.equal(normalized.installation.inspectorName, projected.installation.inspectorName);
   assert.equal(normalized.installation.auditDate, projected.installation.auditDate);
+  assert.equal(normalized.installation.jobEndDate, projected.installation.jobEndDate);
   assert.equal(normalized.gridSupplies[0].name, projected.gridSupplies[0].name);
   assert.equal(normalized.zones[0].zoneName, projected.zones[0].zoneName);
   assert.equal(normalized.zones[0].zoneDescription, projected.zones[0].zoneDescription);
@@ -386,6 +389,25 @@ test('optional default projection is pure, idempotent, and fingerprint-equivalen
   assert.equal(
     canonicalTreeMutationFingerprint(historical),
     canonicalTreeMutationFingerprint(projected),
+  );
+});
+
+test('canonical job end date is optional and cannot precede the audit date', () => {
+  const omitted = baseTree();
+  assert.equal(normalizeInstallationTreeV2(omitted).installation.jobEndDate, undefined);
+
+  const invalid = baseTree();
+  invalid.installation.jobEndDate = '2026-02-30';
+  assert.throws(
+    () => normalizeInstallationTreeV2(invalid),
+    /installation\.jobEndDate must be a valid calendar date/,
+  );
+
+  const inverted = baseTree();
+  inverted.installation.jobEndDate = '2026-07-31';
+  assert.throws(
+    () => normalizeInstallationTreeV2(inverted),
+    /installation\.jobEndDate cannot be before installation\.auditDate/,
   );
 });
 
