@@ -16,7 +16,7 @@ export type EventLaneLayout = {
   widthPercent: number;
 };
 
-export type CalendarEventVisualState = 'default' | 'completed' | 'overdue';
+export type CalendarEventVisualState = 'default' | 'in_progress' | 'completed' | 'overdue';
 export type CalendarEventContentDensity = 'title' | 'meta' | 'full';
 export type CalendarEventLaneDensity = 'tight' | 'compact' | 'full';
 export type CalendarPreviewPosition = {
@@ -55,6 +55,7 @@ export function calendarEventVisualState(
   now = new Date(),
 ): CalendarEventVisualState {
   if (status === 'done') return 'completed';
+  if (status === 'in_progress') return 'in_progress';
   if (status === 'cancelled') return 'default';
   const scheduledDay = new Date(scheduledStartAt);
   if (Number.isNaN(scheduledDay.getTime())) return 'default';

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { appEventSurfaceClass } from './colors';
+import { appEventSurfaceClass, calendarEventSurfaceClass } from './colors';
 
 test('calendar events use one opaque surface with a distinct source border', () => {
   const field = appEventSurfaceClass('installhub');
@@ -17,4 +17,22 @@ test('calendar events use one opaque surface with a distinct source border', () 
     assert.doesNotMatch(surface, /bg-(?:teal|sky|amber)-500\/15/);
   }
   assert.equal(new Set([field, ecoAudit, solarSense, custom]).size, 4);
+});
+
+test('calendar status surfaces highlight in-progress work blue and completed work green', () => {
+  const inProgress = calendarEventSurfaceClass('installhub', 'in_progress');
+  const completed = calendarEventSurfaceClass('installhub', 'completed');
+
+  assert.match(inProgress, /border-blue-500/);
+  assert.match(inProgress, /bg-blue-100/);
+  assert.match(completed, /border-emerald-600/);
+  assert.match(completed, /bg-emerald-100/);
+  assert.equal(
+    calendarEventSurfaceClass('installhub', 'default'),
+    appEventSurfaceClass('installhub'),
+  );
+  assert.equal(
+    calendarEventSurfaceClass('installhub', 'overdue'),
+    appEventSurfaceClass('installhub'),
+  );
 });

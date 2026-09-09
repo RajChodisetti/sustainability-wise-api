@@ -1,4 +1,5 @@
 import type { ScheduleSourceApp } from '@/modules/scheduler/types/domain';
+import type { CalendarEventVisualState } from '@/modules/scheduler/lib/weekGrid';
 
 export const SOURCE_APP_LABEL: Record<ScheduleSourceApp, string> = {
   ecoaudit: 'Eco Audit',
@@ -49,4 +50,18 @@ export function appEventSurfaceClass(app: ScheduleSourceApp): string {
     default:
       return 'border-violet-300 bg-[var(--surface)] hover:border-violet-500 hover:bg-violet-50 dark:border-violet-700 dark:hover:bg-violet-950/40';
   }
+}
+
+/** Status owns the event highlight; the left bar retains product identity. */
+export function calendarEventSurfaceClass(
+  app: ScheduleSourceApp,
+  visualState: CalendarEventVisualState,
+): string {
+  if (visualState === 'completed') {
+    return 'border-emerald-600 bg-emerald-100 hover:border-emerald-700 hover:bg-emerald-200 dark:border-emerald-500 dark:bg-emerald-950/70 dark:hover:bg-emerald-900/70';
+  }
+  if (visualState === 'in_progress') {
+    return 'border-blue-500 bg-blue-100 hover:border-blue-600 hover:bg-blue-200 dark:border-blue-400 dark:bg-blue-950/70 dark:hover:bg-blue-900/70';
+  }
+  return appEventSurfaceClass(app);
 }

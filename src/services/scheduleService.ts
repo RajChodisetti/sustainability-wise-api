@@ -17,7 +17,12 @@ import {
 } from 'drizzle-orm';
 import { db } from '../db/client.js';
 import { eaAudits } from '../db/schema/ecoaudit.js';
-import { ihGridSupplies, ihInstallations, ihMeterDevices } from '../db/schema/installhub.js';
+import {
+  ihGridSupplies,
+  ihInstallations,
+  ihInventoryMeters,
+  ihMeterDevices,
+} from '../db/schema/installhub.js';
 import {
   businessClients,
   businessJobs,
@@ -62,6 +67,7 @@ import { completeInstallHubInstallation } from './installHubCompletionService.js
 import type { SchedulerFinanceExecutor } from './schedulerFinanceService.js';
 import {
   BUSINESS_COMPANY_KEY,
+  normalizeClientName,
   upsertClientSiteFromProductRecord,
 } from './clientSiteMemoryService.js';
 import { copyFieldInstallationForJob } from './productJobCopyService.js';
@@ -1707,23 +1713,53 @@ async function resolveDispatchBusinessSite(
       .for('update')
       .limit(1);
     if (!existing) throw notFound('Business site');
-    if (structuredAddress.siteAddressFingerprint !== existing.addressFingerprint) {
-      throw badRequest(
-        'A saved site address cannot be replaced; choose Add a new address instead',
-      );
+    const nextClientName = clientName || existing.clientName;
+    const nextClientKey = normalizeClientName(nextClientName);
+    const [clientNameCollision] = await executor.select({ id: businessClients.id })
+      .from(businessClients)
+      .where(and(
+        eq(businessClients.companyKey, BUSINESS_COMPANY_KEY),
+        eq(businessClients.normalizedKey, nextClientKey),
+        ne(businessClients.id, existing.clientId),
+        isNull(businessClients.mergedIntoClientId),
+      ))
+      .limit(1);
+    if (clientNameCollision) {
+      throw conflict('The edited client name already belongs to another client');
     }
     await executor.update(businessClients).set({
-      contactName: clientContactName ?? existing.clientContactName,
-      contactPhone: clientContactPhone ?? existing.clientContactPhone,
-      contactEmail: clientContactEmail ?? existing.clientContactEmail,
+      name: nextClientName,
+      normalizedKey: nextClientKey,
+      contactName: job.clientContactName === undefined
+        ? existing.clientContactName
+        : clientContactName,
+      contactPhone: job.clientContactPhone === undefined
+        ? existing.clientContactPhone
+        : clientContactPhone,
+      contactEmail: job.clientContactEmail === undefined
+        ? existing.clientContactEmail
+        : clientContactEmail,
       updatedAt: now,
     }).where(eq(businessClients.id, existing.clientId));
     await executor.update(businessSites).set({
       name: siteName || existing.siteName,
+      address,
+      locality: structuredAddress.siteLocality,
+      state: structuredAddress.siteState,
+      postcode: structuredAddress.sitePostcode,
+      countryCode: structuredAddress.siteCountryCode,
+      latitude: structuredAddress.siteLatitude,
+      longitude: structuredAddress.siteLongitude,
+      geocodeStatus: structuredAddress.siteGeocodeStatus,
+      geocodeProvider: structuredAddress.siteGeocodeProvider,
+      geocodePlaceId: structuredAddress.siteGeocodePlaceId,
+      addressSource: structuredAddress.siteAddressSource,
+      addressFingerprint: structuredAddress.siteAddressFingerprint,
+      geocodedAt: structuredAddress.siteGeocodedAt,
       timezone: timezone || existing.timezone,
-      contactName: contactName ?? existing.contactName,
-      contactPhone: contactPhone ?? existing.contactPhone,
-      contactEmail: contactEmail ?? existing.contactEmail,
+      contactName: job.siteContactName === undefined ? existing.contactName : contactName,
+      contactPhone: job.siteContactPhone === undefined ? existing.contactPhone : contactPhone,
+      contactEmail: job.siteContactEmail === undefined ? existing.contactEmail : contactEmail,
       accessInformation: job.accessInformation === undefined
         ? existing.accessInformation
         : accessInformation,
@@ -1743,30 +1779,34 @@ async function resolveDispatchBusinessSite(
     return {
       id: existing.id,
       clientId: existing.clientId,
-      clientName: existing.clientName,
-      clientContactName: clientContactName ?? existing.clientContactName,
-      clientContactPhone: clientContactPhone ?? existing.clientContactPhone,
-      clientContactEmail: clientContactEmail ?? existing.clientContactEmail,
+      clientName: nextClientName,
+      clientContactName: job.clientContactName === undefined
+        ? existing.clientContactName
+        : clientContactName,
+      clientContactPhone: job.clientContactPhone === undefined
+        ? existing.clientContactPhone
+        : clientContactPhone,
+      clientContactEmail: job.clientContactEmail === undefined
+        ? existing.clientContactEmail
+        : clientContactEmail,
       siteName: siteName || existing.siteName,
-      address: existing.address,
-      locality: existing.locality,
-      state: existing.state,
-      postcode: existing.postcode,
-      countryCode: existing.countryCode,
-      latitude: existing.latitude,
-      longitude: existing.longitude,
-      geocodeStatus: existing.geocodeStatus,
-      geocodeProvider: existing.geocodeProvider,
-      geocodePlaceId: existing.geocodePlaceId,
-      // The business site retains how its address was originally captured;
-      // this new product record records that the user chose saved client data.
-      addressSource: 'client_saved',
-      addressFingerprint: existing.addressFingerprint,
-      geocodedAt: existing.geocodedAt,
+      address,
+      locality: structuredAddress.siteLocality,
+      state: structuredAddress.siteState,
+      postcode: structuredAddress.sitePostcode,
+      countryCode: structuredAddress.siteCountryCode,
+      latitude: structuredAddress.siteLatitude,
+      longitude: structuredAddress.siteLongitude,
+      geocodeStatus: structuredAddress.siteGeocodeStatus,
+      geocodeProvider: structuredAddress.siteGeocodeProvider,
+      geocodePlaceId: structuredAddress.siteGeocodePlaceId,
+      addressSource: structuredAddress.siteAddressSource,
+      addressFingerprint: structuredAddress.siteAddressFingerprint,
+      geocodedAt: structuredAddress.siteGeocodedAt,
       timezone: timezone || existing.timezone,
-      contactName: contactName ?? existing.contactName,
-      contactPhone: contactPhone ?? existing.contactPhone,
-      contactEmail: contactEmail ?? existing.contactEmail,
+      contactName: job.siteContactName === undefined ? existing.contactName : contactName,
+      contactPhone: job.siteContactPhone === undefined ? existing.contactPhone : contactPhone,
+      contactEmail: job.siteContactEmail === undefined ? existing.contactEmail : contactEmail,
       accessInformation: job.accessInformation === undefined
         ? existing.accessInformation
         : accessInformation,
@@ -1854,6 +1894,27 @@ export async function listSchedulerSites(
   const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200);
   const q = (opts.q ?? '').trim();
   const pattern = q ? `%${q.replace(/%/g, '')}%` : '%';
+  const meterMatchedSiteIds = opts.sourceApp === 'installhub' && q
+    ? [...new Set((await Promise.all([
+      db.select({ siteId: ihInventoryMeters.businessSiteId })
+        .from(ihInventoryMeters)
+        .where(and(
+          ilike(ihInventoryMeters.deviceId, pattern),
+          eq(ihInventoryMeters.status, 'installed'),
+          isNull(ihInventoryMeters.deletedAt),
+        )),
+      db.select({ siteId: ihInstallations.businessSiteId })
+        .from(ihMeterDevices)
+        .innerJoin(ihInstallations, and(
+          eq(ihInstallations.id, ihMeterDevices.installationId),
+          isNull(ihInstallations.deletedAt),
+        ))
+        .where(and(
+          ilike(ihMeterDevices.serialNumber, pattern),
+          isNull(ihMeterDevices.deletedAt),
+        )),
+    ])).flat().flatMap((row) => row.siteId ? [row.siteId] : []))]
+    : [];
   const sites = await db.select({
     id: businessSites.id,
     clientId: businessSites.clientId,
@@ -1890,6 +1951,7 @@ export async function listSchedulerSites(
       ilike(businessSites.name, pattern),
       ilike(businessSites.address, pattern),
       ilike(businessClients.name, pattern),
+      ...(meterMatchedSiteIds.length ? [inArray(businessSites.id, meterMatchedSiteIds)] : []),
     ),
   )).orderBy(asc(businessClients.name), asc(businessSites.name)).limit(limit);
   if (opts.sourceApp !== 'installhub' || sites.length === 0) {
@@ -1940,6 +2002,36 @@ export async function listSchedulerSites(
       ),
     )).orderBy(asc(ihMeterDevices.serialNumber), asc(ihMeterDevices.id))
     : [];
+  const inventoryMeters = await db.select({
+    meterId: ihInventoryMeters.installedMeterId,
+    siteId: ihInventoryMeters.businessSiteId,
+    serialNumber: ihInventoryMeters.deviceId,
+    deviceModel: ihInventoryMeters.deviceModel,
+  }).from(ihInventoryMeters).where(and(
+    inArray(ihInventoryMeters.businessSiteId, siteIds),
+    eq(ihInventoryMeters.status, 'installed'),
+    isNull(ihInventoryMeters.deletedAt),
+  )).orderBy(asc(ihInventoryMeters.deviceId), asc(ihInventoryMeters.id));
+  const directlyMatchedMeters = q
+    ? await db.select({
+      meterId: ihMeterDevices.id,
+      siteId: ihInstallations.businessSiteId,
+      serialNumber: ihMeterDevices.serialNumber,
+      deviceNumber: ihMeterDevices.deviceNumber,
+      deviceModel: ihMeterDevices.deviceModel,
+    }).from(ihMeterDevices).innerJoin(ihInstallations, and(
+      eq(ihInstallations.id, ihMeterDevices.installationId),
+      inArray(ihInstallations.businessSiteId, siteIds),
+      isNull(ihInstallations.deletedAt),
+    )).where(and(
+      ilike(ihMeterDevices.serialNumber, pattern),
+      isNull(ihMeterDevices.deletedAt),
+      or(
+        isNull(ihMeterDevices.lifecycleState),
+        eq(ihMeterDevices.lifecycleState, 'ACTIVE'),
+      ),
+    )).orderBy(asc(ihMeterDevices.serialNumber), asc(ihMeterDevices.id))
+    : [];
   const siteByInstallation = new Map(
     [...latestInstallationBySite].map(([siteId, installationId]) => [installationId, siteId]),
   );
@@ -1950,6 +2042,42 @@ export async function listSchedulerSites(
     if (!siteId) continue;
     const serialNumber = meter.serialNumber.trim();
     if (!serialNumber) continue;
+    const meterKey = serialNumber.toLocaleLowerCase('en-AU');
+    const meterKeys = meterKeysBySite.get(siteId) ?? new Set<string>();
+    if (meterKeys.has(meterKey)) continue;
+    meterKeys.add(meterKey);
+    meterKeysBySite.set(siteId, meterKeys);
+    const knownMeters = metersBySite.get(siteId) ?? [];
+    knownMeters.push({
+      meterId: meter.meterId,
+      serialNumber,
+      deviceNumber: meter.deviceNumber,
+      deviceModel: meter.deviceModel,
+    });
+    metersBySite.set(siteId, knownMeters);
+  }
+  for (const meter of inventoryMeters) {
+    const siteId = meter.siteId;
+    const serialNumber = meter.serialNumber.trim();
+    if (!siteId || !serialNumber) continue;
+    const meterKey = serialNumber.toLocaleLowerCase('en-AU');
+    const meterKeys = meterKeysBySite.get(siteId) ?? new Set<string>();
+    if (meterKeys.has(meterKey)) continue;
+    meterKeys.add(meterKey);
+    meterKeysBySite.set(siteId, meterKeys);
+    const knownMeters = metersBySite.get(siteId) ?? [];
+    knownMeters.push({
+      meterId: meter.meterId ?? `inventory:${serialNumber}`,
+      serialNumber,
+      deviceNumber: null,
+      deviceModel: meter.deviceModel,
+    });
+    metersBySite.set(siteId, knownMeters);
+  }
+  for (const meter of directlyMatchedMeters) {
+    const siteId = meter.siteId;
+    const serialNumber = meter.serialNumber.trim();
+    if (!siteId || !serialNumber) continue;
     const meterKey = serialNumber.toLocaleLowerCase('en-AU');
     const meterKeys = meterKeysBySite.get(siteId) ?? new Set<string>();
     if (meterKeys.has(meterKey)) continue;
@@ -2366,6 +2494,22 @@ export async function createSchedulerDispatch(
       description,
       user.userId,
     );
+    if (sourceApp === 'installhub') {
+      const now = new Date();
+      for (const deviceId of replacementMeterNumbersFromDispatch(job)) {
+        await tx.update(ihInventoryMeters).set({
+          businessClientId: site.clientId,
+          businessSiteId: site.id,
+          businessJobId: jobId,
+          updatedByUserId: actor.fieldUserId,
+          updatedAt: now,
+        }).where(and(
+          eq(ihInventoryMeters.deviceId, deviceId.trim().toUpperCase()),
+          eq(ihInventoryMeters.status, 'installed'),
+          isNull(ihInventoryMeters.deletedAt),
+        ));
+      }
+    }
     if (!assignee) {
       return {
         kind: 'job' as const,

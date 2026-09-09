@@ -29,6 +29,7 @@ import {
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createMeter, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
+import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
 import {
   defaultCustomNameForType,
   defaultMeterCustomName,
@@ -308,6 +309,7 @@ export function InstallHubMeterPage({
   );
   const latestBoard = tree.electricalAssets.find((item) => item.id === boardId)!;
   const latest = latestBoard.meters.find((item) => item.id === meterId) ?? draft;
+  const latestDevice = tree.meterDevices?.find((item) => item.id === meterId);
   const commissionedForm = tree.formSubmissions.find(
     (form) =>
       form.formType === 'ww-installation' &&
@@ -933,16 +935,45 @@ export function InstallHubMeterPage({
             ? canonicalPhotos.extra.filter((item): item is string => typeof item === 'string')
             : [];
           canonicalPhotos.extra = existing.filter((_, index) => index !== photoIndex);
+          targetDevice.photoNotes = removeIndexedPhotoNote(
+            targetDevice.photoNotes,
+            'wwPhotos.extra',
+            photoIndex,
+          );
         }
         else {
           target.wwPhotos[slot] = null;
           canonicalPhotos[slot] = null;
+          targetDevice.photoNotes = setPhotoNote(targetDevice.photoNotes, `wwPhotos.${slot}`, '');
         }
         targetDevice.wwPhotos = canonicalPhotos;
       });
       updateEditorEvidenceBaseline(confirmed);
       pendingWriteKindRef.current = null;
       toast.success('Meter photo removed.');
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    }
+  }
+
+  async function updatePhotoNote(fieldName: string, caption: string) {
+    if (writer.hasPendingTree) {
+      toast.error('Retry or discard the pending meter write before changing evidence notes.');
+      return;
+    }
+    pendingWriteKindRef.current = 'evidence';
+    try {
+      const confirmed = await writer.mutate((next) => {
+        const targetDevice = next.meterDevices?.find((item) => item.id === meterId);
+        const targetMeter = next.electricalAssets
+          .find((item) => item.id === boardId)
+          ?.meters.find((item) => item.id === meterId);
+        if (!targetDevice || !targetMeter) throw new Error('Meter not found.');
+        targetDevice.photoNotes = setPhotoNote(targetDevice.photoNotes, fieldName, caption);
+        targetMeter.photoNotes = targetDevice.photoNotes;
+      });
+      updateEditorEvidenceBaseline(confirmed);
+      pendingWriteKindRef.current = null;
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     }
@@ -2629,9 +2660,10 @@ export function InstallHubMeterPage({
                 key={slot}
                 id={`meter-photo-${slot}`}
                 label={label}
-                items={uri ? [{ id: slot, uri }] : []}
+                items={uri ? [{ id: slot, uri, caption: photoNote(latestDevice?.photoNotes, `wwPhotos.${slot}`) }] : []}
                 busy={uploading || busy || writer.hasPendingTree}
                 onFiles={(files) => uploadSingle(slot, files)}
+                onCaptionChange={(_, caption) => updatePhotoNote(`wwPhotos.${slot}`, caption)}
                 onRemove={uri ? () => removePhoto(slot) : undefined}
               />
             );
@@ -2639,9 +2671,14 @@ export function InstallHubMeterPage({
           <EvidenceField
             id="meter-extra-photos"
             label="Extra meter photos"
-            items={(latest.wwPhotos?.extra ?? []).map((uri, index) => ({ id: `${index}`, uri }))}
+            items={(latest.wwPhotos?.extra ?? []).map((uri, index) => ({
+              id: `${index}`,
+              uri,
+              caption: photoNote(latestDevice?.photoNotes, `wwPhotos.extra[${index}]`),
+            }))}
             busy={uploading || busy || writer.hasPendingTree}
             onFiles={uploadExtra}
+            onCaptionChange={(id, caption) => updatePhotoNote(`wwPhotos.extra[${Number(id)}]`, caption)}
             onRemove={latest.wwPhotos?.extra?.length ? (id) => removePhoto('extra', id) : undefined}
           />
         </Card>

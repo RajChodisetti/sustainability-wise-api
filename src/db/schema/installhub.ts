@@ -293,6 +293,7 @@ export const ihZones = pgTable('ih_zones', {
   zoneName: text('zone_name').notNull(),
   zoneDescription: text('zone_description').notNull().default(''),
   photos: jsonb('photos').notNull().default([]).$type<string[]>(),
+  photoNotes: jsonb('photo_notes').notNull().default({}).$type<Record<string, string>>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   index('ih_zones_installation_idx').on(table.installationId),
@@ -331,6 +332,7 @@ export const ihElectricalAssets = pgTable('ih_electrical_assets', {
   siteNmi: text('site_nmi'),
   photo: text('photo'),
   extraPhotos: jsonb('extra_photos').notNull().default([]).$type<string[]>(),
+  photoNotes: jsonb('photo_notes').notNull().default({}).$type<Record<string, string>>(),
   meterPresent: boolean('meter_present').notNull().default(false),
   meters: jsonb('meters').notNull().default([]).$type<unknown[]>(),
   subCircuitsDescription: text('sub_circuits_description'),
@@ -396,6 +398,7 @@ export const ihSiteAssets = pgTable('ih_site_assets', {
   meterChannels: jsonb('meter_channels').notNull().default([]).$type<unknown[]>(),
   comments: text('comments'),
   extraPhotos: jsonb('extra_photos').notNull().default([]).$type<string[]>(),
+  photoNotes: jsonb('photo_notes').notNull().default({}).$type<Record<string, string>>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [
   index('ih_site_assets_installation_idx').on(table.installationId),
@@ -457,6 +460,7 @@ export const ihMeterDevices = pgTable('ih_meter_devices', {
   displayCodeOverrideReason: text('display_code_override_reason'),
   commissioningData: jsonb('commissioning_data').$type<Record<string, unknown>>(),
   wwPhotos: jsonb('ww_photos').notNull().default({}).$type<Record<string, unknown>>(),
+  photoNotes: jsonb('photo_notes').notNull().default({}).$type<Record<string, string>>(),
   notes: text('notes'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 }, (table) => [

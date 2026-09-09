@@ -22,6 +22,7 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
+import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
 import {
   assetMeterDraftKey,
   measurementTargetDetails,
@@ -522,13 +523,17 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
       await writer.mutate((next) => {
         const target = next.siteAssets.find((item) => item.id === assetId);
         if (!target) return;
-        if (kind === 'location') target.locationPhoto = null;
+        if (kind === 'location') {
+          target.locationPhoto = null;
+          target.photoNotes = setPhotoNote(target.photoNotes, 'locationPhoto', '');
+        }
         else {
           const photoIndex = Number(id);
           if (!Number.isInteger(photoIndex)) return;
           target.extraPhotos = target.extraPhotos.filter(
             (_, index) => index !== photoIndex,
           );
+          target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'extraPhotos', photoIndex);
         }
         target.updatedAt = nowIso();
       });
@@ -1413,17 +1418,37 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             <EvidenceField
               id="asset-location-photo"
               label="Location photo"
-              items={latest.locationPhoto ? [{ id: 'location', uri: latest.locationPhoto }] : []}
+              items={latest.locationPhoto ? [{
+                id: 'location',
+                uri: latest.locationPhoto,
+                caption: photoNote(latest.photoNotes, 'locationPhoto'),
+              }] : []}
               busy={uploading}
               onFiles={uploadLocation}
+              onCaptionChange={(_, caption) => writer.mutate((next) => {
+                const target = next.siteAssets.find((item) => item.id === assetId);
+                if (!target) throw new Error('Site asset not found.');
+                target.photoNotes = setPhotoNote(target.photoNotes, 'locationPhoto', caption);
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.locationPhoto ? () => removePhoto('location') : undefined}
             />
             <EvidenceField
               id="asset-extra-photos"
               label="Extra photos"
-              items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
+              items={latest.extraPhotos.map((uri, index) => ({
+                id: `${index}`,
+                uri,
+                caption: photoNote(latest.photoNotes, `extraPhotos[${index}]`),
+              }))}
               busy={uploading}
               onFiles={uploadExtra}
+              onCaptionChange={(id, caption) => writer.mutate((next) => {
+                const target = next.siteAssets.find((item) => item.id === assetId);
+                if (!target) throw new Error('Site asset not found.');
+                target.photoNotes = setPhotoNote(target.photoNotes, `extraPhotos[${Number(id)}]`, caption);
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}
             />
         </Card>

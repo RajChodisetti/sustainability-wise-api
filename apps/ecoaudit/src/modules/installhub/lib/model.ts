@@ -20,6 +20,7 @@ import type {
 } from '@/modules/installhub/types/domain';
 import { createInstallHubId } from '@/modules/installhub/lib/id';
 import { defaultMeterCustomName } from '@/modules/installhub/lib/naming';
+import { photoNote } from '@/modules/installhub/lib/photoNotes';
 
 export function createId(prefix: string): string {
   return createInstallHubId(prefix);
@@ -1004,7 +1005,7 @@ export function collectPhotoReferences(tree: InstallationTree): PhotoReference[]
     zone.photos.forEach((uri, index) => references.push({
       key: `zone:${zone.id}:${index}`,
       uri,
-      label: `${zone.zoneName} photo ${index + 1}`,
+      label: photoNote(zone.photoNotes, `photos[${index}]`) || `${zone.zoneName} photo ${index + 1}`,
       entityType: 'zone',
       entityId: zone.id,
     }));
@@ -1013,18 +1014,20 @@ export function collectPhotoReferences(tree: InstallationTree): PhotoReference[]
     if (board.photo) references.push({
       key: `board:${board.id}:main`,
       uri: board.photo,
-      label: `${board.assetName} main photo`,
+      label: photoNote(board.photoNotes, 'photo') || `${board.assetName} main photo`,
       entityType: 'electrical_asset',
       entityId: board.id,
     });
     board.extraPhotos.forEach((uri, index) => references.push({
       key: `board:${board.id}:extra:${index}`,
       uri,
-      label: `${board.assetName} extra photo ${index + 1}`,
+      label: photoNote(board.photoNotes, `extraPhotos[${index}]`) || `${board.assetName} extra photo ${index + 1}`,
       entityType: 'electrical_asset',
       entityId: board.id,
     }));
     for (const meter of board.meters) {
+      const canonicalMeter = tree.meterDevices?.find((item) => item.id === meter.id);
+      const meterNotes = canonicalMeter?.photoNotes ?? meter.photoNotes;
       const slots: Array<[string, string | null | undefined]> = [
         ['device installed', meter.wwPhotos?.deviceInstalled],
         ['switchboard overview', meter.wwPhotos?.switchboardOverview],
@@ -1034,7 +1037,7 @@ export function collectPhotoReferences(tree: InstallationTree): PhotoReference[]
         if (uri) references.push({
           key: `meter:${meter.id}:${label}`,
           uri,
-          label: `${meter.deviceName} ${label}`,
+          label: photoNote(meterNotes, `wwPhotos.${label === 'device installed' ? 'deviceInstalled' : label === 'switchboard overview' ? 'switchboardOverview' : 'labeling'}`) || `${meter.deviceName} ${label}`,
           entityType: 'electrical_asset',
           entityId: board.id,
         });
@@ -1042,7 +1045,7 @@ export function collectPhotoReferences(tree: InstallationTree): PhotoReference[]
       meter.wwPhotos?.extra?.forEach((uri, index) => references.push({
         key: `meter:${meter.id}:extra:${index}`,
         uri,
-        label: `${meter.deviceName} extra photo ${index + 1}`,
+        label: photoNote(meterNotes, `wwPhotos.extra[${index}]`) || `${meter.deviceName} extra photo ${index + 1}`,
         entityType: 'electrical_asset',
         entityId: board.id,
       }));
@@ -1052,14 +1055,14 @@ export function collectPhotoReferences(tree: InstallationTree): PhotoReference[]
     if (asset.locationPhoto) references.push({
       key: `asset:${asset.id}:location`,
       uri: asset.locationPhoto,
-      label: `${asset.assetName} location photo`,
+      label: photoNote(asset.photoNotes, 'locationPhoto') || `${asset.assetName} location photo`,
       entityType: 'site_asset',
       entityId: asset.id,
     });
     asset.extraPhotos.forEach((uri, index) => references.push({
       key: `asset:${asset.id}:extra:${index}`,
       uri,
-      label: `${asset.assetName} extra photo ${index + 1}`,
+      label: photoNote(asset.photoNotes, `extraPhotos[${index}]`) || `${asset.assetName} extra photo ${index + 1}`,
       entityType: 'site_asset',
       entityId: asset.id,
     }));

@@ -22,6 +22,7 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
     { eaAudits, eaAuditWorkSessions },
     { ssSites, ssRooftopAssessments, ssAssessmentWorkSessions },
     { ihInstallations, ihInstallationWorkSessions },
+    { portalScheduleEvents },
     { and, eq },
     { signAccessToken },
   ] = await Promise.all([
@@ -30,6 +31,7 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
     import('../db/schema/ecoaudit.js'),
     import('../db/schema/solarsense.js'),
     import('../db/schema/installhub.js'),
+    import('../db/schema/shared.js'),
     import('drizzle-orm'),
     import('../auth/jwt.js'),
   ]);
@@ -40,6 +42,7 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
   const siteId = randomUUID();
   const assessmentId = randomUUID();
   const installationId = randomUUID();
+  const installationScheduleEventId = randomUUID();
   const parentUpdatedAt = new Date('2026-08-15T09:00:00.000Z');
   const startedAt = '2026-08-15T10:00:00.000Z';
   const lastActiveAt = '2026-08-15T10:01:00.000Z';
@@ -132,6 +135,19 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
       createdByUserId: actorUserId,
       updatedAt: parentUpdatedAt,
     });
+    await db.insert(portalScheduleEvents).values({
+      id: installationScheduleEventId,
+      title: 'Work session Field job',
+      sourceApp: 'installhub',
+      sourceType: 'installation',
+      sourceId: installationId,
+      assigneeFieldUserId: actorUserId,
+      scheduledStartAt: new Date(startedAt),
+      deadlineAt: new Date(lastActiveAt),
+      status: 'planned',
+      createdByUserId: actorUserId,
+      createdByApp: 'installhub',
+    });
 
     const endpoints = [
       {
@@ -183,6 +199,9 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
     assert.equal(installationAfterCheckpoint.updatedAt.getTime(), parentUpdatedAt.getTime());
     assert.equal(installationAfterCheckpoint.treeRevision, 0);
     assert.equal(installationAfterCheckpoint.recordVersionNumber, 0);
+    const [scheduleAfterCheckpoint] = await db.select().from(portalScheduleEvents)
+      .where(eq(portalScheduleEvents.id, installationScheduleEventId));
+    assert.equal(scheduleAfterCheckpoint.status, 'in_progress');
 
     const forbiddenResponse = await put(
       endpoints[0].url,
@@ -366,6 +385,8 @@ test('active-time endpoints persist monotonic sessions without mutating parent s
     assert.equal(solarStored.actorUserId, actorUserId);
     assert.equal(installStored.actorUserId, actorUserId);
   } finally {
+    await db.delete(portalScheduleEvents)
+      .where(eq(portalScheduleEvents.id, installationScheduleEventId));
     await db.delete(eaAudits).where(eq(eaAudits.id, auditId));
     await db.delete(ssRooftopAssessments)
       .where(eq(ssRooftopAssessments.id, assessmentId));

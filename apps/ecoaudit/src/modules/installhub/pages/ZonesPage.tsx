@@ -23,6 +23,7 @@ import {
   resolvedZoneCodes,
 } from '@/modules/installhub/lib/naming';
 import { zoneElectricalSummary } from '@/modules/installhub/lib/electricalPresentation';
+import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
 import { coverageState, localReadiness, siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -314,6 +315,7 @@ export function InstallHubZoneDetailPage() {
         const target = next.zones.find((item) => item.id === zoneId);
         if (target) {
           target.photos = target.photos.filter((_, index) => index !== photoIndex);
+          target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'photos', photoIndex);
         }
         if (target) target.updatedAt = nowIso();
       });
@@ -482,9 +484,19 @@ export function InstallHubZoneDetailPage() {
         <EvidenceField
           id="zone-photos"
           label="Zone photos"
-          items={zone.photos.map((uri, index) => ({ id: `${index}`, uri }))}
+          items={zone.photos.map((uri, index) => ({
+            id: `${index}`,
+            uri,
+            caption: photoNote(zone.photoNotes, `photos[${index}]`),
+          }))}
           busy={uploading}
           onFiles={upload}
+          onCaptionChange={(id, caption) => writer.mutate((next) => {
+            const target = next.zones.find((item) => item.id === zoneId);
+            if (!target) throw new Error('Zone not found.');
+            target.photoNotes = setPhotoNote(target.photoNotes, `photos[${Number(id)}]`, caption);
+            target.updatedAt = nowIso();
+          })}
           onRemove={zone.photos.length ? removePhoto : undefined}
         />
       </Card>

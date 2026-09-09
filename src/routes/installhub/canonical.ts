@@ -256,6 +256,7 @@ export type CanonicalZone = {
   zoneName: string;
   zoneDescription: string;
   photos: string[];
+  photoNotes?: Record<string, string>;
   createdAt?: string | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
@@ -276,6 +277,7 @@ export type CanonicalBoard = {
   siteNmi?: string | null;
   photo?: string | null;
   extraPhotos: string[];
+  photoNotes?: Record<string, string>;
   meterPresent: boolean;
   subCircuitsDescription?: string | null;
   comments?: string | null;
@@ -299,6 +301,7 @@ export type CanonicalSiteAsset = {
   meterPresent: boolean;
   comments?: string | null;
   extraPhotos: string[];
+  photoNotes?: Record<string, string>;
   createdAt?: string | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
@@ -371,6 +374,7 @@ export type MeterDevice = {
   channels: MeterChannel[];
   commissioningData?: MeterCommissioningData;
   wwPhotos?: Record<string, unknown>;
+  photoNotes?: Record<string, string>;
   notes?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -835,6 +839,38 @@ function boundedCapabilities(value: unknown, label: string): Record<string, unkn
     throw new CanonicalInputError(
       `${label} must serialize to at most ${CAPABILITY_MAX_SERIALIZED_BYTES} bytes`,
     );
+  }
+  return normalized;
+}
+
+const PHOTO_NOTE_MAX_LENGTH = 500;
+const PHOTO_NOTE_MAX_ENTRIES = 100;
+
+export function parsePhotoNotes(value: unknown, label: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new CanonicalInputError(`${label} must be an object`);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > PHOTO_NOTE_MAX_ENTRIES) {
+    throw new CanonicalInputError(`${label} may contain at most ${PHOTO_NOTE_MAX_ENTRIES} entries`);
+  }
+  const normalized: Record<string, string> = {};
+  for (const [rawKey, rawNote] of entries) {
+    const key = rawKey.trim();
+    if (!key || key.length > 200) {
+      throw new CanonicalInputError(`${label} keys must be 1-200 trimmed characters`);
+    }
+    if (typeof rawNote !== 'string') {
+      throw new CanonicalInputError(`${label}.${key} must be a string`);
+    }
+    const note = rawNote.trim();
+    if (!note) continue;
+    if (note.length > PHOTO_NOTE_MAX_LENGTH) {
+      throw new CanonicalInputError(`${label}.${key} must be at most ${PHOTO_NOTE_MAX_LENGTH} characters`);
+    }
+    normalized[key] = note;
   }
   return normalized;
 }
@@ -1508,6 +1544,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       zoneName: stringValueOrDefault(item.zoneName, `zones[${index}].zoneName`, 'Zone'),
       zoneDescription: stringValueOrDefault(item.zoneDescription, `zones[${index}].zoneDescription`, ''),
       photos: stringArray(item.photos, `zones[${index}].photos`),
+      photoNotes: parsePhotoNotes(item.photoNotes, `zones[${index}].photoNotes`),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
       deletedAt: iso(item.deletedAt),
@@ -1562,6 +1599,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       siteNmi: optionalText(item.siteNmi),
       photo: optionalText(item.photo),
       extraPhotos: stringArray(item.extraPhotos, `electricalAssets[${index}].extraPhotos`),
+      photoNotes: parsePhotoNotes(item.photoNotes, `electricalAssets[${index}].photoNotes`),
       meterPresent: booleanValue(item.meterPresent, `electricalAssets[${index}].meterPresent`),
       subCircuitsDescription: optionalText(item.subCircuitsDescription),
       comments: optionalText(item.comments),
@@ -1593,6 +1631,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       meterPresent: booleanValue(item.meterPresent, `siteAssets[${index}].meterPresent`),
       comments: optionalText(item.comments),
       extraPhotos: stringArray(item.extraPhotos, `siteAssets[${index}].extraPhotos`),
+      photoNotes: parsePhotoNotes(item.photoNotes, `siteAssets[${index}].photoNotes`),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
       deletedAt: iso(item.deletedAt),
@@ -1683,6 +1722,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
         `meterDevices[${index}].commissioningData`,
       ),
       wwPhotos: record(item.wwPhotos, `meterDevices[${index}].wwPhotos`),
+      photoNotes: parsePhotoNotes(item.photoNotes, `meterDevices[${index}].photoNotes`),
       notes: optionalText(item.notes),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),

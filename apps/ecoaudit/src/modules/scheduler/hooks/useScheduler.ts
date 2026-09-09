@@ -184,6 +184,7 @@ export function useScheduleEvents(filters: {
       app: filters.sourceApp,
     }),
     queryFn: () => fetchScheduleEvents(filters),
+    refetchInterval: 15_000,
   });
 }
 

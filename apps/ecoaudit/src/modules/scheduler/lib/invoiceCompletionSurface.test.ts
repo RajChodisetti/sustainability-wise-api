@@ -56,3 +56,12 @@ test('automatic final-invoice email uses the newly issued invoice revision', () 
     /const issued = await onIssue\(expectedUpdatedAt\);[\s\S]*?queueInvoiceEmail\(issued\.updatedAt, emailContent\)/,
   );
 });
+
+// A height-constrained fieldset/grid compressed every card into clipped strips.
+test('invoice job scrolling does not constrain or clip the card grid rows', () => {
+  const selector = invoiceRegister.slice(invoiceRegister.indexOf('<fieldset className="mt-3'));
+  assert.match(selector, /<fieldset className="mt-3 min-w-0"/);
+  assert.match(selector, /<div className="max-h-\[min\(34rem,60vh\)\] overflow-y-auto/);
+  assert.match(selector, /<div className="grid auto-rows-max items-start gap-3 lg:grid-cols-2"/);
+  assert.doesNotMatch(selector.match(/<article[^>]+>/)?.[0] ?? '', /overflow-hidden/);
+});

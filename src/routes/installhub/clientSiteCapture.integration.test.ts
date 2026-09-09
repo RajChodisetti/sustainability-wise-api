@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const integrationDatabase = process.env.INSTALLHUB_PG_INTEGRATION_URL;
 
-test('optional client/site capture round-trips without directory learning and detaches explicit clears transactionally', {
+test('optional client/site capture updates explicit links and detaches explicit clears transactionally', {
   skip: !integrationDatabase,
 }, async () => {
   const [{ buildApp }, { db, closeDb }, { ihInstallations }, { businessClients, businessSites, businessJobs, fieldAppJobDetails }, { signAccessToken }, { eq, inArray }, { purgeInstallHubInstallationTree }, { upsertClientSiteFromProductRecord }] = await Promise.all([
@@ -71,6 +71,26 @@ test('optional client/site capture round-trips without directory learning and de
     assert.equal(reused.statusCode, 200, reused.body);
     assert.equal(reused.json().clientId, directoryClientId);
     assert.equal(reused.json().clientSiteId, directorySiteId);
+    const linkedTree = (await pull(ids[1]!)).json().installations[0];
+    const renamedClient = `${clientName} Updated`;
+    const editedLinked = await push({
+      ...linkedTree,
+      baseTreeRevision: reused.json().treeRevision,
+      syncStage: 'metadata',
+      installation: {
+        ...linkedTree.installation,
+        clientName: renamedClient,
+        siteName: 'Updated optional site',
+        siteAddress: '2 Updated Street, Sydney NSW 2000',
+        siteAddressSource: 'client_saved',
+      },
+    });
+    assert.equal(editedLinked.statusCode, 200, editedLinked.body);
+    const [updatedClient] = await db.select().from(businessClients).where(eq(businessClients.id, directoryClientId!));
+    const [updatedSite] = await db.select().from(businessSites).where(eq(businessSites.id, directorySiteId!));
+    assert.equal(updatedClient!.name, renamedClient);
+    assert.equal(updatedSite!.name, 'Updated optional site');
+    assert.equal(updatedSite!.address, '2 Updated Street, Sydney NSW 2000');
 
     const cleared = await push(clearRequest);
     assert.equal(cleared.statusCode, 200, cleared.body);
@@ -85,7 +105,7 @@ test('optional client/site capture round-trips without directory learning and de
     const [detached] = await db.select().from(ihInstallations).where(eq(ihInstallations.id, ids[0]!));
     assert.equal(detached!.businessSiteId, null);
     const [retainedSite] = await db.select().from(businessSites).where(eq(businessSites.id, directorySiteId!));
-    assert.equal(retainedSite!.address, '1 Test Street, Sydney NSW 2000');
+    assert.equal(retainedSite!.address, '2 Updated Street, Sydney NSW 2000');
     const replayClear = await push({ ...afterClear, baseTreeRevision: revision, syncStage: 'metadata' });
     assert.equal(replayClear.statusCode, 200, replayClear.body);
     assert.equal(replayClear.json().treeRevision, revision);

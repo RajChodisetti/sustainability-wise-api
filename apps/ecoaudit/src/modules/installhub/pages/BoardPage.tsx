@@ -23,6 +23,7 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
+import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
 import type { ElectricalAsset, ElectricalSourceKind, InstallationTree } from '@/modules/installhub/types/domain';
 import {
   defaultCustomNameForType,
@@ -283,13 +284,17 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
       await writer.mutate((next) => {
         const target = next.electricalAssets.find((item) => item.id === boardId);
         if (!target) return;
-        if (kind === 'main') target.photo = null;
+        if (kind === 'main') {
+          target.photo = null;
+          target.photoNotes = setPhotoNote(target.photoNotes, 'photo', '');
+        }
         else {
           const photoIndex = Number(id);
           if (!Number.isInteger(photoIndex)) return;
           target.extraPhotos = target.extraPhotos.filter(
             (_, index) => index !== photoIndex,
           );
+          target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'extraPhotos', photoIndex);
         }
         target.updatedAt = nowIso();
       });
@@ -702,17 +707,41 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             <EvidenceField
               id="board-photo"
               label="Main switchboard photo"
-              items={latest.photo ? [{ id: 'main', uri: latest.photo }] : []}
+              items={latest.photo ? [{
+                id: 'main',
+                uri: latest.photo,
+                caption: photoNote(latest.photoNotes, 'photo'),
+              }] : []}
               busy={uploading}
               onFiles={uploadMain}
+              onCaptionChange={(_, caption) => writer.mutate((next) => {
+                const target = next.electricalAssets.find((item) => item.id === boardId);
+                if (!target) throw new Error('Switchboard not found.');
+                target.photoNotes = setPhotoNote(target.photoNotes, 'photo', caption);
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.photo ? () => removePhoto('main') : undefined}
             />
             <EvidenceField
               id="board-extra-photos"
               label="Extra photos"
-              items={latest.extraPhotos.map((uri, index) => ({ id: `${index}`, uri }))}
+              items={latest.extraPhotos.map((uri, index) => ({
+                id: `${index}`,
+                uri,
+                caption: photoNote(latest.photoNotes, `extraPhotos[${index}]`),
+              }))}
               busy={uploading}
               onFiles={uploadExtra}
+              onCaptionChange={(id, caption) => writer.mutate((next) => {
+                const target = next.electricalAssets.find((item) => item.id === boardId);
+                if (!target) throw new Error('Switchboard not found.');
+                target.photoNotes = setPhotoNote(
+                  target.photoNotes,
+                  `extraPhotos[${Number(id)}]`,
+                  caption,
+                );
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}
             />
           </Card>

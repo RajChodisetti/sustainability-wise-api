@@ -8,6 +8,7 @@ import {
   ihElectricalAssets,
   ihFormSubmissions,
   ihInstallations,
+  ihInventoryMeters,
   ihMeterDevices,
   ihMeterHistoryEvents,
   ihSiteAssets,
@@ -228,6 +229,27 @@ export function retainOmittedMeterLifecycleStates(
     if (meter.lifecycleState !== undefined) continue;
     meter.lifecycleState = currentById.get(meter.id)?.lifecycleState ?? 'ACTIVE';
   }
+}
+
+/** Preserves notes authored by newer clients when an older full-tree client omits the additive field. */
+export function retainOmittedPhotoNotes(
+  current: CanonicalInstallationTree,
+  incoming: CanonicalInstallationTree,
+): void {
+  const retain = <T extends { id: string; photoNotes?: Record<string, string> }>(
+    currentItems: T[],
+    incomingItems: T[],
+  ) => {
+    const currentById = new Map(currentItems.map((item) => [item.id, item]));
+    for (const item of incomingItems) {
+      if (item.photoNotes !== undefined) continue;
+      item.photoNotes = currentById.get(item.id)?.photoNotes ?? {};
+    }
+  };
+  retain(current.zones, incoming.zones);
+  retain(current.electricalAssets, incoming.electricalAssets);
+  retain(current.siteAssets, incoming.siteAssets);
+  retain(current.meterDevices, incoming.meterDevices);
 }
 
 /**
@@ -631,7 +653,7 @@ export async function rememberInstallHubClientSite(
   const memory = await upsertClientSiteFromProductRecord(executor, {
     clientName: installation.clientName,
     selectedClientId: installation.clientId,
-    selectedSiteId: submittedSource === 'client_saved'
+    selectedSiteId: installation.clientId && installation.clientSiteId
       ? installation.clientSiteId
       : null,
     siteName: installation.siteName,
@@ -653,6 +675,7 @@ export async function rememberInstallHubClientSite(
     siteContactPhone: installation.siteContactPhone,
     siteContactEmail: installation.siteContactEmail,
     accessInformation: installation.accessInformation,
+    updateSelectedRecords: Boolean(installation.clientId && installation.clientSiteId),
     job: {
       sourceApp: 'installhub',
       sourceType: 'installation',
@@ -676,7 +699,9 @@ export async function rememberInstallHubClientSite(
 
   // Product provenance records what this submission chose. The reusable site
   // may retain richer evidence from an earlier submission independently.
-  const productSource = submittedSource;
+  const productSource = installation.clientId && installation.clientSiteId
+    ? 'client_saved'
+    : submittedSource;
   Object.assign(installation, {
     clientId: memory.client.id,
     clientSiteId: memory.site.id,
@@ -715,6 +740,50 @@ export async function rememberInstallHubClientSite(
       ? new Date(memory.site.updatedAt)
       : null,
   }).where(eq(ihInstallations.id, installation.id));
+
+  const plannedMeterNumbers = (installation.existingDeviceId ?? '')
+    .split(/\r?\n/u)
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
+  const currentMeters = await executor.select({
+    serialNumber: ihMeterDevices.serialNumber,
+    deviceModel: ihMeterDevices.deviceModel,
+    customManufacturerName: ihMeterDevices.customManufacturerName,
+    customModelName: ihMeterDevices.customModelName,
+  }).from(ihMeterDevices).where(and(
+    eq(ihMeterDevices.installationId, installation.id),
+    isNull(ihMeterDevices.deletedAt),
+  ));
+  const currentMeterBySerial = new Map(currentMeters.map((meter) => (
+    [meter.serialNumber.trim().toUpperCase(), meter] as const
+  )));
+  const linkedMeterNumbers = [...new Set([
+    ...plannedMeterNumbers,
+    ...currentMeterBySerial.keys(),
+  ])];
+  for (const deviceId of linkedMeterNumbers) {
+    const meter = currentMeterBySerial.get(deviceId);
+    await executor.update(ihInventoryMeters).set({
+      businessClientId: memory.client.id,
+      businessSiteId: memory.site.id,
+      businessJobId: memory.jobId,
+      ...(meter
+        ? {
+            deviceModel: meter.deviceModel === 'A3RM' || meter.deviceModel === 'A6M'
+              ? meter.deviceModel
+              : 'OTHER',
+            customManufacturerName: meter.customManufacturerName,
+            customModelName: meter.customModelName,
+          }
+        : {}),
+      updatedByUserId: actorUserId,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(ihInventoryMeters.deviceId, deviceId),
+      eq(ihInventoryMeters.status, 'installed'),
+      isNull(ihInventoryMeters.deletedAt),
+    ));
+  }
   return { client: memory.client, site: memory.site };
 }
 
@@ -1002,6 +1071,9 @@ function zoneValues(
     zoneName,
     zoneDescription: optionalString(item, 'zoneDescription') ?? '',
     photos: jsonArray<string>(item.photos),
+    photoNotes: item.photoNotes === undefined
+      ? existing?.photoNotes ?? {}
+      : jsonObject(item.photoNotes) as Record<string, string>,
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
   };
 }
@@ -1031,6 +1103,9 @@ function electricalAssetValues(
     siteNmi: optionalString(item, 'siteNmi'),
     photo: optionalString(item, 'photo'),
     extraPhotos: jsonArray<string>(item.extraPhotos),
+    photoNotes: item.photoNotes === undefined
+      ? existing?.photoNotes ?? {}
+      : jsonObject(item.photoNotes) as Record<string, string>,
     meterPresent: Boolean(item.meterPresent),
     meters: jsonArray(item.meters),
     subCircuitsDescription: optionalString(item, 'subCircuitsDescription'),
@@ -1066,6 +1141,9 @@ function siteAssetValues(
     meterChannels: jsonArray(item.meterChannels),
     comments: optionalString(item, 'comments'),
     extraPhotos: jsonArray<string>(item.extraPhotos),
+    photoNotes: item.photoNotes === undefined
+      ? existing?.photoNotes ?? {}
+      : jsonObject(item.photoNotes) as Record<string, string>,
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
   };
 }
@@ -1758,6 +1836,7 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
               incomingTree.installation,
             );
             retainOmittedMeterLifecycleStates(currentTree, incomingTree);
+            retainOmittedPhotoNotes(currentTree, incomingTree);
             if (syncStage === 'metadata') {
               // Installed clients stage server-completed forms as Draft during
               // metadata sync. Restore those first so only a genuinely pending

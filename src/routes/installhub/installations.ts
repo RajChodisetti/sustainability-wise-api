@@ -27,6 +27,7 @@ import {
   workSessionBodySchema,
   workSessionResponseSchema,
 } from '../workSessions.js';
+import { markLinkedInstallHubEventsInProgress } from '../../services/schedulerProgressService.js';
 
 type InstallationAssignment = Pick<
   typeof ihInstallations.$inferSelect,
@@ -154,6 +155,13 @@ export async function installhubInstallationRoutes(
           : null,
         completedDetail: 'installation_completed_time_tracking_disabled',
       });
+
+      if (installation.status === 'Draft' && incoming.activeMilliseconds > 0) {
+        await markLinkedInstallHubEventsInProgress(tx, {
+          installationId,
+          actorUserId: request.user.userId,
+        });
+      }
 
       if (decision.action === 'current') {
         return presentWorkSession(existing!, false);

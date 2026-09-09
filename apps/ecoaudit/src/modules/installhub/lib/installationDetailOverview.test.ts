@@ -79,6 +79,21 @@ test('installation details remain above the installation workspace', () => {
   assert.ok(incomingConnectionsIndex < workspaceIndex);
 });
 
+test('completed installation shows a contextual report download before the workspace', () => {
+  const completedRecordIndex = detailSource.indexOf('>Authoritative completion record</h2>');
+  const reportActionIndex = detailSource.indexOf('Download installation report', completedRecordIndex);
+  const workspaceIndex = detailSource.indexOf('>Installation workspace</h2>');
+
+  assert.ok(completedRecordIndex >= 0);
+  assert.ok(reportActionIndex > completedRecordIndex);
+  assert.ok(reportActionIndex < workspaceIndex);
+  assert.match(
+    detailSource,
+    /installation\.status === 'Completed' \? \([\s\S]*href=\{`\/installhub\/installations\/\$\{installationId\}\/report`\}[\s\S]*Download installation report/,
+  );
+  assert.match(detailSource, /completed, version-pinned cloud record and its original evidence/);
+});
+
 test('more tools does not duplicate the electrical workspace', () => {
   assert.doesNotMatch(
     detailSource,

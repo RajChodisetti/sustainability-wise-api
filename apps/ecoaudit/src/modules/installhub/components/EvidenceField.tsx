@@ -3,7 +3,7 @@
 import { useId, type ChangeEvent } from 'react';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { Button } from '@/components/ui/Button';
-import { FieldHint, FieldLabel, Input } from '@/components/ui/FormFields';
+import { FieldHint, FieldLabel, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 
 export type EvidenceItem = {
@@ -36,9 +36,9 @@ export function EvidenceField({
   busy?: boolean;
   readOnly?: boolean;
   hint?: string;
-  onFiles: (files: File[]) => void | Promise<void>;
-  onCaptionChange?: (id: string, caption: string) => void | Promise<void>;
-  onRemove?: (id: string) => void | Promise<void>;
+  onFiles: (files: File[]) => void | Promise<unknown>;
+  onCaptionChange?: (id: string, caption: string) => void | Promise<unknown>;
+  onRemove?: (id: string) => void | Promise<unknown>;
 }) {
   const inputId = useId();
 
@@ -73,14 +73,15 @@ export function EvidenceField({
               />
               <div className="p-3">
                 {onCaptionChange ? (
-                  <Input
+                  <Textarea
                     disabled={readOnly || busy}
-                    aria-label={`Caption for ${label} ${index + 1}`}
-                    placeholder="Add a caption or comment"
-                    maxLength={120}
+                    aria-label={`Title, notes, or comments for ${label} ${index + 1}`}
+                    placeholder="Add a title, note, or comment"
+                    maxLength={500}
                     onBlur={(event) => void onCaptionChange(item.id, event.target.value)}
                     defaultValue={item.caption ?? ''}
-                    className="!min-h-10"
+                    rows={2}
+                    className="!min-h-16"
                   />
                 ) : (
                   <p className="text-xs text-[var(--text-sub)]">{item.caption || `Photo ${index + 1}`}</p>

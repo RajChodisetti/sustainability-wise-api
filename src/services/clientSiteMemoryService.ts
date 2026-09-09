@@ -99,6 +99,8 @@ export type UpsertClientSiteFromProductRecordInput = {
   siteContactPhone?: string | null;
   siteContactEmail?: string | null;
   accessInformation?: string | null;
+  /** Server-authorized write intent for a product already linked to these records. */
+  updateSelectedRecords?: boolean;
   job?: ProductJobMemoryInput;
 };
 
@@ -401,7 +403,22 @@ async function resolveClient(
   const contactPhone = optionalText(input.clientContactPhone, 'clientContactPhone', 50);
   const contactEmail = optionalText(input.clientContactEmail, 'clientContactEmail', 320);
   if (existing) {
+    if (input.selectedClientId && input.updateSelectedRecords) {
+      const [collision] = await executor.select({ id: businessClients.id })
+        .from(businessClients)
+        .where(and(
+          eq(businessClients.companyKey, BUSINESS_COMPANY_KEY),
+          eq(businessClients.normalizedKey, normalizedKey),
+          isNull(businessClients.mergedIntoClientId),
+          sql`${businessClients.id} <> ${existing.id}`,
+        ))
+        .limit(1);
+      if (collision) throw conflict('The edited client name already belongs to another client');
+    }
     const [updated] = await executor.update(businessClients).set({
+      ...(input.selectedClientId && input.updateSelectedRecords
+        ? { name: displayName, normalizedKey }
+        : {}),
       contactName: contactName ?? existing.contactName,
       contactPhone: contactPhone ?? existing.contactPhone,
       contactEmail: contactEmail ?? existing.contactEmail,
@@ -435,16 +452,54 @@ async function resolveSite(
     executor,
     `${BUSINESS_COMPANY_KEY}:site:${client.id}:${address.fingerprint}`,
   );
-  if (address.source === 'client_saved') {
-    if (!input.selectedSiteId) {
-      throw badRequest('client_saved addresses require selectedSiteId');
+  if (input.selectedSiteId) {
+    if (address.source !== 'client_saved' && !input.updateSelectedRecords) {
+      throw badRequest('selectedSiteId updates require explicit linked-record authority');
     }
     const [saved] = await executor.select().from(businessSites).where(and(
       eq(businessSites.id, input.selectedSiteId),
       eq(businessSites.clientId, client.id),
     )).limit(1);
     if (!saved) throw notFound('Client site');
+    if (input.updateSelectedRecords) {
+      const siteName = requiredText(input.siteName, 'siteName', 300);
+      const timezone = optionalText(input.timezone, 'timezone', 100) ?? saved.timezone;
+      const siteContactName = optionalText(input.siteContactName, 'siteContactName', 300);
+      const siteContactPhone = optionalText(input.siteContactPhone, 'siteContactPhone', 50);
+      const siteContactEmail = optionalText(input.siteContactEmail, 'siteContactEmail', 320);
+      const accessInformation = optionalText(input.accessInformation, 'accessInformation', 5_000);
+      const addressChanged = address.fingerprint !== saved.addressFingerprint;
+      const addressSource = addressChanged
+        ? address.provider && address.placeId ? 'suggested' : 'manual'
+        : saved.addressSource;
+      const [updated] = await executor.update(businessSites).set({
+        name: siteName,
+        address: address.displayAddress,
+        locality: address.locality,
+        state: address.state,
+        postcode: address.postcode,
+        countryCode: 'AU',
+        latitude: address.latitude,
+        longitude: address.longitude,
+        addressSource,
+        geocodeStatus: address.geocodingStatus,
+        geocodeProvider: address.provider,
+        geocodePlaceId: address.placeId,
+        addressFingerprint: address.fingerprint,
+        geocodedAt: address.geocodedAt,
+        timezone,
+        contactName: siteContactName,
+        contactPhone: siteContactPhone,
+        contactEmail: siteContactEmail,
+        accessInformation,
+        updatedAt: now,
+      }).where(eq(businessSites.id, saved.id)).returning();
+      return updated!;
+    }
     return saved;
+  }
+  if (address.source === 'client_saved') {
+    throw badRequest('client_saved addresses require selectedSiteId');
   }
 
   const [matching] = await executor.select().from(businessSites).where(and(

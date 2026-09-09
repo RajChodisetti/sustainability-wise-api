@@ -418,6 +418,8 @@ export function DynamicSchedulerBoard({
         </DragOverlay>
       </DndContext>
 
+      <CalendarStatusLegend />
+
       {pendingAssign ? (
         <AssignStaffDialog
           pendingAssign={pendingAssign}
@@ -432,6 +434,31 @@ export function DynamicSchedulerBoard({
         />
       ) : null}
     </div>
+  );
+}
+
+function CalendarStatusLegend() {
+  return (
+    <aside
+      aria-label="Calendar colour note"
+      className="rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--surface2)] px-3 py-2.5 text-xs text-[var(--text-sub)]"
+    >
+      <p className="font-extrabold text-[var(--text)]">Calendar colour note</p>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+        <span className="inline-flex items-center gap-2">
+          <span aria-hidden="true" className="h-3 w-5 rounded-sm border border-blue-500 bg-blue-100 dark:border-blue-400 dark:bg-blue-950/70" />
+          Blue = In progress
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span aria-hidden="true" className="h-3 w-5 rounded-sm border border-emerald-600 bg-emerald-100 dark:border-emerald-500 dark:bg-emerald-950/70" />
+          Green = Completed
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span aria-hidden="true" className="h-3 w-5 rounded-sm border border-amber-500 bg-[var(--surface)] ring-1 ring-amber-500/45" />
+          Amber = Scheduled day passed
+        </span>
+      </div>
+    </aside>
   );
 }
 

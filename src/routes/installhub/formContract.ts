@@ -699,6 +699,9 @@ function validateAttachments(value: unknown): InstallHubFormAttachment[] {
     ) {
       throw badRequest(`attachments[${index}].caption must be a string or null`);
     }
+    if (typeof record.caption === 'string' && record.caption.length > 500) {
+      throw badRequest(`attachments[${index}].caption must be at most 500 characters`);
+    }
     return {
       id,
       slot,

@@ -15,7 +15,7 @@ import { createPortal } from 'react-dom';
 import { Icon } from '@/components/ui/Icon';
 import {
   appBarClass,
-  appEventSurfaceClass,
+  calendarEventSurfaceClass,
   SOURCE_APP_LABEL,
 } from '@/modules/scheduler/lib/colors';
 import { formatEstimatedDuration } from '@/modules/scheduler/lib/estimatedDuration';
@@ -54,6 +54,7 @@ export function ScheduleEventBlock({
 }) {
   const visualState = calendarEventVisualState(event.status, event.scheduledStartAt);
   const completed = visualState === 'completed';
+  const inProgress = visualState === 'in_progress';
   const overdue = visualState === 'overdue';
   const statusLabel = completed
     ? 'Completed'
@@ -89,6 +90,20 @@ export function ScheduleEventBlock({
   const showMeta = contentDensity !== 'title' && laneDensity === 'full';
   const showAssignee = contentDensity === 'full' && laneDensity === 'full';
   const estimatedDurationLabel = formatEstimatedDuration(event.estimatedDurationMinutes);
+  const detailsAccentClass = completed
+    ? 'bg-emerald-600'
+    : inProgress
+      ? 'bg-blue-600'
+      : overdue
+        ? 'bg-amber-500'
+        : 'bg-emerald-500';
+  const detailsStatusClass = completed
+    ? 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
+    : inProgress
+      ? 'bg-blue-50 text-blue-800 ring-1 ring-blue-200'
+      : overdue
+        ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-200'
+        : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200';
   const describedBy = [draggable ? dragDescriptionId : undefined, showDetails ? detailsId : undefined]
     .filter(Boolean)
     .join(' ') || undefined;
@@ -216,9 +231,9 @@ export function ScheduleEventBlock({
         ...style,
         ...dragStyle,
       }}
-      className={`absolute rounded-[var(--radius-sm)] border text-left shadow-[var(--shadow-xs)] transition-[border-color,background-color,box-shadow] duration-200 hover:shadow-[var(--shadow-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 motion-reduce:transition-none ${appEventSurfaceClass(event.sourceApp)} ${
+      className={`absolute rounded-[var(--radius-sm)] border text-left shadow-[var(--shadow-xs)] transition-[border-color,background-color,box-shadow] duration-200 hover:shadow-[var(--shadow-sm)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 motion-reduce:transition-none ${calendarEventSurfaceClass(event.sourceApp, visualState)} ${
         showDetails ? 'z-20 overflow-hidden' : 'z-10 overflow-hidden'
-      } ${completed ? 'ring-1 ring-emerald-600/35' : overdue ? 'ring-1 ring-amber-500/45' : ''} ${
+      } ${completed ? 'ring-1 ring-emerald-600/35' : inProgress ? 'ring-1 ring-blue-500/35' : overdue ? 'ring-1 ring-amber-500/45' : ''} ${
         isDragging ? 'opacity-60 ring-2 ring-[var(--primary)]' : ''
       } ${draggable ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}`}
       aria-label={`${event.title}, ${SOURCE_APP_LABEL[event.sourceApp]}, ${eventTimeLabel(event.scheduledStartAt)}${event.assigneeDisplayName ? `, assigned to ${event.assigneeDisplayName}` : ', unassigned'}, estimated time ${estimatedDurationLabel}, ${statusLabel.toLowerCase()}`}
@@ -269,7 +284,9 @@ export function ScheduleEventBlock({
               ? 'rounded-[1px] bg-amber-500'
               : completed
                 ? 'rounded-[1px] bg-emerald-700'
-                : 'rounded-full bg-emerald-500'
+                : inProgress
+                  ? 'rounded-full bg-blue-600'
+                  : 'rounded-full bg-emerald-500'
           }`}
         />
       ) : completed ? (
@@ -288,12 +305,16 @@ export function ScheduleEventBlock({
         >
           !
         </span>
+      ) : inProgress ? (
+        <span
+          aria-hidden="true"
+          className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-white bg-blue-600 shadow-[0_0_0_4px_rgba(37,99,235,0.18)]"
+          title="In progress"
+        />
       ) : (
         <span
           aria-hidden="true"
-          className={`absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-white shadow-[0_0_0_4px_rgba(16,185,129,0.14)] ${
-            event.status === 'in_progress' ? 'bg-emerald-400' : 'bg-emerald-500'
-          }`}
+          className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.14)]"
         />
       )}
     </button>
@@ -314,7 +335,7 @@ export function ScheduleEventBlock({
             previewOriginClass(detailsPosition.placement)
           }`}
         >
-          <div className="absolute inset-x-0 top-0 h-1 bg-emerald-500" />
+          <div className={`absolute inset-x-0 top-0 h-1 ${detailsAccentClass}`} />
           <div className="flex items-start justify-between gap-3 border-b border-slate-200 pb-3 pt-1">
             <div className="min-w-0">
               <p className="flex items-center gap-1.5 text-[9px] font-extrabold uppercase tracking-[0.1em] text-slate-500">
@@ -325,12 +346,8 @@ export function ScheduleEventBlock({
                 {event.title}
               </p>
             </div>
-            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px] font-extrabold ${
-              overdue
-                ? 'bg-amber-100 text-amber-800 ring-1 ring-amber-200'
-                : 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200'
-            }`}>
-              <span className={`h-2 w-2 rounded-full ${overdue ? 'bg-amber-500' : 'bg-emerald-500'}`} />
+            <span className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[9px] font-extrabold ${detailsStatusClass}`}>
+              <span className={`h-2 w-2 rounded-full ${detailsAccentClass}`} />
               {statusLabel}
             </span>
           </div>

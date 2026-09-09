@@ -407,6 +407,13 @@
       "when": 1788748746313,
       "tag": "0057_installhub_meter_lifecycle_state",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1788752400000,
+      "tag": "0058_installhub_photo_notes",
+      "breakpoints": true
     }
   ]
 }

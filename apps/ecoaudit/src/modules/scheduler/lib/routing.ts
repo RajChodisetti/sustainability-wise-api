@@ -150,7 +150,7 @@ export function schedulerDispatchSiteSelectionPayload(input: {
   clientId: string | null;
 } {
   const existingSiteId = input.existingSiteId?.trim() || null;
-  const useSavedSite = input.address.source === 'client_saved' && Boolean(existingSiteId);
+  const useSavedSite = Boolean(existingSiteId);
   return {
     siteMode: useSavedSite ? 'existing' : 'new',
     existingSiteId: useSavedSite ? existingSiteId : null,

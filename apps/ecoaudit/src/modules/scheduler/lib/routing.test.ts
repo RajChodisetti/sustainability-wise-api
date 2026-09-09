@@ -123,8 +123,8 @@ test('dispatch selection links saved sites but keeps provider and manual address
     clientId: 'client-1',
     existingSiteId: 'site-1',
   }), {
-    siteMode: 'new',
-    existingSiteId: null,
+    siteMode: 'existing',
+    existingSiteId: 'site-1',
     clientId: 'client-1',
   });
 });

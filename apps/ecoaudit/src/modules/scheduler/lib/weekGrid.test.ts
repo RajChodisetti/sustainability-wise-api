@@ -24,12 +24,13 @@ test('calendar exposes every hour of the day', () => {
   assert.equal(eventBlockStyle('2026-08-17T23:00:00', 60, null).top, 23 * HOUR_HEIGHT_PX);
 });
 
-test('calendar retains completed jobs and warns only after an incomplete scheduled day passes', () => {
+test('calendar prioritizes completed and in-progress status before overdue planning warnings', () => {
   const now = new Date(2026, 7, 29, 12, 0, 0);
 
   assert.equal(calendarEventVisualState('done', '2026-08-30T09:00:00', now), 'completed');
   assert.equal(calendarEventVisualState('planned', '2026-08-28T09:00:00', now), 'overdue');
-  assert.equal(calendarEventVisualState('in_progress', '2026-08-28T09:00:00', now), 'overdue');
+  assert.equal(calendarEventVisualState('in_progress', '2026-08-28T09:00:00', now), 'in_progress');
+  assert.equal(calendarEventVisualState('in_progress', '2026-08-30T09:00:00', now), 'in_progress');
   assert.equal(calendarEventVisualState('planned', '2026-08-29T08:00:00', now), 'default');
   assert.equal(calendarEventVisualState('planned', '2026-08-30T08:00:00', now), 'default');
   assert.equal(calendarEventVisualState('cancelled', '2026-08-28T09:00:00', now), 'default');

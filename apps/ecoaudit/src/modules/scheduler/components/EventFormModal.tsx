@@ -44,7 +44,6 @@ import {
   schedulerEventSupportsMobileNotifications,
 } from '@/modules/scheduler/lib/visibility';
 import {
-  clearSchedulerFieldJobPlanning,
   EMPTY_SCHEDULER_JOB_ADDRESS,
   randomSchedulerFieldJobTitleSuffix,
   schedulerAddressFromClientSuggestion,
@@ -339,11 +338,18 @@ export function EventFormModal({
   const completionIdempotencyKeyRef = useRef<string | null>(null);
   const sourceCanCreateNew = sourceApp !== 'custom'
     && creatableSourceApps.includes(sourceApp);
+  const meterLookupQuery = installHubJobDetails.workType === COMMS_FAULT_WORK_TYPE
+    ? installHubJobDetails.existingDeviceIds.at(-1)?.trim() ?? ''
+    : '';
+  const schedulerSiteQuery = siteSelectionMode === 'existing' ? siteQuery : meterLookupQuery;
 
   const sites = useSchedulerSites(
-    siteQuery,
+    schedulerSiteQuery,
     sourceApp === 'custom' ? 'installhub' : sourceApp,
-    open && isAdmin && sourceApp !== 'custom' && siteSelectionMode === 'existing',
+    open
+      && isAdmin
+      && sourceApp !== 'custom'
+      && (siteSelectionMode === 'existing' || Boolean(meterLookupQuery)),
   );
   const selectedExistingSite = sites.data?.find((site) => site.id === existingSiteId);
   const eligibleAssignees = useMemo(() => (assignees.data ?? []).filter((assignee) => (
@@ -462,6 +468,47 @@ export function EventFormModal({
     if (error) errorRef.current?.focus();
   }, [error]);
 
+  useEffect(() => {
+    if (
+      sourceApp !== 'installhub'
+      || installHubJobDetails.workType !== COMMS_FAULT_WORK_TYPE
+      || !meterLookupQuery
+      || existingSiteId
+    ) return;
+    const meterKey = meterLookupQuery.toLocaleLowerCase('en-AU');
+    const matchedSite = sites.data?.find((site) => site.knownMeters?.some(
+      (meter) => meter.serialNumber.trim().toLocaleLowerCase('en-AU') === meterKey,
+    ));
+    if (!matchedSite) return;
+    const timer = window.setTimeout(() => {
+      setSiteSelectionMode('existing');
+      setExistingSiteId(matchedSite.id);
+      setSiteQuery(matchedSite.clientName);
+      setSelectedClientId(matchedSite.clientId);
+      setSelectedClient(null);
+      setJobClientName(matchedSite.clientName);
+      setJobSiteName(matchedSite.siteName);
+      setJobAddress(addressFromSite(matchedSite));
+      setInstallHubJobDetails((current) => ({
+        ...current,
+        clientContactName: matchedSite.clientContactName ?? '',
+        clientContactPhone: matchedSite.clientContactPhone ?? '',
+        clientContactEmail: matchedSite.clientContactEmail ?? '',
+        siteContactName: matchedSite.siteContactName ?? '',
+        siteContactPhone: matchedSite.siteContactPhone ?? '',
+        siteContactEmail: matchedSite.siteContactEmail ?? '',
+        accessInformation: matchedSite.accessInformation ?? '',
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [
+    existingSiteId,
+    installHubJobDetails.workType,
+    meterLookupQuery,
+    sites.data,
+    sourceApp,
+  ]);
+
   if (!open || (event && !visibleSourceApps.includes(event.sourceApp))) return null;
 
   function selectExistingSite(siteId: string) {
@@ -474,7 +521,7 @@ export function EventFormModal({
     setJobSiteName(site.siteName);
     setJobAddress(addressFromSite(site));
     setInstallHubJobDetails((current) => ({
-      ...clearSchedulerFieldJobPlanning(current),
+      ...current,
       clientContactName: site.clientContactName ?? '',
       clientContactPhone: site.clientContactPhone ?? '',
       clientContactEmail: site.clientContactEmail ?? '',
@@ -516,6 +563,7 @@ export function EventFormModal({
   function changeClientName(value: string) {
     setJobClientName(value);
     if (!selectedClientId) return;
+    if (siteSelectionMode === 'existing' && existingSiteId) return;
     setSelectedClientId('');
     setSelectedClient(null);
     if (siteSelectionMode === 'existing') {
@@ -558,7 +606,7 @@ export function EventFormModal({
     setJobSiteName(site?.siteName ?? legacySite?.siteName ?? suggestion.siteName ?? 'Site');
     setJobAddress(schedulerAddressFromClientSuggestion(suggestion));
     setInstallHubJobDetails((current) => ({
-      ...clearSchedulerFieldJobPlanning(current),
+      ...current,
       clientContactName: client?.contactName
         ?? legacySite?.clientContactName
         ?? current.clientContactName,
@@ -590,8 +638,8 @@ export function EventFormModal({
   }
 
   function markAddressAsNew() {
-    setSiteSelectionMode('new');
-    setExistingSiteId('');
+    // Editing a selected saved site updates that canonical site. The explicit
+    // "Add a new address" action remains the way to create a separate site.
   }
 
   async function handleSubmit() {
@@ -860,9 +908,6 @@ export function EventFormModal({
                                     setSiteSelectionMode('existing');
                                     setExistingSiteId('');
                                     setSiteQuery(jobClientName);
-                                    setInstallHubJobDetails((current) => (
-                                      clearSchedulerFieldJobPlanning(current)
-                                    ));
                                   }
                                 }}
                                 className={`cursor-pointer rounded-lg px-3 py-2 text-sm font-extrabold transition-colors ${
@@ -913,8 +958,8 @@ export function EventFormModal({
                                       The saved client and site details are filled in below. For this M2 Field
                                       App job, the latest zones, switchboards, site assets, active devices,
                                       channels, and electrical mappings are copied into the new job. You can edit
-                                      the details before creating it, and changes made during this job become the
-                                      next site view.
+                                      the details before creating it; those edits update the linked client, site,
+                                      and installed-meter directory associations when the job is created.
                                     </>
                                   ) : sourceApp === 'installhub' ? (
                                     <>
@@ -1009,15 +1054,22 @@ export function EventFormModal({
                                 ) : null}
                               </div>
                               {installHubJobDetails.workType === COMMS_FAULT_WORK_TYPE ? (
-                                <ReplacementMeterPicker
-                                  id="scheduler-replacement-meters"
-                                  value={installHubJobDetails.existingDeviceIds}
-                                  knownMeters={selectedExistingSite?.knownMeters ?? []}
-                                  onChange={(existingDeviceIds) => setInstallHubJobDetails((current) => ({
-                                    ...current,
-                                    existingDeviceIds,
-                                  }))}
-                                />
+                                <div>
+                                  <ReplacementMeterPicker
+                                    id="scheduler-replacement-meters"
+                                    value={installHubJobDetails.existingDeviceIds}
+                                    knownMeters={selectedExistingSite?.knownMeters ?? []}
+                                    onChange={(existingDeviceIds) => setInstallHubJobDetails((current) => ({
+                                      ...current,
+                                      existingDeviceIds,
+                                    }))}
+                                  />
+                                  <FieldHint>
+                                    A known installed meter fills its client/site and carries the available
+                                    electrical structure into this job. An unknown meter is still allowed and
+                                    creates a fresh site job using the details entered here.
+                                  </FieldHint>
+                                </div>
                               ) : null}
                               <div>
                                 <FieldLabel htmlFor="scheduler-metering-solution">Metering type selection</FieldLabel>

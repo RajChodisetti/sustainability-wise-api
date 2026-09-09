@@ -464,7 +464,12 @@ function ConsolidatedInvoiceBuilder({
 
   return (
     <section className="rounded-[var(--radius-md)] border border-[var(--border-strong)] bg-[var(--surface)] p-4 shadow-[var(--shadow-sm)] sm:p-5" aria-labelledby="invoice-builder-heading">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="invoice-builder-heading" className="font-extrabold text-[var(--text)]">{minimumJobs === 2 ? 'New consolidated invoice' : 'New single-job invoice'}</h2><p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">{eligibility ? 'Billable items and their selling prices are selected automatically. Review the charges and recipient before creating the draft.' : minimumJobs === 2 ? 'Select two or more sites. Billable items and selling prices will be added automatically.' : 'Select a site. Its billable items and selling prices will be added automatically.'}</p></div><Button variant="ghost" disabled={eligibilityMutation.isPending || create.isPending} onClick={onCancel}>Close</Button></div>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 id="invoice-builder-heading" className="font-extrabold text-[var(--text)]">{minimumJobs === 2 ? 'New consolidated invoice' : 'New single-job invoice'}</h2><p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">{eligibility ? 'Billable items and their selling prices are selected automatically. Review the charges and recipient before creating the draft.' : minimumJobs === 2 ? 'Combine two or more completed jobs into one invoice. Select jobs, then review the charges and billing recipient.' : 'Select a completed job, then review the charges and billing recipient.'}</p></div><Button variant="ghost" disabled={eligibilityMutation.isPending || create.isPending} onClick={onCancel}>Close</Button></div>
+
+      <ol className="mt-4 flex flex-wrap gap-x-6 gap-y-2 border-b border-[var(--border)] pb-4 text-sm font-bold" aria-label="Invoice creation progress">
+        <li aria-current={!eligibility ? 'step' : undefined} className={!eligibility ? 'text-[var(--primary)]' : 'text-[var(--text-sub)]'}>1. Select jobs</li>
+        <li aria-current={eligibility ? 'step' : undefined} className={eligibility ? 'text-[var(--primary)]' : 'text-[var(--text-sub)]'}>2. Review &amp; create draft</li>
+      </ol>
 
       {!eligibility ? (
         <>
@@ -482,97 +487,117 @@ function ConsolidatedInvoiceBuilder({
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm font-extrabold text-[var(--text)]" aria-live="polite">
-              {selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} selected
-              {minimumJobs === 2 ? ' · minimum 2' : ''}
-              <span className="ml-2 font-medium text-[var(--text-sub)]">· {matchingJobs.length} shown</span>
-            </p>
-            <div className="flex flex-wrap gap-2 text-xs font-bold" aria-label="Job status colours">
-              <span className="rounded-full bg-[var(--amber-soft)] px-2.5 py-1 text-[var(--amber)]">Needs completion</span>
-              <span className="rounded-full bg-[var(--green-soft)] px-2.5 py-1 text-[var(--green)]">Complete</span>
-              <span className="rounded-full bg-[var(--green)] px-2.5 py-1 text-white">Invoiced</span>
-            </div>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-[var(--text-sub)]" aria-live="polite">{matchingJobs.length} jobs shown · Completed jobs appear first</p>
+            <p id="invoice-selection-help" className="text-xs text-[var(--text-sub)]">Select {minimumJobs === 2 ? '2–50 jobs' : 'at least 1 job (up to 50)'} to continue.</p>
           </div>
-
-          <fieldset className="mt-3 grid min-w-0 max-h-[34rem] w-full gap-3 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--surface2)]/40 p-3 lg:grid-cols-2">
-            <legend className="sr-only">Jobs to invoice</legend>
-            {matchingJobs.map((job) => {
-              const selected = selectedIds.includes(job.financeId);
-              const jobState = invoiceJobSelectionState(job);
-              const completed = jobState !== 'incomplete';
-              const invoiced = jobState === 'invoiced';
-              const cardStateClasses = invoiced
-                ? 'border-[var(--green)] bg-[var(--green)] text-white hover:brightness-95'
-                : completed
-                  ? 'border-[var(--green)]/35 bg-[var(--green-soft)] hover:border-[var(--green)]/60'
-                  : 'border-[var(--amber)]/35 bg-[var(--amber-soft)]';
-              const selectedClasses = selected
-                ? 'ring-2 ring-[var(--primary)] ring-offset-2 ring-offset-[var(--surface)]'
-                : '';
-              const secondaryTextClass = invoiced ? 'text-white/80' : 'text-[var(--text-sub)]';
-              return (
-                <article key={job.financeId} className={`flex min-w-0 flex-col overflow-hidden rounded-xl border transition ${cardStateClasses} ${selectedClasses}`}>
-                  <label className={`flex min-w-0 items-start gap-3 p-3 sm:p-4 ${completed ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
-                    <input type="checkbox" aria-label={`Select ${job.jobName}`} className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
-                      const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
-                      setSelectedIds(result.financeIds);
-                      setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
-                    }} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-start justify-between gap-2">
-                        <strong className={`min-w-0 flex-1 break-words text-base leading-6 ${invoiced ? 'text-white' : 'text-[var(--text)]'}`}>{job.jobName}</strong>
-                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${
-                          invoiced
-                            ? 'bg-white/20 text-white'
-                            : completed
-                              ? 'bg-[var(--green)] text-white'
-                              : 'bg-[var(--amber)] text-white'
-                        }`}>
-                          {invoiced ? 'Invoiced' : completed ? 'Complete' : 'Needs completion'}
-                        </span>
-                      </span>
-                      <span className={`mt-0.5 block break-words text-xs leading-5 ${secondaryTextClass}`}>{job.siteName || 'Site not set'}</span>
-                      <span className={`mt-2 block text-xs leading-5 ${secondaryTextClass}`}>{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
-                      {invoiced ? (
-                        <span className="mt-1 block text-xs font-bold text-white">{job.invoiceCount} invoice{job.invoiceCount === 1 ? '' : 's'} already created</span>
-                      ) : !completed ? (
-                        <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span>
-                      ) : job.needsHoursReview ? (
-                        <span className="mt-1 block text-xs font-bold text-[var(--green)]">Internal billing setup needs review</span>
-                      ) : null}
-                    </span>
-                  </label>
-                  {!completed && job.sourceApp === 'installhub' && job.sourceType === 'installation' ? (
-                    <InvoiceJobCompletionAction
-                      className="mt-auto flex justify-end border-t border-[var(--amber)]/20 bg-white/35 px-3 py-2 sm:px-4"
-                      job={{
-                        financeId: job.financeId,
-                        sourceApp: job.sourceApp,
-                        sourceType: job.sourceType,
-                        sourceId: job.sourceId,
-                        jobName: job.jobName,
-                      }}
-                      onCompleted={() => setError(null)}
-                    />
-                  ) : null}
-                </article>
-              );
-            })}
-            {matchingJobs.length === 0 ? (
-              <div className="col-span-full rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-10 text-center">
-                <p className="text-sm font-bold text-[var(--text)]">No jobs match the current view.</p>
-                <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
-                  {!showInvoicedJobs && invoicedJobCount > 0
-                    ? 'Change the search or select “Show all jobs, including invoiced”.'
-                    : 'Change or clear the job search.'}
-                </p>
+          {selectedIds.length > 0 ? (
+            <div className="mt-3 rounded-xl border border-[var(--primary)]/25 bg-[var(--primary-soft)] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-bold text-[var(--text)]" aria-live="polite">{selectedIds.length} job{selectedIds.length === 1 ? '' : 's'} selected{selectedIds.some((id) => !matchingJobs.some((job) => job.financeId === id)) ? ' · Includes jobs outside this search' : ''}</p>
+                <Button variant="ghost" disabled={eligibilityMutation.isPending} onClick={() => { setSelectedIds([]); setError(null); }}>Clear selection</Button>
               </div>
-            ) : null}
+              <ul className="mt-2 flex max-h-32 flex-wrap gap-2 overflow-y-auto" aria-label="Selected jobs">
+                {selectedIds.map((id) => (
+                  <li key={id} className="min-w-0 max-w-full">
+                    <Button variant="secondary" className="max-w-full !justify-start !px-3" disabled={eligibilityMutation.isPending} aria-label={`Remove ${jobs.find((job) => job.financeId === id)?.jobName ?? 'job'} from invoice`} onClick={() => { setSelectedIds((current) => current.filter((selectedId) => selectedId !== id)); setError(null); }}>
+                      <span className="min-w-0 break-words text-left">{jobs.find((job) => job.financeId === id)?.jobName ?? 'Selected job'}</span>
+                      <span className="shrink-0 text-xs text-[var(--text-sub)]">Remove</span>
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          <fieldset className="mt-3 min-w-0" aria-describedby="invoice-selection-help" disabled={eligibilityMutation.isPending}>
+            <legend className="sr-only">Jobs to invoice</legend>
+            <div className="max-h-[min(34rem,60vh)] overflow-y-auto overscroll-contain rounded-xl border border-[var(--border)] bg-[var(--surface2)]/40 p-3" role="region" aria-label="Available jobs" tabIndex={0}>
+              <div className="grid auto-rows-max items-start gap-3 lg:grid-cols-2">
+                {matchingJobs.map((job) => {
+                  const selected = selectedIds.includes(job.financeId);
+                  const jobState = invoiceJobSelectionState(job);
+                  const completed = jobState !== 'incomplete';
+                  const invoiced = jobState === 'invoiced';
+                  const cardStateClasses = selected
+                    ? 'border-[var(--primary)] bg-[var(--primary-soft)]'
+                    : 'border-[var(--border)] bg-[var(--surface)]';
+                  const selectedClasses = selected ? 'ring-1 ring-[var(--primary)]' : '';
+                  const secondaryTextClass = 'text-[var(--text-sub)]';
+                  return (
+                    <article key={job.financeId} className={`flex min-w-0 flex-col rounded-xl border transition focus-within:ring-2 focus-within:ring-[var(--primary)] ${cardStateClasses} ${selectedClasses}`}>
+                      <label className={`flex min-w-0 items-start gap-3 p-3 sm:p-4 ${completed ? 'cursor-pointer' : 'cursor-not-allowed'}`}>
+                        <input type="checkbox" aria-label={`Select ${job.jobName}`} className="mt-1 h-5 w-5 shrink-0 accent-[var(--primary)]" checked={selected} disabled={!completed} onChange={(event) => {
+                          const result = toggleConsolidatedInvoiceJob(selectedIds, job.financeId, event.target.checked);
+                          setSelectedIds(result.financeIds);
+                          setError(result.atLimit ? `A single invoice can include up to ${MAX_CONSOLIDATED_INVOICE_JOBS} jobs.` : null);
+                        }} />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-start justify-between gap-2">
+                            <strong className="min-w-0 flex-1 basis-48 break-words text-base leading-6 text-[var(--text)]">{job.jobName}</strong>
+                            <span className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-extrabold uppercase tracking-wide ${
+                              invoiced
+                                ? 'bg-[var(--surface2)] text-[var(--text-sub)]'
+                                : completed
+                                  ? 'bg-[var(--green)] text-white'
+                                  : 'bg-[var(--amber-soft)] text-[var(--amber)]'
+                            }`}>
+                              {invoiced ? 'Invoiced' : completed ? 'Complete' : 'Needs completion'}
+                            </span>
+                          </span>
+                          <span className={`mt-0.5 block break-words text-xs leading-5 ${secondaryTextClass}`}>{[job.clientName, job.siteName].filter(Boolean).join(' · ') || 'Site not set'}</span>
+                          {job.siteAddress ? <span className="block break-words text-xs leading-5 text-[var(--text-sub)]">{job.siteAddress}</span> : null}
+                          <span className={`mt-2 block text-xs leading-5 ${secondaryTextClass}`}>{financeAppLabel(job.sourceApp)} · {job.currency} · {money(job.billableAmount, job.currency)} billable</span>
+                          {invoiced ? (
+                            <span className="mt-1 block text-xs font-bold text-[var(--text-sub)]">{job.invoiceCount} invoice{job.invoiceCount === 1 ? '' : 's'} already created</span>
+                          ) : !completed ? (
+                            <span className="mt-1 block text-xs font-bold text-[var(--amber)]">Complete this job before invoicing</span>
+                          ) : job.needsHoursReview ? (
+                            <span className="mt-1 block text-xs font-bold text-[var(--green)]">Internal billing setup needs review</span>
+                          ) : null}
+                        </span>
+                      </label>
+                      {!completed && job.sourceApp === 'installhub' && job.sourceType === 'installation' ? (
+                        <InvoiceJobCompletionAction
+                          className="mt-auto flex justify-end border-t border-[var(--amber)]/20 bg-[var(--amber-soft)] px-3 py-2 sm:px-4"
+                          job={{
+                            financeId: job.financeId,
+                            sourceApp: job.sourceApp,
+                            sourceType: job.sourceType,
+                            sourceId: job.sourceId,
+                            jobName: job.jobName,
+                          }}
+                          onCompleted={() => setError(null)}
+                        />
+                      ) : null}
+                    </article>
+                  );
+                })}
+                {matchingJobs.length === 0 ? (
+                  <div className="col-span-full rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-10 text-center">
+                    <p className="text-sm font-bold text-[var(--text)]">No jobs match the current view.</p>
+                    <p className="mt-1 text-xs leading-5 text-[var(--text-sub)]">
+                      {!showInvoicedJobs && invoicedJobCount > 0
+                        ? 'Change the search or select “Show all jobs, including invoiced”.'
+                        : 'Change or clear the job search.'}
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </fieldset>
           {hasMoreJobs ? <Button className="mt-3" variant="secondary" disabled={loadingMoreJobs} onClick={onLoadMoreJobs}>{loadingMoreJobs ? 'Loading jobs…' : 'Load more jobs'}</Button> : null}
           {error ? <div className="mt-4"><ErrorBanner message={error} /></div> : null}
-          <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end"><Button className="w-full sm:w-auto" variant="secondary" disabled={eligibilityMutation.isPending} onClick={onCancel}>Cancel</Button><Button className="w-full sm:w-auto" disabled={eligibilityMutation.isPending || selectedIds.length < minimumJobs} aria-busy={eligibilityMutation.isPending} onClick={() => void review()}>{eligibilityMutation.isPending ? 'Checking jobs…' : 'Review invoice'}</Button></div>
+          <div className="sticky bottom-0 z-10 mt-4 flex flex-col gap-3 border-t border-[var(--border)] bg-[var(--surface)] py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div aria-live="polite">
+              <p className="text-sm font-extrabold text-[var(--text)]">{selectedIds.length} / {MAX_CONSOLIDATED_INVOICE_JOBS} jobs selected</p>
+              <p className="mt-1 text-xs text-[var(--text-sub)]">{selectedIds.length < minimumJobs ? `Select ${minimumJobs - selectedIds.length} more completed job${minimumJobs - selectedIds.length === 1 ? '' : 's'} to continue.` : 'Next: review charges and billing recipient.'}</p>
+            </div>
+            <div className="flex flex-col-reverse gap-2 sm:flex-row">
+              <Button className="w-full sm:w-auto" variant="secondary" disabled={eligibilityMutation.isPending} onClick={onCancel}>Cancel</Button>
+              <Button className="w-full sm:w-auto" disabled={eligibilityMutation.isPending || selectedIds.length < minimumJobs} aria-busy={eligibilityMutation.isPending} onClick={() => void review()}>{eligibilityMutation.isPending ? 'Checking jobs…' : `Review invoice${selectedIds.length ? ` (${selectedIds.length} job${selectedIds.length === 1 ? '' : 's'})` : ''}`}</Button>
+            </div>
+          </div>
         </>
       ) : (
         <>

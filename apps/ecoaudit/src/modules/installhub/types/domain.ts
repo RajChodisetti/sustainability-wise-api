@@ -80,6 +80,7 @@ export type MeterDevice = {
     commissioning?: WattwatcherCommissioning;
   };
   wwPhotos?: Record<string, unknown>;
+  photoNotes?: Record<string, string>;
   notes?: string | null;
 };
 
@@ -248,6 +249,8 @@ export type SavedElectricalMapLayout = ElectricalMapLayoutDocument & {
 
 export type Installation = {
   id: string;
+  clientId?: string | null;
+  clientSiteId?: string | null;
   treeSchemaVersion?: 2;
   treeRevision?: number;
   recordVersionNumber?: number;
@@ -267,6 +270,7 @@ export type Installation = {
   customJobNumber?: string | null;
   siteName: string;
   siteAddress: string;
+  siteAddressSource?: 'suggested' | 'manual' | 'client_saved' | null;
   siteLocality?: string | null;
   siteState?: string | null;
   sitePostcode?: string | null;
@@ -312,6 +316,7 @@ export type Zone = {
   zoneName: string;
   zoneDescription: string;
   photos: string[];
+  photoNotes?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
@@ -421,6 +426,7 @@ export type Meter = {
   wwVerification?: WattwatcherVerification;
   wwCommissioning?: WattwatcherCommissioning;
   wwPhotos?: WattwatcherPhotos;
+  photoNotes?: Record<string, string>;
 };
 
 export type ElectricalAsset = {
@@ -443,6 +449,7 @@ export type ElectricalAsset = {
   siteNmi?: string | null;
   photo?: string | null;
   extraPhotos: string[];
+  photoNotes?: Record<string, string>;
   meterPresent: boolean;
   meters: Meter[];
   subCircuitsDescription?: string | null;
@@ -484,6 +491,7 @@ export type SiteAsset = {
   meterChannels: MeterChannelRef[];
   comments?: string | null;
   extraPhotos: string[];
+  photoNotes?: Record<string, string>;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;

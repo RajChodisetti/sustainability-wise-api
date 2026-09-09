@@ -32,6 +32,16 @@ the equipment JSON metadata, `photo_registry.field_name`, and
 `photo_copy_references.target_field_name`, then retain only the minimum read/sync
 alias required for installed clients.
 
+InstallHub keeps photo URLs backward-compatible and stores editable annotation
+text separately as `photoNotes` (`photo_notes` in PostgreSQL) on zones,
+switchboards, site assets, and meter devices. Keys are the exact canonical
+upload fields (`photo`, `photos[0]`, `extraPhotos[0]`,
+`wwPhotos.deviceInstalled`, or `wwPhotos.extra[0]`). Each non-empty value is a
+trimmed title/note/comment of at most 500 characters. Array-photo deletion must
+reindex the matching annotation keys. Form evidence continues to use the
+attachment's existing `caption` field. Older full-tree clients that omit
+`photoNotes` must not erase server-side annotations.
+
 ## Photos and Copies
 
 `photo_registry` identifies stored originals. `photo_copy_references` grants a
@@ -239,6 +249,15 @@ increases by one. A repeated claim by the same user is idempotent; installed,
 deleted, unknown, or another user's meter cannot be claimed. The legacy scan
 registration route remains available for installed-client compatibility.
 
+Scheduler COMMS-fault planning is separate from stock claiming. It accepts a
+manually entered meter number for either a new or existing site and always
+creates the Draft job when the rest of the job input is valid. An exact installed
+meter-register match fills and binds the canonical client/site and makes the
+copied electrical structure available in the new job; an unknown meter starts a
+fresh site workspace. Explicit edits to a bound client/site update those shared
+records in the same transaction, and linked installed-register rows follow the
+resulting client/site/job association without changing custody or history.
+
 ## Scheduler visibility, workforce, and analytics
 
 Public Scheduler planning exposes Field App Complete (`installhub`) jobs and
@@ -265,6 +284,17 @@ reassigned, rescheduled, or reactivated. Product assignment backdoors must not
 bypass this Scheduler authority.
 When an explicit event end is supplied it must be strictly later than the
 start; an omitted end retains the existing one-hour availability interval.
+The first accepted positive Field App active-time checkpoint for the currently assigned technician
+advances a linked planned InstallHub event and business job to `in_progress`. This status projection
+does not change the installation tree revision, does not reopen done/cancelled work, and is
+idempotent across checkpoint retries. Authoritative installation completion advances the linked
+event to `done`. The Scheduler calendar refreshes active event data every 15 seconds and uses blue
+for in-progress work and green for completed work, with a visible colour note below the calendar.
+Both Field App Complete job-detail surfaces expose the formal report-pack action inside the
+completed-record card, before the general installation workspace. The portal routes to the pinned
+report generator/download view; iOS routes to the same authoritative report workflow and exposes
+the native Save to Files/share destination after generation. Draft jobs retain report tools in the
+workspace for diagnostic generation, but do not show the completed-record shortcut.
 
 Admin analytics accepts inclusive `from`/`to` date keys and an IANA timezone,
 defaults to `Australia/Sydney`, uses a half-open UTC interval internally, and is

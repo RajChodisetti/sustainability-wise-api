@@ -556,7 +556,22 @@ export function InstallHubInstallationDetailPage() {
 
       {installation.status === 'Completed' ? (
         <Card className="mb-6 border-l-4 border-l-[var(--green)]">
-          <h2 className="font-extrabold text-[var(--text)]">Authoritative completion record</h2>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="font-extrabold text-[var(--text)]">Authoritative completion record</h2>
+              <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
+                The installation report uses this completed, version-pinned cloud record and its original evidence.
+              </p>
+            </div>
+            <LinkButton
+              href={`/installhub/installations/${installationId}/report`}
+              className="w-full shrink-0 sm:w-auto"
+              aria-label={`Download the completed installation report for ${installation.siteName}`}
+            >
+              <Icon name="download" size={17} />
+              Download installation report
+            </LinkButton>
+          </div>
           <dl className="mt-3 grid gap-x-5 gap-y-3 sm:grid-cols-2">
             <InstallationDetailItem label="Completed at" value={completedAtValue(installation.completedAt, installation.timezone)} />
             <InstallationDetailItem label="Completed by user ID" value={optionalValue(installation.completedByUserId)} />

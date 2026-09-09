@@ -102,7 +102,7 @@ test('calendar drop confirms assignment details without expanding technician lan
   assert.doesNotMatch(gridSource, /Drop an event on a person/);
 });
 
-test('calendar keeps completed jobs and renders completed and overdue markers', () => {
+test('calendar keeps completed jobs, status highlights, and a visible colour note', () => {
   const boardSource = readFileSync(
     new URL('../components/DynamicSchedulerBoard.tsx', import.meta.url),
     'utf8',
@@ -111,15 +111,24 @@ test('calendar keeps completed jobs and renders completed and overdue markers', 
     new URL('../components/ScheduleEventBlock.tsx', import.meta.url),
     'utf8',
   );
+  const hooksSource = readFileSync(
+    new URL('../hooks/useScheduler.ts', import.meta.url),
+    'utf8',
+  );
 
   assert.doesNotMatch(boardSource, /event\.status !== 'done'/);
+  assert.match(boardSource, /Calendar colour note/);
+  assert.match(boardSource, /Blue = In progress/);
+  assert.match(boardSource, /Green = Completed/);
   assert.match(blockSource, /calendarEventVisualState/);
+  assert.match(blockSource, /calendarEventSurfaceClass/);
   assert.match(blockSource, /title="Completed"/);
   assert.match(blockSource, /Scheduled day passed; not complete/);
   assert.match(blockSource, /disabled: !draggable/);
+  assert.match(hooksSource, /refetchInterval: 15_000/);
 });
 
-test('calendar jobs use opaque adaptive cards and a solid white green-accented preview', () => {
+test('calendar jobs use opaque adaptive cards and a solid status-accented preview', () => {
   const blockSource = readFileSync(
     new URL('../components/ScheduleEventBlock.tsx', import.meta.url),
     'utf8',
@@ -127,8 +136,8 @@ test('calendar jobs use opaque adaptive cards and a solid white green-accented p
 
   assert.match(blockSource, /DETAILS_HOVER_DELAY_MS = 600/);
   assert.match(blockSource, /setTimeout\(\(\) => \{/);
-  assert.match(blockSource, /appEventSurfaceClass\(event\.sourceApp\)/);
-  assert.equal(blockSource.match(/appEventSurfaceClass\(event\.sourceApp\)/g)?.length, 1);
+  assert.match(blockSource, /calendarEventSurfaceClass\(event\.sourceApp, visualState\)/);
+  assert.equal(blockSource.match(/calendarEventSurfaceClass\(event\.sourceApp, visualState\)/g)?.length, 1);
   assert.match(blockSource, /calendarEventContentDensity/);
   assert.match(blockSource, /calendarEventLaneDensity/);
   assert.match(blockSource, /preferredAlign: detailsAlign/);
@@ -225,10 +234,10 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
     modalSource,
     /This Field App job\s+starts with a fresh installation workspace; prior zones, devices, channels,\s+and electrical mappings are not copied/,
   );
-  assert.ok(
-    (modalSource.match(/clearSchedulerFieldJobPlanning\(current\)/g) ?? []).length >= 3,
-    'every existing-site entry path clears Field planning values',
-  );
+  assert.match(modalSource, /meterLookupQuery/);
+  assert.match(modalSource, /selectedExistingSite\?\.knownMeters/);
+  assert.match(modalSource, /An unknown meter is still allowed/);
+  assert.doesNotMatch(modalSource, /clearSchedulerFieldJobPlanning\(current\)/);
   assert.doesNotMatch(modalSource, /latestRevisionNumber/);
   assert.doesNotMatch(modalSource, /latest(?:WorkType|MeteringSolutionType|CustomJobNumber|JobComments|Maas|ElectricityNmi)/);
   assert.doesNotMatch(modalSource, /new independent job version/);

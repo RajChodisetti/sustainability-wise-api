@@ -144,6 +144,10 @@ ownership. Field App Complete installations with backup disabled therefore keep
 their session checkpoints queued locally until the installation is backed up.
 The checkpoint endpoint deliberately does not change parent sync watermarks,
 tree revisions, record versions, or full-snapshot payloads.
+For a Scheduler-linked Field App installation, the first accepted checkpoint with positive active
+time advances the assigned technician's planned calendar event and business job to `in_progress`.
+Retries and later checkpoints are idempotent, and done, cancelled, or differently assigned events
+are never reopened or changed by this projection.
 
 These hours remain immutable app evidence when Scheduler finance reads them;
 they are never assumed to be billable or cost hours. Effective commercial hours
@@ -509,6 +513,15 @@ durable job lifecycle, and configured OneDrive mirroring.
    or otherwise unresolved optional evidence.
 6. Advance the local installation watermark only after the final push succeeds.
 
+Zone, switchboard, site-asset, and meter-device records may include additive
+`photoNotes: Record<string, string>` metadata. Keys match the exact canonical
+photo field used by upload (for example `photos[0]`, `photo`,
+`extraPhotos[0]`, `wwPhotos.deviceInstalled`, and `wwPhotos.extra[0]`). Values
+are editable title/note/comment text up to 500 characters. Photo URL fields
+remain unchanged for installed-client compatibility, and a client that omits
+this additive map cannot clear notes already stored by the server. Form photos
+retain their annotation in `attachments[index].caption`.
+
 The queue survives restarts, caps automatic attempts at five, and can be reset
 from Settings. Foreground activation, a 15-minute in-app timer, debounced local
 changes, connectivity recovery, a Settings action, and the registered Expo
@@ -775,19 +788,27 @@ general_electricity:      photos[], extra_photos[]
 ## Scheduler saved-site prefill
 
 Selecting an existing canonical site in Scheduler fills the editable client,
-site, address, contact, and access fields. Creating the job then produces a
-fresh Draft product record linked to that saved site. Only an explicitly
-existing-site `M2 - Faults / COMMS fault` Field job copies the latest available,
-non-deleted Field installation topology for that site: zones, switchboards, site
-assets, devices, channels, and electrical mappings. It does not copy completed
-forms, photos, job scope, NMI, or comments. Meter-number suggestions for that M2
-job come from the same copied installation and include only active devices (a
-missing lifecycle on a historical device is treated as active); inactive,
-planned, deleted, blank, and case-insensitive duplicate serials are omitted.
-Other Field work types and new-site M2 work start with a fresh installation
-workspace. If the user edits the address, the saved-site binding is cleared and
-the new or matching address is linked without removing the original saved
-address.
+site, address, contact, and access fields. For `M2 - Faults / COMMS fault`, an
+entered meter number also searches the installed meter register; an exact known
+meter selects and fills its canonical client/site automatically. An unknown
+meter remains valid planning input and the new-site job must still be created.
+Creating the job produces a fresh Draft product record linked to the resolved
+site. An existing-site M2 job copies the latest available, non-deleted Field
+installation topology for that site: zones, switchboards, site assets, devices,
+channels, and electrical mappings. It does not copy completed forms, photos,
+job scope, NMI, or comments. Meter-number suggestions include active devices
+from that topology plus linked installed-register records; inactive, planned,
+deleted, blank, and case-insensitive duplicate serials are omitted. Other Field
+work types and unknown-meter/new-site M2 work start with a fresh installation
+workspace.
+
+Editing an explicitly selected existing client/site retains that binding and
+updates the canonical client and site records transactionally with the new job.
+The Field portal and iOS use the same rule when editing a linked Draft: ordinary
+text/address edits update the linked records, while the explicit new-client or
+new-address action detaches the selection and creates or matches a separate
+record. Installed meter-register rows referenced by the job are retargeted to
+the resulting client/site/job without changing custody or installation history.
 
 ---
 

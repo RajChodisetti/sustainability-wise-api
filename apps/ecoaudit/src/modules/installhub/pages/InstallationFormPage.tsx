@@ -577,6 +577,12 @@ export function InstallHubInstallationFormPage({ mode }: { mode: 'new' | 'edit' 
         title={mode === 'new' ? 'New installation' : 'Edit installation'}
         subtitle="These details prefill field forms and identify the installation in cloud storage and reports."
       />
+      {mode === 'edit' && treeQuery.data?.installation.clientSiteId ? (
+        <div className="mb-5 max-w-5xl rounded-xl border border-[var(--border)] bg-[var(--primary-soft)] p-3 text-sm text-[var(--text)]">
+          This job is linked to an existing client and site. Saving client, site, address, or
+          device changes updates the shared records used by Scheduler and future Field jobs.
+        </div>
+      ) : null}
       {mode === 'new' && createRetryLocked ? (
         <ErrorBanner message="This installation reference is locked for safe retry. Retry reuses the exact same details so another installation is not created." />
       ) : null}

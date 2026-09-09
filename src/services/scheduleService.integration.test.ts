@@ -14,6 +14,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       ihElectricalAssets,
       ihGridSupplies,
       ihInstallations,
+      ihInventoryMeters,
       ihMeasurementAssignmentChannels,
       ihMeasurementAssignments,
       ihMeterChannels,
@@ -35,6 +36,7 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       createScheduleEvent,
       createSchedulerDispatch,
       getScheduleEvent,
+      listSchedulerSites,
       listUnscheduledJobs,
       searchJobOptions,
       updateScheduleEvent,
@@ -403,6 +405,31 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     });
     const [fieldBusinessJob] = await db.select().from(businessJobs)
       .where(eq(businessJobs.id, field.jobId!));
+    const [fieldBusinessSite] = await db.select().from(businessSites)
+      .where(eq(businessSites.id, fieldBusinessJob.siteId));
+    const inventoryMeterId = randomUUID();
+    await db.insert(ihInventoryMeters).values({
+      id: inventoryMeterId,
+      deviceId: 'KNOWN-METER-001',
+      deviceModel: 'A3RM',
+      status: 'installed',
+      installedInstallationId: field.sourceId!,
+      installedMeterId: sourceMeterId,
+      businessClientId: null,
+      businessSiteId: fieldBusinessJob.siteId,
+      businessJobId: fieldBusinessJob.id,
+      createdByUserId: actor.fieldUserId,
+      updatedByUserId: actor.fieldUserId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const meterMatchedSites = await listSchedulerSites(admin, {
+      q: 'KNOWN-METER-001',
+      sourceApp: 'installhub',
+    });
+    assert.equal(meterMatchedSites.length, 1);
+    assert.equal(meterMatchedSites[0].id, fieldBusinessJob.siteId);
+    assert.equal(meterMatchedSites[0].knownMeters[0]?.serialNumber, 'KNOWN-METER-001');
     const followUpField = await createSchedulerDispatch(admin, {
       ...baseDispatch,
       scheduledStartAt: '2026-08-24T09:00:00.000Z',
@@ -505,6 +532,11 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(originalMeters.length, 1);
     assert.equal(originalMeters[0].id, sourceMeterId);
     assert.equal(originalMeters[0].serialNumber, 'KNOWN-METER-001');
+    const [retargetedInventoryMeter] = await db.select().from(ihInventoryMeters)
+      .where(eq(ihInventoryMeters.id, inventoryMeterId));
+    assert.equal(retargetedInventoryMeter.businessSiteId, fieldBusinessJob.siteId);
+    assert.equal(retargetedInventoryMeter.businessClientId, fieldBusinessSite.clientId);
+    assert.equal(retargetedInventoryMeter.businessJobId, followUpJob.id);
 
     assert.equal(fieldRow.sitePostcode, '2002');
     assert.equal(fieldRow.siteGeocodeStatus, 'resolved');
@@ -719,6 +751,8 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       .where(inArray(ihMeasurementAssignments.installationId, createdProductIds));
     await db.delete(ihMeterChannels)
       .where(inArray(ihMeterChannels.installationId, createdProductIds));
+    await db.delete(ihInventoryMeters)
+      .where(inArray(ihInventoryMeters.installedInstallationId, createdProductIds));
     await db.delete(ihMeterDevices)
       .where(inArray(ihMeterDevices.installationId, createdProductIds));
     await db.delete(ihSiteAssets)
