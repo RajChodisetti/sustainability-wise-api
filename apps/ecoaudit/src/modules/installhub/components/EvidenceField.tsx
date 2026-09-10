@@ -3,17 +3,27 @@
 import { useId, type ChangeEvent } from 'react';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { Button } from '@/components/ui/Button';
-import { FieldHint, FieldLabel, Textarea } from '@/components/ui/FormFields';
+import { Checkbox, FieldHint, FieldLabel, Textarea } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 
 export type EvidenceItem = {
   id: string;
   uri: string;
   caption?: string | null;
+  largeInPdf?: boolean;
 };
 
-export function evidenceActionLabel(itemCount: number, busy = false): string {
+export function evidenceRenderKey(item: EvidenceItem): string {
+  return `photo:${item.uri}`;
+}
+
+export function evidenceActionLabel(
+  itemCount: number,
+  busy = false,
+  multiple = true,
+): string {
   if (busy) return 'Uploading…';
+  if (!multiple) return itemCount > 0 ? 'Replace photo' : 'Take or choose photo';
   return itemCount > 0 ? 'Add more photos' : 'Take or choose photos';
 }
 
@@ -25,8 +35,11 @@ export function EvidenceField({
   busy,
   readOnly,
   hint,
+  multiple = true,
+  showPdfSizing = false,
   onFiles,
   onCaptionChange,
+  onLargeInPdfChange,
   onRemove,
 }: {
   id?: string;
@@ -36,8 +49,11 @@ export function EvidenceField({
   busy?: boolean;
   readOnly?: boolean;
   hint?: string;
+  multiple?: boolean;
+  showPdfSizing?: boolean;
   onFiles: (files: File[]) => void | Promise<unknown>;
   onCaptionChange?: (id: string, caption: string) => void | Promise<unknown>;
+  onLargeInPdfChange?: (id: string, largeInPdf: boolean) => void | Promise<unknown>;
   onRemove?: (id: string) => void | Promise<unknown>;
 }) {
   const inputId = useId();
@@ -54,13 +70,17 @@ export function EvidenceField({
         {label}{required ? <span className="text-[var(--red)]"> *</span> : null}
       </FieldLabel>
       {hint ? <FieldHint>{hint}</FieldHint> : !readOnly ? (
-        <FieldHint>You can choose several photos now and use “Add more photos” later.</FieldHint>
+        <FieldHint>
+          {multiple
+            ? 'You can choose several photos now and use “Add more photos” later.'
+            : 'Choose one primary photo. You can replace it later.'}
+        </FieldHint>
       ) : null}
       {items.length ? (
         <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
           {items.map((item, index) => (
             <div
-              key={item.id}
+              key={evidenceRenderKey(item)}
               id={id ? `${id}-${index + 1}` : undefined}
               tabIndex={id ? -1 : undefined}
               className="scroll-mt-4 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface2)]"
@@ -86,6 +106,17 @@ export function EvidenceField({
                 ) : (
                   <p className="text-xs text-[var(--text-sub)]">{item.caption || `Photo ${index + 1}`}</p>
                 )}
+                {showPdfSizing ? (
+                  <div className="mt-2 rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-1">
+                    <Checkbox
+                      label="Show large in PDF"
+                      checked={item.largeInPdf === true}
+                      disabled={readOnly || busy || !onLargeInPdfChange}
+                      onChange={(largeInPdf) => void onLargeInPdfChange?.(item.id, largeInPdf)}
+                    />
+                    <FieldHint>Off uses the compact multi-photo layout.</FieldHint>
+                  </div>
+                ) : null}
                 {!readOnly && onRemove ? (
                   <Button
                     variant="ghost"
@@ -112,14 +143,14 @@ export function EvidenceField({
           className="mt-3 inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-[var(--radius-sm)] border border-[var(--border-strong)] bg-[var(--surface)] px-4 py-2 text-sm font-bold text-[var(--text)] shadow-[var(--shadow-xs)] transition hover:border-[var(--primary)] hover:bg-[var(--primary-soft)] hover:text-[var(--primary)]"
         >
           <Icon name="camera" size={17} />
-          {evidenceActionLabel(items.length, busy)}
+          {evidenceActionLabel(items.length, busy, multiple)}
           <input
             id={inputId}
             className="sr-only"
             type="file"
             accept="image/*"
             capture="environment"
-            multiple
+            multiple={multiple}
             disabled={busy}
             onChange={selectFiles}
           />

@@ -1591,9 +1591,7 @@ export function dispatchSiteSelection(job: DispatchJobInput): {
 
 export function shouldCopyExistingSiteFieldTopology(job: DispatchJobInput): boolean {
   const selection = dispatchSiteSelection(job);
-  const workType = optionalDispatchString(job, 'workType', 120)
-    ?? optionalDispatchString(job, 'serviceType', 120);
-  return selection.mode === 'existing' && workType === COMMS_FAULT_WORK_TYPE;
+  return selection.mode === 'existing';
 }
 
 export function validateDispatchJob(
@@ -1916,6 +1914,7 @@ async function resolveDispatchBusinessSite(
     siteContactPhone: contactPhone,
     siteContactEmail: contactEmail,
     accessInformation,
+    forceNewSite: true,
   });
   const [previous] = await executor.select({
     id: businessJobs.id,

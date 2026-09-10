@@ -23,7 +23,16 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, nowIso } from '@/modules/installhub/lib/model';
-import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
+import {
+  photoLargeInPdf,
+  photoNote,
+  planPrimaryAndAdditionalPhotoFields,
+  removeIndexedPhotoMetadata,
+  removeIndexedPhotoNote,
+  removePhotoMetadata,
+  setPhotoLargeInPdf,
+  setPhotoNote,
+} from '@/modules/installhub/lib/photoNotes';
 import type { ElectricalAsset, ElectricalSourceKind, InstallationTree } from '@/modules/installhub/types/domain';
 import {
   defaultCustomNameForType,
@@ -229,22 +238,36 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
   }
 
   async function uploadMain(files: File[]) {
-    const file = files[0];
-    if (!file || !boardId) return;
+    if (!files.length || !boardId) return;
     setUploading(true);
     try {
       await writer.mutate(async (next) => {
         const target = next.electricalAssets.find((item) => item.id === boardId);
         if (!target) throw new Error('Switchboard not found.');
-        target.photo = await uploadInstallationPhoto(next, {
-          installationId,
-          entityType: 'electrical_asset',
-          entityId: boardId,
-          fieldName: 'photo',
-        }, file);
+        const fieldNames = planPrimaryAndAdditionalPhotoFields({
+          primaryField: 'photo',
+          primaryOccupied: Boolean(target.photo),
+          additionalFieldPrefix: 'extraPhotos',
+          existingAdditionalCount: target.extraPhotos.length,
+          fileCount: files.length,
+        });
+        for (const [index, file] of files.entries()) {
+          const fieldName = fieldNames[index];
+          const uri = await uploadInstallationPhoto(next, {
+            installationId,
+            entityType: 'electrical_asset',
+            entityId: boardId,
+            fieldName,
+          }, file);
+          if (fieldName === 'photo') {
+            target.photo = uri;
+          } else {
+            target.extraPhotos.push(uri);
+          }
+        }
         target.updatedAt = nowIso();
       });
-      toast.success('Switchboard photo uploaded.');
+      toast.success(`${files.length} switchboard photo${files.length === 1 ? '' : 's'} uploaded.`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -287,6 +310,7 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
         if (kind === 'main') {
           target.photo = null;
           target.photoNotes = setPhotoNote(target.photoNotes, 'photo', '');
+          target.photoMetadata = removePhotoMetadata(target.photoMetadata, 'photo');
         }
         else {
           const photoIndex = Number(id);
@@ -295,6 +319,11 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
             (_, index) => index !== photoIndex,
           );
           target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'extraPhotos', photoIndex);
+          target.photoMetadata = removeIndexedPhotoMetadata(
+            target.photoMetadata,
+            'extraPhotos',
+            photoIndex,
+          );
         }
         target.updatedAt = nowIso();
       });
@@ -711,8 +740,11 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                 id: 'main',
                 uri: latest.photo,
                 caption: photoNote(latest.photoNotes, 'photo'),
+                largeInPdf: photoLargeInPdf(latest.photoMetadata, 'photo'),
               }] : []}
               busy={uploading}
+              hint="The first image is the primary switchboard photo. Add more photos here or in the additional-photo area below."
+              showPdfSizing
               onFiles={uploadMain}
               onCaptionChange={(_, caption) => writer.mutate((next) => {
                 const target = next.electricalAssets.find((item) => item.id === boardId);
@@ -720,17 +752,26 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                 target.photoNotes = setPhotoNote(target.photoNotes, 'photo', caption);
                 target.updatedAt = nowIso();
               })}
+              onLargeInPdfChange={(_, largeInPdf) => writer.mutate((next) => {
+                const target = next.electricalAssets.find((item) => item.id === boardId);
+                if (!target) throw new Error('Switchboard not found.');
+                target.photoMetadata = setPhotoLargeInPdf(target.photoMetadata, 'photo', largeInPdf);
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.photo ? () => removePhoto('main') : undefined}
             />
             <EvidenceField
               id="board-extra-photos"
-              label="Extra photos"
+              label="Additional switchboard photos"
+              hint="Add as many supporting photos as needed."
               items={latest.extraPhotos.map((uri, index) => ({
                 id: `${index}`,
                 uri,
                 caption: photoNote(latest.photoNotes, `extraPhotos[${index}]`),
+                largeInPdf: photoLargeInPdf(latest.photoMetadata, `extraPhotos[${index}]`),
               }))}
               busy={uploading}
+              showPdfSizing
               onFiles={uploadExtra}
               onCaptionChange={(id, caption) => writer.mutate((next) => {
                 const target = next.electricalAssets.find((item) => item.id === boardId);
@@ -739,6 +780,16 @@ export function InstallHubBoardPage({ mode }: { mode: 'new' | 'edit' }) {
                   target.photoNotes,
                   `extraPhotos[${Number(id)}]`,
                   caption,
+                );
+                target.updatedAt = nowIso();
+              })}
+              onLargeInPdfChange={(id, largeInPdf) => writer.mutate((next) => {
+                const target = next.electricalAssets.find((item) => item.id === boardId);
+                if (!target) throw new Error('Switchboard not found.');
+                target.photoMetadata = setPhotoLargeInPdf(
+                  target.photoMetadata,
+                  `extraPhotos[${Number(id)}]`,
+                  largeInPdf,
                 );
                 target.updatedAt = nowIso();
               })}

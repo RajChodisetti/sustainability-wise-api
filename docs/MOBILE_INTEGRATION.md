@@ -794,14 +794,17 @@ entered meter number also searches the installed meter register; an exact known
 meter selects and fills its canonical client/site automatically. An unknown
 meter remains valid planning input and the new-site job must still be created.
 Creating the job produces a fresh Draft product record linked to the resolved
-site. An existing-site M2 job copies the latest available, non-deleted Field
-installation topology for that site: zones, switchboards, site assets, devices,
-channels, and electrical mappings. It does not copy completed forms, photos,
-job scope, NMI, or comments. Meter-number suggestions include active devices
+site. Every existing-site Field job copies the latest available, non-deleted
+Field installation site state: zones, switchboards, site assets, active devices,
+channels, electrical mappings, NMI, site/entity comments, entity photo URLs,
+and photo annotations. Copied photo originals remain immutable virtual
+references; the iOS checkout durably downloads their authenticated 400 px
+previews. Completed forms and job-specific planning remain with the historical
+job. Meter-number suggestions include active devices
 from that topology plus linked installed-register records; inactive, planned,
-deleted, blank, and case-insensitive duplicate serials are omitted. Other Field
-work types and unknown-meter/new-site M2 work start with a fresh installation
-workspace.
+deleted, blank, and case-insensitive duplicate serials are omitted. Explicit
+new-site work creates a distinct site and an empty installation workspace even
+when its address matches a saved site.
 
 Editing an explicitly selected existing client/site retains that binding and
 updates the canonical client and site records transactionally with the new job.

@@ -101,8 +101,16 @@ export type UpsertClientSiteFromProductRecordInput = {
   accessInformation?: string | null;
   /** Server-authorized write intent for a product already linked to these records. */
   updateSelectedRecords?: boolean;
+  /** Explicit authoring choice to create a separate empty site, even at a known address. */
+  forceNewSite?: boolean;
   job?: ProductJobMemoryInput;
 };
+
+export function mayReuseSiteAddressMatch(
+  input: Pick<UpsertClientSiteFromProductRecordInput, 'forceNewSite'>,
+): boolean {
+  return input.forceNewSite !== true;
+}
 
 export type ClientDirectorySiteDto = {
   id: string;
@@ -502,10 +510,12 @@ async function resolveSite(
     throw badRequest('client_saved addresses require selectedSiteId');
   }
 
-  const [matching] = await executor.select().from(businessSites).where(and(
-    eq(businessSites.clientId, client.id),
-    eq(businessSites.addressFingerprint, address.fingerprint),
-  )).orderBy(desc(businessSites.updatedAt)).limit(1);
+  const [matching] = mayReuseSiteAddressMatch(input)
+    ? await executor.select().from(businessSites).where(and(
+        eq(businessSites.clientId, client.id),
+        eq(businessSites.addressFingerprint, address.fingerprint),
+      )).orderBy(desc(businessSites.updatedAt)).limit(1)
+    : [];
 
   const siteName = requiredText(input.siteName, 'siteName', 300);
   const timezone = optionalText(input.timezone, 'timezone', 100) ?? 'Australia/Sydney';

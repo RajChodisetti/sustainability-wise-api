@@ -63,6 +63,7 @@ import {
 } from './canonical.js';
 import {
   assertCompletedFormsImmutable,
+  canonicalEvidenceReferences,
   ensureCanonicalRecordVersion,
   existingDisplayCodeClaims,
   isCanonicalChildOwnershipDatabaseError,
@@ -231,25 +232,148 @@ export function retainOmittedMeterLifecycleStates(
   }
 }
 
+type RetainablePhotoOwner = {
+  id: string;
+  photoNotes?: Record<string, string>;
+  photoMetadata?: Record<string, { largeInPdf?: boolean }>;
+};
+
+function evidenceUriIdentity(uri: string): string {
+  const matches = uri.toLowerCase().match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+  );
+  return matches?.at(-1) ?? uri.trim();
+}
+
+function retainOmittedEntityPhotoMap(
+  current: CanonicalInstallationTree,
+  incoming: CanonicalInstallationTree,
+  property: 'photoNotes' | 'photoMetadata',
+): void {
+  const currentReferences = canonicalEvidenceReferences(current)
+    .filter((reference) => reference.entityType !== 'form_submission');
+  const incomingReferences = canonicalEvidenceReferences(incoming)
+    .filter((reference) => reference.entityType !== 'form_submission');
+  const fieldsByOwnerIdentity = new Map<string, string[]>();
+  for (const reference of currentReferences) {
+    const key = [
+      reference.entityType,
+      reference.entityId,
+      evidenceUriIdentity(reference.uri),
+    ].join('\0');
+    const fields = fieldsByOwnerIdentity.get(key) ?? [];
+    fields.push(reference.fieldName);
+    fieldsByOwnerIdentity.set(key, fields);
+  }
+  const incomingReferencesByOwner = new Map<string, typeof incomingReferences>();
+  for (const reference of incomingReferences) {
+    const key = [reference.entityType, reference.entityId].join('\0');
+    const references = incomingReferencesByOwner.get(key) ?? [];
+    references.push(reference);
+    incomingReferencesByOwner.set(key, references);
+  }
+
+  const retain = (
+    entityType: 'zone' | 'electrical_asset' | 'site_asset' | 'meter_device',
+    currentItems: RetainablePhotoOwner[],
+    incomingItems: RetainablePhotoOwner[],
+  ): void => {
+    const currentById = new Map(currentItems.map((item) => [item.id, item]));
+    for (const item of incomingItems) {
+      if (item[property] !== undefined) continue;
+      const currentItem = currentById.get(item.id);
+      const currentMap = currentItem?.[property] as Record<string, unknown> | undefined;
+      const rebound: Record<string, unknown> = {};
+      const ownerReferences = incomingReferencesByOwner.get(
+        [entityType, item.id].join('\0'),
+      ) ?? [];
+      const incomingIdentityCounts = new Map<string, number>();
+      for (const reference of ownerReferences) {
+        const identity = evidenceUriIdentity(reference.uri);
+        incomingIdentityCounts.set(identity, (incomingIdentityCounts.get(identity) ?? 0) + 1);
+      }
+      for (const reference of ownerReferences) {
+        const identity = evidenceUriIdentity(reference.uri);
+        const fields = fieldsByOwnerIdentity.get([
+          entityType,
+          item.id,
+          identity,
+        ].join('\0')) ?? [];
+        // Repeated use of one immutable photo identity cannot prove which
+        // indexed caption/flag survived a legacy deletion or reorder. Drop the
+        // ambiguous inherited value rather than attach it to the wrong photo.
+        if (fields.length !== 1 || incomingIdentityCounts.get(identity) !== 1) continue;
+        const currentField = fields[0];
+        if (
+          !currentField
+          || !currentMap
+          || !Object.prototype.hasOwnProperty.call(currentMap, currentField)
+        ) continue;
+        rebound[reference.fieldName] = structuredClone(currentMap[currentField]);
+      }
+      if (property === 'photoNotes') {
+        item.photoNotes = rebound as Record<string, string>;
+      } else {
+        item.photoMetadata = rebound as Record<string, { largeInPdf?: boolean }>;
+      }
+    }
+  };
+
+  retain('zone', current.zones, incoming.zones);
+  retain('electrical_asset', current.electricalAssets, incoming.electricalAssets);
+  retain('site_asset', current.siteAssets, incoming.siteAssets);
+  retain('meter_device', current.meterDevices, incoming.meterDevices);
+}
+
 /** Preserves notes authored by newer clients when an older full-tree client omits the additive field. */
 export function retainOmittedPhotoNotes(
   current: CanonicalInstallationTree,
   incoming: CanonicalInstallationTree,
 ): void {
-  const retain = <T extends { id: string; photoNotes?: Record<string, string> }>(
-    currentItems: T[],
-    incomingItems: T[],
-  ) => {
-    const currentById = new Map(currentItems.map((item) => [item.id, item]));
-    for (const item of incomingItems) {
-      if (item.photoNotes !== undefined) continue;
-      item.photoNotes = currentById.get(item.id)?.photoNotes ?? {};
+  retainOmittedEntityPhotoMap(current, incoming, 'photoNotes');
+}
+
+/** Preserves PDF sizing authored by newer clients when an older full-tree client omits it. */
+export function retainOmittedPhotoMetadata(
+  current: CanonicalInstallationTree,
+  incoming: CanonicalInstallationTree,
+): void {
+  retainOmittedEntityPhotoMap(current, incoming, 'photoMetadata');
+}
+
+/**
+ * An installed client predating per-attachment PDF sizing sends the same
+ * stable attachment ID without `largeInPdf`. Preserve the server value only
+ * for that omitted property; an explicit false is the user's untick action.
+ */
+export function retainOmittedAttachmentPdfSizing(
+  current: CanonicalInstallationTree,
+  incoming: CanonicalInstallationTree,
+): void {
+  const currentForms = new Map(current.formSubmissions.map((form) => [form.id, form]));
+  for (const form of incoming.formSubmissions) {
+    const currentForm = currentForms.get(form.id);
+    if (!currentForm) continue;
+    const currentAttachments = new Map(currentForm.attachments.flatMap((attachment) => {
+      if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return [];
+      const item = attachment as Record<string, unknown>;
+      return typeof item.id === 'string' && item.id ? [[item.id, item] as const] : [];
+    }));
+    for (const attachment of form.attachments) {
+      if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) continue;
+      const item = attachment as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(item, 'largeInPdf')) continue;
+      const currentAttachment = typeof item.id === 'string'
+        ? currentAttachments.get(item.id)
+        : undefined;
+      if (
+        currentAttachment
+        && typeof currentAttachment.largeInPdf === 'boolean'
+      ) {
+        item.largeInPdf = currentAttachment.largeInPdf;
+      }
     }
-  };
-  retain(current.zones, incoming.zones);
-  retain(current.electricalAssets, incoming.electricalAssets);
-  retain(current.siteAssets, incoming.siteAssets);
-  retain(current.meterDevices, incoming.meterDevices);
+  }
 }
 
 /**
@@ -1110,6 +1234,9 @@ function zoneValues(
     photoNotes: item.photoNotes === undefined
       ? existing?.photoNotes ?? {}
       : jsonObject(item.photoNotes) as Record<string, string>,
+    photoMetadata: item.photoMetadata === undefined
+      ? existing?.photoMetadata ?? {}
+      : jsonObject(item.photoMetadata) as Record<string, { largeInPdf?: boolean }>,
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
   };
 }
@@ -1142,6 +1269,9 @@ function electricalAssetValues(
     photoNotes: item.photoNotes === undefined
       ? existing?.photoNotes ?? {}
       : jsonObject(item.photoNotes) as Record<string, string>,
+    photoMetadata: item.photoMetadata === undefined
+      ? existing?.photoMetadata ?? {}
+      : jsonObject(item.photoMetadata) as Record<string, { largeInPdf?: boolean }>,
     meterPresent: Boolean(item.meterPresent),
     meters: jsonArray(item.meters),
     subCircuitsDescription: optionalString(item, 'subCircuitsDescription'),
@@ -1180,6 +1310,9 @@ function siteAssetValues(
     photoNotes: item.photoNotes === undefined
       ? existing?.photoNotes ?? {}
       : jsonObject(item.photoNotes) as Record<string, string>,
+    photoMetadata: item.photoMetadata === undefined
+      ? existing?.photoMetadata ?? {}
+      : jsonObject(item.photoMetadata) as Record<string, { largeInPdf?: boolean }>,
     createdAt: item.createdAt ? dateOrNow(item.createdAt) : (existing?.createdAt ?? new Date()),
   };
 }
@@ -1873,6 +2006,8 @@ export async function installhubSyncRoutes(app: FastifyInstance): Promise<void> 
             );
             retainOmittedMeterLifecycleStates(currentTree, incomingTree);
             retainOmittedPhotoNotes(currentTree, incomingTree);
+            retainOmittedPhotoMetadata(currentTree, incomingTree);
+            retainOmittedAttachmentPdfSizing(currentTree, incomingTree);
             if (syncStage === 'metadata') {
               // Installed clients stage server-completed forms as Draft during
               // metadata sync. Restore those first so only a genuinely pending

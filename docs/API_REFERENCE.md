@@ -238,11 +238,14 @@ explicitly chooses a new site or an existing site. An existing-site request must
 carry the selected canonical `existingSiteId`; its submitted site fields are the
 editable copy shown to the user and become the site's current known details.
 The new `business_jobs` row receives the next per-site/per-app `revisionNumber`
-and `previousJobId`. The source product row is always new: Field copies known
-electrical topology, meters, channels, and assignments without copying completed
-forms only for an explicit existing-site `M2 - Faults / COMMS fault` request;
-other Field work types and new-site M2 requests start with an empty installation
-workspace. The M2 meter suggestions are read from that same latest available,
+and `previousJobId`. The source product row is always new: every explicit
+existing-site Field request copies the latest known site topology, NMI, entity
+comments, photo references, meters, channels, and assignments without copying
+completed forms or prior job-specific planning. Copied originals remain
+immutable virtual references and assigned iOS checkouts cache authenticated
+400 px previews. An explicit new-site request creates a distinct site and an
+empty installation workspace even when the address matches a saved site. The
+M2 meter suggestions are read from that same latest available,
 non-deleted source installation and include active devices plus legacy devices
 whose lifecycle is missing, but not planned, inactive, deleted, blank, or
 case-insensitive duplicate serials. EcoAudit copies its audit zones and

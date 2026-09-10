@@ -434,6 +434,7 @@ export function canonicalMeterDevice(
       },
       wwPhotos: meter.wwPhotos as Record<string, unknown> | undefined || prior?.wwPhotos || {},
       photoNotes: meter.photoNotes ?? prior?.photoNotes ?? {},
+      photoMetadata: meter.photoMetadata ?? prior?.photoMetadata ?? {},
       notes: meter.notes ?? prior?.notes ?? null,
   };
 }

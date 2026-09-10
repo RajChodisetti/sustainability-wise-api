@@ -253,6 +253,7 @@ export async function loadCanonicalInstallationTree(
       zoneDescription: row.zoneDescription,
       photos: row.photos,
       photoNotes: row.photoNotes,
+      photoMetadata: row.photoMetadata,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       deletedAt: iso(row.deletedAt),
@@ -283,6 +284,7 @@ export async function loadCanonicalInstallationTree(
       photo: row.photo,
       extraPhotos: row.extraPhotos,
       photoNotes: row.photoNotes,
+      photoMetadata: row.photoMetadata,
       meterPresent: row.meterPresent,
       subCircuitsDescription: row.subCircuitsDescription,
       comments: row.comments,
@@ -320,6 +322,7 @@ export async function loadCanonicalInstallationTree(
       comments: row.comments,
       extraPhotos: row.extraPhotos,
       photoNotes: row.photoNotes,
+      photoMetadata: row.photoMetadata,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
       deletedAt: iso(row.deletedAt),
@@ -360,6 +363,7 @@ export async function loadCanonicalInstallationTree(
       commissioningData: row.commissioningData as MeterDevice['commissioningData'] ?? undefined,
       wwPhotos: row.wwPhotos,
       photoNotes: row.photoNotes,
+      photoMetadata: row.photoMetadata,
       notes: row.notes,
       createdAt: iso(row.createdAt),
       updatedAt: iso(row.updatedAt),
@@ -520,6 +524,7 @@ export function projectLegacyInstallationTree(tree: CanonicalInstallationTree) {
           })),
           wwPhotos: meter.wwPhotos ?? {},
           photoNotes: meter.photoNotes ?? {},
+          photoMetadata: meter.photoMetadata ?? {},
         })),
     })),
     siteAssets: tree.siteAssets.map((asset) => ({
@@ -1081,6 +1086,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       zoneDescription: zone.zoneDescription,
       photos: zone.photos,
       photoNotes: zone.photoNotes ?? {},
+      photoMetadata: zone.photoMetadata ?? {},
       syncStatus: 'synced',
       updatedAt: now,
       deletedAt: null,
@@ -1147,6 +1153,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       photo: board.photo ?? null,
       extraPhotos: board.extraPhotos,
       photoNotes: board.photoNotes ?? {},
+      photoMetadata: board.photoMetadata ?? {},
       meterPresent: board.meterPresent,
       meters: [],
       subCircuitsDescription: board.subCircuitsDescription ?? null,
@@ -1194,6 +1201,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       comments: asset.comments ?? null,
       extraPhotos: asset.extraPhotos,
       photoNotes: asset.photoNotes ?? {},
+      photoMetadata: asset.photoMetadata ?? {},
       syncStatus: 'synced',
       updatedAt: now,
       deletedAt: null,
@@ -1225,6 +1233,7 @@ async function replaceCanonicalInstallationChildrenUnchecked(
       } : {}),
       wwPhotos: meter.wwPhotos ?? {},
       photoNotes: meter.photoNotes ?? {},
+      photoMetadata: meter.photoMetadata ?? {},
       notes: meter.notes ?? null,
       syncStatus: 'synced',
       updatedAt: now,
@@ -1853,18 +1862,34 @@ export function canonicalSnapshotContentHash(
   const missingFields = nullableInstallationFields.filter((field) => (
     !Object.prototype.hasOwnProperty.call(installation, field)
   ));
-  const comparable = missingFields.length === 0
-    ? canonicalizerComparable
-    : {
-        ...canonicalizerComparable,
-        installationTree: {
-          ...canonicalizerComparable.installationTree,
-          installation: {
-            ...installation,
-            ...Object.fromEntries(missingFields.map((field) => [field, null])),
-          },
-        },
-      };
+  const withPhotoMetadata = <T extends { photoMetadata?: unknown }>(items: T[]): T[] => (
+    items.map((item) => (
+      Object.prototype.hasOwnProperty.call(item, 'photoMetadata')
+        ? item
+        : { ...item, photoMetadata: {} }
+    ))
+  );
+  const comparable = {
+    ...canonicalizerComparable,
+    installationTree: {
+      ...canonicalizerComparable.installationTree,
+      installation: {
+        ...installation,
+        ...Object.fromEntries(missingFields.map((field) => [field, null])),
+      },
+      // Historical snapshots predate the additive PDF-sizing map. Treat an
+      // absent map as the new empty-map default for content deduplication only;
+      // the immutable stored payload and its exact hash remain unchanged.
+      zones: withPhotoMetadata(canonicalizerComparable.installationTree.zones),
+      electricalAssets: withPhotoMetadata(
+        canonicalizerComparable.installationTree.electricalAssets,
+      ),
+      siteAssets: withPhotoMetadata(canonicalizerComparable.installationTree.siteAssets),
+      meterDevices: withPhotoMetadata(
+        canonicalizerComparable.installationTree.meterDevices,
+      ),
+    },
+  };
   return canonicalPayloadHash(comparable);
 }
 

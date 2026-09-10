@@ -4,9 +4,16 @@ import { AppError } from '../utils/errors.js';
 import {
   BUSINESS_COMPANY_KEY,
   businessClientMergeLockKeys,
+  mayReuseSiteAddressMatch,
   normalizeClientName,
   normalizeFieldExistingDeviceId,
 } from './clientSiteMemoryService.js';
+
+test('an explicit fresh-site choice cannot reuse a same-address site record', () => {
+  assert.equal(mayReuseSiteAddressMatch({}), true);
+  assert.equal(mayReuseSiteAddressMatch({ forceNewSite: false }), true);
+  assert.equal(mayReuseSiteAddressMatch({ forceNewSite: true }), false);
+});
 
 test('client matching uses one NFKC, whitespace-collapsed, case-insensitive key', () => {
   assert.equal(normalizeClientName('  ABC   Energy  '), 'abc energy');

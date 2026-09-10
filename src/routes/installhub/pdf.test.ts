@@ -8,12 +8,14 @@ import {
   assertPinnedSnapshotProvenance,
   buildElectricalMapDownloadArtifact,
   installHubChannelLoadLabel,
+  installHubEntityPhotoReferences,
   installhubPdfRoutes,
   liveDiagnosticCanonicalReport,
   registerInstallHubElectricalMapDownloadRoute,
   installHubReportVariantKey,
   pinnedCanonicalReport,
   pinnedPhotoMatchesManifest,
+  reportAttachments,
   requestedElectricalMapDownloadFormat,
   requestedLiveMode,
   requestedReportDetailMode,
@@ -117,6 +119,39 @@ test('pinned reports require exact registry identity and checksum', () => {
     id: '22222222-2222-4222-8222-222222222222',
     checksum: manifest.checksum,
   }, manifest), false);
+});
+
+test('report attachment projection preserves explicit compact and large sizing', () => {
+  assert.deepEqual(reportAttachments([
+    { id: 'compact', slot: 'photo.one', uri: 'https://files.example/one.jpg', largeInPdf: false },
+    { id: 'large', slot: 'photo.two', uri: 'https://files.example/two.jpg', largeInPdf: true },
+  ]).map((attachment) => attachment.largeInPdf), [false, true]);
+});
+
+test('entity report references keep canonical captions and explicit PDF sizing', () => {
+  const tree = electricalMapRouteTree();
+  const photoId = '11111111-1111-4111-8111-111111111111';
+  tree.zones = [{
+    id: 'zone-1',
+    installationId: tree.installation.id,
+    zoneCode: 'PLANT-01',
+    zoneName: 'Plant room',
+    zoneDescription: '',
+    photos: [`https://files.example/installhub/${tree.installation.id}/photo-${photoId}.jpg`],
+    photoNotes: { 'photos[0]': 'Main incomer wall' },
+    photoMetadata: { 'photos[0]': { largeInPdf: false } },
+  }];
+
+  assert.deepEqual(installHubEntityPhotoReferences(tree), [{
+    entityType: 'zone',
+    entityId: 'zone-1',
+    fieldName: 'photos[0]',
+    uri: `https://files.example/installhub/${tree.installation.id}/photo-${photoId}.jpg`,
+    groupKey: 'zone:zone-1',
+    groupLabel: 'Zone · Plant room',
+    caption: 'Main incomer wall',
+    largeInPdf: false,
+  }]);
 });
 
 test('authoritative reports require a version and live diagnostics are explicit', () => {
@@ -343,7 +378,7 @@ test('installation-pack detail mode and durable variant normalize deterministica
   }));
   assert.match(
     normalized,
-    /^installation-pack:v10:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
+    /^installation-pack:v11:by-zone:map:tree-revision-7:forms-[a-f0-9]{24}$/,
   );
   assert.notEqual(
     installHubReportVariantKey({

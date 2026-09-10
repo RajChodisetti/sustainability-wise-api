@@ -672,6 +672,14 @@ export function InstallHubFormEditorPage() {
                       );
                       setDirty(true);
                     }}
+                    onLargeInPdf={(id, largeInPdf) => {
+                      setAttachments((current) =>
+                        current.map((item) =>
+                          item.id === id ? { ...item, largeInPdf } : item,
+                        ),
+                      );
+                      setDirty(true);
+                    }}
                     onRemove={(id) => {
                       setAttachments((current) =>
                         current.filter((item) => item.id !== id),
@@ -738,6 +746,7 @@ function FormField({
   onChange,
   onUpload,
   onCaption,
+  onLargeInPdf,
   onRemove,
 }: {
   field: FormFieldDefinition;
@@ -749,6 +758,7 @@ function FormField({
   onChange: (key: string, value: string) => void;
   onUpload: (files: File[]) => Promise<void>;
   onCaption: (id: string, caption: string) => void;
+  onLargeInPdf: (id: string, largeInPdf: boolean) => void;
   onRemove: (id: string) => void;
 }) {
   const label = `${field.label}${field.required ? ' *' : ''}`;
@@ -765,9 +775,13 @@ function FormField({
           items={items}
           busy={uploading}
           readOnly={readOnly}
+          showPdfSizing
           onFiles={onUpload}
           onCaptionChange={
             readOnly ? undefined : (id, caption) => onCaption(id, caption)
+          }
+          onLargeInPdfChange={
+            readOnly ? undefined : (id, largeInPdf) => onLargeInPdf(id, largeInPdf)
           }
           onRemove={
             readOnly || !items.length
@@ -929,6 +943,7 @@ function LegacyFormRecord({ form }: { form: FormSubmission }) {
             label="Legacy evidence"
             items={form.attachments}
             readOnly
+            showPdfSizing
             onFiles={() => undefined}
           />
         </div>

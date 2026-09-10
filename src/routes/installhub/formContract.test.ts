@@ -647,6 +647,18 @@ test('attachments require a unique identity, image metadata, timestamp and remot
     }),
     detailMatches(/remote HTTP\(S\) URL/),
   );
+
+  assert.doesNotThrow(() => validateInstallHubFormContract({
+    ...fixture,
+    attachments: [{ ...base, largeInPdf: false }, ...fixture.attachments.slice(1)],
+  }));
+  assert.throws(
+    () => validateInstallHubFormContract({
+      ...fixture,
+      attachments: [{ ...base, largeInPdf: 'yes' }, ...fixture.attachments.slice(1)],
+    }),
+    detailMatches(/largeInPdf must be a boolean/),
+  );
 });
 
 test('schema-v2 rejects unsupported answer keys instead of silently persisting drift', () => {

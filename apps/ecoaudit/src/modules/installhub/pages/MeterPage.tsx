@@ -29,7 +29,16 @@ import {
 import { useInstallHubAuth } from '@/modules/installhub/contexts/AuthContext';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createMeter, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
-import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
+import {
+  photoLargeInPdf,
+  photoNote,
+  planPrimaryAndAdditionalPhotoFields,
+  removeIndexedPhotoMetadata,
+  removeIndexedPhotoNote,
+  removePhotoMetadata,
+  setPhotoLargeInPdf,
+  setPhotoNote,
+} from '@/modules/installhub/lib/photoNotes';
 import {
   defaultCustomNameForType,
   defaultMeterCustomName,
@@ -832,8 +841,7 @@ export function InstallHubMeterPage({
       toast.error('Retry or discard the pending meter write before changing evidence.');
       return;
     }
-    const file = files[0];
-    if (!file || !meterId) return;
+    if (!files.length || !meterId) return;
     setUploading(true);
     pendingWriteKindRef.current = 'evidence';
     try {
@@ -844,19 +852,41 @@ export function InstallHubMeterPage({
         const targetDevice = next.meterDevices?.find((item) => item.id === meterId);
         if (!targetMeter || !targetDevice) throw new Error('Meter not found.');
         targetMeter.wwPhotos = targetMeter.wwPhotos ?? { extra: [] };
-        const uri = await uploadInstallationPhoto(next, {
-          installationId,
-          entityType: 'meter_device',
-          entityId: meterId,
-          fieldName: `wwPhotos.${slot}`,
-        }, file);
-        targetMeter.wwPhotos[slot] = uri;
-        targetDevice.wwPhotos = { ...(targetDevice.wwPhotos || {}), [slot]: uri };
+        targetMeter.wwPhotos.extra = targetMeter.wwPhotos.extra ?? [];
+        const canonicalPhotos = { ...(targetDevice.wwPhotos || {}) };
+        const canonicalExtra = Array.isArray(canonicalPhotos.extra)
+          ? canonicalPhotos.extra.filter((item): item is string => typeof item === 'string')
+          : [];
+        const primaryField = `wwPhotos.${slot}`;
+        const fieldNames = planPrimaryAndAdditionalPhotoFields({
+          primaryField,
+          primaryOccupied: Boolean(targetMeter.wwPhotos[slot]),
+          additionalFieldPrefix: 'wwPhotos.extra',
+          existingAdditionalCount: canonicalExtra.length,
+          fileCount: files.length,
+        });
+        for (const [index, file] of files.entries()) {
+          const fieldName = fieldNames[index];
+          const uri = await uploadInstallationPhoto(next, {
+            installationId,
+            entityType: 'meter_device',
+            entityId: meterId,
+            fieldName,
+          }, file);
+          if (fieldName === primaryField) {
+            targetMeter.wwPhotos[slot] = uri;
+            canonicalPhotos[slot] = uri;
+          } else {
+            targetMeter.wwPhotos.extra.push(uri);
+            canonicalExtra.push(uri);
+          }
+        }
+        targetDevice.wwPhotos = { ...canonicalPhotos, extra: canonicalExtra };
         targetBoard.updatedAt = nowIso();
       });
       updateEditorEvidenceBaseline(confirmed);
       pendingWriteKindRef.current = null;
-      toast.success('Meter evidence uploaded.');
+      toast.success(`${files.length} meter photo${files.length === 1 ? '' : 's'} uploaded.`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -940,13 +970,24 @@ export function InstallHubMeterPage({
             'wwPhotos.extra',
             photoIndex,
           );
+          targetDevice.photoMetadata = removeIndexedPhotoMetadata(
+            targetDevice.photoMetadata,
+            'wwPhotos.extra',
+            photoIndex,
+          );
         }
         else {
           target.wwPhotos[slot] = null;
           canonicalPhotos[slot] = null;
           targetDevice.photoNotes = setPhotoNote(targetDevice.photoNotes, `wwPhotos.${slot}`, '');
+          targetDevice.photoMetadata = removePhotoMetadata(
+            targetDevice.photoMetadata,
+            `wwPhotos.${slot}`,
+          );
         }
         targetDevice.wwPhotos = canonicalPhotos;
+        target.photoNotes = targetDevice.photoNotes;
+        target.photoMetadata = targetDevice.photoMetadata;
       });
       updateEditorEvidenceBaseline(confirmed);
       pendingWriteKindRef.current = null;
@@ -971,6 +1012,33 @@ export function InstallHubMeterPage({
         if (!targetDevice || !targetMeter) throw new Error('Meter not found.');
         targetDevice.photoNotes = setPhotoNote(targetDevice.photoNotes, fieldName, caption);
         targetMeter.photoNotes = targetDevice.photoNotes;
+      });
+      updateEditorEvidenceBaseline(confirmed);
+      pendingWriteKindRef.current = null;
+    } catch (error) {
+      toast.error(installHubConnectionErrorMessage(error));
+    }
+  }
+
+  async function updatePhotoLargeInPdf(fieldName: string, largeInPdf: boolean) {
+    if (writer.hasPendingTree) {
+      toast.error('Retry or discard the pending meter write before changing PDF photo settings.');
+      return;
+    }
+    pendingWriteKindRef.current = 'evidence';
+    try {
+      const confirmed = await writer.mutate((next) => {
+        const targetDevice = next.meterDevices?.find((item) => item.id === meterId);
+        const targetMeter = next.electricalAssets
+          .find((item) => item.id === boardId)
+          ?.meters.find((item) => item.id === meterId);
+        if (!targetDevice || !targetMeter) throw new Error('Meter not found.');
+        targetDevice.photoMetadata = setPhotoLargeInPdf(
+          targetDevice.photoMetadata,
+          fieldName,
+          largeInPdf,
+        );
+        targetMeter.photoMetadata = targetDevice.photoMetadata;
       });
       updateEditorEvidenceBaseline(confirmed);
       pendingWriteKindRef.current = null;
@@ -2660,10 +2728,24 @@ export function InstallHubMeterPage({
                 key={slot}
                 id={`meter-photo-${slot}`}
                 label={label}
-                items={uri ? [{ id: slot, uri, caption: photoNote(latestDevice?.photoNotes, `wwPhotos.${slot}`) }] : []}
+                items={uri ? [{
+                  id: slot,
+                  uri,
+                  caption: photoNote(latestDevice?.photoNotes ?? latest.photoNotes, `wwPhotos.${slot}`),
+                  largeInPdf: photoLargeInPdf(
+                    latestDevice?.photoMetadata ?? latest.photoMetadata,
+                    `wwPhotos.${slot}`,
+                  ),
+                }] : []}
                 busy={uploading || busy || writer.hasPendingTree}
+                hint="The first image stays in this evidence slot. Add more photos here and they will appear under Additional meter photos."
+                showPdfSizing
                 onFiles={(files) => uploadSingle(slot, files)}
                 onCaptionChange={(_, caption) => updatePhotoNote(`wwPhotos.${slot}`, caption)}
+                onLargeInPdfChange={(_, largeInPdf) => updatePhotoLargeInPdf(
+                  `wwPhotos.${slot}`,
+                  largeInPdf,
+                )}
                 onRemove={uri ? () => removePhoto(slot) : undefined}
               />
             );
@@ -2674,11 +2756,21 @@ export function InstallHubMeterPage({
             items={(latest.wwPhotos?.extra ?? []).map((uri, index) => ({
               id: `${index}`,
               uri,
-              caption: photoNote(latestDevice?.photoNotes, `wwPhotos.extra[${index}]`),
+              caption: photoNote(latestDevice?.photoNotes ?? latest.photoNotes, `wwPhotos.extra[${index}]`),
+              largeInPdf: photoLargeInPdf(
+                latestDevice?.photoMetadata ?? latest.photoMetadata,
+                `wwPhotos.extra[${index}]`,
+              ),
             }))}
             busy={uploading || busy || writer.hasPendingTree}
+            hint="Add as many supporting meter photos as needed."
+            showPdfSizing
             onFiles={uploadExtra}
             onCaptionChange={(id, caption) => updatePhotoNote(`wwPhotos.extra[${Number(id)}]`, caption)}
+            onLargeInPdfChange={(id, largeInPdf) => updatePhotoLargeInPdf(
+              `wwPhotos.extra[${Number(id)}]`,
+              largeInPdf,
+            )}
             onRemove={latest.wwPhotos?.extra?.length ? (id) => removePhoto('extra', id) : undefined}
           />
         </Card>

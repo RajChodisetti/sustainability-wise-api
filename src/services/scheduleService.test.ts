@@ -183,7 +183,7 @@ test('Field dispatch accepts optional job end date and 24-hour end time', () => 
   );
 });
 
-test('Field topology copy is limited to explicit existing-site M2 dispatches', () => {
+test('Field site state is copied for every explicit existing-site dispatch', () => {
   assert.equal(shouldCopyExistingSiteFieldTopology({
     siteMode: 'existing',
     existingSiteId: 'site-1',
@@ -193,7 +193,7 @@ test('Field topology copy is limited to explicit existing-site M2 dispatches', (
     siteMode: 'existing',
     existingSiteId: 'site-1',
     workType: 'M1 - New install',
-  }), false);
+  }), true);
   assert.equal(shouldCopyExistingSiteFieldTopology({
     siteMode: 'new',
     workType: 'M2 - Faults / COMMS fault',

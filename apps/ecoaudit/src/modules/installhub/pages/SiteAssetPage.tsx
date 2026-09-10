@@ -22,7 +22,16 @@ import { installHubConnectionErrorMessage } from '@/modules/installhub/api/clien
 import { uploadInstallationPhoto } from '@/modules/installhub/api/installhub';
 import { useInstallationTree, useTreeWriter } from '@/modules/installhub/hooks/useInstallationTree';
 import { createBoard, createSiteAsset, nowIso } from '@/modules/installhub/lib/model';
-import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
+import {
+  photoLargeInPdf,
+  photoNote,
+  planPrimaryAndAdditionalPhotoFields,
+  removeIndexedPhotoMetadata,
+  removeIndexedPhotoNote,
+  removePhotoMetadata,
+  setPhotoLargeInPdf,
+  setPhotoNote,
+} from '@/modules/installhub/lib/photoNotes';
 import {
   assetMeterDraftKey,
   measurementTargetDetails,
@@ -469,22 +478,36 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
   }
 
   async function uploadLocation(files: File[]) {
-    const file = files[0];
-    if (!file || !assetId) return;
+    if (!files.length || !assetId) return;
     setUploading(true);
     try {
       await writer.mutate(async (next) => {
         const target = next.siteAssets.find((item) => item.id === assetId);
         if (!target) throw new Error('Site asset not found.');
-        target.locationPhoto = await uploadInstallationPhoto(next, {
-          installationId,
-          entityType: 'site_asset',
-          entityId: assetId,
-          fieldName: 'locationPhoto',
-        }, file);
+        const fieldNames = planPrimaryAndAdditionalPhotoFields({
+          primaryField: 'locationPhoto',
+          primaryOccupied: Boolean(target.locationPhoto),
+          additionalFieldPrefix: 'extraPhotos',
+          existingAdditionalCount: target.extraPhotos.length,
+          fileCount: files.length,
+        });
+        for (const [index, file] of files.entries()) {
+          const fieldName = fieldNames[index];
+          const uri = await uploadInstallationPhoto(next, {
+            installationId,
+            entityType: 'site_asset',
+            entityId: assetId,
+            fieldName,
+          }, file);
+          if (fieldName === 'locationPhoto') {
+            target.locationPhoto = uri;
+          } else {
+            target.extraPhotos.push(uri);
+          }
+        }
         target.updatedAt = nowIso();
       });
-      toast.success('Location photo uploaded.');
+      toast.success(`${files.length} site asset photo${files.length === 1 ? '' : 's'} uploaded.`);
     } catch (error) {
       toast.error(installHubConnectionErrorMessage(error));
     } finally {
@@ -526,6 +549,7 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
         if (kind === 'location') {
           target.locationPhoto = null;
           target.photoNotes = setPhotoNote(target.photoNotes, 'locationPhoto', '');
+          target.photoMetadata = removePhotoMetadata(target.photoMetadata, 'locationPhoto');
         }
         else {
           const photoIndex = Number(id);
@@ -534,6 +558,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
             (_, index) => index !== photoIndex,
           );
           target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'extraPhotos', photoIndex);
+          target.photoMetadata = removeIndexedPhotoMetadata(
+            target.photoMetadata,
+            'extraPhotos',
+            photoIndex,
+          );
         }
         target.updatedAt = nowIso();
       });
@@ -1422,8 +1451,11 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                 id: 'location',
                 uri: latest.locationPhoto,
                 caption: photoNote(latest.photoNotes, 'locationPhoto'),
+                largeInPdf: photoLargeInPdf(latest.photoMetadata, 'locationPhoto'),
               }] : []}
               busy={uploading}
+              hint="The first image is the location photo. Add more photos here or in the additional-photo area below."
+              showPdfSizing
               onFiles={uploadLocation}
               onCaptionChange={(_, caption) => writer.mutate((next) => {
                 const target = next.siteAssets.find((item) => item.id === assetId);
@@ -1431,22 +1463,45 @@ export function InstallHubSiteAssetPage({ mode }: { mode: 'new' | 'edit' }) {
                 target.photoNotes = setPhotoNote(target.photoNotes, 'locationPhoto', caption);
                 target.updatedAt = nowIso();
               })}
+              onLargeInPdfChange={(_, largeInPdf) => writer.mutate((next) => {
+                const target = next.siteAssets.find((item) => item.id === assetId);
+                if (!target) throw new Error('Site asset not found.');
+                target.photoMetadata = setPhotoLargeInPdf(
+                  target.photoMetadata,
+                  'locationPhoto',
+                  largeInPdf,
+                );
+                target.updatedAt = nowIso();
+              })}
               onRemove={latest.locationPhoto ? () => removePhoto('location') : undefined}
             />
             <EvidenceField
               id="asset-extra-photos"
-              label="Extra photos"
+              label="Additional site asset photos"
+              hint="Add as many supporting photos as needed."
               items={latest.extraPhotos.map((uri, index) => ({
                 id: `${index}`,
                 uri,
                 caption: photoNote(latest.photoNotes, `extraPhotos[${index}]`),
+                largeInPdf: photoLargeInPdf(latest.photoMetadata, `extraPhotos[${index}]`),
               }))}
               busy={uploading}
+              showPdfSizing
               onFiles={uploadExtra}
               onCaptionChange={(id, caption) => writer.mutate((next) => {
                 const target = next.siteAssets.find((item) => item.id === assetId);
                 if (!target) throw new Error('Site asset not found.');
                 target.photoNotes = setPhotoNote(target.photoNotes, `extraPhotos[${Number(id)}]`, caption);
+                target.updatedAt = nowIso();
+              })}
+              onLargeInPdfChange={(id, largeInPdf) => writer.mutate((next) => {
+                const target = next.siteAssets.find((item) => item.id === assetId);
+                if (!target) throw new Error('Site asset not found.');
+                target.photoMetadata = setPhotoLargeInPdf(
+                  target.photoMetadata,
+                  `extraPhotos[${Number(id)}]`,
+                  largeInPdf,
+                );
                 target.updatedAt = nowIso();
               })}
               onRemove={latest.extraPhotos.length ? (id) => removePhoto('extra', id) : undefined}

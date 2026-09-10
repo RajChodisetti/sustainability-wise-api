@@ -48,6 +48,7 @@ export type InstallHubReportAttachment = {
   uri: string;
   mimeType?: string;
   caption?: string;
+  largeInPdf?: boolean;
   capturedAt?: string;
 };
 
@@ -77,6 +78,7 @@ export type InstallHubReportInstallation = {
 
 export type InstallHubReportPhoto = {
   id: string;
+  entityType?: string;
   entityId: string;
   fieldName: string;
   storageKey: string | null;
@@ -196,6 +198,22 @@ export type ResolvedInstallHubFormPhoto = {
   attachmentIndex: number;
   slot: string;
   caption?: string;
+  largeInPdf?: boolean;
+  photo: InstallHubReportPhoto;
+};
+
+export type InstallHubEntityPhotoReference = {
+  entityType: 'zone' | 'electrical_asset' | 'site_asset' | 'meter_device';
+  entityId: string;
+  fieldName: string;
+  uri: string;
+  groupKey: string;
+  groupLabel: string;
+  caption: string;
+  largeInPdf: boolean;
+};
+
+export type ResolvedInstallHubEntityPhoto = InstallHubEntityPhotoReference & {
   photo: InstallHubReportPhoto;
 };
 
@@ -204,6 +222,8 @@ export type InstallHubFormReportSlice = {
   sectionIndexes: number[];
   continuation: boolean;
   photoCount: number;
+  /** Present only when an oversized section is split between photo cards. */
+  attachmentIndexes?: number[];
 };
 
 export class MissingInstallHubReportEvidenceError extends Error {
@@ -222,11 +242,27 @@ export class MissingInstallHubReportEvidenceError extends Error {
   }
 }
 
+export class MissingInstallHubEntityEvidenceError extends Error {
+  constructor(
+    readonly references: InstallHubEntityPhotoReference[],
+  ) {
+    super(
+      `${references.length} installation evidence reference${
+        references.length === 1 ? '' : 's'
+      } do not have confirmed original evidence (${references
+        .map((reference) => `${reference.entityType}:${reference.entityId}:${reference.fieldName}`)
+        .join(', ')})`,
+    );
+    this.name = 'MissingInstallHubEntityEvidenceError';
+  }
+}
+
 export function safeInstallHubReportFailure(error: unknown): {
   code: 'missing_confirmed_evidence' | 'report_generation_failed';
   publicMessage: string;
 } {
   return error instanceof MissingInstallHubReportEvidenceError
+    || error instanceof MissingInstallHubEntityEvidenceError
     ? {
         code: 'missing_confirmed_evidence',
         publicMessage: 'The report could not be generated because confirmed evidence is missing.',
@@ -264,26 +300,26 @@ export function resolveInstallHubFormPhotos(
   photos: InstallHubReportPhoto[],
   options: { allowMissingEvidence?: boolean } = {},
 ): ResolvedInstallHubFormPhoto[] {
-  const rowsByField = new Map<string, InstallHubReportPhoto[]>();
-  for (const photo of photos) {
-    if (photo.entityId !== form.id) continue;
-    const rows = rowsByField.get(photo.fieldName) ?? [];
-    rows.push(photo);
-    rowsByField.set(photo.fieldName, rows);
-  }
+  const ownerPhotos = photos
+    .filter((photo) => (
+      (!photo.entityType || photo.entityType === 'form_submission')
+      && photo.entityId === form.id
+      && Boolean(photo.storageKey && photo.remoteUrl)
+    ))
+    .sort((left, right) => createdAtValue(left) - createdAtValue(right));
 
   const missing: number[] = [];
   const resolved = form.attachments.flatMap((attachment, attachmentIndex) => {
     const fieldName = `attachments[${attachmentIndex}].uri`;
-    const candidates = (rowsByField.get(fieldName) ?? [])
-      .filter((photo) => Boolean(photo.storageKey && photo.remoteUrl))
-      .sort((left, right) => createdAtValue(left) - createdAtValue(right));
     const photoId = referencedPhotoId(attachment.uri);
     const selected =
       (photoId
-        ? candidates.find((candidate) => candidate.id.toLowerCase() === photoId)
+        ? ownerPhotos.find((candidate) => candidate.id.toLowerCase() === photoId)
         : undefined)
-      ?? candidates.find((candidate) => candidate.remoteUrl === attachment.uri);
+      ?? ownerPhotos.find((candidate) => (
+        candidate.fieldName === fieldName
+        && candidate.remoteUrl === attachment.uri
+      ));
     if (!selected) {
       missing.push(attachmentIndex);
       return [];
@@ -292,6 +328,7 @@ export function resolveInstallHubFormPhotos(
       attachmentIndex,
       slot: attachment.slot,
       ...(attachment.caption ? { caption: attachment.caption } : {}),
+      largeInPdf: attachment.largeInPdf === true,
       photo: selected,
     }];
   });
@@ -302,8 +339,45 @@ export function resolveInstallHubFormPhotos(
   return resolved;
 }
 
+/** Resolves entity evidence by exact registry entity, field and immutable ID. */
+export function resolveInstallHubEntityPhotos(
+  references: InstallHubEntityPhotoReference[],
+  photos: InstallHubReportPhoto[],
+  options: { allowMissingEvidence?: boolean } = {},
+): ResolvedInstallHubEntityPhoto[] {
+  const missing: InstallHubEntityPhotoReference[] = [];
+  const resolved = references.flatMap((reference) => {
+    const ownerPhotos = photos
+      .filter((photo) => (
+        photo.entityType === reference.entityType
+        && photo.entityId === reference.entityId
+      ))
+      .filter((photo) => Boolean(photo.storageKey && photo.remoteUrl))
+      .sort((left, right) => createdAtValue(left) - createdAtValue(right));
+    const photoId = referencedPhotoId(reference.uri);
+    const selected = (
+      photoId
+        ? ownerPhotos.find((candidate) => candidate.id.toLowerCase() === photoId)
+        : undefined
+    ) ?? ownerPhotos.find((candidate) => (
+      candidate.fieldName === reference.fieldName
+      && candidate.remoteUrl === reference.uri
+    ));
+    if (!selected) {
+      missing.push(reference);
+      return [];
+    }
+    return [{ ...reference, photo: selected }];
+  });
+
+  if (missing.length > 0 && !options.allowMissingEvidence) {
+    throw new MissingInstallHubEntityEvidenceError(missing);
+  }
+  return resolved;
+}
+
 export function installHubReportPhotoTotals(
-  resolvedPhotos: ResolvedInstallHubFormPhoto[],
+  resolvedPhotos: Array<{ photo: InstallHubReportPhoto }>,
 ): { count: number; rawBytes: number } {
   const unique = new Map<string, InstallHubReportPhoto>();
   for (const resolved of resolvedPhotos) {
@@ -316,6 +390,52 @@ export function installHubReportPhotoTotals(
       0,
     ),
   };
+}
+
+/**
+ * Keeps ordinary entity sections together while bounding every chunk near the
+ * shared target. An oversized entity is split only between photos; its heading
+ * is repeated by each continuation chunk.
+ */
+export function planInstallHubEntityPhotoChunks(
+  photos: ResolvedInstallHubEntityPhoto[],
+  target = INSTALLHUB_REPORT_CHUNK_PHOTO_TARGET,
+): ResolvedInstallHubEntityPhoto[][] {
+  const boundedTarget = Math.max(1, target);
+  const groups = new Map<string, ResolvedInstallHubEntityPhoto[]>();
+  for (const photo of photos) {
+    const group = groups.get(photo.groupKey) ?? [];
+    group.push(photo);
+    groups.set(photo.groupKey, group);
+  }
+  const chunks: ResolvedInstallHubEntityPhoto[][] = [];
+  let current: ResolvedInstallHubEntityPhoto[] = [];
+  for (const group of groups.values()) {
+    if (
+      group.length <= boundedTarget
+      && current.length > 0
+      && current.length + group.length > boundedTarget
+    ) {
+      chunks.push(current);
+      current = [];
+    }
+    let offset = 0;
+    while (offset < group.length) {
+      if (current.length === boundedTarget) {
+        chunks.push(current);
+        current = [];
+      }
+      const take = Math.min(boundedTarget - current.length, group.length - offset);
+      current.push(...group.slice(offset, offset + take));
+      offset += take;
+      if (offset < group.length && current.length === boundedTarget) {
+        chunks.push(current);
+        current = [];
+      }
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 export function installHubReportNeedsChunks(
@@ -364,38 +484,77 @@ export function photosForInstallHubFormSlice(
   form: InstallHubReportForm,
   resolvedPhotos: ResolvedInstallHubFormPhoto[],
   sectionIndexes: number[],
+  attachmentIndexes?: number[],
 ): ResolvedInstallHubFormPhoto[] {
   const slots = new Set(
     sectionIndexes.flatMap((sectionIndex) => [
       ...sectionPhotoSlots(form, sectionIndex),
     ]),
   );
-  return resolvedPhotos.filter((photo) => slots.has(photo.slot));
+  const selectedAttachments = attachmentIndexes
+    ? new Set(attachmentIndexes)
+    : null;
+  return resolvedPhotos.filter((photo) => (
+    slots.has(photo.slot)
+    && (!selectedAttachments || selectedAttachments.has(photo.attachmentIndex))
+  ));
 }
 
 /**
- * Chunks only at semantic section boundaries. A single oversized section stays
- * atomic because splitting its heading/field/photo relationship is less useful
- * than exceeding the target for that one chunk.
+ * Chunks at semantic section boundaries. If one multi-photo section alone
+ * exceeds the target, it repeats that section as a continuation and splits
+ * only between atomic photo cards so one field cannot defeat the memory bound.
  */
 export function planInstallHubFormReportSlices(
   form: InstallHubReportForm,
   resolvedPhotos: ResolvedInstallHubFormPhoto[],
   target = INSTALLHUB_REPORT_CHUNK_PHOTO_TARGET,
 ): InstallHubFormReportSlice[] {
+  const boundedTarget = Math.max(1, target);
   const slices: InstallHubFormReportSlice[] = [];
   let sectionIndexes: number[] = [];
   let photoCount = 0;
 
   for (const sectionIndex of visibleInstallHubReportSectionIndexes(form)) {
-    const sectionCount = photosForInstallHubFormSlice(
+    const sectionPhotos = photosForInstallHubFormSlice(
       form,
       resolvedPhotos,
       [sectionIndex],
-    ).length;
+    );
+    const sectionCount = sectionPhotos.length;
+    if (sectionCount > boundedTarget) {
+      const leadingZeroPhotoSections = sectionIndexes.length > 0 && photoCount === 0
+        ? sectionIndexes
+        : [];
+      if (sectionIndexes.length > 0 && photoCount > 0) {
+        slices.push({
+          formId: form.id,
+          sectionIndexes,
+          continuation: slices.length > 0,
+          photoCount,
+        });
+        sectionIndexes = [];
+        photoCount = 0;
+      }
+      sectionIndexes = [];
+      photoCount = 0;
+      for (let offset = 0; offset < sectionPhotos.length; offset += boundedTarget) {
+        const selectedPhotos = sectionPhotos.slice(offset, offset + boundedTarget);
+        slices.push({
+          formId: form.id,
+          sectionIndexes: offset === 0
+            ? [...leadingZeroPhotoSections, sectionIndex]
+            : [sectionIndex],
+          continuation: slices.length > 0,
+          photoCount: selectedPhotos.length,
+          attachmentIndexes: selectedPhotos.map((photo) => photo.attachmentIndex),
+        });
+      }
+      continue;
+    }
     if (
       sectionIndexes.length > 0
-      && photoCount + sectionCount > target
+      && photoCount + sectionCount > boundedTarget
     ) {
       slices.push({
         formId: form.id,
@@ -503,31 +662,90 @@ function answerHtml(value: string | undefined, key?: string): string {
   return display;
 }
 
-function photoGrid(
-  photos: ResolvedInstallHubFormPhoto[],
+type RenderableInstallHubPhoto = {
+  caption?: string;
+  largeInPdf?: boolean;
+  photo: InstallHubReportPhoto;
+};
+
+function compactPhotoGrid(
+  photos: RenderableInstallHubPhoto[],
   label: string,
 ): string {
+  const columnCount = photos.length <= 2 ? 2 : 3;
   const rows: string[] = [];
-  for (let index = 0; index < photos.length; index += 2) {
-    const cells = photos.slice(index, index + 2).map((resolved) => {
+  for (let index = 0; index < photos.length; index += columnCount) {
+    const cells = photos.slice(index, index + columnCount).map((resolved) => {
       const caption = resolved.caption?.trim() || label;
       return `<div class="photo-cell">
         <img src="${escapeHtml(resolved.photo.remoteUrl)}" alt="${escapeHtml(caption)}" />
         <div class="photo-caption">${escapeHtml(caption)}</div>
       </div>`;
     });
-    if (cells.length === 1) {
+    while (cells.length < columnCount) {
       cells.push('<div class="photo-cell photo-empty"></div>');
     }
-    rows.push(`<div class="photo-row">${cells.join('')}</div>`);
+    rows.push(`<div class="photo-row photo-columns-${columnCount}">${cells.join('')}</div>`);
   }
   return `<div class="photo-grid">${rows.join('')}</div>`;
+}
+
+function photoBlocks(
+  photos: RenderableInstallHubPhoto[],
+  label: string,
+): string {
+  const blocks: string[] = [];
+  let compact: RenderableInstallHubPhoto[] = [];
+  const flushCompact = (): void => {
+    if (!compact.length) return;
+    blocks.push(compactPhotoGrid(compact, label));
+    compact = [];
+  };
+  for (const resolved of photos) {
+    if (!resolved.largeInPdf) {
+      compact.push(resolved);
+      continue;
+    }
+    flushCompact();
+    const caption = resolved.caption?.trim() || label;
+    blocks.push(`<figure class="photo-large">
+      <img src="${escapeHtml(resolved.photo.remoteUrl)}" alt="${escapeHtml(caption)}" />
+      <figcaption class="photo-caption">${escapeHtml(caption)}</figcaption>
+    </figure>`);
+  }
+  flushCompact();
+  return blocks.join('');
+}
+
+function entityEvidenceHtml(
+  photos: ResolvedInstallHubEntityPhoto[],
+  continuation: boolean,
+): string {
+  if (!photos.length) return '';
+  const groups = new Map<string, ResolvedInstallHubEntityPhoto[]>();
+  for (const photo of photos) {
+    const group = groups.get(photo.groupKey) ?? [];
+    group.push(photo);
+    groups.set(photo.groupKey, group);
+  }
+  const sections = [...groups.values()].map((group) => {
+    const label = group[0]?.groupLabel ?? 'Installation evidence';
+    return `<div class="entity-photo-group">
+      <h3>${escapeHtml(label)}</h3>
+      ${photoBlocks(group, label)}
+    </div>`;
+  }).join('');
+  return `<section class="entity-evidence">
+    <div class="section-bar">Installation photographic evidence${continuation ? ' - continued' : ''}</div>
+    ${sections}
+  </section>`;
 }
 
 function formSectionsHtml(
   form: InstallHubReportForm,
   sectionIndexes: number[],
   resolvedPhotos: ResolvedInstallHubFormPhoto[],
+  hideEmptyPhotoFields = false,
 ): string {
   const definition = definitionFor(form);
   const visibleSectionIndexes = visibleInstallHubReportSectionIndexes(form);
@@ -549,11 +767,12 @@ function formSectionsHtml(
       .filter((field) => field.kind === 'photo')
       .map((field) => {
         const images = resolvedPhotos.filter((item) => item.slot === field.key);
+        if (hideEmptyPhotoFields && images.length === 0) return '';
         return `<div class="photo-block">
           <h3>${escapeHtml(field.label)}</h3>
           ${
             images.length > 0
-              ? photoGrid(images, field.label)
+              ? photoBlocks(images, field.label)
               : '<div class="missing">No photo provided</div>'
           }
         </div>`;
@@ -616,7 +835,19 @@ function installationCoverHtml(
   formCount: number,
   photoCount: number,
   logoDataUri: string,
+  topologyCounts?: {
+    zones: number;
+    boards: number;
+    meters: number;
+    siteAssets: number;
+  },
 ): string {
+  const topologyStats = topologyCounts
+    ? `<div class="stat"><span>${topologyCounts.zones}</span>Zones</div>
+      <div class="stat"><span>${topologyCounts.boards}</span>Switchboards</div>
+      <div class="stat"><span>${topologyCounts.meters}</span>Meter devices</div>
+      <div class="stat"><span>${topologyCounts.siteAssets}</span>Site assets</div>`
+    : '';
   return `<div class="cover">
     <div class="cover-eyebrow">Field App Complete installation record</div>
     <h1 class="cover-title">Field App Complete Installation Pack</h1>
@@ -642,6 +873,7 @@ function installationCoverHtml(
     <div class="stats">
       <div class="stat"><span>${formCount}</span>Completed forms</div>
       <div class="stat"><span>${photoCount}</span>Evidence photos</div>
+      ${topologyStats}
     </div>
   </div>`;
 }
@@ -671,8 +903,8 @@ body{margin:0;color:#1E293B;background:#FFFFFF;font-family:-apple-system,BlinkMa
 .cover-status{display:inline-block;margin-top:11px;padding:3px 10px;border:1px solid;border-radius:4px;font-size:7.5pt;font-weight:800;text-transform:uppercase;letter-spacing:.08em;}
 .cover-status-completed{color:#166534;background:#DCFCE7;border-color:#86EFAC;}
 .cover-status-draft{color:#92400E;background:#FEF3C7;border-color:#FCD34D;}
-.stats{display:table;width:100%;border-spacing:8px;margin-top:10px;}
-.stat{display:table-cell;width:50%;padding:8px 10px;color:#64748B;background:#F8FAFC;border:1px solid #DBEAFE;border-top:3px solid #1E3A8A;text-transform:uppercase;font-size:7pt;font-weight:700;}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;width:100%;margin-top:10px;}
+.stat{padding:8px 10px;color:#64748B;background:#F8FAFC;border:1px solid #DBEAFE;border-top:3px solid #1E3A8A;text-transform:uppercase;font-size:7pt;font-weight:700;}
 .stat span{display:block;color:#1E3A8A;font-size:15pt;font-weight:900;}
 .form-record{margin-top:18px;}
 .form-record + .form-record{page-break-before:always;break-before:page;}
@@ -697,10 +929,16 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .photo-block{break-inside:auto;margin-top:10px;}
 .photo-grid{display:table;width:100%;border-collapse:separate;border-spacing:7px;table-layout:fixed;}
 .photo-row{display:table-row;page-break-inside:avoid;break-inside:avoid;}
-.photo-cell{display:table-cell;width:50%;padding:5px;border:1px solid #CBD5E1;border-radius:6px;text-align:center;vertical-align:top;page-break-inside:avoid;break-inside:avoid;background:#FFFFFF;}
+.photo-cell{display:table-cell;padding:5px;border:1px solid #CBD5E1;border-radius:6px;text-align:center;vertical-align:top;page-break-inside:avoid;break-inside:avoid;background:#FFFFFF;}
+.photo-columns-2 .photo-cell{width:50%;}
+.photo-columns-3 .photo-cell{width:33.333%;}
 .photo-empty{border-color:transparent;}
-.photo-cell img{max-width:100%;max-height:212px;width:auto;height:auto;object-fit:contain;border-radius:4px;background:#FFFFFF;}
+.photo-cell img{max-width:100%;max-height:172px;width:auto;height:auto;object-fit:contain;border-radius:4px;background:#FFFFFF;}
+.photo-large{display:block;width:100%;margin:7px 0;padding:7px;border:1px solid #CBD5E1;border-radius:6px;text-align:center;background:#FFFFFF;page-break-inside:avoid;break-inside:avoid;}
+.photo-large img{display:block;max-width:100%;max-height:370px;width:auto;height:auto;object-fit:contain;margin:0 auto;background:#FFFFFF;}
 .photo-caption{color:#64748B;font-size:7pt;line-height:1.3;margin-top:4px;overflow-wrap:anywhere;}
+.entity-evidence{margin-top:18px;}
+.entity-photo-group{page-break-inside:auto;break-inside:auto;margin-top:10px;}
 .missing{color:#94A3B8;font-size:8.5pt;font-style:italic;border:1px dashed #CBD5E1;background:#F8FAFC;padding:10px 12px;}
 .end-block{margin-top:24px;padding:13px 16px;background:#1E3A8A;color:#FFFFFF;border-radius:7px;font-size:9pt;font-weight:700;}
 .canonical-section{page-break-before:always;break-before:page;margin-top:18px;}
@@ -715,9 +953,6 @@ h3{color:#1E3A8A;background:#EFF6FF;border-left:4px solid #1E3A8A;font-size:9.5p
 .electrical-map-frame{margin:8px 0 14px;padding:8px;border:1px solid #CBD5E1;border-radius:7px;background:#FFFFFF;page-break-inside:avoid;break-inside:avoid;}
 .electrical-map-frame img{display:block;width:100%;height:auto;max-height:555px;object-fit:contain;}
 .electrical-map-caption{margin-top:5px;color:#64748B;font-size:7pt;line-height:1.35;}
-.electrical-map-detail{page:electricalmap;page-break-before:always;break-before:page;page-break-after:always;break-after:page;margin-top:0;}
-.electrical-map-detail .electrical-map-frame img{max-height:585px;}
-.electrical-map-segment-label{font-weight:800;color:#1E3A8A;}
 .detail-group{margin:0 0 13px;border:1px solid #DBEAFE;border-left:3px solid #1E3A8A;border-radius:0 7px 7px 0;page-break-inside:auto;break-inside:auto;}
 .detail-group-title{padding:7px 10px;background:#EFF6FF;color:#1E3A8A;font-size:9pt;font-weight:900;page-break-after:avoid;break-after:avoid;}
 .detail-row{display:table;width:100%;border-top:1px solid #E2E8F0;page-break-inside:avoid;break-inside:avoid;}
@@ -947,26 +1182,6 @@ function hierarchyRows(report: InstallHubCanonicalReport): string {
     .join('');
 }
 
-function indexedHierarchyFallbackTable(report: InstallHubCanonicalReport): string {
-  const nodeNames = new Map(report.electricalNodes.map((node) => [
-    node.id,
-    node.displayCode || node.name,
-  ]));
-  const supplyParent = new Map<string, string>();
-  for (const edge of report.supplyEdges
-    .slice()
-    .sort((left, right) => left.targetNodeId.localeCompare(right.targetNodeId)
-      || left.sourceNodeId.localeCompare(right.sourceNodeId))) {
-    if (!supplyParent.has(edge.targetNodeId)) supplyParent.set(edge.targetNodeId, edge.sourceNodeId);
-  }
-  const zoneNames = new Map(report.physicalLocations.map((zone) => [zone.id, zone.name]));
-  const rows = hierarchyNodeOrder(report).map(({ node, depth }, index) => {
-    const parentId = supplyParent.get(node.id) ?? node.parentNodeId;
-    return `<tr data-electrical-node-id="${escapeHtml(node.id)}"><td>${index + 1}</td><td><span class="hierarchy-indent" style="width:${Math.min(depth, 8) * 12}px"></span><strong>${escapeHtml(node.displayCode || node.name)}</strong>${node.displayCode ? `<small>${escapeHtml(node.name)}</small>` : ''}</td><td>${escapeHtml(node.typeLabel || node.kind.replaceAll('_', ' '))}</td><td>${escapeHtml(parentId ? nodeNames.get(parentId) ?? parentId : 'Electrical root')}</td><td>${escapeHtml(node.physicalLocationId ? zoneNames.get(node.physicalLocationId) ?? node.physicalLocationId : 'Shared / unassigned')}</td></tr>`;
-  }).join('');
-  return `<table class="canonical-table hierarchy-fallback-table"><thead><tr><th>#</th><th>Electrical node</th><th>Type</th><th>Supplied from / parent</th><th>Zone</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No electrical nodes recorded.</td></tr>'}</tbody></table>`;
-}
-
 function compactCanonicalAppendices(report: InstallHubCanonicalReport): string {
   const unresolved = report.unresolvedRelationships.length
     ? `<ul class="compact-list">${report.unresolvedRelationships.map((item) => `<li>${escapeHtml(`${item.subjectType} ${item.subjectId}: ${item.relation} ${item.reason}`)}</li>`).join('')}</ul>`
@@ -1023,26 +1238,12 @@ function installationDetailsHtml(
     ? `Record version ${report.recordVersionNumber} &middot; Snapshot ${escapeHtml(report.snapshotPayloadHash)} &middot; Mapping ${escapeHtml(report.mappingContentHash)}`
     : 'Live diagnostic projection &middot; Not pinned to a canonical record version or payload hash';
   const authorityLabel = report.authoritative ? 'AUTHORITATIVE' : 'NON-AUTHORITATIVE';
-  const detailPagesCapped = Boolean(electricalMapImages?.omittedDetailWindows);
-  const detailMapPages = electricalMapImages?.detailTiles.map((tile, index, tiles) => (
-    `<div class="electrical-map-detail" data-map-detail-segment="${index + 1}">
-      <div class="section-bar">Electrical map detail - row ${tile.row} of ${tile.rowCount}, column ${tile.column} of ${tile.columnCount}</div>
-      <div class="electrical-map-frame"><img src="${escapeHtml(tile.dataUri)}" alt="Electrical map detail row ${tile.row} of ${tile.rowCount}, column ${tile.column} of ${tile.columnCount}" /></div>
-      <p class="electrical-map-caption"><span class="electrical-map-segment-label">Detail page ${index + 1} of ${tiles.length} - source window ${tile.windowIndex} of ${tile.windowCount}, row ${tile.row}, column ${tile.column}.</span> Source window left ${tile.left + 1}-${tile.left + tile.width}, top ${tile.top + 1}-${tile.top + tile.height} of ${electricalMapImages.sourceWidth} x ${electricalMapImages.sourceHeight}. ${detailPagesCapped ? 'Window edges retain source overlap; capped sets may omit intermediate windows.' : 'Adjacent rows and columns overlap to preserve connector continuity.'} Refer to the complete overview for the full topology and legend.</p>
-    </div>`
-  )).join('') ?? '';
   const map = electricalMapImages
     ? `<div class="electrical-map">
         <div class="section-bar">Installation electrical map</div>
         <div class="electrical-map-frame"><img src="${escapeHtml(electricalMapImages.overviewDataUri)}" alt="Complete electrical supply, metering and connected load overview" /></div>
-        <p class="electrical-map-caption">This client-facing overview uses the saved electrical map arrangement when one has been prepared; otherwise it uses the automatic top-down hierarchy. Straight copper lines follow confirmed supply paths from the incoming grid through each level, grey dotted lines show calculated residual relationships, and each board keeps its installed meters close by with active channel and load labels. Every connected load carries its own pictogram, name, location, coverage and confirmed meter/channel allocation.${detailPagesCapped ? ` This complete overview is retained; visual detail pages are capped at ${electricalMapImages.detailTiles.length} representative windows from ${electricalMapImages.totalDetailWindows}.` : ''}</p>
-      </div>${detailMapPages}`
-    : '';
-  const cappedFallbackNotice = detailPagesCapped
-    ? `<div class="canonical-meta" data-map-detail-fallback="indexed-hierarchy"><strong>Visual detail page limit reached.</strong> ${electricalMapImages!.omittedDetailWindows} additional map windows are represented by the complete overview and ${detailMode === 'by-zone' ? 'the indexed electrical hierarchy table below' : 'the complete electrical hierarchy details below'}. Every electrical node and resolved parent remains listed.</div>`
-    : '';
-  const zoneModeHierarchyFallback = detailPagesCapped && detailMode === 'by-zone'
-    ? `<h3>Indexed electrical hierarchy fallback</h3>${indexedHierarchyFallbackTable(report)}`
+        <p class="electrical-map-caption">This is the single whole-site electrical map. It uses the saved arrangement when one has been prepared; otherwise it uses the automatic top-down hierarchy. Straight copper lines follow confirmed supply paths, grey dotted lines show calculated residual relationships, and boards retain their installed meters, active channels and connected-load labels. The report does not generate zoomed tiles or individual map views.</p>
+      </div>`
     : '';
   const detailTitle = detailMode === 'by-zone'
     ? 'Details by physical zone'
@@ -1059,8 +1260,6 @@ function installationDetailsHtml(
     <div class="canonical-meta">Report source ${report.reportSource} &middot; ${authorityLabel} &middot; Tree revision ${report.treeRevision} &middot; Ready ${report.readyToComplete ? 'YES' : 'NO'} &middot; ${canonicalVersionMeta}</div>
     ${completionNotesBlock}
     ${map}
-    ${cappedFallbackNotice}
-    ${zoneModeHierarchyFallback}
     <h3>${detailTitle}</h3>
     ${details}
     <h3>Meter and channel schedule</h3>
@@ -1195,6 +1394,8 @@ export function buildInstallHubReportHtml(input: {
   forms: InstallHubReportForm[];
   slices: InstallHubFormReportSlice[];
   resolvedByForm: Map<string, ResolvedInstallHubFormPhoto[]>;
+  entityPhotos?: ResolvedInstallHubEntityPhoto[];
+  entityEvidenceContinuation?: boolean;
   logoDataUri: string;
   includeIntro: boolean;
   includeEnd: boolean;
@@ -1212,7 +1413,7 @@ export function buildInstallHubReportHtml(input: {
       ? definitionFor(firstForm).title
       : `${input.installation.siteName} - Installation Pack`;
   const totalPhotos = [...input.resolvedByForm.values()]
-    .reduce((sum, photos) => sum + photos.length, 0);
+    .reduce((sum, photos) => sum + photos.length, input.entityPhotos?.length ?? 0);
   const formBlocks = input.slices.map((slice) => {
     const form = formsById.get(slice.formId);
     if (!form) return '';
@@ -1222,6 +1423,7 @@ export function buildInstallHubReportHtml(input: {
       form,
       allPhotos,
       slice.sectionIndexes,
+      slice.attachmentIndexes,
     );
     const heading =
       input.mode === 'installation-pack'
@@ -1236,6 +1438,7 @@ export function buildInstallHubReportHtml(input: {
       form,
       slice.sectionIndexes,
       selectedPhotos,
+      slice.attachmentIndexes !== undefined,
     )}</div>`;
   }).join('');
 
@@ -1248,6 +1451,16 @@ export function buildInstallHubReportHtml(input: {
             input.forms.length,
             input.summaryPhotoCount ?? totalPhotos,
             input.logoDataUri,
+            input.canonicalReport
+              ? {
+                  zones: input.canonicalReport.physicalLocations.length,
+                  boards: input.canonicalReport.electricalNodes.filter(
+                    (node) => node.kind === 'BOARD',
+                  ).length,
+                  meters: input.canonicalReport.meters.length,
+                  siteAssets: input.canonicalReport.assets.length,
+                }
+              : undefined,
           )
       : '';
 
@@ -1284,6 +1497,10 @@ export function buildInstallHubReportHtml(input: {
           )
         : canonicalReportHtml(input.canonicalReport)
       : ''}
+    ${entityEvidenceHtml(
+      input.entityPhotos ?? [],
+      input.entityEvidenceContinuation ?? false,
+    )}
     ${formBlocks}
     ${input.includeEnd ? `<div class="end-block">Prepared by Sustainability Wise &middot; Field App Complete report manifest v${INSTALLHUB_REPORT_MANIFEST_VERSION}</div>` : ''}
   </main>

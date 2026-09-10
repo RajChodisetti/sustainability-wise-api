@@ -20,6 +20,12 @@ export type DisplayCodeMetadata = {
   provisional?: boolean;
 };
 
+export type InstallHubPhotoMetadata = {
+  largeInPdf?: boolean;
+};
+
+export type InstallHubPhotoMetadataMap = Record<string, InstallHubPhotoMetadata>;
+
 export type ElectricalSource =
   | { kind: 'GRID'; gridSupplyId: string }
   | { kind: 'BOARD'; boardId: string }
@@ -81,6 +87,7 @@ export type MeterDevice = {
   };
   wwPhotos?: Record<string, unknown>;
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   notes?: string | null;
 };
 
@@ -319,6 +326,7 @@ export type Zone = {
   zoneDescription: string;
   photos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
@@ -429,6 +437,7 @@ export type Meter = {
   wwCommissioning?: WattwatcherCommissioning;
   wwPhotos?: WattwatcherPhotos;
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
 };
 
 export type ElectricalAsset = {
@@ -452,6 +461,7 @@ export type ElectricalAsset = {
   photo?: string | null;
   extraPhotos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   meterPresent: boolean;
   meters: Meter[];
   subCircuitsDescription?: string | null;
@@ -494,6 +504,7 @@ export type SiteAsset = {
   comments?: string | null;
   extraPhotos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   createdAt: string;
   updatedAt: string;
   deletedAt?: string | null;
@@ -507,6 +518,7 @@ export type FormAttachment = {
   uri: string;
   mimeType: string;
   caption?: string | null;
+  largeInPdf?: boolean;
   capturedAt: string;
 };
 

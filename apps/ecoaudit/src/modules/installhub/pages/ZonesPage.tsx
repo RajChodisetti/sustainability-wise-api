@@ -23,7 +23,14 @@ import {
   resolvedZoneCodes,
 } from '@/modules/installhub/lib/naming';
 import { zoneElectricalSummary } from '@/modules/installhub/lib/electricalPresentation';
-import { photoNote, removeIndexedPhotoNote, setPhotoNote } from '@/modules/installhub/lib/photoNotes';
+import {
+  photoLargeInPdf,
+  photoNote,
+  removeIndexedPhotoMetadata,
+  removeIndexedPhotoNote,
+  setPhotoLargeInPdf,
+  setPhotoNote,
+} from '@/modules/installhub/lib/photoNotes';
 import { coverageState, localReadiness, siteAssetMeteringState } from '@/modules/installhub/lib/workflow';
 import { useToast } from '@/contexts/ToastContext';
 
@@ -316,6 +323,7 @@ export function InstallHubZoneDetailPage() {
         if (target) {
           target.photos = target.photos.filter((_, index) => index !== photoIndex);
           target.photoNotes = removeIndexedPhotoNote(target.photoNotes, 'photos', photoIndex);
+          target.photoMetadata = removeIndexedPhotoMetadata(target.photoMetadata, 'photos', photoIndex);
         }
         if (target) target.updatedAt = nowIso();
       });
@@ -488,13 +496,25 @@ export function InstallHubZoneDetailPage() {
             id: `${index}`,
             uri,
             caption: photoNote(zone.photoNotes, `photos[${index}]`),
+            largeInPdf: photoLargeInPdf(zone.photoMetadata, `photos[${index}]`),
           }))}
           busy={uploading}
+          showPdfSizing
           onFiles={upload}
           onCaptionChange={(id, caption) => writer.mutate((next) => {
             const target = next.zones.find((item) => item.id === zoneId);
             if (!target) throw new Error('Zone not found.');
             target.photoNotes = setPhotoNote(target.photoNotes, `photos[${Number(id)}]`, caption);
+            target.updatedAt = nowIso();
+          })}
+          onLargeInPdfChange={(id, largeInPdf) => writer.mutate((next) => {
+            const target = next.zones.find((item) => item.id === zoneId);
+            if (!target) throw new Error('Zone not found.');
+            target.photoMetadata = setPhotoLargeInPdf(
+              target.photoMetadata,
+              `photos[${Number(id)}]`,
+              largeInPdf,
+            );
             target.updatedAt = nowIso();
           })}
           onRemove={zone.photos.length ? removePhoto : undefined}

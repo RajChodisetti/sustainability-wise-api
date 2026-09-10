@@ -318,7 +318,8 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       zoneCode: 'MAIN',
       zoneName: 'Main building',
       zoneDescription: '',
-      photos: [],
+      photos: ['https://example.test/main-building.jpg'],
+      photoNotes: { 'photos[0]': 'Existing zone overview' },
       updatedAt: now,
       createdAt: now,
     });
@@ -334,6 +335,12 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       typeCode: 'MSB',
       sourceKind: 'GRID',
       gridSupplyId: gridRows[0].id,
+      photo: 'https://example.test/main-switchboard.jpg',
+      extraPhotos: ['https://example.test/main-switchboard-label.jpg'],
+      photoNotes: {
+        photo: 'Existing switchboard overview',
+        'extraPhotos[0]': 'Existing switchboard label',
+      },
       updatedAt: now,
       createdAt: now,
     });
@@ -347,6 +354,8 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       deviceFamily: 'WATTWATCHERS',
       deviceModel: 'A3RM',
       serialNumber: 'KNOWN-METER-001',
+      wwPhotos: { deviceInstalled: 'https://example.test/existing-meter.jpg' },
+      photoNotes: { 'wwPhotos.deviceInstalled': 'Existing installed meter' },
       updatedAt: now,
       createdAt: now,
     });
@@ -377,6 +386,12 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
       measurementAssignmentIds: [sourceAssignmentId],
       meterPresent: true,
       meterSwitchboardId: sourceBoardId,
+      locationPhoto: 'https://example.test/existing-air-conditioning.jpg',
+      extraPhotos: ['https://example.test/existing-air-conditioning-label.jpg'],
+      photoNotes: {
+        locationPhoto: 'Existing air conditioning location',
+        'extraPhotos[0]': 'Existing air conditioning label',
+      },
       updatedAt: now,
       createdAt: now,
     });
@@ -503,19 +518,39 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(followUpZones.length, 1);
     assert.notEqual(followUpZones[0].id, sourceZoneId);
     assert.equal(followUpZones[0].zoneName, 'Main building');
+    assert.deepEqual(followUpZones[0].photos, ['https://example.test/main-building.jpg']);
+    assert.deepEqual(followUpZones[0].photoNotes, { 'photos[0]': 'Existing zone overview' });
     assert.equal(followUpBoards.length, 1);
     assert.notEqual(followUpBoards[0].id, sourceBoardId);
     assert.equal(followUpBoards[0].zoneId, followUpZones[0].id);
     assert.equal(followUpBoards[0].gridSupplyId, followUpGridSupplies[0].id);
+    assert.equal(followUpBoards[0].photo, 'https://example.test/main-switchboard.jpg');
+    assert.deepEqual(followUpBoards[0].extraPhotos, ['https://example.test/main-switchboard-label.jpg']);
+    assert.deepEqual(followUpBoards[0].photoNotes, {
+      photo: 'Existing switchboard overview',
+      'extraPhotos[0]': 'Existing switchboard label',
+    });
     assert.equal(followUpSiteAssets.length, 1);
     assert.notEqual(followUpSiteAssets[0].id, sourceSiteAssetId);
     assert.equal(followUpSiteAssets[0].zoneId, followUpZones[0].id);
     assert.equal(followUpSiteAssets[0].electricalBoardId, followUpBoards[0].id);
     assert.equal(followUpSiteAssets[0].meterSwitchboardId, followUpBoards[0].id);
+    assert.equal(followUpSiteAssets[0].locationPhoto, 'https://example.test/existing-air-conditioning.jpg');
+    assert.deepEqual(followUpSiteAssets[0].extraPhotos, ['https://example.test/existing-air-conditioning-label.jpg']);
+    assert.deepEqual(followUpSiteAssets[0].photoNotes, {
+      locationPhoto: 'Existing air conditioning location',
+      'extraPhotos[0]': 'Existing air conditioning label',
+    });
     assert.equal(followUpMeters.length, 1);
     assert.notEqual(followUpMeters[0].id, sourceMeterId);
     assert.equal(followUpMeters[0].installedOnBoardId, followUpBoards[0].id);
     assert.equal(followUpMeters[0].serialNumber, 'KNOWN-METER-001');
+    assert.deepEqual(followUpMeters[0].wwPhotos, {
+      deviceInstalled: 'https://example.test/existing-meter.jpg',
+    });
+    assert.deepEqual(followUpMeters[0].photoNotes, {
+      'wwPhotos.deviceInstalled': 'Existing installed meter',
+    });
     assert.equal(followUpChannels.length, 1);
     assert.notEqual(followUpChannels[0].id, sourceChannelId);
     assert.equal(followUpChannels[0].meterId, followUpMeters[0].id);
@@ -532,6 +567,64 @@ test('Scheduler exposes Field App work only and keeps assignment aligned', {
     assert.equal(originalMeters.length, 1);
     assert.equal(originalMeters[0].id, sourceMeterId);
     assert.equal(originalMeters[0].serialNumber, 'KNOWN-METER-001');
+
+    const existingSiteNewInstall = await createSchedulerDispatch(admin, {
+      ...baseDispatch,
+      scheduledStartAt: '2026-08-25T09:00:00.000Z',
+      deadlineAt: '2026-08-27T17:00:00.000Z',
+      sourceApp: 'installhub',
+      job: {
+        siteMode: 'existing',
+        existingSiteId: fieldBusinessJob.siteId,
+        clientName: `Client ${runId}`,
+        siteName: `Field ${runId}`,
+        siteAddress: '3 Field Street, Sydney NSW 2002, Australia',
+        workType: 'M1 - New install',
+        auditDate: '2026-08-25',
+        address: {
+          freeform: '3 Field Street',
+          locality: 'Sydney',
+          state: 'NSW',
+          postcode: '2002',
+          countryCode: 'AU',
+        },
+      },
+    });
+    createdProductIds.push(existingSiteNewInstall.sourceId!);
+    const m1CopiedZones = await db.select().from(ihZones)
+      .where(eq(ihZones.installationId, existingSiteNewInstall.sourceId!));
+    assert.equal(m1CopiedZones.length, 1);
+    assert.deepEqual(m1CopiedZones[0].photos, ['https://example.test/main-building.jpg']);
+
+    const blankSameAddress = await createSchedulerDispatch(admin, {
+      ...baseDispatch,
+      scheduledStartAt: '2026-08-26T09:00:00.000Z',
+      deadlineAt: '2026-08-28T17:00:00.000Z',
+      sourceApp: 'installhub',
+      job: {
+        siteMode: 'new',
+        clientId: fieldBusinessSite.clientId,
+        clientName: `Client ${runId}`,
+        siteName: `Fresh field ${runId}`,
+        siteAddress: '3 Field Street, Sydney NSW 2002, Australia',
+        workType: 'M1 - New install',
+        auditDate: '2026-08-26',
+        address: {
+          freeform: '3 Field Street',
+          locality: 'Sydney',
+          state: 'NSW',
+          postcode: '2002',
+          countryCode: 'AU',
+        },
+      },
+    });
+    createdProductIds.push(blankSameAddress.sourceId!);
+    const [blankJob] = await db.select().from(businessJobs)
+      .where(eq(businessJobs.id, blankSameAddress.jobId!));
+    const blankZones = await db.select().from(ihZones)
+      .where(eq(ihZones.installationId, blankSameAddress.sourceId!));
+    assert.notEqual(blankJob.siteId, fieldBusinessJob.siteId);
+    assert.equal(blankZones.length, 0);
     const [retargetedInventoryMeter] = await db.select().from(ihInventoryMeters)
       .where(eq(ihInventoryMeters.id, inventoryMeterId));
     assert.equal(retargetedInventoryMeter.businessSiteId, fieldBusinessJob.siteId);

@@ -251,12 +251,17 @@ registration route remains available for installed-client compatibility.
 
 Scheduler COMMS-fault planning is separate from stock claiming. It accepts a
 manually entered meter number for either a new or existing site and always
-creates the Draft job when the rest of the job input is valid. An exact installed
-meter-register match fills and binds the canonical client/site and makes the
-copied electrical structure available in the new job; an unknown meter starts a
-fresh site workspace. Explicit edits to a bound client/site update those shared
-records in the same transaction, and linked installed-register rows follow the
-resulting client/site/job association without changing custody or history.
+creates the Draft job when the rest of the job input is valid. Every explicit
+existing-site Field job carries the latest site structure, entity evidence
+references, NMI, and site/entity comments into the new Draft while completed
+forms and prior job planning remain historical. iOS assigned checkouts cache
+authenticated 400 px previews without replacing the original references. An
+explicit new-site choice creates a distinct empty site even when the address
+matches a saved site. Exact installed-meter matches still fill and bind the
+canonical client/site; unknown meters remain valid planning input. Explicit
+edits to a bound client/site update those shared records in the same transaction,
+and linked installed-register rows follow the resulting client/site/job
+association without changing custody or history.
 
 ## Scheduler visibility, workforce, and analytics
 

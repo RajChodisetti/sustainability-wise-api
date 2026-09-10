@@ -9,7 +9,7 @@ import {
 } from '../../services/schedulerAddressService.js';
 
 export const INSTALLATION_TREE_SCHEMA_VERSION = 2 as const;
-export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.10';
+export const INSTALLATION_CANONICALIZER_VERSION = 'installation-canonical-v2.11';
 export const INSTALLATION_VALIDATOR_VERSION = 'installation-readiness-v2.3-tbc-only';
 export const INSTALLATION_TAXONOMY_VERSION = 'installation-taxonomy-2026-08-05';
 export const DISPLAY_CODE_RULE_VERSION = 4;
@@ -261,6 +261,7 @@ export type CanonicalZone = {
   zoneDescription: string;
   photos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   createdAt?: string | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
@@ -282,6 +283,7 @@ export type CanonicalBoard = {
   photo?: string | null;
   extraPhotos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   meterPresent: boolean;
   subCircuitsDescription?: string | null;
   comments?: string | null;
@@ -306,6 +308,7 @@ export type CanonicalSiteAsset = {
   comments?: string | null;
   extraPhotos: string[];
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   createdAt?: string | null;
   updatedAt?: string | null;
   deletedAt?: string | null;
@@ -379,6 +382,7 @@ export type MeterDevice = {
   commissioningData?: MeterCommissioningData;
   wwPhotos?: Record<string, unknown>;
   photoNotes?: Record<string, string>;
+  photoMetadata?: InstallHubPhotoMetadataMap;
   notes?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
@@ -888,6 +892,10 @@ function boundedCapabilities(value: unknown, label: string): Record<string, unkn
 const PHOTO_NOTE_MAX_LENGTH = 500;
 const PHOTO_NOTE_MAX_ENTRIES = 100;
 
+export type InstallHubPhotoMetadataMap = Record<string, {
+  largeInPdf?: boolean;
+}>;
+
 export function parsePhotoNotes(value: unknown, label: string): Record<string, string> | undefined {
   if (value === undefined) return undefined;
   if (value === null) return {};
@@ -913,6 +921,47 @@ export function parsePhotoNotes(value: unknown, label: string): Record<string, s
       throw new CanonicalInputError(`${label}.${key} must be at most ${PHOTO_NOTE_MAX_LENGTH} characters`);
     }
     normalized[key] = note;
+  }
+  return normalized;
+}
+
+export function parsePhotoMetadata(
+  value: unknown,
+  label: string,
+): InstallHubPhotoMetadataMap | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new CanonicalInputError(`${label} must be an object`);
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > PHOTO_NOTE_MAX_ENTRIES) {
+    throw new CanonicalInputError(`${label} may contain at most ${PHOTO_NOTE_MAX_ENTRIES} entries`);
+  }
+  const normalized: InstallHubPhotoMetadataMap = {};
+  for (const [rawKey, rawMetadata] of entries) {
+    const key = rawKey.trim();
+    if (!key || key.length > 200) {
+      throw new CanonicalInputError(`${label} keys must be 1-200 trimmed characters`);
+    }
+    if (!rawMetadata || typeof rawMetadata !== 'object' || Array.isArray(rawMetadata)) {
+      throw new CanonicalInputError(`${label}.${key} must be an object`);
+    }
+    const metadata = rawMetadata as Record<string, unknown>;
+    for (const property of Object.keys(metadata)) {
+      if (property !== 'largeInPdf') {
+        throw new CanonicalInputError(`${label}.${key}.${property} is not supported`);
+      }
+    }
+    if (
+      metadata.largeInPdf !== undefined
+      && typeof metadata.largeInPdf !== 'boolean'
+    ) {
+      throw new CanonicalInputError(`${label}.${key}.largeInPdf must be a boolean`);
+    }
+    if (typeof metadata.largeInPdf === 'boolean') {
+      normalized[key] = { largeInPdf: metadata.largeInPdf };
+    }
   }
   return normalized;
 }
@@ -1597,6 +1646,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       zoneDescription: stringValueOrDefault(item.zoneDescription, `zones[${index}].zoneDescription`, ''),
       photos: stringArray(item.photos, `zones[${index}].photos`),
       photoNotes: parsePhotoNotes(item.photoNotes, `zones[${index}].photoNotes`),
+      photoMetadata: parsePhotoMetadata(item.photoMetadata, `zones[${index}].photoMetadata`),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
       deletedAt: iso(item.deletedAt),
@@ -1652,6 +1702,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       photo: optionalText(item.photo),
       extraPhotos: stringArray(item.extraPhotos, `electricalAssets[${index}].extraPhotos`),
       photoNotes: parsePhotoNotes(item.photoNotes, `electricalAssets[${index}].photoNotes`),
+      photoMetadata: parsePhotoMetadata(item.photoMetadata, `electricalAssets[${index}].photoMetadata`),
       meterPresent: booleanValue(item.meterPresent, `electricalAssets[${index}].meterPresent`),
       subCircuitsDescription: optionalText(item.subCircuitsDescription),
       comments: optionalText(item.comments),
@@ -1684,6 +1735,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       comments: optionalText(item.comments),
       extraPhotos: stringArray(item.extraPhotos, `siteAssets[${index}].extraPhotos`),
       photoNotes: parsePhotoNotes(item.photoNotes, `siteAssets[${index}].photoNotes`),
+      photoMetadata: parsePhotoMetadata(item.photoMetadata, `siteAssets[${index}].photoMetadata`),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
       deletedAt: iso(item.deletedAt),
@@ -1775,6 +1827,7 @@ export function normalizeInstallationTreeV2(value: unknown): CanonicalInstallati
       ),
       wwPhotos: record(item.wwPhotos, `meterDevices[${index}].wwPhotos`),
       photoNotes: parsePhotoNotes(item.photoNotes, `meterDevices[${index}].photoNotes`),
+      photoMetadata: parsePhotoMetadata(item.photoMetadata, `meterDevices[${index}].photoMetadata`),
       notes: optionalText(item.notes),
       createdAt: iso(item.createdAt),
       updatedAt: iso(item.updatedAt),
@@ -3079,8 +3132,58 @@ export function canonicalPayloadHash(value: unknown): string {
 /** Stable domain-only fingerprint used to suppress retry/reorder revisions. */
 function evidenceOrderKey(value: unknown): string {
   if (typeof value !== 'string') return stableStringify(value);
-  const match = value.toLowerCase().match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
-  return match?.[0] ?? value;
+  const matches = value.toLowerCase().match(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+  );
+  return matches?.at(-1) ?? value;
+}
+
+function orderIndexedEvidence(
+  owner: {
+    photoNotes?: Record<string, string>;
+    photoMetadata?: InstallHubPhotoMetadataMap;
+  },
+  values: string[],
+  fieldPrefix: string,
+): void {
+  const rows = values.map((uri, originalIndex) => {
+    const fieldName = `${fieldPrefix}[${originalIndex}]`;
+    return {
+      uri,
+      originalIndex,
+      hasNote: Object.prototype.hasOwnProperty.call(owner.photoNotes ?? {}, fieldName),
+      note: owner.photoNotes?.[fieldName],
+      hasMetadata: Object.prototype.hasOwnProperty.call(owner.photoMetadata ?? {}, fieldName),
+      metadata: owner.photoMetadata?.[fieldName],
+    };
+  }).sort((left, right) => (
+    evidenceOrderKey(left.uri).localeCompare(evidenceOrderKey(right.uri))
+      || left.originalIndex - right.originalIndex
+  ));
+
+  values.splice(0, values.length, ...rows.map((row) => row.uri));
+  const escapedPrefix = fieldPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const indexedField = new RegExp(`^${escapedPrefix}\\[\\d+\\]$`);
+  if (owner.photoNotes !== undefined) {
+    const notes = Object.fromEntries(
+      Object.entries(owner.photoNotes).filter(([key]) => !indexedField.test(key)),
+    );
+    rows.forEach((row, index) => {
+      if (row.hasNote && row.note !== undefined) notes[`${fieldPrefix}[${index}]`] = row.note;
+    });
+    owner.photoNotes = notes;
+  }
+  if (owner.photoMetadata !== undefined) {
+    const metadata: InstallHubPhotoMetadataMap = Object.fromEntries(
+      Object.entries(owner.photoMetadata).filter(([key]) => !indexedField.test(key)),
+    );
+    rows.forEach((row, index) => {
+      if (row.hasMetadata && row.metadata !== undefined) {
+        metadata[`${fieldPrefix}[${index}]`] = row.metadata;
+      }
+    });
+    owner.photoMetadata = metadata;
+  }
 }
 
 /**
@@ -3096,9 +3199,6 @@ export function canonicalOrderInstallationTree(
   const byId = <T extends { id: string }>(values: T[]): T[] => (
     values.sort((left, right) => left.id.localeCompare(right.id))
   );
-  const evidence = (values: string[]): string[] => values.sort((left, right) => (
-    evidenceOrderKey(left).localeCompare(evidenceOrderKey(right))
-  ));
   byId(tree.gridSupplies);
   byId(tree.zones);
   byId(tree.electricalAssets);
@@ -3106,13 +3206,19 @@ export function canonicalOrderInstallationTree(
   byId(tree.meterDevices);
   byId(tree.measurementAssignments);
   byId(tree.formSubmissions);
-  tree.zones.forEach((zone) => evidence(zone.photos));
-  tree.electricalAssets.forEach((board) => evidence(board.extraPhotos));
-  tree.siteAssets.forEach((asset) => evidence(asset.extraPhotos));
+  tree.zones.forEach((zone) => orderIndexedEvidence(zone, zone.photos, 'photos'));
+  tree.electricalAssets.forEach((board) => (
+    orderIndexedEvidence(board, board.extraPhotos, 'extraPhotos')
+  ));
+  tree.siteAssets.forEach((asset) => (
+    orderIndexedEvidence(asset, asset.extraPhotos, 'extraPhotos')
+  ));
   tree.meterDevices.forEach((meter) => {
     meter.channels.sort((left, right) => left.ordinal - right.ordinal || left.id.localeCompare(right.id));
     const photos = meter.wwPhotos;
-    if (photos && Array.isArray(photos.extra)) evidence(photos.extra as string[]);
+    if (photos && Array.isArray(photos.extra)) {
+      orderIndexedEvidence(meter, photos.extra as string[], 'wwPhotos.extra');
+    }
   });
   const channelOrdinal = new Map(tree.meterDevices.flatMap((meter) => (
     meter.channels.map((channel) => [channel.id, channel.ordinal] as const)

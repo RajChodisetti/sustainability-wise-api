@@ -215,7 +215,7 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
     'utf8',
   );
 
-  assert.match(modalSource, /Is this work for a new or existing site\?/);
+  assert.match(modalSource, /Use saved site data or start with a blank site\?/);
   assert.match(modalSource, /Find existing site/);
   assert.match(modalSource, /schedulerDispatchSiteSelectionPayload\(\{/);
   assert.match(modalSource, /address: jobAddress/);
@@ -224,15 +224,11 @@ test('new product jobs require an explicit new-site or existing-site choice', ()
   assert.match(modalSource, /schedulerSiteOptionLabel\(site\)/);
   assert.match(
     modalSource,
-    /installHubJobDetails\.workType === COMMS_FAULT_WORK_TYPE/,
+    /The latest zones,\s+switchboards, site assets, active devices, channels, NMI, electrical\s+mappings, site comments, and photo references are copied into the new Field\s+App job/,
   );
   assert.match(
     modalSource,
-    /For this M2 Field\s+App job, the latest zones, switchboards, site assets, active devices,\s+channels, and electrical mappings are copied into the new job/,
-  );
-  assert.match(
-    modalSource,
-    /This Field App job\s+starts with a fresh installation workspace; prior zones, devices, channels,\s+and electrical mappings are not copied/,
+    /A new site starts with an empty installation workspace, even when its\s+address matches a saved site/,
   );
   assert.match(modalSource, /meterLookupQuery/);
   assert.match(modalSource, /selectedExistingSite\?\.knownMeters/);

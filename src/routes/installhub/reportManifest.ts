@@ -10,10 +10,14 @@ export type InstallHubReportFormType =
   | 'a3rm-installation'
   | 'a6m-installation';
 
-export type ReportVisibility = {
+export type ReportVisibilityCondition = {
   key: string;
   equals: string | string[];
 };
+
+export type ReportVisibility =
+  | ReportVisibilityCondition
+  | ReportVisibilityCondition[];
 
 export type InstallHubReportField = {
   key: string;
@@ -122,7 +126,15 @@ function channelSections(
       fields:
         deviceType === 'dynamic'
           ? [
-              value(`${prefix}.load`, 'Load'),
+              value(`${prefix}.purpose`, 'Channel purpose'),
+              value(`${prefix}.load`, 'Load', {
+                key: `${prefix}.purpose`,
+                equals: ['Main board supply', 'Sub-circuit / asset'],
+              }),
+              value(`${prefix}.custom_load_type`, 'Custom load type', {
+                key: `${prefix}.load`,
+                equals: 'Other',
+              }),
               value(`${prefix}.rating`, 'CT / Rogowski coil rating', ratingVisibility),
               value(`${prefix}.description`, 'Load description', ratingVisibility),
               photo(`${prefix}.nameplate_photos`, 'Load / nameplate photos', ratingVisibility),
@@ -148,7 +160,12 @@ function commissioningFields(
     const channel = index + 1;
     const visibility: ReportVisibility =
       deviceType === 'dynamic'
-        ? { key: `channel.${channel}.load`, equals: usedLoads }
+        ? [
+            ...(channel > 3
+              ? [{ key: 'device.type', equals: 'A6M' }]
+              : []),
+            { key: `channel.${channel}.load`, equals: usedLoads },
+          ]
         : {
             key: `channel.${channel}.rating`,
             equals:
@@ -259,7 +276,10 @@ function installationDefinition(
             ? [
                 value('device.type', 'Meter / Device Type'),
                 value('device.name', 'Device name'),
-                value('device.number', 'Device number'),
+                value(
+                  'device.number',
+                  'Site / asset tag (optional — not the Device ID / serial)',
+                ),
                 value('device.id', 'Device ID / serial'),
               ]
             : [
@@ -305,7 +325,10 @@ const communicationsFault: InstallHubReportDefinition = {
         value('existing.site_nmi', 'Site NMI'),
         photo('existing.switchboard_photos', 'Whole switchboard photos'),
         value('existing.device_type', 'Existing Meter / Device Type'),
-        value('existing.device_number', 'Existing device number'),
+        value(
+          'existing.device_number',
+          'Existing site / asset tag (optional — not the Device ID / serial)',
+        ),
         value('existing.device_id', 'Existing Device ID / serial'),
         value('existing.sensor_rating', 'Existing CT / Rogowski coil rating', {
           key: 'existing.device_type',
@@ -328,7 +351,7 @@ const communicationsFault: InstallHubReportDefinition = {
           key: 'works.replace_device',
           equals: 'yes',
         }),
-        value('works.new_device_number', 'New device number', {
+        value('works.new_device_number', 'New site / asset tag (optional — not the Device ID / serial)', {
           key: 'works.replace_device',
           equals: 'yes',
         }),
@@ -608,8 +631,13 @@ export function isReportItemVisible(
   answers: Record<string, string>,
 ): boolean {
   if (!visibility) return true;
-  const expected = Array.isArray(visibility.equals)
-    ? visibility.equals
-    : [visibility.equals];
-  return expected.includes(String(answers[visibility.key] ?? ''));
+  const conditions: ReportVisibilityCondition[] = Array.isArray(visibility)
+    ? visibility
+    : [visibility];
+  return conditions.every((condition) => {
+    const expected = Array.isArray(condition.equals)
+      ? condition.equals
+      : [condition.equals];
+    return expected.includes(String(answers[condition.key] ?? ''));
+  });
 }

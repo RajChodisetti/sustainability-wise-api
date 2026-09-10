@@ -3,20 +3,25 @@ import test from 'node:test';
 import {
   INSTALLHUB_LARGE_REPORT_PHOTO_COUNT,
   INSTALLHUB_LARGE_REPORT_RAW_BYTES,
+  MissingInstallHubEntityEvidenceError,
   MissingInstallHubReportEvidenceError,
   buildInstallHubReportHtml,
   installHubReportNeedsChunks,
   installHubReportPhotoTotals,
+  planInstallHubEntityPhotoChunks,
   planInstallHubFormReportSlices,
+  resolveInstallHubEntityPhotos,
   resolveInstallHubFormPhotos,
   safeInstallHubReportFailure,
   visibleInstallHubReportSectionIndexes,
   type InstallHubReportForm,
   type InstallHubReportInstallation,
+  type InstallHubEntityPhotoReference,
   type InstallHubReportPhoto,
   type InstallHubCanonicalReport,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
+import { INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS } from './formContract.js';
 import {
   INSTALLHUB_REPORT_DEFINITIONS,
   INSTALLHUB_REPORT_DEFINITION_BY_TYPE,
@@ -102,6 +107,59 @@ test('report manifest is versioned and covers all six current and two legacy for
     INSTALLHUB_REPORT_DEFINITION_BY_TYPE['comms-fault'].title,
     'SW MaaS - Comms Fault',
   );
+});
+
+test('report manifest exhaustively mirrors every schema-v2 answer and photo key visibility', () => {
+  const normalizedVisibility = (values: unknown[]): string => JSON.stringify(
+    values.flatMap((value) => (
+      !value
+        ? []
+        : (Array.isArray(value) ? value : [value]) as Array<{
+            key: string;
+            equals: string | readonly string[];
+          }>
+    )).map((condition) => ({
+      key: condition.key,
+      equals: (Array.isArray(condition.equals)
+        ? [...condition.equals]
+        : [condition.equals]).sort(),
+    })).sort((left, right) => (
+      left.key.localeCompare(right.key)
+        || left.equals.join('\0').localeCompare(right.equals.join('\0'))
+    )),
+  );
+
+  for (const [formType, contract] of Object.entries(INSTALLHUB_SCHEMA_V2_FORM_DEFINITIONS)) {
+    const report = INSTALLHUB_REPORT_DEFINITION_BY_TYPE[
+      formType as keyof typeof INSTALLHUB_REPORT_DEFINITION_BY_TYPE
+    ];
+    assert.ok(report, `${formType} must have a report definition`);
+    const contractFields = new Map(contract.sections.flatMap((section) => (
+      section.fields.map((field) => [
+        field.key,
+        normalizedVisibility([section.showWhen, field.showWhen]),
+      ] as const)
+    )));
+    const reportFields = new Map(report.sections.flatMap((section) => (
+      section.fields.map((field) => [
+        field.key,
+        normalizedVisibility([section.showWhen, field.showWhen]),
+      ] as const)
+    )));
+
+    assert.deepEqual(
+      [...reportFields.keys()].sort(),
+      [...contractFields.keys()].sort(),
+      `${formType} report keys must equal its schema-v2 contract keys`,
+    );
+    for (const [key, visibility] of contractFields) {
+      assert.equal(
+        reportFields.get(key),
+        visibility,
+        `${formType}.${key} must use compatible visibility`,
+      );
+    }
+  }
 });
 
 test('canonical completion notes render escaped from the pinned report and blank notes are omitted', () => {
@@ -213,6 +271,20 @@ test('communications report preserves existing and replacement device numbers', 
   assert.ok(fields.some((field) => field.key === 'works.new_device_number'));
 });
 
+test('communications replacement sensor visibility matches the iOS device-type gate', () => {
+  const sensor = INSTALLHUB_REPORT_DEFINITION_BY_TYPE['comms-fault'].sections
+    .flatMap((section) => section.fields)
+    .find((field) => field.key === 'works.new_sensor_rating');
+  assert.ok(sensor);
+  assert.equal(isReportItemVisible(sensor.showWhen, {
+    'works.replace_device': 'yes',
+  }), false);
+  assert.equal(isReportItemVisible(sensor.showWhen, {
+    'works.replace_device': 'yes',
+    'works.new_device_type': 'A3RM',
+  }), true);
+});
+
 test('photo evidence resolves only through the exact attachment registry field', () => {
   const firstId = '11111111-1111-4111-8111-111111111111';
   const secondUri = 'https://files.example/completed.jpg';
@@ -286,7 +358,7 @@ test('reindexed evidence resolves the attachment UUID when an obsolete direct ro
     }),
     photo({
       id: shiftedId,
-      fieldName: 'attachments[0].uri',
+      fieldName: 'attachments[3].uri',
       remoteUrl: `https://files.example/installhub/${installationId}/photo-${shiftedId}.jpg`,
       createdAt: '2026-07-23T01:00:00.000Z',
     }),
@@ -361,6 +433,73 @@ test('live diagnostic drafts tolerate missing evidence instead of aborting rende
   }), []);
 });
 
+test('entity evidence resolves immutable UUID within its exact owner before stale field provenance', () => {
+  const photoId = '77777777-7777-4777-8777-777777777777';
+  const reference: InstallHubEntityPhotoReference = {
+    entityType: 'zone',
+    entityId: 'zone-1',
+    fieldName: 'photos[0]',
+    uri: `https://files.example/installhub/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/photo-${photoId}.jpg`,
+    groupKey: 'zone:zone-1',
+    groupLabel: 'Zone · Plant room',
+    caption: 'Incoming supply wall',
+    largeInPdf: true,
+  };
+  const [resolvedPhoto] = resolveInstallHubEntityPhotos([reference], [
+    photo({
+      id: photoId,
+      entityType: 'zone',
+      entityId: 'zone-1',
+      fieldName: 'photos[4]',
+    }),
+    photo({
+      id: photoId,
+      entityType: 'zone',
+      entityId: 'another-zone',
+      fieldName: 'photos[0]',
+    }),
+  ]);
+
+  assert.equal(resolvedPhoto?.photo.entityId, 'zone-1');
+  assert.equal(resolvedPhoto?.caption, 'Incoming supply wall');
+  assert.equal(resolvedPhoto?.largeInPdf, true);
+  assert.throws(
+    () => resolveInstallHubEntityPhotos([
+      { ...reference, entityId: 'missing-zone' },
+    ], [photo({
+      id: photoId,
+      entityType: 'zone',
+      entityId: 'zone-1',
+      fieldName: 'photos[0]',
+    })]),
+    MissingInstallHubEntityEvidenceError,
+  );
+});
+
+test('entity evidence chunks split an oversized owner at the bounded photo target', () => {
+  const entityPhotos = Array.from({ length: 121 }, (_, index) => ({
+    entityType: 'zone' as const,
+    entityId: 'zone-1',
+    fieldName: `photos[${index}]`,
+    uri: `https://files.example/photo-${index}.jpg`,
+    groupKey: 'zone:zone-1',
+    groupLabel: 'Zone · Plant room',
+    caption: `Plant room photo ${index + 1}`,
+    largeInPdf: false,
+    photo: photo({
+      id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`,
+      entityType: 'zone',
+      entityId: 'zone-1',
+      fieldName: `photos[${index}]`,
+    }),
+  }));
+
+  assert.deepEqual(
+    planInstallHubEntityPhotoChunks(entityPhotos, 50).map((chunk) => chunk.length),
+    [50, 50, 21],
+  );
+});
+
 test('large-report thresholds are strict and photo totals deduplicate originals', () => {
   const shared = resolved(0, 'water.lcd_photo');
   const totals = installHubReportPhotoTotals([
@@ -417,6 +556,39 @@ test('large forms split near the target only at report section boundaries', () =
     slices.flatMap((slice) => slice.sectionIndexes),
     visibleInstallHubReportSectionIndexes(reportForm),
   );
+});
+
+test('one unlimited multi-photo form section is bounded by attachment subsets', () => {
+  const reportForm = form();
+  const photos = Array.from({ length: 121 }, (_, index) => (
+    resolved(index, 'water.lcd_photo')
+  ));
+  const slices = planInstallHubFormReportSlices(reportForm, photos, 50);
+
+  assert.deepEqual(slices.map((slice) => slice.photoCount), [50, 50, 21]);
+  assert.deepEqual(slices.map((slice) => slice.continuation), [false, true, true]);
+  assert.deepEqual(
+    slices.map((slice) => slice.attachmentIndexes?.length),
+    [50, 50, 21],
+  );
+  const repeatedPhotoSection = slices[1]?.sectionIndexes[0];
+  assert.ok(repeatedPhotoSection !== undefined);
+  assert.ok(slices.every((slice) => slice.sectionIndexes.includes(repeatedPhotoSection)));
+
+  const html = buildInstallHubReportHtml({
+    mode: 'form',
+    installation,
+    forms: [reportForm],
+    slices: [slices[1]!],
+    resolvedByForm: new Map([[reportForm.id, photos]]),
+    logoDataUri: '',
+    includeIntro: false,
+    includeEnd: false,
+    generatedLabel: 'Generated',
+  });
+  assert.equal(html.match(/src="https:\/\/files\.example\/original\.jpg"/g)?.length, 50);
+  assert.doesNotMatch(html, /No photo provided/);
+  assert.match(html, /continued/);
 });
 
 test('HTML uses the Sustainability Wise A4 frame, contains photos, and escapes data', () => {
@@ -528,6 +700,49 @@ test('HTML renders escaped attachment captions and falls back to the evidence la
   );
   assert.doesNotMatch(html, /<caption>Panel 4 0 2<\/caption>/);
   assert.match(html, /Completed water-meter installation/);
+});
+
+test('entity and form evidence use EcoAudit compact and large PDF sizing without cropping', () => {
+  const entityPhotos = Array.from({ length: 4 }, (_, index) => ({
+    entityType: 'zone' as const,
+    entityId: 'zone-1',
+    fieldName: `photos[${index}]`,
+    uri: `https://files.example/photo-${index}.jpg`,
+    groupKey: 'zone:zone-1',
+    groupLabel: 'Zone · Plant room',
+    caption: index === 3 ? '<Large> distribution board' : `Compact ${index + 1}`,
+    largeInPdf: index === 3,
+    photo: photo({
+      id: `00000000-0000-4000-8000-${String(index + 20).padStart(12, '0')}`,
+      entityType: 'zone',
+      entityId: 'zone-1',
+      fieldName: `photos[${index}]`,
+      remoteUrl: `data:image/jpeg;base64,cGhvdG8${index}`,
+    }),
+  }));
+  const html = buildInstallHubReportHtml({
+    mode: 'installation-pack',
+    installation,
+    forms: [],
+    slices: [],
+    resolvedByForm: new Map(),
+    entityPhotos,
+    entityEvidenceContinuation: true,
+    logoDataUri: '',
+    includeIntro: false,
+    includeEnd: false,
+    generatedLabel: 'Generated',
+  });
+
+  assert.match(html, /Installation photographic evidence - continued/);
+  assert.match(html, /photo-row photo-columns-3/);
+  assert.match(html, /class="photo-large"/);
+  assert.match(html, /max-height:172px/);
+  assert.match(html, /max-height:370px/);
+  assert.match(html, /object-fit:contain/);
+  assert.match(html, /border:1px solid #CBD5E1/);
+  assert.match(html, /&lt;Large&gt; distribution board/);
+  assert.doesNotMatch(html, /\.entity-evidence\{[^}]*break-before/);
 });
 
 test('canonical form with optional evidence omitted renders safely without leaking a local URI', () => {
@@ -934,7 +1149,7 @@ test('installation packs embed the electrical map once and render only the selec
   assert.doesNotMatch(continuation, /Details by physical zone/);
 });
 
-test('capped electrical maps keep the complete overview and add an indexed hierarchy fallback', () => {
+test('electrical maps render only the single whole-site overview even if legacy tiles are supplied', () => {
   const canonicalReport: InstallHubCanonicalReport = {
     reportSource: 'canonical-version',
     treeRevision: 8,
@@ -1006,23 +1221,17 @@ test('capped electrical maps keep the complete overview and add an indexed hiera
   });
 
   assert.equal(html.match(/data:image\/png;base64,b3ZlcnZpZXc=/g)?.length, 1);
-  assert.equal(html.match(/data-map-detail-segment=/g)?.length, 2);
-  assert.match(html, /Electrical map detail - row 1 of 1, column 1 of 2/);
-  assert.match(html, /Electrical map detail - row 1 of 1, column 2 of 2/);
-  assert.match(html, /Source window left 1-1080, top 69-368 of 2000 x 400/);
-  assert.match(html, /Source window left 921-2000, top 69-368 of 2000 x 400/);
-  assert.match(html, /Window edges retain source overlap; capped sets may omit intermediate windows/);
-  assert.doesNotMatch(html, /Adjacent rows and columns overlap/);
-  assert.match(html, /Refer to the complete overview for the full topology and legend/);
-  assert.match(html, /visual detail pages are capped at 2 representative windows from 30/);
-  assert.match(html, /Visual detail page limit reached/);
-  assert.match(html, /28 additional map windows/);
-  assert.match(html, /data-map-detail-fallback="indexed-hierarchy"/);
-  assert.match(html, /Supplied from \/ parent/);
-  assert.match(html, /\.electrical-map-detail\{page:electricalmap;page-break-before:always/);
+  assert.doesNotMatch(html, /data-map-detail-segment=/);
+  assert.doesNotMatch(html, /data:image\/png;base64,c2VnbWVudDE=/);
+  assert.doesNotMatch(html, /data:image\/png;base64,c2VnbWVudDI=/);
+  assert.doesNotMatch(html, /Visual detail page limit reached/);
+  assert.doesNotMatch(html, /data-map-detail-fallback=/);
+  assert.doesNotMatch(html, /\.electrical-map-detail\{/);
+  assert.match(html, /single whole-site electrical map/);
+  assert.match(html, /does not generate zoomed tiles or individual map views/);
   assert.match(html, /automatic top-down hierarchy/);
-  assert.match(html, /Straight copper lines follow confirmed supply paths from the incoming grid through each level/);
-  assert.match(html, /installed meters close by with active channel and load labels/);
+  assert.match(html, /Straight copper lines follow confirmed supply paths/);
+  assert.match(html, /boards retain their installed meters, active channels and connected-load labels/);
 });
 
 test('the electrical map prints on its own landscape plate', () => {
@@ -1083,7 +1292,8 @@ test('the electrical map prints on its own landscape plate', () => {
   assert.match(html, /@page\{size:A4;/);
   assert.match(html, /@page electricalmap\{size:A4 landscape;/);
   assert.match(html, /\.electrical-map\{page:electricalmap;page-break-before:always/);
-  assert.match(html, /\.electrical-map-detail\{page:electricalmap;page-break-before:always/);
+  assert.doesNotMatch(html, /data:image\/png;base64,BBBB/);
+  assert.doesNotMatch(html, /\.electrical-map-detail\{/);
   assert.match(html, /\.electrical-map\{[^}]*break-after:page/);
 });
 

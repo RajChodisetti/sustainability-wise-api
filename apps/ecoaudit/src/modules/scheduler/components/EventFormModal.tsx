@@ -891,12 +891,12 @@ export function EventFormModal({
                     <div className="mt-3 rounded-xl border border-[var(--border)] bg-[var(--surface2)] p-3">
                         <fieldset>
                           <legend className="mb-1.5 text-sm font-bold text-[var(--text)]">
-                            Is this work for a new or existing site?
+                            Use saved site data or start with a blank site?
                           </legend>
                           <div className="grid grid-cols-2 gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-1">
                             {([
-                              ['new', 'New site'],
-                              ['existing', 'Existing site'],
+                              ['new', 'Start blank'],
+                              ['existing', 'Use site data'],
                             ] as const).map(([value, label]) => (
                               <button
                                 key={value}
@@ -922,6 +922,13 @@ export function EventFormModal({
                             ))}
                           </div>
                         </fieldset>
+                        {siteSelectionMode === 'new' ? (
+                          <FieldHint>
+                            A new site starts with an empty installation workspace, even when its
+                            address matches a saved site. Choose Use site data to carry the saved
+                            site into this job.
+                          </FieldHint>
+                        ) : null}
                         {siteSelectionMode === 'existing' ? (
                           <div className="mt-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] p-3">
                             <FieldLabel htmlFor="scheduler-site-search">Find existing site</FieldLabel>
@@ -953,27 +960,22 @@ export function EventFormModal({
                             ) : null}
                             {existingSiteId ? (
                               <FieldHint>
-                                {sourceApp === 'installhub'
-                                  && installHubJobDetails.workType === COMMS_FAULT_WORK_TYPE ? (
-                                    <>
-                                      The saved client and site details are filled in below. For this M2 Field
-                                      App job, the latest zones, switchboards, site assets, active devices,
-                                      channels, and electrical mappings are copied into the new job. You can edit
-                                      the details before creating it; those edits update the linked client, site,
-                                      and installed-meter directory associations when the job is created.
-                                    </>
-                                  ) : sourceApp === 'installhub' ? (
-                                    <>
-                                      The saved client and site details are filled in below. This Field App job
-                                      starts with a fresh installation workspace; prior zones, devices, channels,
-                                      and electrical mappings are not copied.
-                                    </>
-                                  ) : (
-                                    <>
-                                      The saved client and site details are filled in below. You can edit them
-                                      before creating the new job.
-                                    </>
-                                  )}
+                                {sourceApp === 'installhub' ? (
+                                  <>
+                                    The saved client and site details are filled in below. The latest zones,
+                                    switchboards, site assets, active devices, channels, NMI, electrical
+                                    mappings, site comments, and photo references are copied into the new Field
+                                    App job. Secure photo previews download on iOS with the assigned job. Prior
+                                    completed forms stay with the historical job. You can edit the details before
+                                    creating this job; those edits update the linked client, site, and
+                                    installed-meter directory associations.
+                                  </>
+                                ) : (
+                                  <>
+                                    The saved client and site details are filled in below. You can edit them
+                                    before creating the new job.
+                                  </>
+                                )}
                               </FieldHint>
                             ) : null}
                           </div>

@@ -60,6 +60,7 @@ export type InstallHubFormAttachment = {
   uri: string;
   mimeType: string;
   caption?: string | null;
+  largeInPdf?: boolean;
   capturedAt: string;
 };
 
@@ -396,7 +397,7 @@ const commsFault: InstallHubContractDefinition = {
         sensor(
           'works.new_sensor_rating',
           'works.new_device_type',
-          replacementVisible,
+          { key: 'works.new_device_type', equals: DEVICE_TYPES },
         ),
         { ...yesNo('works.new_online'), showWhen: replacementVisible },
         {
@@ -702,6 +703,12 @@ function validateAttachments(value: unknown): InstallHubFormAttachment[] {
     if (typeof record.caption === 'string' && record.caption.length > 500) {
       throw badRequest(`attachments[${index}].caption must be at most 500 characters`);
     }
+    if (
+      record.largeInPdf !== undefined
+      && typeof record.largeInPdf !== 'boolean'
+    ) {
+      throw badRequest(`attachments[${index}].largeInPdf must be a boolean`);
+    }
     return {
       id,
       slot,
@@ -710,6 +717,9 @@ function validateAttachments(value: unknown): InstallHubFormAttachment[] {
       capturedAt,
       ...(record.caption === null || typeof record.caption === 'string'
         ? { caption: record.caption }
+        : {}),
+      ...(typeof record.largeInPdf === 'boolean'
+        ? { largeInPdf: record.largeInPdf }
         : {}),
     };
   });

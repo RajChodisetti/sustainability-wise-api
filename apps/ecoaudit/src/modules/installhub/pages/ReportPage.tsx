@@ -308,8 +308,9 @@ export function InstallHubReportPage() {
               Report organisation
             </h2>
             <p className="mt-1 text-sm leading-6 text-[var(--text-sub)]">
-              The electrical map is always included. Choose how the supporting
-              switchboard, device and load details are grouped.
+              The electrical map is always included as one fitted whole-site
+              view. The PDF does not add zoomed or individual map views. Choose
+              how the supporting switchboard, device and load details are grouped.
             </p>
           </div>
           <div>

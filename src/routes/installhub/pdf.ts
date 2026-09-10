@@ -41,24 +41,28 @@ import {
   buildInstallHubReportHtml,
   installHubReportNeedsChunks,
   installHubReportPhotoTotals,
+  planInstallHubEntityPhotoChunks,
   planInstallHubFormReportSlices,
   planInstallHubPackChunks,
   photosForInstallHubFormSlice,
+  resolveInstallHubEntityPhotos,
   resolveInstallHubFormPhotos,
   safeInstallHubReportFailure,
   visibleInstallHubReportSectionIndexes,
   type InstallHubFormReportSlice,
+  type InstallHubEntityPhotoReference,
   type InstallHubReportAttachment,
   type InstallHubReportForm,
   type InstallHubReportInstallation,
   type InstallHubReportPhoto,
   type InstallHubReportDetailMode,
   type InstallHubCanonicalReport,
+  type ResolvedInstallHubEntityPhoto,
   type ResolvedInstallHubFormPhoto,
 } from './reportHtml.js';
 import {
   buildElectricalMapSvg,
-  renderElectricalMapImages,
+  renderElectricalMapPngDataUri,
   renderElectricalMapPngBuffer,
 } from './electricalMapImage.js';
 import {
@@ -93,7 +97,7 @@ type FormRow = typeof ihFormSubmissions.$inferSelect;
 type PhotoRow = typeof photoRegistry.$inferSelect;
 type ReportMode = 'form' | 'installation-pack';
 
-export const INSTALLHUB_REPORT_RENDERER_VERSION = 10;
+export const INSTALLHUB_REPORT_RENDERER_VERSION = 11;
 export const DEFAULT_INSTALLHUB_REPORT_DETAIL_MODE: InstallHubReportDetailMode =
   'by-electrical-hierarchy';
 
@@ -157,6 +161,13 @@ export function pinnedPhotoMatchesManifest(
 ): boolean {
   return photo.id.toLowerCase() === manifest.id.toLowerCase()
     && photo.checksum === manifest.checksum;
+}
+
+const INSTALLHUB_EVIDENCE_UUID_RE =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+function immutableEvidencePhotoId(uri: string): string | null {
+  return uri.match(INSTALLHUB_EVIDENCE_UUID_RE)?.at(-1)?.toLowerCase() ?? null;
 }
 
 export function requestedRecordVersion(value: unknown): number | undefined {
@@ -430,7 +441,7 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-function reportAttachments(value: unknown): InstallHubReportAttachment[] {
+export function reportAttachments(value: unknown): InstallHubReportAttachment[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => {
     if (!item || typeof item !== 'object') return [];
@@ -442,6 +453,7 @@ function reportAttachments(value: unknown): InstallHubReportAttachment[] {
       attachment.mimeType ?? attachment.mime_type,
     );
     const caption = optionalText(attachment.caption);
+    const largeInPdf = attachment.largeInPdf ?? attachment.large_in_pdf;
     const capturedAt = optionalText(
       attachment.capturedAt ?? attachment.captured_at,
     );
@@ -452,6 +464,7 @@ function reportAttachments(value: unknown): InstallHubReportAttachment[] {
       uri,
       ...(mimeType ? { mimeType } : {}),
       ...(caption ? { caption } : {}),
+      ...(typeof largeInPdf === 'boolean' ? { largeInPdf } : {}),
       ...(capturedAt ? { capturedAt } : {}),
     }];
   });
@@ -510,6 +523,7 @@ function reportInstallation(row: InstallHubReportInstallation): InstallHubReport
 function reportPhoto(row: PhotoRow): InstallHubReportPhoto {
   return {
     id: row.id,
+    entityType: row.entityType,
     entityId: row.entityId,
     fieldName: row.fieldName,
     storageKey: row.storageKey,
@@ -517,6 +531,119 @@ function reportPhoto(row: PhotoRow): InstallHubReportPhoto {
     fileSizeBytes: row.fileSizeBytes,
     createdAt: row.createdAt,
   };
+}
+
+function indexedFieldNumber(fieldName: string): number {
+  const match = /\[(\d+)\]$/.exec(fieldName);
+  return match ? Number(match[1]) : 0;
+}
+
+function entityEvidenceFieldOrder(fieldName: string): number {
+  if (fieldName === 'photo' || fieldName === 'locationPhoto') return 0;
+  if (fieldName === 'wwPhotos.deviceInstalled') return 0;
+  if (fieldName === 'wwPhotos.switchboardOverview') return 1;
+  if (fieldName === 'wwPhotos.labeling') return 2;
+  if (fieldName.startsWith('wwPhotos.extra[')) return 3 + indexedFieldNumber(fieldName);
+  return 1 + indexedFieldNumber(fieldName);
+}
+
+/**
+ * Builds client-facing entity evidence exclusively from the canonical registry
+ * paths. Notes remain the caption authority; PDF metadata controls only size.
+ */
+export function installHubEntityPhotoReferences(
+  tree: CanonicalInstallationTree,
+): InstallHubEntityPhotoReference[] {
+  const zones = new Map(tree.zones.map((zone) => [zone.id, zone]));
+  const boards = new Map(tree.electricalAssets.map((board) => [board.id, board]));
+  const assets = new Map(tree.siteAssets.map((asset) => [asset.id, asset]));
+  const meters = new Map(tree.meterDevices.map((meter) => [meter.id, meter]));
+  const orderedEntities = [
+    ...tree.zones.map((zone) => `zone\0${zone.id}`),
+    ...tree.electricalAssets.flatMap((board) => [
+      `electrical_asset\0${board.id}`,
+      ...tree.meterDevices
+        .filter((meter) => meter.installedOnBoardId === board.id)
+        .map((meter) => `meter_device\0${meter.id}`),
+    ]),
+    ...tree.meterDevices
+      .filter((meter) => !boards.has(meter.installedOnBoardId))
+      .map((meter) => `meter_device\0${meter.id}`),
+    ...tree.siteAssets.map((asset) => `site_asset\0${asset.id}`),
+  ];
+  const entityOrder = new Map(orderedEntities.map((key, index) => [key, index]));
+
+  return canonicalEvidenceReferences(tree)
+    .filter((reference): reference is typeof reference & {
+      entityType: InstallHubEntityPhotoReference['entityType'];
+    } => reference.entityType !== 'form_submission')
+    .map((reference) => {
+      let name: string;
+      let photoNotes: Record<string, string> | undefined;
+      let photoMetadata: Record<string, { largeInPdf?: boolean }> | undefined;
+      if (reference.entityType === 'zone') {
+        const entity = zones.get(reference.entityId);
+        if (!entity) throw new Error(`Canonical evidence entity ${reference.entityId} was not found`);
+        name = entity.zoneName;
+        photoNotes = entity.photoNotes;
+        photoMetadata = entity.photoMetadata;
+      } else if (reference.entityType === 'electrical_asset') {
+        const entity = boards.get(reference.entityId);
+        if (!entity) throw new Error(`Canonical evidence entity ${reference.entityId} was not found`);
+        name = entity.assetName;
+        photoNotes = entity.photoNotes;
+        photoMetadata = entity.photoMetadata;
+      } else if (reference.entityType === 'site_asset') {
+        const entity = assets.get(reference.entityId);
+        if (!entity) throw new Error(`Canonical evidence entity ${reference.entityId} was not found`);
+        name = entity.assetName;
+        photoNotes = entity.photoNotes;
+        photoMetadata = entity.photoMetadata;
+      } else {
+        const entity = meters.get(reference.entityId);
+        if (!entity) throw new Error(`Canonical evidence entity ${reference.entityId} was not found`);
+        name = entity.displayName.value || entity.customName || entity.serialNumber;
+        photoNotes = entity.photoNotes;
+        photoMetadata = entity.photoMetadata;
+      }
+      const groupLabel = reference.entityType === 'zone'
+        ? `Zone · ${name}`
+        : reference.entityType === 'electrical_asset'
+          ? `Switchboard · ${name}`
+          : reference.entityType === 'meter_device'
+            ? `Meter · ${name}`
+            : `Site asset · ${name}`;
+      const defaultCaption = reference.entityType === 'zone'
+        ? `${name} photo ${indexedFieldNumber(reference.fieldName) + 1}`
+        : reference.entityType === 'electrical_asset'
+          ? reference.fieldName === 'photo'
+            ? `${name} main photo`
+            : `${name} extra photo ${indexedFieldNumber(reference.fieldName) + 1}`
+          : reference.entityType === 'site_asset'
+            ? reference.fieldName === 'locationPhoto'
+              ? `${name} location photo`
+              : `${name} extra photo ${indexedFieldNumber(reference.fieldName) + 1}`
+            : reference.fieldName === 'wwPhotos.deviceInstalled'
+              ? `${name} device installed`
+              : reference.fieldName === 'wwPhotos.switchboardOverview'
+                ? `${name} switchboard overview`
+                : reference.fieldName === 'wwPhotos.labeling'
+                  ? `${name} labeling`
+                  : `${name} extra photo ${indexedFieldNumber(reference.fieldName) + 1}`;
+      return {
+        ...reference,
+        groupKey: `${reference.entityType}:${reference.entityId}`,
+        groupLabel,
+        caption: photoNotes?.[reference.fieldName]?.trim() || defaultCaption,
+        largeInPdf: photoMetadata?.[reference.fieldName]?.largeInPdf === true,
+      };
+    })
+    .sort((left, right) => (
+      (entityOrder.get(`${left.entityType}\0${left.entityId}`) ?? Number.MAX_SAFE_INTEGER)
+        - (entityOrder.get(`${right.entityType}\0${right.entityId}`) ?? Number.MAX_SAFE_INTEGER)
+      || entityEvidenceFieldOrder(left.fieldName) - entityEvidenceFieldOrder(right.fieldName)
+      || left.fieldName.localeCompare(right.fieldName)
+    ));
 }
 
 async function loadInstallation(installationId: string): Promise<InstallationRow> {
@@ -581,6 +708,7 @@ function selectedResolvedPhotos(
       form,
       resolvedByForm.get(form.id) ?? [],
       slice.sectionIndexes,
+      slice.attachmentIndexes,
     );
     const existing = selected.get(form.id) ?? [];
     const seen = new Set(existing.map((item) => item.attachmentIndex));
@@ -593,36 +721,50 @@ function selectedResolvedPhotos(
 }
 
 async function compressResolvedPhotos(
-  selected: Map<string, ResolvedInstallHubFormPhoto[]>,
+  selectedForms: Map<string, ResolvedInstallHubFormPhoto[]>,
+  selectedEntities: ResolvedInstallHubEntityPhoto[],
   scopedPhotoRows: PhotoRow[],
-): Promise<Map<string, ResolvedInstallHubFormPhoto[]>> {
+): Promise<{
+  forms: Map<string, ResolvedInstallHubFormPhoto[]>;
+  entities: ResolvedInstallHubEntityPhoto[];
+}> {
   const photoIds = new Set(
-    [...selected.values()].flatMap((photos) =>
-      photos.map((photo) => photo.photo.id),
-    ),
+    [
+      ...[...selectedForms.values()].flatMap((photos) => (
+        photos.map((photo) => photo.photo.id)
+      )),
+      ...selectedEntities.map((photo) => photo.photo.id),
+    ],
   );
   const raw = uniquePhotoRows(
     scopedPhotoRows.filter((photo) => photoIds.has(photo.id)),
   );
   const compressed = await prepareCompressedPdfPhotos(raw);
   const compressedById = new Map(compressed.map((photo) => [photo.id, photo]));
-  const result = new Map<string, ResolvedInstallHubFormPhoto[]>();
+  const replacePhoto = (photo: InstallHubReportPhoto): InstallHubReportPhoto => {
+    const replacement = compressedById.get(photo.id);
+    if (!replacement?.remoteUrl?.startsWith('data:image/')) {
+      throw new Error(
+        `Original evidence ${photo.id} could not be prepared for PDF rendering`,
+      );
+    }
+    return reportPhoto(replacement);
+  };
+  const forms = new Map<string, ResolvedInstallHubFormPhoto[]>();
 
-  for (const [formId, photos] of selected) {
-    result.set(formId, photos.map((resolved) => {
-      const replacement = compressedById.get(resolved.photo.id);
-      if (!replacement?.remoteUrl?.startsWith('data:image/')) {
-        throw new Error(
-          `Original evidence ${resolved.photo.id} could not be prepared for PDF rendering`,
-        );
-      }
-      return {
-        ...resolved,
-        photo: reportPhoto(replacement),
-      };
-    }));
+  for (const [formId, photos] of selectedForms) {
+    forms.set(formId, photos.map((resolved) => ({
+      ...resolved,
+      photo: replacePhoto(resolved.photo),
+    })));
   }
-  return result;
+  return {
+    forms,
+    entities: selectedEntities.map((resolved) => ({
+      ...resolved,
+      photo: replacePhoto(resolved.photo),
+    })),
+  };
 }
 
 function allFormSlices(
@@ -665,7 +807,10 @@ async function renderInstallHubReport(args: {
           .map(canonicalReportForm)
       : args.formRows.map(reportForm);
   const formsById = new Map(forms.map((form) => [form.id, form]));
-  const formIds = new Set(forms.map((form) => form.id));
+  const sourceTree = args.pinnedSnapshot?.installationTree ?? args.liveDiagnosticTree;
+  const entityReferences = args.mode === 'installation-pack' && sourceTree
+    ? installHubEntityPhotoReferences(sourceTree)
+    : [];
   const pinnedMediaById = args.pinnedSnapshot
     ? new Map(args.pinnedSnapshot.mediaManifest.map((item) => [item.id.toLowerCase(), item]))
     : null;
@@ -673,24 +818,34 @@ async function renderInstallHubReport(args: {
     app: 'installhub',
     parentId: installation.id,
   })).filter((photo) => (
-    formIds.has(photo.entityId)
-    && (!pinnedMediaById || (() => {
+    !pinnedMediaById || (() => {
       const manifest = pinnedMediaById.get(photo.id.toLowerCase());
       return Boolean(manifest && pinnedPhotoMatchesManifest(photo, manifest));
     })())
-  ));
+  );
   if (args.pinnedSnapshot) {
-    const fieldByPhotoEntity = new Map<string, string>();
+    const fieldsByPhotoEntity = new Map<string, Array<{
+      fieldName: string;
+      uri: string;
+    }>>();
     for (const reference of canonicalEvidenceReferences(args.pinnedSnapshot.installationTree)) {
-      const photoId = reference.uri.match(
-        /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-      )?.[0]?.toLowerCase();
-      if (photoId) fieldByPhotoEntity.set(`${photoId}\0${reference.entityId}`, reference.fieldName);
+      const photoId = immutableEvidencePhotoId(reference.uri);
+      if (!photoId) continue;
+      const key = [photoId, reference.entityType, reference.entityId].join('\0');
+      const fields = fieldsByPhotoEntity.get(key) ?? [];
+      fields.push({ fieldName: reference.fieldName, uri: reference.uri });
+      fieldsByPhotoEntity.set(key, fields);
     }
     scopedPhotoRows = scopedPhotoRows.map((photo) => ({
       ...photo,
-      fieldName: fieldByPhotoEntity.get(`${photo.id.toLowerCase()}\0${photo.entityId}`)
-        ?? photo.fieldName,
+      fieldName: (() => {
+        const fields = fieldsByPhotoEntity.get([
+          photo.id.toLowerCase(), photo.entityType, photo.entityId,
+        ].join('\0')) ?? [];
+        return fields.find((field) => field.fieldName === photo.fieldName)?.fieldName
+          ?? (fields.length === 1 ? fields[0]?.fieldName : undefined)
+          ?? photo.fieldName;
+      })(),
     }));
   }
   const reportPhotoRows = scopedPhotoRows.map(reportPhoto);
@@ -702,19 +857,54 @@ async function renderInstallHubReport(args: {
       }),
     ]),
   );
+  const resolvedEntityPhotos = resolveInstallHubEntityPhotos(
+    entityReferences,
+    reportPhotoRows,
+    { allowMissingEvidence: Boolean(args.liveDiagnosticTree) },
+  );
   const totals = installHubReportPhotoTotals(
-    [...resolvedByForm.values()].flat(),
+    [
+      ...[...resolvedByForm.values()].flat(),
+      ...resolvedEntityPhotos,
+    ],
   );
   const chunked = installHubReportNeedsChunks(totals);
-  const chunks: InstallHubFormReportSlice[][] =
-    chunked
-      ? args.mode === 'form' && forms[0]
-        ? planInstallHubFormReportSlices(
-            forms[0],
-            resolvedByForm.get(forms[0].id) ?? [],
-          ).map((slice) => [slice])
-        : planInstallHubPackChunks(forms, resolvedByForm)
-      : [allFormSlices(forms, resolvedByForm)];
+  type RenderChunk = {
+    slices: InstallHubFormReportSlice[];
+    entityPhotos: ResolvedInstallHubEntityPhoto[];
+    entityEvidenceContinuation: boolean;
+  };
+  let chunks: RenderChunk[];
+  if (!chunked) {
+    chunks = [{
+      slices: allFormSlices(forms, resolvedByForm),
+      entityPhotos: resolvedEntityPhotos,
+      entityEvidenceContinuation: false,
+    }];
+  } else {
+    const entityChunks = planInstallHubEntityPhotoChunks(resolvedEntityPhotos);
+    const formChunks = args.mode === 'form' && forms[0]
+      ? planInstallHubFormReportSlices(
+          forms[0],
+          resolvedByForm.get(forms[0].id) ?? [],
+        ).map((slice) => [slice])
+      : planInstallHubPackChunks(forms, resolvedByForm);
+    chunks = entityChunks.map((entityPhotos, index) => ({
+      slices: [],
+      entityPhotos,
+      entityEvidenceContinuation: index > 0,
+    }));
+    if (forms.length > 0) {
+      chunks.push(...formChunks.map((slices) => ({
+        slices,
+        entityPhotos: [],
+        entityEvidenceContinuation: false,
+      })));
+    }
+    if (chunks.length === 0) {
+      chunks = [{ slices: [], entityPhotos: [], entityEvidenceContinuation: false }];
+    }
+  }
 
   await args.onPhase?.(
     chunked
@@ -732,32 +922,39 @@ async function renderInstallHubReport(args: {
           args.liveDiagnosticReadiness,
         )
       : undefined;
-  const electricalMapImages = args.mode === 'installation-pack' && canonicalReport
-    ? await renderElectricalMapImages(canonicalReport, installation.siteName)
+  const electricalMapDataUri = args.mode === 'installation-pack' && canonicalReport
+    ? await renderElectricalMapPngDataUri(canonicalReport, installation.siteName)
     : undefined;
   const parts: Buffer[] = [];
   for (let index = 0; index < chunks.length; index += 1) {
-    const slices = chunks[index];
+    const chunk = chunks[index];
+    const slices = chunk.slices;
     const selected = selectedResolvedPhotos(
       formsById,
       resolvedByForm,
       slices,
     );
-    const compressed = await compressResolvedPhotos(selected, scopedPhotoRows);
+    const compressed = await compressResolvedPhotos(
+      selected,
+      chunk.entityPhotos,
+      scopedPhotoRows,
+    );
     const html = buildInstallHubReportHtml({
       mode: args.mode,
       detailMode: args.detailMode,
       installation,
       forms,
       slices,
-      resolvedByForm: compressed,
+      resolvedByForm: compressed.forms,
+      entityPhotos: compressed.entities,
+      entityEvidenceContinuation: chunk.entityEvidenceContinuation,
       logoDataUri,
       includeIntro: index === 0,
       includeEnd: index === chunks.length - 1,
       generatedLabel: reportGeneratedLabel,
       summaryPhotoCount: totals.count,
       ...(canonicalReport ? { canonicalReport } : {}),
-      ...(index === 0 && electricalMapImages ? { electricalMapImages } : {}),
+      ...(index === 0 && electricalMapDataUri ? { electricalMapDataUri } : {}),
     });
     parts.push(await renderPdf(html));
     await args.onProgress?.(index + 1, chunks.length);

@@ -1548,8 +1548,9 @@ export async function renderElectricalMapPngDataUri(
 }
 
 /**
- * Render the bounded overview used by both PDF reports and the authenticated
- * mobile download route. Detail tiles remain a PDF-only concern.
+ * Render the single bounded whole-site overview used by PDF reports and the
+ * authenticated mobile download route. Report generation does not request the
+ * legacy detail-tile helper below.
  */
 export async function renderElectricalMapPngBuffer(
   report: InstallHubCanonicalReport,

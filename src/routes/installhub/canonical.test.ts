@@ -6,6 +6,7 @@ import {
   assertCanonicalAssetMeteringWrite,
   assertStructurallySafeTree,
   canonicalPayloadHash,
+  canonicalOrderInstallationTree,
   canonicalTreeMutationFingerprint,
   deriveZoneCode,
   deriveVirtualMeterDefinitions,
@@ -24,6 +25,44 @@ import {
   type MeterChannel,
   type MeterDevice,
 } from './canonical.js';
+
+test('canonical evidence ordering rekeys notes and PDF metadata with each URI', () => {
+  const tree = baseTree();
+  const parentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const photoA = '11111111-1111-4111-8111-111111111111';
+  const photoB = '22222222-2222-4222-8222-222222222222';
+  tree.zones[0].photos = [
+    `https://files.example.test/installhub/${parentId}/photo-${photoB}.jpg`,
+    `https://files.example.test/installhub/${parentId}/photo-${photoA}.jpg`,
+  ];
+  tree.zones[0].photoNotes = {
+    'photos[0]': 'Photo B',
+    'photos[1]': 'Photo A',
+    'photos[8]': 'Stale note',
+    photo: 'Unrelated scalar note',
+  };
+  tree.zones[0].photoMetadata = {
+    'photos[0]': { largeInPdf: false },
+    'photos[1]': { largeInPdf: true },
+    'photos[8]': { largeInPdf: true },
+    photo: { largeInPdf: false },
+  };
+
+  const ordered = canonicalOrderInstallationTree(tree);
+
+  assert.match(ordered.zones[0].photos[0], new RegExp(photoA));
+  assert.deepEqual(ordered.zones[0].photoNotes, {
+    photo: 'Unrelated scalar note',
+    'photos[0]': 'Photo A',
+    'photos[1]': 'Photo B',
+  });
+  assert.deepEqual(ordered.zones[0].photoMetadata, {
+    photo: { largeInPdf: false },
+    'photos[0]': { largeInPdf: true },
+    'photos[1]': { largeInPdf: false },
+  });
+  assert.deepEqual(tree.zones[0].photos.map((uri) => uri.includes(photoB)), [true, false]);
+});
 
 test('canonical site-code contract accepts only bounded uppercase groups', () => {
   for (const valid of ['W', 'SYD-WH1', '123', 'ABCDEFGHIJKLMNOP']) {
@@ -3271,5 +3310,5 @@ test('canonical snapshot hash and evidence fields ignore input array order', () 
     JSON.stringify(preCompletionNotesSnapshot),
     preCompletionNotesBeforeComparison,
   );
-  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.10');
+  assert.equal(storedShape.canonicalizerVersion, 'installation-canonical-v2.11');
 });
