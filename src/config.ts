@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { assertOneDriveBackupPolicy } from './onedrive/configPolicy.js';
 import { assertStorageIsolationPolicy } from './storage/storageIsolationPolicy.js';
 
 function required(name: string): string {
@@ -318,6 +319,18 @@ const azure = {
   tenantId: optional('AZURE_TENANT_ID'),
   userEmail: optional('ONEDRIVE_USER_EMAIL'),
 } as const;
+const oneDriveBackupEnabled = optionalBool('ONEDRIVE_PHOTO_BACKUP_ENABLED', false);
+const oneDriveBackupRequired = optionalBool('ONEDRIVE_BACKUP_REQUIRED', false);
+const oneDrivePhotosFolder = normalizeOneDriveFolder(
+  optional('ONEDRIVE_PHOTOS_FOLDER', 'SustainabilityWise/photos'),
+);
+
+assertOneDriveBackupPolicy({
+  enabled: oneDriveBackupEnabled,
+  backupRequired: oneDriveBackupRequired,
+  ...azure,
+  photosFolder: oneDrivePhotosFolder,
+});
 
 type StorageProvider = 'local' | 'spaces';
 type StorageApp = 'ecoaudit' | 'solarsense' | 'installhub';
@@ -611,14 +624,12 @@ export const config = {
   azure,
   oneDrive: {
     ...azure,
-    enabled: optionalBool('ONEDRIVE_PHOTO_BACKUP_ENABLED', false),
-    photosFolder: normalizeOneDriveFolder(
-      optional('ONEDRIVE_PHOTOS_FOLDER', 'SustainabilityWise/photos'),
-    ),
+    enabled: oneDriveBackupEnabled,
+    photosFolder: oneDrivePhotosFolder,
     invoicesFolder: normalizeOneDriveFolder(
       optional('ONEDRIVE_INVOICES_FOLDER', 'SustainabilityWise/invoices'),
     ),
-    backupRequired: optionalBool('ONEDRIVE_BACKUP_REQUIRED', false),
+    backupRequired: oneDriveBackupRequired,
   },
   expoPush: {
     // Test processes opt in explicitly so buildApp/route suites never start a

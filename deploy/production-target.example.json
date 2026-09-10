@@ -96,7 +96,7 @@
   "oneDrive": {
     "enabled": true,
     "allowDisabled": false,
-    "backupRequired": false,
+    "backupRequired": true,
     "tenantId": "REPLACE_WITH_AZURE_TENANT_ID",
     "clientId": "REPLACE_WITH_AZURE_CLIENT_ID",
     "clientSecretSha256": "REPLACE_WITH_SHA256_FINGERPRINT",

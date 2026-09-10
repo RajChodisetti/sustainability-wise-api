@@ -378,9 +378,12 @@ When `ONEDRIVE_PHOTO_BACKUP_ENABLED=true`, require all of:
 - upload/download checksum smoke;
 - one integrated photo/PDF mirror check.
 
-`ONEDRIVE_BACKUP_REQUIRED=false` means Graph failure is best effort and does not
-fail the primary operation. This policy must be explicit in the release record.
-`ONEDRIVE_BACKUP_REQUIRED=true` with mirroring disabled is invalid.
+Field App production evidence requires `ONEDRIVE_BACKUP_REQUIRED=true`, so a
+Graph failure leaves confirmation retryable rather than silently completing
+without the secondary copy. `ONEDRIVE_BACKUP_REQUIRED=false` remains a
+best-effort mode only for a separately approved exception. This policy must be
+explicit in the release record, and required mirroring with mirroring disabled
+is invalid.
 
 The existing OneDrive smoke writes beneath `_smoke`; record and clean up its
 artifact after verification.

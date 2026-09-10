@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { invoicePdfOneDrivePath } from './paths.js';
+import { invoicePdfOneDrivePath, oneDrivePathForStorageKey } from './paths.js';
+
+test('Field App evidence stays in its own OneDrive application hierarchy', () => {
+  assert.equal(
+    oneDrivePathForStorageKey(
+      'SustainabilityWise/photos',
+      'installhub/acme-site/zone/main-switchboard/photo/evidence-1.jpg',
+    ),
+    'SustainabilityWise/photos/installhub/acme-site/zone/main-switchboard/photo/evidence-1.jpg',
+  );
+});
 
 test('invoice PDFs use the lazy invoices/client folder hierarchy', () => {
   assert.equal(

@@ -2,6 +2,29 @@
 
 The API can optionally mirror confirmed photo uploads and generated PDFs to OneDrive using Microsoft Graph. Local disk or DigitalOcean Spaces remains the source of truth for app download URLs; OneDrive is a secondary copy.
 
+## Field App Environment Policy
+
+Field App evidence follows the same shared upload pipeline as EcoAudit and
+SolarSense, while retaining the `installhub` application boundary:
+
+| Environment | Primary evidence storage | OneDrive mirror |
+| --- | --- | --- |
+| QA | Dedicated VM-local InstallHub root with `STORAGE_WRITE_MODE=isolated` and `INSTALLHUB_STORAGE_PROVIDER=local`; storage keys remain prefixed by `installhub/` | Disabled |
+| Production | Dedicated InstallHub Spaces bucket and least-privilege access key with `STORAGE_WRITE_MODE=isolated` | Enabled and required |
+
+Production Field App paths remain visibly segregated beneath both destinations,
+for example `installhub/site-name/zone/zone-name/photos-0/...jpg` in Spaces and
+`SustainabilityWise/photos/installhub/site-name/...` in OneDrive. A required
+mirror fails the confirmation request when Graph is unavailable, leaving the
+durable upload retryable instead of marking evidence fully backed up. QA must
+keep `ONEDRIVE_PHOTO_BACKUP_ENABLED=false` and
+`ONEDRIVE_BACKUP_REQUIRED=false`.
+
+For QA, give EcoAudit, SolarSense, and InstallHub distinct local roots. For
+example, the Field App lane can use
+`INSTALLHUB_LOCAL_FILE_STORAGE_ROOT=/var/lib/sustainability-wise-api-lanes/field-qa/installhub`.
+The existing storage startup policy rejects reused roots in isolated mode.
+
 ## Required Azure App Settings
 
 The app registration needs Microsoft Graph application permission to write files, for example `Files.ReadWrite.All`, with admin consent granted for the tenant.
@@ -62,9 +85,13 @@ After the smoke test succeeds, set:
 
 ```bash
 ONEDRIVE_PHOTO_BACKUP_ENABLED=true
+ONEDRIVE_BACKUP_REQUIRED=true
 ```
 
 Then restart the API. New confirmed photo uploads and generated PDFs will be mirrored to OneDrive.
+Use the required setting when both primary storage and the mirror are release
+requirements; an optional mirror remains available only for an explicitly
+approved best-effort policy.
 
 ## Existing Data Backfill
 
