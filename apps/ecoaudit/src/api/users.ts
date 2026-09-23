@@ -10,10 +10,11 @@ export function getUser(id: string): Promise<CloudUser> {
 }
 
 export function createUser(body: {
+  id?: string;
   email: string;
   password: string;
   fullName?: string;
-  role?: string;
+  role?: 'admin' | 'inspector';
 }): Promise<CloudUser> {
   return request<CloudUser>('POST', '/v1/ecoaudit/users', body);
 }

@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { listUsers } from '@/api/users';
 import { listAudits } from '@/api/audits';
 import { AdminLayout } from '@/components/layout/ProtectedLayout';
+import { LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@/api/client';
 
@@ -23,7 +24,11 @@ function AdminDashboardContent() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Admin dashboard" subtitle="User access and audit oversight" />
+      <PageHeader
+        title="Admin dashboard"
+        subtitle="User access and audit oversight"
+        actions={<LinkButton href="/ecoaudit/admin/users/new">Add user</LinkButton>}
+      />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Card>
