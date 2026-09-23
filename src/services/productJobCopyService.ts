@@ -7,6 +7,7 @@ import {
   eaForkliftChargers,
   eaGeneralElectricity,
   eaGeneralWater,
+  eaWaterAssets,
   eaHotWaterSystems,
   eaHvacUnits,
   eaLightingSystems,
@@ -82,6 +83,7 @@ const ecoEquipmentTables = [
   { table: eaHotWaterSystems, entityType: 'hot_water_system' },
   { table: eaGeneralWater, entityType: 'general_water' },
   { table: eaGeneralElectricity, entityType: 'general_electricity' },
+  { table: eaWaterAssets, entityType: 'water_asset' },
 ] as const;
 
 function cloneRecordWithId(

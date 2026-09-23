@@ -7,3 +7,4 @@ export { eaForkliftChargerRoutes } from './forkliftChargers.js';
 export { eaHotWaterSystemRoutes } from './hotWaterSystems.js';
 export { eaGeneralWaterRoutes } from './generalWater.js';
 export { eaGeneralElectricityRoutes } from './generalElectricity.js';
+export { eaWaterAssetRoutes } from './waterAssets.js';

@@ -9,6 +9,7 @@ import {
   eaMainSwitchboardRoutes, eaAdditionalSwitchboardRoutes, eaHvacUnitRoutes,
   eaLightingSystemRoutes, eaSolarPvRoutes, eaForkliftChargerRoutes,
   eaHotWaterSystemRoutes, eaGeneralWaterRoutes, eaGeneralElectricityRoutes,
+  eaWaterAssetRoutes,
 } from './equipment/index.js';
 import { productClientDirectoryRoutes } from '../clientDirectory.js';
 
@@ -29,4 +30,5 @@ export async function ecoauditRoutes(app: FastifyInstance): Promise<void> {
   await app.register(eaHotWaterSystemRoutes,     { prefix: '/' });
   await app.register(eaGeneralWaterRoutes,       { prefix: '/' });
   await app.register(eaGeneralElectricityRoutes, { prefix: '/' });
+  await app.register(eaWaterAssetRoutes,         { prefix: '/' });
 }

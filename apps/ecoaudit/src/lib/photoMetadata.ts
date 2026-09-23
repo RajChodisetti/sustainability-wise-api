@@ -29,7 +29,7 @@ export function parsePhotoFieldName(fieldName: string): { fieldName: string; ind
   const trimmed = fieldName.trim();
   if (!trimmed) return { fieldName: '' };
 
-  const arrayMatch = /^([A-Za-z][A-Za-z0-9_]*?)(?:\[(\d+)\]|_(\d+)|\.(\d+))$/.exec(trimmed);
+  const arrayMatch = /^([A-Za-z][A-Za-z0-9_.-]*?)(?:\[(\d+)\]|_(\d+)|\.(\d+))$/.exec(trimmed);
   if (arrayMatch) {
     return {
       fieldName: canonicalPhotoFieldName(arrayMatch[1]),

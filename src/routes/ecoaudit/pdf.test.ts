@@ -76,6 +76,7 @@ function reportArgs(zones: PdfZone[], photos: PdfPhoto[]): PdfBodyArgs {
     solarList: [],
     forkliftList: [],
     hotWaterList: [],
+    waterAssetList: [],
     genWaterList: [],
     genElecList: [],
     brandLogo: 'data:image/png;base64,logo',
@@ -236,4 +237,125 @@ test('zone and equipment photos remain in their owning PDF sections in both repo
     assert.match(htmlParts[1], /Lighting evidence/);
     assert.doesNotMatch(htmlParts[1], /zone-evidence|Zone evidence/);
   }
+});
+
+test('all water asset subtypes render their fields, calculations, custom answers, and labelled photos', () => {
+  const reportZone = zone('zone-water', 'Water Services');
+  const waterAssets = [
+    {
+      id: 'water-meter-1',
+      auditId: 'audit-1',
+      zoneId: reportZone.id,
+      assetType: 'water_meter',
+      name: 'GWW Main Incomer',
+      category: null,
+      data: JSON.stringify({
+        meterType: 'Electromagnetic',
+        waterSupplyType: 'Potable Main',
+        meterSizeMm: 100,
+        currentMeterReadingKl: 12548.3,
+      }),
+      generalComments: 'Meter is operating normally.',
+      customFields: [],
+      photos: [],
+      photoDescs: {},
+    },
+    {
+      id: 'water-submeter-1',
+      auditId: 'audit-1',
+      zoneId: reportZone.id,
+      assetType: 'water_submeter_logger',
+      name: 'BMS-WM-01',
+      category: null,
+      data: {
+        connectedToBms: 'Dry-contact available',
+        dataLoggerFitted: 'Other',
+        dataLoggerOther: 'Site telemetry gateway',
+        pulseWeight: '1 pulse = 10 L',
+      },
+      generalComments: null,
+      customFields: [],
+      photos: [],
+      photoDescs: {},
+    },
+    {
+      id: 'water-fixture-1',
+      auditId: 'audit-1',
+      zoneId: reportZone.id,
+      assetType: 'water_fixture',
+      name: 'Main Kitchen Dishwasher',
+      category: 'Dishwasher',
+      data: {
+        waterConsumptionLPerCycle: 9.5,
+        rinseCycleMode: 'Recirculated',
+      },
+      generalComments: null,
+      customFields: [],
+      photos: [],
+      photoDescs: {},
+    },
+    {
+      id: 'water-system-1',
+      auditId: 'audit-1',
+      zoneId: reportZone.id,
+      assetType: 'water_asset_system',
+      name: 'Leak NW-01',
+      category: 'Network Leak / Pipework Defect',
+      data: {
+        specificLocationRoomLine: 'North plant room line 2',
+        estimatedLeakRateLHr: 10,
+        estimatedRectificationCostAud: 750,
+      },
+      generalComments: 'Repair during next shutdown.',
+      customFields: [{
+        id: 'custom-1',
+        question: 'Isolation required?',
+        answer: 'Yes, isolate line 2',
+        photos: ['https://files.example/leak-close-up.jpg'],
+        photoDescs: {
+          'photos.0': { name: 'Defect close-up', largeInPdf: true },
+        },
+      }],
+      photos: [],
+      photoDescs: {},
+    },
+  ];
+  const waterPhoto = photo('water-photo-1', 'water-system-1', {
+    entityType: 'water_asset',
+    fieldName: 'customFields.custom-1.photos.0',
+  });
+  waterPhoto.remoteUrl = 'https://files.example/leak-close-up.jpg';
+  const args = {
+    ...reportArgs([reportZone], [waterPhoto]),
+    mode: 'by-equipment' as const,
+    waterAssetList: waterAssets,
+  };
+  const overview = buildEcoAuditReportOverview(args, [waterPhoto]);
+  const html = buildEcoAuditChunkHtml(args, overview, 0, 1);
+
+  assert.equal(overview.waterAssetCount, 4);
+  assert.equal(overview.totalEquipment, 4);
+  assert.match(html, /<span class="sec-bar-name">Water Meters<\/span>/);
+  assert.match(html, /<span class="sec-bar-name">Water Submeters \/ Loggers<\/span>/);
+  assert.match(html, /<span class="sec-bar-name">Water Fixtures<\/span>/);
+  assert.match(html, /<span class="sec-bar-name">Water Assets \/ Systems<\/span>/);
+  assert.match(html, /Electromagnetic/);
+  assert.match(html, /Site telemetry gateway/);
+  assert.match(html, /9\.5 L\/rack or cycle/);
+  assert.match(html, /87\.60 kL\/year/);
+  assert.match(html, /Custom: Isolation required\?/);
+  assert.match(html, /Defect close-up/);
+  assert.match(html, /photo-large-img/);
+
+  const zoneArgs = { ...args, mode: 'by-zone' as const };
+  const zoneHtml = buildEcoAuditChunkHtml(
+    zoneArgs,
+    buildEcoAuditReportOverview(zoneArgs, [waterPhoto]),
+    0,
+    1,
+  );
+  assert.match(zoneHtml, /<div class="zone-type-label">Water Meters<\/div>/);
+  assert.match(zoneHtml, /<div class="zone-type-label">Water Submeters \/ Loggers<\/div>/);
+  assert.match(zoneHtml, /<div class="zone-type-label">Water Fixtures<\/div>/);
+  assert.match(zoneHtml, /<div class="zone-type-label">Water Assets \/ Systems<\/div>/);
 });

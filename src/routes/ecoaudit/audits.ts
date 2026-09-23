@@ -8,6 +8,7 @@ import {
   eaForkliftChargers,
   eaGeneralElectricity,
   eaGeneralWater,
+  eaWaterAssets,
   eaHotWaterSystems,
   eaHvacUnits,
   eaAuditWorkSessions,
@@ -64,6 +65,7 @@ const equipmentTables = [
   { table: eaHotWaterSystems, entityType: 'hot_water_system' },
   { table: eaGeneralWater, entityType: 'general_water' },
   { table: eaGeneralElectricity, entityType: 'general_electricity' },
+  { table: eaWaterAssets, entityType: 'water_asset' },
 ];
 
 async function copyEquipmentRows(

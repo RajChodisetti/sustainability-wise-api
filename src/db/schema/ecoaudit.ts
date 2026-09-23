@@ -353,6 +353,36 @@ export const eaGeneralWater = pgTable('ea_general_water', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
+export const eaWaterAssets = pgTable('ea_water_assets', {
+  id: text('id').primaryKey(),
+  ...syncCols,
+  zoneId: text('zone_id').notNull(),
+  auditId: text('audit_id').notNull(),
+  assetType: text('asset_type').notNull(),
+  name: text('name').notNull(),
+  category: text('category'),
+  data: jsonb('data').notNull().default({}).$type<Record<string, unknown>>(),
+  generalComments: text('general_comments'),
+  customFields: jsonb('custom_fields').notNull().default([]).$type<unknown[]>(),
+  photos: text('photos').array().notNull().default([]),
+  photoDescs: jsonb('photo_descs').notNull().default({}),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('ea_water_assets_audit_idx').on(table.auditId, table.createdAt),
+  index('ea_water_assets_zone_idx').on(table.zoneId, table.createdAt),
+  check('ea_water_assets_type_check', sql`
+    ${table.assetType} IN (
+      'water_meter',
+      'water_submeter_logger',
+      'water_fixture',
+      'water_asset_system'
+    )
+  `),
+  check('ea_water_assets_data_object_check', sql`jsonb_typeof(${table.data}) = 'object'`),
+  check('ea_water_assets_custom_fields_array_check', sql`jsonb_typeof(${table.customFields}) = 'array'`),
+  check('ea_water_assets_photo_descs_object_check', sql`jsonb_typeof(${table.photoDescs}) = 'object'`),
+]);
+
 export const eaGeneralElectricity = pgTable('ea_general_electricity', {
   id: text('id').primaryKey(),
   ...syncCols,

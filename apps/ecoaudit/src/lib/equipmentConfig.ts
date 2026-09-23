@@ -1,9 +1,37 @@
-export type FieldKind = 'text' | 'textarea' | 'number' | 'photo' | 'photos';
+export type FieldKind =
+  | 'text'
+  | 'textarea'
+  | 'number'
+  | 'select'
+  | 'datetime'
+  | 'calculated'
+  | 'customFields'
+  | 'photo'
+  | 'photos';
+
+export type FieldCondition = {
+  key: string;
+  values: string[];
+};
+
+export type FieldCalculation = {
+  operation: 'divide' | 'multiply';
+  operands: [string, string?];
+  factor?: number;
+  decimalPlaces?: number;
+};
 
 export type FieldDef = {
   key: string;
   label: string;
   kind: FieldKind;
+  options?: string[];
+  condition?: FieldCondition;
+  calculation?: FieldCalculation;
+  storage?: 'root' | 'data';
+  placeholder?: string;
+  step?: number;
+  required?: boolean;
 };
 
 export type EquipmentTypeConfig = {
@@ -11,6 +39,8 @@ export type EquipmentTypeConfig = {
   label: string;
   icon: string;
   entityType: string;
+  apiSlug?: string;
+  assetType?: 'water_meter' | 'water_submeter_logger' | 'water_fixture' | 'water_asset_system';
   nameField: string;
   nameLabel: string;
   fields: FieldDef[];
@@ -20,6 +50,55 @@ const sharedTail: FieldDef[] = [
   { key: 'extraNotes', label: 'Extra notes', kind: 'textarea' },
   { key: 'extraPhotos', label: 'Extra photos', kind: 'photos' },
 ];
+
+const waterRoot = (key: string, label: string, kind: FieldKind, options?: string[]): FieldDef => ({
+  key,
+  label,
+  kind,
+  storage: 'root',
+  required: key === 'name' || key === 'category',
+  ...(options ? { options } : {}),
+});
+
+const waterData = (
+  key: string,
+  label: string,
+  kind: FieldKind = 'text',
+  options?: string[],
+  condition?: FieldCondition,
+): FieldDef => ({
+  key,
+  label,
+  kind,
+  storage: 'data',
+  ...(options ? { options } : {}),
+  ...(condition ? { condition } : {}),
+});
+
+const fixtureCategories = [
+  'Toilets (Pans & Cisterns)',
+  'Urinals',
+  'Hand Basins & Taps',
+  'Showers',
+  'Sink / Wash Basin',
+  'Dishwasher',
+  'Combi Oven / Steamer',
+  'Ice Machine',
+  'Zip Tap / Boiling Unit',
+  'Pre-Rinse Spray Valve',
+];
+
+const systemCategories = [
+  'Cooling Tower & Condenser',
+  'Stormwater Harvesting & Recycle',
+  'Aquatic & Recovery Facility',
+  'Process Cooling & Industrial Equipment',
+  'Dust Suppression / Truck Standpipe',
+  'Network Leak / Pipework Defect',
+];
+
+const whenCategory = (...values: string[]): FieldCondition => ({ key: 'category', values });
+const yesNo = ['Yes', 'No'];
 
 export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
   {
@@ -199,6 +278,220 @@ export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
     ],
   },
   {
+    slug: 'water-meters',
+    apiSlug: 'water-assets',
+    assetType: 'water_meter',
+    label: 'Water Meters',
+    icon: '💧',
+    entityType: 'water_asset',
+    nameField: 'name',
+    nameLabel: 'Meter Tag / ID',
+    fields: [
+      waterRoot('name', 'Meter Tag / ID', 'text'),
+      waterData('meterType', 'Meter Type', 'select', ['Mechanical dial', 'Electromagnetic', 'Ultrasonic', 'Pulse-enabled']),
+      waterData('waterSupplyType', 'Water Supply Type', 'select', ['Potable Main', 'Recycled Water', 'Harvested Stormwater', 'Bore/Groundwater']),
+      waterData('meterSizeMm', 'Meter Size (mm)', 'number'),
+      waterData('currentMeterReadingKl', 'Current Meter Reading (kL)', 'number'),
+      waterData('readingDateTime', 'Reading Date / Time', 'datetime'),
+      waterData('serialNumber', 'Serial Number'),
+      waterData('makeModel', 'Make / Model'),
+      waterData('operationalCondition', 'Operational Condition', 'select', ['Operating normally', 'Dial frosted', 'Flooded pit', 'Seized']),
+      waterRoot('generalComments', 'General Comments', 'textarea'),
+      waterRoot('customFields', 'Custom Questions', 'customFields'),
+      waterRoot('photos', 'Photos', 'photos'),
+    ],
+  },
+  {
+    slug: 'water-submeters-loggers',
+    apiSlug: 'water-assets',
+    assetType: 'water_submeter_logger',
+    label: 'Water Submeters / Loggers',
+    icon: '📟',
+    entityType: 'water_asset',
+    nameField: 'name',
+    nameLabel: 'Submeter / Logger Tag ID',
+    fields: [
+      waterRoot('name', 'Submeter / Logger Tag ID', 'text'),
+      waterData('connectedToBms', 'Connected To BMS?', 'select', ['Yes', 'No', 'Dry-contact available']),
+      waterData('dataLoggerFitted', 'Data Logger Fitted?', 'select', ['None', 'Wattwatchers', 'Kallipr', 'Outpost', 'EDMI', 'Other']),
+      waterData('dataLoggerOther', 'Other Data Logger', 'text', undefined, { key: 'dataLoggerFitted', values: ['Other'] }),
+      waterData('loggerSerial', 'Logger Serial'),
+      waterData('pulseWeight', 'Pulse Weight', 'text'),
+      waterData('areasEquipmentServed', 'Areas / Equipment Served', 'textarea'),
+      waterData('currentMeterReadingKl', 'Current Meter Reading (kL)', 'number'),
+      waterData('readingDateTime', 'Reading Date / Time', 'datetime'),
+      waterData('submeteringImprovementOpportunity', 'Submetering Improvement Opportunity', 'textarea'),
+      waterRoot('generalComments', 'General Comments', 'textarea'),
+      waterRoot('customFields', 'Custom Questions', 'customFields'),
+      waterRoot('photos', 'Photos', 'photos'),
+    ],
+  },
+  {
+    slug: 'water-fixtures',
+    apiSlug: 'water-assets',
+    assetType: 'water_fixture',
+    label: 'Water Fixtures',
+    icon: '🚰',
+    entityType: 'water_asset',
+    nameField: 'name',
+    nameLabel: 'Fixture Location / Room ID',
+    fields: [
+      waterRoot('name', 'Fixture Location / Room ID', 'text'),
+      waterData('waterSupplySource', 'Water Supply Source', 'select', ['Potable Main', 'Harvested Stormwater']),
+      waterRoot('category', 'Fixture Category', 'select', fixtureCategories),
+
+      waterData('totalToiletCount', 'Total Toilet Count', 'number', undefined, whenCategory('Toilets (Pans & Cisterns)')),
+      waterData('flushMechanism', 'Flush Mechanism', 'select', ['Single', 'Dual', 'Pneumatic', 'Sensor'], whenCategory('Toilets (Pans & Cisterns)')),
+      waterData('fullFlushVolumeL', 'Full Flush Volume (L)', 'number', undefined, whenCategory('Toilets (Pans & Cisterns)')),
+      waterData('halfFlushVolumeL', 'Half Flush Volume (L)', 'number', undefined, whenCategory('Toilets (Pans & Cisterns)')),
+      waterData('internalWeepLeakCount', 'Internal Weep / Leak Count', 'number', undefined, whenCategory('Toilets (Pans & Cisterns)')),
+
+      waterData('totalUrinalCount', 'Total Urinal Count', 'number', undefined, whenCategory('Urinals')),
+      waterData('systemType', 'System Type', 'select', ['Sensor-activated', 'Automated timer', 'Waterless', 'Manual Cistern Fed'], whenCategory('Urinals')),
+      waterData('flushesPerHour', 'Flushes per Hour', 'number', undefined, whenCategory('Urinals')),
+      waterData('volumePerFlushL', 'Volume per Flush (L)', 'number', undefined, whenCategory('Urinals')),
+
+      waterData('totalBasinTapCount', 'Total Basin Tap Count', 'number', undefined, whenCategory('Hand Basins & Taps')),
+      waterData('tapMechanism', 'Tap Mechanism', 'select', ['Push-timed', 'Infrared', 'Lever', 'Screw tap', 'Mixer Taps'], whenCategory('Hand Basins & Taps')),
+      waterData('averageMeasuredFlowRateLMin', 'Average Measured Flow Rate (L/min)', 'number', undefined, whenCategory('Hand Basins & Taps')),
+      waterData('averageRunTimeSeconds', 'Average Run Time (seconds)', 'number', undefined, whenCategory('Hand Basins & Taps')),
+      waterData('faultyAeratorLeakCount', 'Faulty Aerator / Leak Count', 'number', undefined, whenCategory('Hand Basins & Taps')),
+
+      waterData('totalShowerCount', 'Total Shower Count', 'number', undefined, whenCategory('Showers')),
+      waterData('showerMechanism', 'Shower Mechanism', 'select', ['Aerated', 'Inefficient / fixed heads'], whenCategory('Showers')),
+      waterData('averageMeasuredFlowRateLMin', 'Average Measured Flow Rate (L/min)', 'number', undefined, whenCategory('Showers')),
+      waterData('showerheadWelsRating', 'Showerhead WELS Rating', 'text', undefined, whenCategory('Showers')),
+      waterData('leakingShowerCount', 'Leaking Shower Count', 'number', undefined, whenCategory('Showers')),
+
+      waterData('sinkPurpose', 'Sink Purpose', 'select', ['Food Prep', 'Hand Wash', 'Pot Wash', 'Cleaners Sink'], whenCategory('Sink / Wash Basin')),
+      waterData('tapMechanism', 'Tap Mechanism', 'select', ['Lever', 'Quarter-turn', 'Sensor', 'Knee-operated', 'Push', 'Manual'], whenCategory('Sink / Wash Basin')),
+      waterData('measuredFlowRateLMin', 'Measured Flow Rate (L/min)', 'number', undefined, whenCategory('Sink / Wash Basin')),
+      waterData('welsStarRating', 'WELS Star Rating', 'text', undefined, whenCategory('Sink / Wash Basin')),
+
+      waterData('waterConsumptionLPerCycle', 'Water Consumption (L/rack or cycle)', 'number', undefined, whenCategory('Dishwasher')),
+      waterData('rinseCycleMode', 'Rinse Cycle Mode', 'select', ['Fresh potable', 'Recirculated'], whenCategory('Dishwasher')),
+
+      waterData('steamGenerationType', 'Steam Generation Type', 'select', ['Boiler injection', 'Direct spray'], whenCategory('Combi Oven / Steamer')),
+      waterData('drainQuenchFunctioning', 'Drain Quench Functioning?', 'select', ['Yes', 'No', 'Continuous to drain'], whenCategory('Combi Oven / Steamer')),
+
+      waterData('coolingMechanism', 'Cooling Mechanism', 'select', ['Air-cooled', 'Water-cooled once-through'], whenCategory('Ice Machine')),
+      waterData('iceYieldCapacityKgDay', 'Ice Yield Capacity (kg/day)', 'number', undefined, whenCategory('Ice Machine')),
+
+      waterData('operationalStatus', 'Operational Status', 'select', ['Normal', 'Vent tube boiling over'], whenCategory('Zip Tap / Boiling Unit')),
+      waterData('underBenchLeakCheck', 'Under-bench Leak Check', 'select', ['Dry', 'Pooling'], whenCategory('Zip Tap / Boiling Unit')),
+
+      waterData('measuredFlowRateLMin', 'Measured Flow Rate (L/min)', 'number', undefined, whenCategory('Pre-Rinse Spray Valve')),
+      waterData('welsStarRating', 'WELS Star Rating', 'text', undefined, whenCategory('Pre-Rinse Spray Valve')),
+      waterData('shutOffValveCondition', 'Shut-off Valve Condition', 'select', ['Clean', 'Weeping', 'Continuous drip'], whenCategory('Pre-Rinse Spray Valve')),
+
+      waterRoot('generalComments', 'General Comments', 'textarea'),
+      waterRoot('customFields', 'Custom Questions and Supporting Photos', 'customFields'),
+      waterRoot('photos', 'Photos', 'photos'),
+    ],
+  },
+  {
+    slug: 'water-assets-systems',
+    apiSlug: 'water-assets',
+    assetType: 'water_asset_system',
+    label: 'Water Assets / Systems',
+    icon: '🌊',
+    entityType: 'water_asset',
+    nameField: 'name',
+    nameLabel: 'Asset Tag / System Name',
+    fields: [
+      waterRoot('name', 'Asset Tag / System Name', 'text'),
+      waterRoot('category', 'Asset Category', 'select', systemCategories),
+
+      waterData('makeModel', 'Make / Model', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('serialNumber', 'Serial Number', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('coolingCapacity', 'Cooling Capacity', 'number', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('coolingCapacityUnit', 'Cooling Capacity Unit', 'select', ['kW', 'TR'], whenCategory('Cooling Tower & Condenser')),
+      waterData('associatedSystem', 'Associated System', 'select', ['Chilled water plant', 'EAF furnace cooling', 'Continuous caster'], whenCategory('Cooling Tower & Condenser')),
+      waterData('waterSource', 'Water Source', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('makeUpMeterInstalled', 'Make-up Meter Installed?', 'select', yesNo, whenCategory('Cooling Tower & Condenser')),
+      waterData('makeUpMeterCurrentReadingKl', 'Make-up Meter Current Reading (kL)', 'number', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('makeUpFloatValveType', 'Make-up Float Valve Type', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('makeUpFloatValveStatus', 'Make-up Float Valve Status', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('blowdownControlMethod', 'Blowdown Control Method', 'select', ['Automated conductivity', 'Timer', 'Continuous drain'], whenCategory('Cooling Tower & Condenser')),
+      waterData('conductivityControllerMakeModel', 'Conductivity Controller Make / Model', 'text', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('conductivityControllerSetpointUsCm', 'Conductivity Controller Setpoint (µS/cm)', 'number', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('makeUpWaterTdsUsCm', 'Make-up Water TDS (µS/cm)', 'number', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('basinWaterTdsUsCm', 'Basin Water TDS (µS/cm)', 'number', undefined, whenCategory('Cooling Tower & Condenser')),
+      {
+        ...waterData('calculatedCyclesOfConcentration', 'Calculated Cycles of Concentration (CoC)', 'calculated', undefined, whenCategory('Cooling Tower & Condenser')),
+        calculation: { operation: 'divide', operands: ['basinWaterTdsUsCm', 'makeUpWaterTdsUsCm'], decimalPlaces: 2 },
+      },
+      waterData('driftEliminatorCondition', 'Drift Eliminator Condition', 'textarea', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('basinIntegrityOverflowStatus', 'Basin Integrity & Overflow Status', 'textarea', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('chemicalDosingRegime', 'Chemical Dosing Regime', 'textarea', undefined, whenCategory('Cooling Tower & Condenser')),
+      waterData('waterEfficiencyObservationsPaybackNotes', 'Water Efficiency Observations & Payback Notes', 'textarea', undefined, whenCategory('Cooling Tower & Condenser')),
+
+      waterData('systemType', 'System Type', 'select', ['Stormwater harvesting', 'Heavy industrial scale pit', 'Oil-water separator'], whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('storageCapacityKl', 'Storage Capacity (kL)', 'number', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('collectionInflows', 'Collection Inflows', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('treatmentTrainAssets', 'Treatment Train Assets', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('systemStatus', 'System Status', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('supplyTargetEndUses', 'Supply Target End-Uses', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('supplyMeterReadingKl', 'Supply Meter Reading (kL)', 'number', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('backupPotableTopUpMechanism', 'Backup Potable Top-up Mechanism', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('backwashFrequency', 'Backwash Frequency', 'text', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('backwashDestination', 'Backwash Destination', 'text', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+      waterData('opportunitiesForExpansion', 'Opportunities for Expansion', 'textarea', undefined, whenCategory('Stormwater Harvesting & Recycle')),
+
+      waterData('facilityType', 'Facility Type', 'select', ['Cold plunge bath', 'Heated spa', 'Hydrotherapy pool'], whenCategory('Aquatic & Recovery Facility')),
+      waterData('poolVolumeKl', 'Pool Volume (kL)', 'number', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('operatingTemperatureC', 'Operating Temperature (°C)', 'number', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('autoTopUpMechanism', 'Auto Top-Up Mechanism', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('topUpDedicatedMeterPresent', 'Top-Up Dedicated Meter Present?', 'select', yesNo, whenCategory('Aquatic & Recovery Facility')),
+      waterData('topUpDedicatedMeterReadingKl', 'Top-Up Dedicated Meter Reading (kL)', 'number', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('filtrationSystemType', 'Filtration System Type', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('backwashTriggerMethod', 'Backwash Trigger Method', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('backwashFrequency', 'Backwash Frequency', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('estimatedBackwashVolumeL', 'Estimated Backwash Volume (L)', 'number', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('backwashDischargeRoute', 'Backwash Discharge Route', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('balanceTankOverflowStatus', 'Balance Tank Overflow Status', 'text', undefined, whenCategory('Aquatic & Recovery Facility')),
+      waterData('poolCoverAvailable', 'Pool Cover Available?', 'select', yesNo, whenCategory('Aquatic & Recovery Facility')),
+      waterData('poolCoverUtilised', 'Pool Cover Utilised?', 'select', yesNo, whenCategory('Aquatic & Recovery Facility')),
+
+      waterData('coolingCircuitType', 'Cooling Circuit Type', 'select', ['Closed-loop', 'Open evaporative', 'Once-through'], whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('waterSupplyType', 'Water Supply Type', 'text', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('operatingPressure', 'Operating Pressure', 'number', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('operatingPressureUnit', 'Operating Pressure Unit', 'select', ['kPa', 'bar'], whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('operatingFlowRate', 'Operating Flow Rate', 'number', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('operatingFlowRateUnit', 'Operating Flow Rate Unit', 'select', ['m³/hr', 'L/min'], whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('supplyTemperatureC', 'Supply Temperature (°C)', 'number', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('returnTemperatureC', 'Return Temperature (°C)', 'number', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('heatExchangerType', 'Heat Exchanger Type', 'text', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('heatExchangerCondition', 'Heat Exchanger Condition', 'textarea', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('billetCasterSprayNozzlesCondition', 'Billet Caster Spray Nozzles Condition', 'textarea', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('scalePitSettlementInterceptorStatus', 'Scale Pit Settlement & Interceptor Status', 'textarea', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('quenchTanksSlagCoolingWaterSource', 'Quench Tanks / Slag Cooling Water Source', 'textarea', undefined, whenCategory('Process Cooling & Industrial Equipment')),
+      waterData('onceThroughPotableCoolingPresent', 'Once-Through Potable Cooling Present?', 'select', yesNo, whenCategory('Process Cooling & Industrial Equipment')),
+
+      waterData('waterSupplySource', 'Water Supply Source', 'text', undefined, whenCategory('Dust Suppression / Truck Standpipe')),
+      waterData('activationMethod', 'Activation Method', 'text', undefined, whenCategory('Dust Suppression / Truck Standpipe')),
+      waterData('isolationValveIntegrity', 'Isolation Valve Integrity', 'textarea', undefined, whenCategory('Dust Suppression / Truck Standpipe')),
+      waterData('controlStrategy', 'Control Strategy', 'select', ['Weather sensor', 'Manual operator'], whenCategory('Dust Suppression / Truck Standpipe')),
+
+      waterData('specificLocationRoomLine', 'Specific Location / Room / Line', 'text', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('pipeMaterial', 'Pipe Material', 'text', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('pipeDiameter', 'Pipe Diameter', 'text', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('defectClassification', 'Defect Classification', 'text', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('estimatedLeakRateLHr', 'Estimated Leak Rate (L/hr)', 'number', undefined, whenCategory('Network Leak / Pipework Defect')),
+      {
+        ...waterData('associatedWaterLossKlYear', 'Associated Water Loss (kL/year)', 'calculated', undefined, whenCategory('Network Leak / Pipework Defect')),
+        calculation: { operation: 'multiply', operands: ['estimatedLeakRateLHr'], factor: 8.76, decimalPlaces: 2 },
+      },
+      waterData('safetyHazardImplication', 'Safety Hazard Implication', 'textarea', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('rectificationPriority', 'Rectification Priority', 'text', undefined, whenCategory('Network Leak / Pipework Defect')),
+      waterData('estimatedRectificationCostAud', 'Estimated Rectification Cost ($)', 'number', undefined, whenCategory('Network Leak / Pipework Defect')),
+
+      waterRoot('generalComments', 'General Comments', 'textarea'),
+      waterRoot('customFields', 'Custom Questions and Supporting Photos', 'customFields'),
+      waterRoot('photos', 'Photos', 'photos'),
+    ],
+  },
+  {
     slug: 'general-water',
     label: 'General Water',
     icon: '💧',
@@ -228,8 +521,27 @@ export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
   },
 ];
 
+const WATER_ASSET_AGGREGATE_CONFIG: EquipmentTypeConfig = {
+  slug: 'water-assets',
+  apiSlug: 'water-assets',
+  label: 'Water Assets',
+  icon: '💧',
+  entityType: 'water_asset',
+  nameField: 'name',
+  nameLabel: 'Name',
+  fields: [],
+};
+
 export function getEquipmentConfig(slug: string): EquipmentTypeConfig | undefined {
-  return EQUIPMENT_TYPES.find((t) => t.slug === slug);
+  return slug === WATER_ASSET_AGGREGATE_CONFIG.slug
+    ? WATER_ASSET_AGGREGATE_CONFIG
+    : EQUIPMENT_TYPES.find((t) => t.slug === slug);
+}
+
+export function getWaterAssetConfig(assetType: unknown): EquipmentTypeConfig | undefined {
+  return typeof assetType === 'string'
+    ? EQUIPMENT_TYPES.find((type) => type.assetType === assetType)
+    : undefined;
 }
 
 export function equipmentDisplayName(item: Record<string, unknown>, config: EquipmentTypeConfig): string {

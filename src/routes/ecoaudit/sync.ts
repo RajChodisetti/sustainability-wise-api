@@ -7,7 +7,7 @@ import { photoRegistry } from '../../db/schema/shared.js';
 import {
   eaAudits, eaZones, eaMainSwitchboards, eaAdditionalSwitchboards,
   eaHvacUnits, eaLightingSystems, eaSolarPv, eaForkliftChargers,
-  eaHotWaterSystems, eaGeneralWater, eaGeneralElectricity,
+  eaHotWaterSystems, eaGeneralWater, eaGeneralElectricity, eaWaterAssets,
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertFound, assertAuditAccess, dateOrNow, isElevated, requiredString, str, num, arr, type JsonRecord } from './helpers.js';
@@ -36,6 +36,7 @@ import {
 } from '../../auth/uploadCapability.js';
 import { completeLinkedSchedulerEvents } from '../../services/schedulerCompletionService.js';
 import { rememberEcoAuditClientSite } from './clientSiteMemory.js';
+import { jsonArray, jsonObject, requiredWaterAssetType } from './waterAssetContract.js';
 
 function uploadUrl(sessionId: string): string {
   return createConfiguredUploadUrl(
@@ -278,6 +279,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       hotWaterSystems?: JsonRecord[];
       generalWater?: JsonRecord[];
       generalElectricity?: JsonRecord[];
+      waterAssets?: JsonRecord[];
     };
     const body = {
       ...rawBody,
@@ -527,6 +529,32 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
       question: str(item.question), answer: str(item.answer), photos: arr(item.photos),
     }));
 
+    await upsertEquipment(eaWaterAssets, body.waterAssets ?? [], (item, ex) => {
+      const existing = ex as typeof eaWaterAssets.$inferSelect | undefined;
+      const resolvedPhotoMetadata = resolveSyncedPhotoMetadata({
+        updatedAt: dateOrNow(item.updatedAt),
+        photoDescs: photoDescs(item),
+      }, existing);
+      return {
+        id: requiredString(item, 'id'),
+        serverId: existing?.serverId ?? (str(item.serverId) ?? randomUUID()),
+        syncStatus: 'synced',
+        updatedAt: resolvedPhotoMetadata.updatedAt,
+        deletedAt: item.deletedAt ? dateOrNow(item.deletedAt) : null,
+        zoneId: requiredString(item, 'zoneId'),
+        auditId: localAuditId,
+        assetType: requiredWaterAssetType(item.assetType),
+        name: requiredString(item, 'name'),
+        category: str(item.category),
+        data: jsonObject(item.data),
+        generalComments: str(item.generalComments),
+        customFields: jsonArray(item.customFields),
+        photos: arr(item.photos),
+        photoDescs: resolvedPhotoMetadata.photoDescs,
+        createdAt: dateOrNow(item.createdAt),
+      };
+    });
+
     await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: localAuditId, actor: request.user });
 
     const versionNumber = await saveRecordVersion({
@@ -579,6 +607,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
           hotWaterSystems: await db.select().from(eaHotWaterSystems).where(and(inArray(eaHotWaterSystems.auditId, auditIds), isNull(eaHotWaterSystems.deletedAt))),
           generalWater: await db.select().from(eaGeneralWater).where(and(inArray(eaGeneralWater.auditId, auditIds), isNull(eaGeneralWater.deletedAt))),
           generalElectricity: await db.select().from(eaGeneralElectricity).where(and(inArray(eaGeneralElectricity.auditId, auditIds), isNull(eaGeneralElectricity.deletedAt))),
+          waterAssets: await db.select().from(eaWaterAssets).where(and(inArray(eaWaterAssets.auditId, auditIds), isNull(eaWaterAssets.deletedAt))),
         }
       : {
           zones: [],
@@ -591,6 +620,7 @@ export async function eaSyncRoutes(app: FastifyInstance): Promise<void> {
           hotWaterSystems: [],
           generalWater: [],
           generalElectricity: [],
+          waterAssets: [],
         };
     return reply.send({
       audits,

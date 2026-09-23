@@ -24,6 +24,7 @@ import {
   eaLightingSystems,
   eaMainSwitchboards,
   eaSolarPv,
+  eaWaterAssets,
   eaZones,
 } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
@@ -292,6 +293,395 @@ function sf(key: string, item: EquipmentItem): string | null {
 function nf(key: string, item: EquipmentItem): number | null {
   const v = item[key];
   return v != null && !isNaN(Number(v)) ? Number(v) : null;
+}
+
+type WaterAssetType =
+  | 'water_meter'
+  | 'water_submeter_logger'
+  | 'water_fixture'
+  | 'water_asset_system';
+
+type WaterFieldSpec = {
+  label: string;
+  keys: string[];
+  suffix?: string;
+};
+
+const WATER_ASSET_TYPE_LABELS: Record<WaterAssetType, string> = {
+  water_meter: 'Water Meter',
+  water_submeter_logger: 'Water Submeter / Logger',
+  water_fixture: 'Water Fixture',
+  water_asset_system: 'Water Asset / System',
+};
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeWaterAssetType(value: unknown): WaterAssetType | null {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s*\/\s*/g, '_')
+    .replace(/[\s-]+/g, '_');
+  if (normalized === 'water_meter') return 'water_meter';
+  if (normalized === 'water_submeter_logger' || normalized === 'water_submeter' || normalized === 'submeter_logger') {
+    return 'water_submeter_logger';
+  }
+  if (normalized === 'water_fixture') return 'water_fixture';
+  if (normalized === 'water_asset_system' || normalized === 'water_system') return 'water_asset_system';
+  return null;
+}
+
+function displayWaterValue(value: unknown): string | null {
+  if (value == null || value === '') return null;
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) {
+    const values = value.map(displayWaterValue).filter((item): item is string => !!item);
+    return values.length ? values.join(', ') : null;
+  }
+  if (typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    const nestedValue = displayWaterValue(object.value);
+    const unit = displayWaterValue(object.unit);
+    if (nestedValue) return unit ? `${nestedValue} ${unit}` : nestedValue;
+    const values = Object.entries(object)
+      .map(([key, nested]) => {
+        const formatted = displayWaterValue(nested);
+        return formatted ? `${humanizeFieldName(key)}: ${formatted}` : null;
+      })
+      .filter((item): item is string => !!item);
+    return values.length ? values.join('; ') : null;
+  }
+  return String(value);
+}
+
+function humanizeFieldName(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function waterDataValue(data: Record<string, unknown>, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = displayWaterValue(data[key]);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function waterDataNumber(data: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const raw = data[key];
+    if (raw == null || raw === '') continue;
+    const value = typeof raw === 'object' && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>).value
+      : raw;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function waterFieldRows(data: Record<string, unknown>, specs: WaterFieldSpec[]): string[] {
+  return specs.map((spec) => {
+    const value = waterDataValue(data, ...spec.keys);
+    return value ? fieldRow(spec.label, `${value}${spec.suffix ?? ''}`) : '';
+  });
+}
+
+function customWaterFields(value: unknown): string {
+  const fields = parseJsonArray(value)
+    .map((raw, index) => {
+      const field = parseJsonObject(raw);
+      const question = displayWaterValue(field.question ?? field.label ?? field.name)
+        ?? `Custom Question ${index + 1}`;
+      const answer = displayWaterValue(field.answer ?? field.value);
+      return answer ? fieldRow(`Custom: ${esc(question)}`, answer) : '';
+    })
+    .filter(Boolean);
+  if (!fields.length) return '';
+  return `<div class="subsec-title water-custom-title">Custom Questions</div>${fieldGrid(...fields)}`;
+}
+
+function waterAssetPhotoMetadata(item: EquipmentItem): PhotoMetadataMap {
+  const metadata: PhotoMetadataMap = {
+    ...normalizePhotoMetadataMap(item.photoDescs),
+  };
+  for (const raw of parseJsonArray(item.customFields)) {
+    const field = parseJsonObject(raw);
+    const id = displayWaterValue(field.id);
+    if (!id) continue;
+    const nestedMetadata = normalizePhotoMetadataMap(field.photoDescs);
+    for (const [key, value] of Object.entries(nestedMetadata)) {
+      const match = /^photos(?:\[(\d+)\]|\.(\d+)|_(\d+))$/.exec(key);
+      if (!match) continue;
+      const index = match[1] ?? match[2] ?? match[3];
+      metadata[`customFields.${id}.photos.${index}`] = value;
+    }
+  }
+  return metadata;
+}
+
+const WATER_METER_FIELDS: WaterFieldSpec[] = [
+  { label: 'Meter Type', keys: ['meterType'] },
+  { label: 'Water Supply Type', keys: ['waterSupplyType', 'supplyType'] },
+  { label: 'Meter Size', keys: ['meterSizeMm', 'meterSize'], suffix: ' mm' },
+  { label: 'Current Meter Reading', keys: ['currentMeterReadingKl', 'currentMeterReading'], suffix: ' kL' },
+  { label: 'Reading Date / Time', keys: ['readingDateTime', 'meterReadingDateTime'] },
+  { label: 'Serial Number', keys: ['serialNumber'] },
+  { label: 'Make / Model', keys: ['makeModel', 'manufacturerModel'] },
+  { label: 'Operational Condition', keys: ['operationalCondition'] },
+];
+
+const WATER_SUBMETER_FIELDS: WaterFieldSpec[] = [
+  { label: 'Connected to BMS?', keys: ['connectedToBms', 'bmsConnection'] },
+  { label: 'Data Logger Fitted?', keys: ['dataLoggerFitted', 'loggerType'] },
+  { label: 'Other Data Logger', keys: ['dataLoggerOther'] },
+  { label: 'Logger Serial', keys: ['loggerSerial', 'loggerSerialNumber'] },
+  { label: 'Pulse Weight', keys: ['pulseWeight'] },
+  { label: 'Areas / Equipment Served', keys: ['areasEquipmentServed', 'areasServed'] },
+  { label: 'Current Meter Reading', keys: ['currentMeterReadingKl', 'currentMeterReading'], suffix: ' kL' },
+  { label: 'Reading Date / Time', keys: ['readingDateTime', 'meterReadingDateTime'] },
+];
+
+const WATER_FIXTURE_COMMON_FIELDS: WaterFieldSpec[] = [
+  { label: 'Fixture Location / Room ID', keys: ['fixtureLocationRoomId', 'locationRoomId', 'location'] },
+  { label: 'Water Supply Source', keys: ['waterSupplySource', 'waterSupplyType'] },
+];
+
+const WATER_FIXTURE_FIELDS: Record<string, WaterFieldSpec[]> = {
+  toilets_pans_cisterns: [
+    { label: 'Total Toilet Count', keys: ['totalToiletCount'] },
+    { label: 'Flush Mechanism', keys: ['flushMechanism'] },
+    { label: 'Full Flush Volume', keys: ['fullFlushVolumeL', 'flushVolumeFullL'], suffix: ' L' },
+    { label: 'Half Flush Volume', keys: ['halfFlushVolumeL', 'flushVolumeHalfL'], suffix: ' L' },
+    { label: 'Internal Weep / Leak Count', keys: ['internalWeepLeakCount'] },
+  ],
+  urinals: [
+    { label: 'Total Urinal Count', keys: ['totalUrinalCount'] },
+    { label: 'System Type', keys: ['systemType'] },
+    { label: 'Flushes per Hour', keys: ['flushesPerHour'] },
+    { label: 'Volume per Flush', keys: ['volumePerFlushL'], suffix: ' L' },
+  ],
+  hand_basins_taps: [
+    { label: 'Total Basin Tap Count', keys: ['totalBasinTapCount'] },
+    { label: 'Tap Mechanism', keys: ['tapMechanism'] },
+    { label: 'Average Measured Flow Rate', keys: ['averageMeasuredFlowRateLMin', 'measuredFlowRateLMin'], suffix: ' L/min' },
+    { label: 'Average Run Time', keys: ['averageRunTimeSeconds'], suffix: ' seconds' },
+    { label: 'Faulty Aerator / Leak Count', keys: ['faultyAeratorLeakCount'] },
+  ],
+  showers: [
+    { label: 'Total Shower Count', keys: ['totalShowerCount'] },
+    { label: 'Shower Mechanism', keys: ['showerMechanism'] },
+    { label: 'Average Measured Flow Rate', keys: ['averageMeasuredFlowRateLMin', 'measuredFlowRateLMin'], suffix: ' L/min' },
+    { label: 'Showerhead WELS Rating', keys: ['showerheadWelsRating', 'welsStarRating'] },
+    { label: 'Leaking Shower Count', keys: ['leakingShowerCount'] },
+  ],
+  sink_wash_basin: [
+    { label: 'Sink Purpose', keys: ['sinkPurpose'] },
+    { label: 'Tap Mechanism', keys: ['tapMechanism'] },
+    { label: 'Measured Flow Rate', keys: ['measuredFlowRateLMin'], suffix: ' L/min' },
+    { label: 'WELS Star Rating', keys: ['welsStarRating'] },
+  ],
+  dishwasher: [
+    { label: 'Water Consumption', keys: ['waterConsumptionLPerCycle', 'waterConsumptionLPerRackOrCycle', 'waterConsumption'], suffix: ' L/rack or cycle' },
+    { label: 'Rinse Cycle Mode', keys: ['rinseCycleMode'] },
+  ],
+  combi_oven_steamer: [
+    { label: 'Steam Generation Type', keys: ['steamGenerationType'] },
+    { label: 'Drain Quench Functioning?', keys: ['drainQuenchFunctioning'] },
+  ],
+  ice_machine: [
+    { label: 'Cooling Mechanism', keys: ['coolingMechanism'] },
+    { label: 'Ice Yield Capacity', keys: ['iceYieldCapacityKgDay'], suffix: ' kg/day' },
+  ],
+  zip_tap_boiling_unit: [
+    { label: 'Operational Status', keys: ['operationalStatus'] },
+    { label: 'Under-bench Leak Check', keys: ['underBenchLeakCheck'] },
+  ],
+  pre_rinse_spray_valve: [
+    { label: 'Measured Flow Rate', keys: ['measuredFlowRateLMin'], suffix: ' L/min' },
+    { label: 'WELS Star Rating', keys: ['welsStarRating'] },
+    { label: 'Shut-off Valve Condition', keys: ['shutOffValveCondition'] },
+  ],
+};
+
+const WATER_SYSTEM_FIELDS: Record<string, WaterFieldSpec[]> = {
+  cooling_tower_condenser: [
+    { label: 'Make / Model', keys: ['makeModel'] },
+    { label: 'Serial Number', keys: ['serialNumber'] },
+    { label: 'Cooling Capacity', keys: ['coolingCapacity'] },
+    { label: 'Cooling Capacity Unit', keys: ['coolingCapacityUnit'] },
+    { label: 'Associated System', keys: ['associatedSystem'] },
+    { label: 'Water Source', keys: ['waterSource', 'waterSupplySource'] },
+    { label: 'Make-up Meter Installed?', keys: ['makeUpMeterInstalled', 'makeupMeterInstalled'] },
+    { label: 'Make-up Meter Reading', keys: ['makeUpMeterCurrentReadingKl', 'makeupMeterCurrentReadingKl'], suffix: ' kL' },
+    { label: 'Make-up Float Valve Type', keys: ['makeUpFloatValveType'] },
+    { label: 'Make-up Float Valve Status', keys: ['makeUpFloatValveStatus'] },
+    { label: 'Blowdown Control Method', keys: ['blowdownControlMethod'] },
+    { label: 'Conductivity Controller Make / Model', keys: ['conductivityControllerMakeModel'] },
+    { label: 'Conductivity Controller Setpoint', keys: ['conductivityControllerSetpointUsCm'], suffix: ' µS/cm' },
+    { label: 'Make-up Water TDS', keys: ['makeUpWaterTdsUsCm', 'makeupWaterTdsUsCm'], suffix: ' µS/cm' },
+    { label: 'Basin Water TDS', keys: ['basinWaterTdsUsCm'], suffix: ' µS/cm' },
+    { label: 'Drift Eliminator Condition', keys: ['driftEliminatorCondition'] },
+    { label: 'Basin Integrity / Overflow Status', keys: ['basinIntegrityOverflowStatus'] },
+    { label: 'Chemical Dosing Regime', keys: ['chemicalDosingRegime'] },
+    { label: 'Water Efficiency Observations / Payback Notes', keys: ['waterEfficiencyObservationsPaybackNotes'] },
+  ],
+  stormwater_harvesting_recycle: [
+    { label: 'System Type', keys: ['systemType'] },
+    { label: 'Storage Capacity', keys: ['storageCapacityKl'], suffix: ' kL' },
+    { label: 'Collection Inflows', keys: ['collectionInflows'] },
+    { label: 'Treatment Train Assets', keys: ['treatmentTrainAssets'] },
+    { label: 'System Status', keys: ['systemStatus'] },
+    { label: 'Supply Target End-Uses', keys: ['supplyTargetEndUses'] },
+    { label: 'Supply Meter Reading', keys: ['supplyMeterReadingKl'], suffix: ' kL' },
+    { label: 'Backup Potable Top-up Mechanism', keys: ['backupPotableTopUpMechanism'] },
+    { label: 'Backwash Frequency', keys: ['backwashFrequency'] },
+    { label: 'Backwash Destination', keys: ['backwashDestination'] },
+    { label: 'Opportunities for Expansion', keys: ['opportunitiesForExpansion'] },
+  ],
+  aquatic_recovery_facility: [
+    { label: 'Facility Type', keys: ['facilityType'] },
+    { label: 'Pool Volume', keys: ['poolVolumeKl'], suffix: ' kL' },
+    { label: 'Operating Temperature', keys: ['operatingTemperatureC'], suffix: ' °C' },
+    { label: 'Auto Top-Up Mechanism', keys: ['autoTopUpMechanism'] },
+    { label: 'Dedicated Top-Up Meter Present?', keys: ['topUpDedicatedMeterPresent'] },
+    { label: 'Top-Up Meter Reading', keys: ['topUpDedicatedMeterReadingKl', 'topUpMeterReadingKl'], suffix: ' kL' },
+    { label: 'Filtration System Type', keys: ['filtrationSystemType'] },
+    { label: 'Backwash Trigger Method', keys: ['backwashTriggerMethod'] },
+    { label: 'Backwash Frequency', keys: ['backwashFrequency'] },
+    { label: 'Estimated Backwash Volume', keys: ['estimatedBackwashVolumeL'], suffix: ' L' },
+    { label: 'Backwash Discharge Route', keys: ['backwashDischargeRoute'] },
+    { label: 'Balance Tank Overflow Status', keys: ['balanceTankOverflowStatus'] },
+    { label: 'Pool Cover Available?', keys: ['poolCoverAvailable'] },
+    { label: 'Pool Cover Utilised?', keys: ['poolCoverUtilised'] },
+  ],
+  process_cooling_industrial_equipment: [
+    { label: 'Cooling Circuit Type', keys: ['coolingCircuitType'] },
+    { label: 'Water Supply Type', keys: ['waterSupplyType'] },
+    { label: 'Operating Pressure', keys: ['operatingPressure'] },
+    { label: 'Operating Pressure Unit', keys: ['operatingPressureUnit'] },
+    { label: 'Operating Flow Rate', keys: ['operatingFlowRate'] },
+    { label: 'Operating Flow Rate Unit', keys: ['operatingFlowRateUnit'] },
+    { label: 'Supply Temperature', keys: ['supplyTemperatureC'], suffix: ' °C' },
+    { label: 'Return Temperature', keys: ['returnTemperatureC'], suffix: ' °C' },
+    { label: 'Heat Exchanger Type', keys: ['heatExchangerType'] },
+    { label: 'Heat Exchanger Condition', keys: ['heatExchangerCondition'] },
+    { label: 'Billet Caster Spray Nozzles Condition', keys: ['billetCasterSprayNozzlesCondition'] },
+    { label: 'Scale Pit Settlement / Interceptor Status', keys: ['scalePitSettlementInterceptorStatus'] },
+    { label: 'Quench Tanks / Slag Cooling Water Source', keys: ['quenchTanksSlagCoolingWaterSource'] },
+    { label: 'Once-Through Potable Cooling Present?', keys: ['onceThroughPotableCoolingPresent'] },
+  ],
+  dust_suppression_truck_standpipe: [
+    { label: 'Water Supply Source', keys: ['waterSupplySource'] },
+    { label: 'Activation Method', keys: ['activationMethod'] },
+    { label: 'Isolation Valve Integrity', keys: ['isolationValveIntegrity'] },
+    { label: 'Control Strategy', keys: ['controlStrategy'] },
+  ],
+  network_leak_pipework_defect: [
+    { label: 'Specific Location / Room / Line', keys: ['specificLocationRoomLine', 'specificLocation'] },
+    { label: 'Pipe Material', keys: ['pipeMaterial'] },
+    { label: 'Pipe Diameter', keys: ['pipeDiameter'] },
+    { label: 'Defect Classification', keys: ['defectClassification'] },
+    { label: 'Estimated Leak Rate', keys: ['estimatedLeakRateLHr'], suffix: ' L/hr' },
+    { label: 'Safety Hazard Implication', keys: ['safetyHazardImplication'] },
+    { label: 'Rectification Priority', keys: ['rectificationPriority'] },
+    { label: 'Estimated Rectification Cost ($)', keys: ['estimatedRectificationCostAud', 'estimatedRectificationCost'] },
+  ],
+};
+
+function normalizeWaterCategory(value: unknown): string {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/\s*\/\s*/g, '_')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_and_/g, '_');
+}
+
+function renderWaterAsset(
+  item: EquipmentItem,
+  photos: PhotoEntry[],
+  zoneMap: Map<string, string>,
+  showZone = true,
+): string {
+  const assetType = normalizeWaterAssetType(item.assetType);
+  const assetTypeLabel = assetType ? WATER_ASSET_TYPE_LABELS[assetType] : 'Water Asset';
+  const data = parseJsonObject(item.data);
+  const name = sf('name', item) || waterDataValue(data, 'meterTagId', 'submeterLoggerTagId', 'fixtureLocationRoomId', 'assetTagSystemName');
+  const category = sf('category', item) || waterDataValue(data, 'category', 'fixtureCategory', 'assetCategory');
+  const normalizedCategory = normalizeWaterCategory(category);
+
+  let specs: WaterFieldSpec[] = [];
+  if (assetType === 'water_meter') specs = WATER_METER_FIELDS;
+  else if (assetType === 'water_submeter_logger') specs = WATER_SUBMETER_FIELDS;
+  else if (assetType === 'water_fixture') {
+    specs = [...WATER_FIXTURE_COMMON_FIELDS, ...(WATER_FIXTURE_FIELDS[normalizedCategory] ?? [])];
+  } else if (assetType === 'water_asset_system') {
+    specs = WATER_SYSTEM_FIELDS[normalizedCategory] ?? [];
+  }
+
+  const calculatedRows: string[] = [];
+  if (assetType === 'water_asset_system' && normalizedCategory === 'cooling_tower_condenser') {
+    const stored = waterDataNumber(data, 'calculatedCyclesOfConcentration', 'cyclesOfConcentration');
+    const makeUpTds = waterDataNumber(data, 'makeUpWaterTdsUsCm', 'makeupWaterTdsUsCm');
+    const basinTds = waterDataNumber(data, 'basinWaterTdsUsCm');
+    const calculated = stored ?? (makeUpTds != null && makeUpTds > 0 && basinTds != null ? basinTds / makeUpTds : null);
+    if (calculated != null) calculatedRows.push(fieldRow('Calculated Cycles of Concentration', calculated.toFixed(2)));
+  }
+  if (assetType === 'water_asset_system' && normalizedCategory === 'network_leak_pipework_defect') {
+    const stored = waterDataNumber(data, 'associatedWaterLossKlYear');
+    const leakRate = waterDataNumber(data, 'estimatedLeakRateLHr');
+    const calculated = stored ?? (leakRate != null ? leakRate * 8.76 : null);
+    if (calculated != null) calculatedRows.push(fieldRow('Associated Water Loss', `${calculated.toFixed(2)} kL/year`));
+  }
+
+  const header = `<div class="item-head">${renderPdfEquipmentIcon('water')}<div class="item-title">
+      <div class="iname">${esc(name || assetTypeLabel)}</div>
+      <div class="isub">${esc(assetTypeLabel)}${category ? ` · ${esc(category)}` : ''}</div>
+      ${showZone ? zoneBadge(zoneMap.get(item.zoneId)) : ''}
+    </div></div>`;
+  const improvement = assetType === 'water_submeter_logger'
+    ? waterDataValue(data, 'submeteringImprovementOpportunity')
+    : null;
+  const details = `${fieldGrid(
+      ...(category ? [fieldRow(assetType === 'water_fixture' ? 'Fixture Category' : 'Asset Category', category)] : []),
+      ...waterFieldRows(data, specs),
+      ...calculatedRows,
+    )}
+    ${improvement ? noteBox('Submetering Improvement Opportunity', improvement, 'note-amber') : ''}
+    ${noteBox('General Comments', sf('generalComments', item), 'note-green')}
+    ${customWaterFields(item.customFields)}`;
+  return renderItem(header, details, photos);
 }
 
 // ── Item renderers ────────────────────────────────────────────────────────────────
@@ -577,6 +967,7 @@ type BodyArgs = {
   solarList: EquipmentItem[];
   forkliftList: EquipmentItem[];
   hotWaterList: EquipmentItem[];
+  waterAssetList: EquipmentItem[];
   genWaterList: EquipmentItem[];
   genElecList: EquipmentItem[];
   brandLogo: string;
@@ -593,6 +984,7 @@ export type EcoAuditReportOverview = {
   solarCount: number;
   forkliftCount: number;
   hotWaterCount: number;
+  waterAssetCount: number;
   generalCount: number;
   totalEquipment: number;
 };
@@ -616,9 +1008,10 @@ export function buildEcoAuditReportOverview(
   const solarCount = args.solarList.length;
   const forkliftCount = args.forkliftList.length;
   const hotWaterCount = args.hotWaterList.length;
+  const waterAssetCount = args.waterAssetList.length;
   const generalCount = args.genWaterList.length + args.genElecList.length;
   const totalEquipment = switchboardCount + hvacCount + lightingCount + solarCount
-    + forkliftCount + hotWaterCount + generalCount;
+    + forkliftCount + hotWaterCount + waterAssetCount + generalCount;
   const totalPhotos = reportPhotos.filter((photo) => photo.remoteUrl).length;
   const selectedZoneCount = args.zones.length;
 
@@ -632,6 +1025,7 @@ export function buildEcoAuditReportOverview(
     solarCount,
     forkliftCount,
     hotWaterCount,
+    waterAssetCount,
     generalCount,
     totalEquipment,
   };
@@ -692,9 +1086,70 @@ function zonePhotosBody(zones: Array<typeof eaZones.$inferSelect>, photos: Photo
   return blocks ? `${secHeaderLabel('ZP', 'Zone Photos')}${blocks}` : '';
 }
 
+const WATER_ASSET_SECTIONS: Array<{ type: WaterAssetType; label: string; badge: string }> = [
+  { type: 'water_meter', label: 'Water Meters', badge: 'W1' },
+  { type: 'water_submeter_logger', label: 'Water Submeters / Loggers', badge: 'W2' },
+  { type: 'water_fixture', label: 'Water Fixtures', badge: 'W3' },
+  { type: 'water_asset_system', label: 'Water Assets / Systems', badge: 'W4' },
+];
+
+function renderWaterAssetsByEquipment(
+  items: EquipmentItem[],
+  photos: PhotoRow[],
+  zoneMap: Map<string, string>,
+): string {
+  const rendered = WATER_ASSET_SECTIONS.map((section) => {
+    const matching = items.filter((item) => normalizeWaterAssetType(item.assetType) === section.type);
+    return matching.length
+      ? `${secHeaderLabel(section.badge, section.label)}${matching.map((item) => renderWaterAsset(
+        item,
+        photosForEntity(photos, item.id, waterAssetPhotoMetadata(item)),
+        zoneMap,
+      )).join('')}`
+      : '';
+  });
+  const unknown = items.filter((item) => normalizeWaterAssetType(item.assetType) == null);
+  if (unknown.length) {
+    rendered.push(`${secHeaderLabel('W5', 'Other Water Assets')}${unknown.map((item) => renderWaterAsset(
+      item,
+      photosForEntity(photos, item.id, waterAssetPhotoMetadata(item)),
+      zoneMap,
+    )).join('')}`);
+  }
+  return rendered.join('');
+}
+
+function renderWaterAssetsInZone(
+  items: EquipmentItem[],
+  photos: PhotoRow[],
+  zoneMap: Map<string, string>,
+): string {
+  const rendered = WATER_ASSET_SECTIONS.map((section) => {
+    const matching = items.filter((item) => normalizeWaterAssetType(item.assetType) === section.type);
+    return matching.length
+      ? `<div class="zone-type-label">${section.label}</div>${matching.map((item) => renderWaterAsset(
+        item,
+        photosForEntity(photos, item.id, waterAssetPhotoMetadata(item)),
+        zoneMap,
+        false,
+      )).join('')}`
+      : '';
+  });
+  const unknown = items.filter((item) => normalizeWaterAssetType(item.assetType) == null);
+  if (unknown.length) {
+    rendered.push(`<div class="zone-type-label">Other Water Assets</div>${unknown.map((item) => renderWaterAsset(
+      item,
+      photosForEntity(photos, item.id, waterAssetPhotoMetadata(item)),
+      zoneMap,
+      false,
+    )).join('')}`);
+  }
+  return rendered.join('');
+}
+
 function byEquipmentBody(args: BodyArgs): string {
   const zoneMap = new Map(args.zones.map((z) => [z.id, z.zoneName]));
-  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList } = args;
+  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, waterAssetList, genWaterList, genElecList } = args;
   const consolidatedObservations = defaultConsolidatedObservations(hvacList, lightList, solarList, forkliftList, hotWaterList);
 
   const elecParts = [
@@ -709,6 +1164,7 @@ function byEquipmentBody(args: BodyArgs): string {
     + (solarList.length ? `${secHeader('4', 'Solar PV Infrastructure')}${solarList.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap)).join('')}` : '')
     + (forkliftList.length ? `${secHeader('5', 'Forklift Charging')}${forkliftList.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap)).join('')}` : '')
     + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap)).join('')}` : '')
+    + renderWaterAssetsByEquipment(waterAssetList, photos, zoneMap)
     + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
     + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
     + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations);
@@ -716,14 +1172,14 @@ function byEquipmentBody(args: BodyArgs): string {
 
 function byZoneBody(args: BodyArgs): string {
   const zoneMap = new Map(args.zones.map((z) => [z.id, z.zoneName]));
-  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList, zones } = args;
-  const allEquipment = [msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, genWaterList, genElecList];
+  const { photos, msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, waterAssetList, genWaterList, genElecList, zones } = args;
+  const allEquipment = [msList, addlSbList, hvacList, lightList, solarList, forkliftList, hotWaterList, waterAssetList, genWaterList, genElecList];
   const knownZoneIds = new Set(zones.map((z) => z.id));
 
   type ZoneBlock = {
     id: string | null; title: string; description: string | null;
     zMs: EquipmentItem[]; zAddl: EquipmentItem[]; zHvac: EquipmentItem[]; zLight: EquipmentItem[];
-    zSolar: EquipmentItem[]; zFork: EquipmentItem[]; zHw: EquipmentItem[]; zGw: EquipmentItem[]; zGe: EquipmentItem[];
+    zSolar: EquipmentItem[]; zFork: EquipmentItem[]; zHw: EquipmentItem[]; zWaterAssets: EquipmentItem[]; zGw: EquipmentItem[]; zGe: EquipmentItem[];
     zPhotos: PhotoEntry[]; total: number; photoCount: number;
   };
 
@@ -735,11 +1191,12 @@ function byZoneBody(args: BodyArgs): string {
     const zSolar = solarList.filter((x) => x.zoneId === zone.id);
     const zFork = forkliftList.filter((x) => x.zoneId === zone.id);
     const zHw = hotWaterList.filter((x) => x.zoneId === zone.id);
+    const zWaterAssets = waterAssetList.filter((x) => x.zoneId === zone.id);
     const zGw = genWaterList.filter((x) => x.zoneId === zone.id);
     const zGe = genElecList.filter((x) => x.zoneId === zone.id);
-    const total = zMs.length + zAddl.length + zHvac.length + zLight.length + zSolar.length + zFork.length + zHw.length + zGw.length + zGe.length;
+    const total = zMs.length + zAddl.length + zHvac.length + zLight.length + zSolar.length + zFork.length + zHw.length + zWaterAssets.length + zGw.length + zGe.length;
     const zPhotos = photosForEntity(photos, zone.id, zone.photoDescs);
-    return { id: zone.id, title: zone.zoneName, description: zone.zoneDescription, zMs, zAddl, zHvac, zLight, zSolar, zFork, zHw, zGw, zGe, total, zPhotos, photoCount: zonePhotoCount(zone.id, photos, allEquipment) };
+    return { id: zone.id, title: zone.zoneName, description: zone.zoneDescription, zMs, zAddl, zHvac, zLight, zSolar, zFork, zHw, zWaterAssets, zGw, zGe, total, zPhotos, photoCount: zonePhotoCount(zone.id, photos, allEquipment) };
   }).filter((z) => z.total > 0 || z.photoCount > 0);
 
   const unzMs = msList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
@@ -749,11 +1206,12 @@ function byZoneBody(args: BodyArgs): string {
   const unzSolar = solarList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
   const unzFork = forkliftList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
   const unzHw = hotWaterList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
+  const unzWaterAssets = waterAssetList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
   const unzGw = genWaterList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
   const unzGe = genElecList.filter((x) => !x.zoneId || !knownZoneIds.has(x.zoneId));
-  const unzTotal = unzMs.length + unzAddl.length + unzHvac.length + unzLight.length + unzSolar.length + unzFork.length + unzHw.length + unzGw.length + unzGe.length;
+  const unzTotal = unzMs.length + unzAddl.length + unzHvac.length + unzLight.length + unzSolar.length + unzFork.length + unzHw.length + unzWaterAssets.length + unzGw.length + unzGe.length;
   if (unzTotal > 0) {
-    zoneBlocks.push({ id: null, title: 'Unzoned', description: null, zMs: unzMs, zAddl: unzAddl, zHvac: unzHvac, zLight: unzLight, zSolar: unzSolar, zFork: unzFork, zHw: unzHw, zGw: unzGw, zGe: unzGe, total: unzTotal, zPhotos: [], photoCount: unzTotal });
+    zoneBlocks.push({ id: null, title: 'Unzoned', description: null, zMs: unzMs, zAddl: unzAddl, zHvac: unzHvac, zLight: unzLight, zSolar: unzSolar, zFork: unzFork, zHw: unzHw, zWaterAssets: unzWaterAssets, zGw: unzGw, zGe: unzGe, total: unzTotal, zPhotos: [], photoCount: unzTotal });
   }
 
   if (zoneBlocks.length === 0) return '<p class="empty-note">No selected zone items in this report.</p>';
@@ -777,6 +1235,7 @@ function byZoneBody(args: BodyArgs): string {
       ${zone.zSolar.length ? `<div class="zone-type-label">Solar PV</div>${zone.zSolar.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zFork.length ? `<div class="zone-type-label">Forklift Charging</div>${zone.zFork.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zHw.length ? `<div class="zone-type-label">Hot Water</div>${zone.zHw.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${renderWaterAssetsInZone(zone.zWaterAssets, photos, zoneMap)}
       ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
     </div>`;
@@ -819,6 +1278,7 @@ function buildAuditHtml(args: BodyArgs, options: BuildAuditHtmlOptions = {}): st
     { count: overview.solarCount, label: 'Solar PV' },
     { count: overview.forkliftCount, label: 'Forklift' },
     { count: overview.hotWaterCount, label: 'Hot Water' },
+    { count: overview.waterAssetCount, label: 'Water Assets' },
     { count: overview.generalCount, label: 'General' },
     { count: overview.totalEquipment, label: 'Total', always: true },
   ]
@@ -930,6 +1390,7 @@ function emptyBodyArgs(args: BodyArgs): BodyArgs {
     solarList: [],
     forkliftList: [],
     hotWaterList: [],
+    waterAssetList: [],
     genWaterList: [],
     genElecList: [],
   };
@@ -972,6 +1433,7 @@ function buildZoneChunk(args: BodyArgs, scopedPhotos: PhotoRow[], zones: Array<t
   const solarList = byZone(args.solarList);
   const forkliftList = byZone(args.forkliftList);
   const hotWaterList = byZone(args.hotWaterList);
+  const waterAssetList = byZone(args.waterAssetList);
   const genWaterList = byZone(args.genWaterList);
   const genElecList = byZone(args.genElecList);
   return {
@@ -985,6 +1447,7 @@ function buildZoneChunk(args: BodyArgs, scopedPhotos: PhotoRow[], zones: Array<t
     solarList,
     forkliftList,
     hotWaterList,
+    waterAssetList,
     genWaterList,
     genElecList,
   };
@@ -993,7 +1456,7 @@ function buildZoneChunk(args: BodyArgs, scopedPhotos: PhotoRow[], zones: Array<t
 function buildEquipmentChunk<T extends EquipmentItem>(
   args: BodyArgs,
   scopedPhotos: PhotoRow[],
-  key: 'msList' | 'addlSbList' | 'hvacList' | 'lightList' | 'solarList' | 'forkliftList' | 'hotWaterList' | 'genWaterList' | 'genElecList',
+  key: 'msList' | 'addlSbList' | 'hvacList' | 'lightList' | 'solarList' | 'forkliftList' | 'hotWaterList' | 'waterAssetList' | 'genWaterList' | 'genElecList',
   items: T[],
 ): BodyArgs {
   const entityIds = new Set(items.map((item) => item.id));
@@ -1018,6 +1481,7 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
         ...args.solarList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
         ...args.forkliftList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
         ...args.hotWaterList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
+        ...args.waterAssetList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
         ...args.genWaterList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
         ...args.genElecList.filter((item) => item.zoneId === zone.id).map((item) => item.id),
       ]);
@@ -1031,6 +1495,7 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
     const unzonedSolar = args.solarList.filter((item) => !knownZoneIds.has(item.zoneId));
     const unzonedForklift = args.forkliftList.filter((item) => !knownZoneIds.has(item.zoneId));
     const unzonedHotWater = args.hotWaterList.filter((item) => !knownZoneIds.has(item.zoneId));
+    const unzonedWaterAssets = args.waterAssetList.filter((item) => !knownZoneIds.has(item.zoneId));
     const unzonedGenWater = args.genWaterList.filter((item) => !knownZoneIds.has(item.zoneId));
     const unzonedGenElec = args.genElecList.filter((item) => !knownZoneIds.has(item.zoneId));
     const unzonedEntityIds = new Set([
@@ -1041,6 +1506,7 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
       ...unzonedSolar,
       ...unzonedForklift,
       ...unzonedHotWater,
+      ...unzonedWaterAssets,
       ...unzonedGenWater,
       ...unzonedGenElec,
     ].map((item) => item.id));
@@ -1056,6 +1522,7 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
         solarList: unzonedSolar,
         forkliftList: unzonedForklift,
         hotWaterList: unzonedHotWater,
+        waterAssetList: unzonedWaterAssets,
         genWaterList: unzonedGenWater,
         genElecList: unzonedGenElec,
       });
@@ -1090,6 +1557,16 @@ export function buildInlineEcoAuditChunks(args: BodyArgs, scopedPhotos: PhotoRow
   addEquipmentChunks('solarList', args.solarList);
   addEquipmentChunks('forkliftList', args.forkliftList);
   addEquipmentChunks('hotWaterList', args.hotWaterList);
+  for (const section of WATER_ASSET_SECTIONS) {
+    addEquipmentChunks(
+      'waterAssetList',
+      args.waterAssetList.filter((item) => normalizeWaterAssetType(item.assetType) === section.type),
+    );
+  }
+  addEquipmentChunks(
+    'waterAssetList',
+    args.waterAssetList.filter((item) => normalizeWaterAssetType(item.assetType) == null),
+  );
   addEquipmentChunks('genWaterList', args.genWaterList);
   addEquipmentChunks('genElecList', args.genElecList);
 
@@ -1211,6 +1688,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     solarPv,
     forkliftChargers,
     hotWaterSystems,
+    waterAssets,
     generalWater,
     generalElectricity,
     photos,
@@ -1222,6 +1700,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaWaterAssets).where(zoneScopedWhere(eaWaterAssets, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
     loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
@@ -1236,6 +1715,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     ...solarPv.map((x) => x.id),
     ...forkliftChargers.map((x) => x.id),
     ...hotWaterSystems.map((x) => x.id),
+    ...waterAssets.map((x) => x.id),
     ...generalWater.map((x) => x.id),
     ...generalElectricity.map((x) => x.id),
   ]);
@@ -1258,6 +1738,7 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     solarList: orderReportItemsByZone(solarPv, orderedZoneIds) as unknown as EquipmentItem[],
     forkliftList: orderReportItemsByZone(forkliftChargers, orderedZoneIds) as unknown as EquipmentItem[],
     hotWaterList: orderReportItemsByZone(hotWaterSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    waterAssetList: orderReportItemsByZone(waterAssets, orderedZoneIds) as unknown as EquipmentItem[],
     genWaterList: orderReportItemsByZone(generalWater, orderedZoneIds) as unknown as EquipmentItem[],
     genElecList: orderReportItemsByZone(generalElectricity, orderedZoneIds) as unknown as EquipmentItem[],
   }, scopedPhotos));
@@ -1344,6 +1825,7 @@ export async function runEcoAuditPdfJob(
     solarPv,
     forkliftChargers,
     hotWaterSystems,
+    waterAssets,
     generalWater,
     generalElectricity,
     photos,
@@ -1355,6 +1837,7 @@ export async function runEcoAuditPdfJob(
     db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
+    db.select().from(eaWaterAssets).where(zoneScopedWhere(eaWaterAssets, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
     db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
     loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
@@ -1369,6 +1852,7 @@ export async function runEcoAuditPdfJob(
     ...solarPv.map((x) => x.id),
     ...forkliftChargers.map((x) => x.id),
     ...hotWaterSystems.map((x) => x.id),
+    ...waterAssets.map((x) => x.id),
     ...generalWater.map((x) => x.id),
     ...generalElectricity.map((x) => x.id),
   ]);
@@ -1393,6 +1877,7 @@ export async function runEcoAuditPdfJob(
     solarList: orderReportItemsByZone(solarPv, orderedZoneIds) as unknown as EquipmentItem[],
     forkliftList: orderReportItemsByZone(forkliftChargers, orderedZoneIds) as unknown as EquipmentItem[],
     hotWaterList: orderReportItemsByZone(hotWaterSystems, orderedZoneIds) as unknown as EquipmentItem[],
+    waterAssetList: orderReportItemsByZone(waterAssets, orderedZoneIds) as unknown as EquipmentItem[],
     genWaterList: orderReportItemsByZone(generalWater, orderedZoneIds) as unknown as EquipmentItem[],
     genElecList: orderReportItemsByZone(generalElectricity, orderedZoneIds) as unknown as EquipmentItem[],
   }, scopedPhotos);

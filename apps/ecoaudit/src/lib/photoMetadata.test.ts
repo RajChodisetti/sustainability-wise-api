@@ -15,6 +15,21 @@ test('canonicalizes app upload photo fields to PDF metadata keys', () => {
   assert.equal(photoMetadataKeyFromUploadField('switchboard_photo_notes'), 'switchboardControlsPhoto');
 });
 
+test('preserves stable nested custom-question photo metadata keys', () => {
+  assert.equal(
+    photoMetadataKeyFromUploadField('customFields.question-1.photos[2]'),
+    'customFields.question-1.photos.2',
+  );
+  assert.deepEqual(
+    normalizePhotoMetadataMap({
+      'customFields.question-1.photos.2': { name: 'Leak under basin', largeInPdf: true },
+    }),
+    {
+      'customFields.question-1.photos.2': { name: 'Leak under basin', largeInPdf: true },
+    },
+  );
+});
+
 test('merges legacy and canonical photo metadata into photoDescs', () => {
   assert.deepEqual(
     normalizePhotoDescsRecord({

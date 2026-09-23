@@ -8,6 +8,7 @@ import {
   eaForkliftChargers,
   eaGeneralElectricity,
   eaGeneralWater,
+  eaWaterAssets,
   eaHotWaterSystems,
   eaHvacUnits,
   eaLightingSystems,
@@ -205,6 +206,7 @@ export async function purgeEcoauditAuditTree(auditId: string, reportPdfStorageKe
     await tx.delete(eaHotWaterSystems).where(eq(eaHotWaterSystems.auditId, audit.id));
     await tx.delete(eaGeneralWater).where(eq(eaGeneralWater.auditId, audit.id));
     await tx.delete(eaGeneralElectricity).where(eq(eaGeneralElectricity.auditId, audit.id));
+    await tx.delete(eaWaterAssets).where(eq(eaWaterAssets.auditId, audit.id));
     await tx.delete(eaZones).where(eq(eaZones.auditId, audit.id));
     await tx.delete(eaAuditWorkSessions).where(eq(eaAuditWorkSessions.auditId, audit.id));
     await tx.delete(eaAudits).where(eq(eaAudits.id, audit.id));

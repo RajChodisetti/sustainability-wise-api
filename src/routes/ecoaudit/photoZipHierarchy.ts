@@ -11,6 +11,7 @@ import {
   eaLightingSystems,
   eaMainSwitchboards,
   eaSolarPv,
+  eaWaterAssets,
   eaZones,
 } from '../../db/schema/ecoaudit.js';
 import type { PhotoRow } from '../../storage/photoCopyReferences.js';
@@ -50,6 +51,7 @@ const SECTION_TITLES: Record<string, string> = {
   hot_water_system: 'Hot Water Systems',
   general_water: 'General Water Systems',
   general_electricity: 'General Electricity Systems',
+  water_asset: 'Water Assets',
 };
 
 const FALLBACK_ITEM_LABELS: Record<string, string> = {
@@ -63,6 +65,7 @@ const FALLBACK_ITEM_LABELS: Record<string, string> = {
   hot_water_system: 'Hot Water System',
   general_water: 'Water Item',
   general_electricity: 'Electricity Item',
+  water_asset: 'Water Asset',
 };
 
 const GENERAL_PHOTO_LABELS: Record<string, string> = {
@@ -169,10 +172,68 @@ function photoExtension(photo: EcoAuditZipPhoto): string {
 }
 
 function defaultPhotoLabel(entityType: string, field: PhotoField): string {
+  const customWaterPhoto = /^customFields\.[^.]+\.photos\.(\d+)$/.exec(field.raw);
+  if (entityType === 'water_asset' && customWaterPhoto) {
+    return `Custom Field Photo ${Number(customWaterPhoto[1]) + 1}`;
+  }
   const label = ENTITY_PHOTO_LABELS[entityType]?.[field.base]
     ?? GENERAL_PHOTO_LABELS[field.base]
     ?? humanize(field.base || 'Photo');
   return field.index === undefined ? label : `${label} ${field.index + 1}`;
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value) ? value : [];
+}
+
+function waterAssetSectionTitle(assetType: unknown): string {
+  switch (assetType) {
+    case 'water_meter': return 'Water Meters';
+    case 'water_submeter_logger': return 'Water Submeters / Loggers';
+    case 'water_fixture': return 'Water Fixtures';
+    case 'water_asset_system': return 'Water Assets / Systems';
+    default: return 'Water Assets';
+  }
+}
+
+export function flattenWaterAssetPhotoDescs(photoDescs: unknown, customFields: unknown): Record<string, unknown> {
+  const flattened = { ...parseJsonObject(photoDescs) };
+  for (const raw of parseJsonArray(customFields)) {
+    const field = parseJsonObject(raw);
+    const id = typeof field.id === 'string' ? field.id.trim() : '';
+    if (!id) continue;
+    for (const [key, value] of Object.entries(parseJsonObject(field.photoDescs))) {
+      const match = /^photos(?:\[(\d+)\]|\.(\d+)|_(\d+))$/.exec(key);
+      if (!match) continue;
+      const index = match[1] ?? match[2] ?? match[3];
+      flattened[`customFields.${id}.photos.${index}`] = value;
+    }
+  }
+  return flattened;
 }
 
 function fallbackEntity(
@@ -236,6 +297,7 @@ export async function loadEcoAuditPhotoZipContext(auditId: string): Promise<EcoA
     solarPv,
     forkliftChargers,
     hotWaterSystems,
+    waterAssets,
     generalWater,
     generalElectricity,
   ] = await Promise.all([
@@ -247,6 +309,7 @@ export async function loadEcoAuditPhotoZipContext(auditId: string): Promise<EcoA
     db.select().from(eaSolarPv).where(eq(eaSolarPv.auditId, auditId)).orderBy(asc(eaSolarPv.createdAt)),
     db.select().from(eaForkliftChargers).where(eq(eaForkliftChargers.auditId, auditId)).orderBy(asc(eaForkliftChargers.createdAt)),
     db.select().from(eaHotWaterSystems).where(eq(eaHotWaterSystems.auditId, auditId)).orderBy(asc(eaHotWaterSystems.createdAt)),
+    db.select().from(eaWaterAssets).where(eq(eaWaterAssets.auditId, auditId)).orderBy(asc(eaWaterAssets.createdAt)),
     db.select().from(eaGeneralWater).where(eq(eaGeneralWater.auditId, auditId)).orderBy(asc(eaGeneralWater.createdAt)),
     db.select().from(eaGeneralElectricity).where(eq(eaGeneralElectricity.auditId, auditId)).orderBy(asc(eaGeneralElectricity.createdAt)),
   ]);
@@ -285,6 +348,14 @@ export async function loadEcoAuditPhotoZipContext(auditId: string): Promise<EcoA
   addEquipment(solarPv, 'solar_pv', () => 'Solar PV');
   addEquipment(forkliftChargers, 'forklift_charger', (row) => row.chargerType);
   addEquipment(hotWaterSystems, 'hot_water_system', (row) => row.dhwDetailsType);
+  waterAssets.forEach((row, index) => {
+    entities.set(entityKey('water_asset', row.id), {
+      zoneName: zoneNames.get(row.zoneId) ?? 'General',
+      sectionTitle: waterAssetSectionTitle(row.assetType),
+      itemLabel: row.name?.trim() || `Water Asset ${index + 1}`,
+      photoDescs: flattenWaterAssetPhotoDescs(row.photoDescs, row.customFields),
+    });
+  });
   addEquipment(generalWater, 'general_water', (row, index) => row.question || `Water Item ${index + 1}`);
   addEquipment(generalElectricity, 'general_electricity', (row, index) => row.question || `Electricity Item ${index + 1}`);
 

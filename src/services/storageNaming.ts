@@ -7,6 +7,7 @@ import {
   eaForkliftChargers,
   eaGeneralElectricity,
   eaGeneralWater,
+  eaWaterAssets,
   eaHotWaterSystems,
   eaHvacUnits,
   eaLightingSystems,
@@ -43,6 +44,7 @@ type EcoEntityNameMaps = {
   hotWaterSystem: Map<string, typeof eaHotWaterSystems.$inferSelect>;
   generalWater: Map<string, typeof eaGeneralWater.$inferSelect>;
   generalElectricity: Map<string, typeof eaGeneralElectricity.$inferSelect>;
+  waterAsset: Map<string, typeof eaWaterAssets.$inferSelect>;
 };
 
 export type StorageNameMaps = {
@@ -83,6 +85,7 @@ export async function loadStorageNameMaps(): Promise<StorageNameMaps> {
     hotWaterSystems,
     generalWater,
     generalElectricity,
+    waterAssets,
   ] = await Promise.all([
     db.select().from(ssSites),
     db.select().from(ssRooftopAssessments),
@@ -97,6 +100,7 @@ export async function loadStorageNameMaps(): Promise<StorageNameMaps> {
     db.select().from(eaHotWaterSystems),
     db.select().from(eaGeneralWater),
     db.select().from(eaGeneralElectricity),
+    db.select().from(eaWaterAssets),
   ]);
 
   return {
@@ -115,6 +119,7 @@ export async function loadStorageNameMaps(): Promise<StorageNameMaps> {
       hotWaterSystem: mapById(hotWaterSystems),
       generalWater: mapById(generalWater),
       generalElectricity: mapById(generalElectricity),
+      waterAsset: mapById(waterAssets),
     },
   };
 }
@@ -215,6 +220,8 @@ function normalizeEcoEntityType(entityType: string): keyof EcoEntityNameMaps | '
       return 'generalWater';
     case 'general_electricity':
       return 'generalElectricity';
+    case 'water_asset':
+      return 'waterAsset';
     default:
       return 'unknown';
   }
@@ -256,6 +263,8 @@ export function ecoEntityName(args: {
       return args.maps.generalWater.get(args.entityId)?.question || 'general-water';
     case 'generalElectricity':
       return args.maps.generalElectricity.get(args.entityId)?.question || 'general-electricity';
+    case 'waterAsset':
+      return args.maps.waterAsset.get(args.entityId)?.name || 'water-asset';
     default:
       return args.entityId;
   }

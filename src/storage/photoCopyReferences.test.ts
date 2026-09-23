@@ -85,6 +85,37 @@ test('photo field extractors include the canonical lighting controls photo but n
   assert.deepEqual([...solarIds].sort(), [PHOTO_A, PHOTO_B, PHOTO_C]);
 });
 
+test('EcoAudit water asset custom-field photos retain precise nested paths', () => {
+  const record = {
+    photos: [`/v1/files/photo-${PHOTO_A}.jpg`],
+    customFields: [{
+      id: 'custom-1',
+      question: `unrelated ${PHOTO_D}`,
+      answer: 'Observed at inspection',
+      photos: [
+        `/v1/files/photo-${PHOTO_B}.jpg`,
+        `/v1/files/photo-${PHOTO_C}.jpg`,
+      ],
+    }],
+  };
+
+  assert.deepEqual(
+    [...collectImmutablePhotoIds(ecoPhotoValues(record))].sort(),
+    [PHOTO_A, PHOTO_B, PHOTO_C],
+  );
+  assert.deepEqual(ecoPhotoFieldReferences(record), [
+    { photoId: PHOTO_A, targetFieldName: 'photos[0]' },
+    { photoId: PHOTO_B, targetFieldName: 'customFields.custom-1.photos.0' },
+    { photoId: PHOTO_C, targetFieldName: 'customFields.custom-1.photos.1' },
+  ]);
+
+  assert.deepEqual(ecoPhotoFieldReferences({
+    customFields: [{ photos: [`/v1/files/photo-${PHOTO_B}.jpg`] }],
+  }), [
+    { photoId: PHOTO_B, targetFieldName: 'customFields[0].photos[0]' },
+  ]);
+});
+
 test('InstallHub copy references cover zones, boards, nested meters, site assets and forms', () => {
   assert.deepEqual(installHubZonePhotoFieldReferences({
     photos: [`/v1/files/photo-${PHOTO_A}.jpg`],

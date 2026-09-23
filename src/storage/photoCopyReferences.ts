@@ -8,6 +8,7 @@ import {
   eaForkliftChargers,
   eaGeneralElectricity,
   eaGeneralWater,
+  eaWaterAssets,
   eaHotWaterSystems,
   eaHvacUnits,
   eaLightingSystems,
@@ -72,9 +73,34 @@ function valuesForKeys(record: Record<string, unknown>, keys: readonly string[])
   return keys.filter((key) => key in record).map((key) => record[key]);
 }
 
+const CUSTOM_FIELD_PHOTO_KEYS = ['photos', 'photoUris', 'supportingPhotos'] as const;
+
+function customFieldPhotoArrays(record: Record<string, unknown>): Array<{
+  fieldName: string;
+  value: unknown;
+}> {
+  const fields = Array.isArray(record.customFields) ? record.customFields : [];
+  return fields.flatMap((field, fieldIndex) => {
+    if (!field || typeof field !== 'object' || Array.isArray(field)) return [];
+    const item = field as Record<string, unknown>;
+    const stableId = typeof item.id === 'string' && item.id.trim() ? item.id.trim() : null;
+    return CUSTOM_FIELD_PHOTO_KEYS
+      .filter((key) => Array.isArray(item[key]))
+      .map((key) => ({
+        fieldName: stableId
+          ? `customFields.${stableId}.${key}`
+          : `customFields[${fieldIndex}].${key}`,
+        value: item[key],
+      }));
+  });
+}
+
 /** Exact EcoAudit photo-bearing columns across zones and every equipment table. */
 export function ecoPhotoValues(record: Record<string, unknown>): unknown[] {
-  return valuesForKeys(record, ECO_PHOTO_FIELDS);
+  return [
+    ...valuesForKeys(record, ECO_PHOTO_FIELDS),
+    ...customFieldPhotoArrays(record).map(({ value }) => value),
+  ];
 }
 
 /** Site-level SolarSense images/documents are stored in appendixItems. */
@@ -121,12 +147,23 @@ function indexedReferences(value: unknown, fieldName: string): PhotoFieldReferen
 }
 
 export function ecoPhotoFieldReferences(record: Record<string, unknown>): PhotoFieldReference[] {
-  return ECO_PHOTO_FIELDS.flatMap((fieldName) => {
+  const direct = ECO_PHOTO_FIELDS.flatMap((fieldName) => {
     const value = record[fieldName];
     return Array.isArray(value)
       ? indexedReferences(value, fieldName)
       : referencesAt(value, fieldName);
   });
+  return [
+    ...direct,
+    ...customFieldPhotoArrays(record).flatMap(({ fieldName, value }) => {
+      if (!Array.isArray(value)) return [];
+      const stablePath = fieldName.startsWith('customFields.');
+      return value.flatMap((item, index) => referencesAt(
+        item,
+        stablePath ? `${fieldName}.${index}` : `${fieldName}[${index}]`,
+      ));
+    }),
+  ];
 }
 
 export function solarSitePhotoFieldReferences(record: Record<string, unknown>): PhotoFieldReference[] {
@@ -605,6 +642,7 @@ async function currentPhotoEntities(
       hotWaterSystems,
       generalWater,
       generalElectricity,
+      waterAssets,
     ] = await Promise.all([
       executor.select().from(eaZones).where(and(eq(eaZones.auditId, parentId), isNull(eaZones.deletedAt))),
       executor.select().from(eaMainSwitchboards).where(and(eq(eaMainSwitchboards.auditId, parentId), isNull(eaMainSwitchboards.deletedAt))),
@@ -616,6 +654,7 @@ async function currentPhotoEntities(
       executor.select().from(eaHotWaterSystems).where(and(eq(eaHotWaterSystems.auditId, parentId), isNull(eaHotWaterSystems.deletedAt))),
       executor.select().from(eaGeneralWater).where(and(eq(eaGeneralWater.auditId, parentId), isNull(eaGeneralWater.deletedAt))),
       executor.select().from(eaGeneralElectricity).where(and(eq(eaGeneralElectricity.auditId, parentId), isNull(eaGeneralElectricity.deletedAt))),
+      executor.select().from(eaWaterAssets).where(and(eq(eaWaterAssets.auditId, parentId), isNull(eaWaterAssets.deletedAt))),
     ]);
     const groups: Array<{ entityType: string; records: Array<Record<string, unknown>> }> = [
       { entityType: 'zone', records: zones },
@@ -628,6 +667,7 @@ async function currentPhotoEntities(
       { entityType: 'hot_water_system', records: hotWaterSystems },
       { entityType: 'general_water', records: generalWater },
       { entityType: 'general_electricity', records: generalElectricity },
+      { entityType: 'water_asset', records: waterAssets },
     ];
     return groups.flatMap(({ entityType, records }) => records.map((record) => ({
       sourceEntityId: String(record.id),

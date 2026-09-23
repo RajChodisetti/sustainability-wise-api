@@ -113,11 +113,12 @@ export default function AuditPhotosPage() {
             const caption = p.caption?.trim() || '';
             const displayName = caption || p.fieldName || 'Photo';
             const equipmentType = EQUIPMENT_TYPES.find((candidate) => candidate.entityType === p.entityType);
+            const equipmentSlug = p.entityType === 'water_asset' ? 'water-assets' : equipmentType?.slug;
             const settingsHref = p.entityId
               ? p.entityType === 'zone'
                 ? `/ecoaudit/audits/${auditId}/zones/${p.entityId}`
-                : equipmentType
-                  ? `/ecoaudit/audits/${auditId}/equipment/${equipmentType.slug}/${p.entityId}`
+                : equipmentSlug
+                  ? `/ecoaudit/audits/${auditId}/equipment/${equipmentSlug}/${p.entityId}`
                   : null
               : null;
             return (

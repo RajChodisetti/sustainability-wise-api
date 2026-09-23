@@ -4,6 +4,7 @@ import test from 'node:test';
 import { writePhotoZip } from '../../services/photoZipExport.js';
 import {
   createEcoAuditPhotoZipEntryNamer,
+  flattenWaterAssetPhotoDescs,
   parseEcoAuditPhotoZipMode,
   resolveEcoAuditPhotoCaption,
   type EcoAuditPhotoZipContext,
@@ -208,4 +209,39 @@ test('the generated ZIP stores the complete human-readable hierarchy', async () 
   assert.ok(zip.includes(Buffer.from(
     'Building_A/Electrical_Infrastructure/MSB_1/Incoming_supply.jpg',
   )));
+});
+
+test('water asset ZIP paths preserve subtype sections and nested custom-field photo labels', () => {
+  const photoDescs = flattenWaterAssetPhotoDescs(
+    { 'photos.0': { name: 'Installation context' } },
+    JSON.stringify([{
+      id: 'leak-check',
+      question: 'Visible leak?',
+      answer: 'Yes',
+      photos: ['https://files.example/leak.jpg'],
+      photoDescs: {
+        'photos.0': { name: 'Defect point close-up', largeInPdf: true },
+      },
+    }]),
+  );
+  const context = contextFor('water_asset', 'water-1', {
+    zoneName: 'Plant Room',
+    sectionTitle: 'Water Assets / Systems',
+    itemLabel: 'Leak NW-01',
+    photoDescs,
+  });
+  const entryName = createEcoAuditPhotoZipEntryNamer(context, 'by-equipment');
+
+  assert.equal(entryName({
+    entityType: 'water_asset',
+    entityId: 'water-1',
+    fieldName: 'customFields.leak-check.photos.0',
+    originalFilename: 'IMG_1234.jpg',
+    contentType: 'image/jpeg',
+  }), 'Water_Assets_Systems/Plant_Room/Leak_NW-01/Defect_point_close-up.jpg');
+  assert.equal(resolveEcoAuditPhotoCaption(context, {
+    entityType: 'water_asset',
+    entityId: 'water-1',
+    fieldName: 'customFields.leak-check.photos.0',
+  }), 'Defect point close-up');
 });

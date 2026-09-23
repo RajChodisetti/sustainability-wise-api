@@ -12,6 +12,7 @@ export type PullResult = {
   hotWaterSystems: unknown[];
   generalWater: unknown[];
   generalElectricity: unknown[];
+  waterAssets: unknown[];
   pulledAt: string;
 };
 

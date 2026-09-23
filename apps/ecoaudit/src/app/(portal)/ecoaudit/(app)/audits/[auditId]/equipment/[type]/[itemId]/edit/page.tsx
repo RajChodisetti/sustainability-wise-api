@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { getAudit } from '@/api/audits';
 import { deleteEquipment, getEquipment, updateEquipment } from '@/api/equipment';
-import { getEquipmentConfig } from '@/lib/equipmentConfig';
+import { getEquipmentConfig, getWaterAssetConfig } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { EquipmentFormFields } from '@/components/equipment/EquipmentFormFields';
@@ -14,11 +14,11 @@ import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 
 export default function EditEquipmentPage() {
   const { auditId, type, itemId } = useParams<{ auditId: string; type: string; itemId: string }>();
-  const config = getEquipmentConfig(type!);
+  const routeConfig = getEquipmentConfig(type!);
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const itemQuery = useQuery({ queryKey: ['equipment', type, itemId], queryFn: () => getEquipment(type!, itemId!), enabled: Boolean(type && itemId) });
 
-  if (!config) return <ErrorBanner message="Unknown equipment type." />;
+  if (!routeConfig) return <ErrorBanner message="Unknown equipment type." />;
   if (itemQuery.isLoading || auditQuery.isLoading) return <Spinner />;
   if (itemQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(itemQuery.error)} />;
   if (!itemQuery.data) return <ErrorBanner message="Equipment record not found." />;
@@ -27,9 +27,9 @@ export default function EditEquipmentPage() {
     <EquipmentEditForm
       key={itemQuery.data.id}
       auditId={auditId}
-      type={type}
+      type={getWaterAssetConfig(itemQuery.data.assetType)?.slug ?? type}
       itemId={itemId}
-      config={config}
+      config={getWaterAssetConfig(itemQuery.data.assetType) ?? routeConfig}
       initialValues={itemQuery.data}
       isCompleted={auditQuery.data?.status === 'Completed'}
     />

@@ -6,7 +6,8 @@ import { getAudit } from '@/api/audits';
 import { getEquipment, updateEquipment } from '@/api/equipment';
 import { listAuditPhotos, type PhotoMeta } from '@/api/photos';
 import { getZone } from '@/api/zones';
-import { getEquipmentConfig, equipmentDisplayName } from '@/lib/equipmentConfig';
+import { getEquipmentConfig, getWaterAssetConfig, equipmentDisplayName } from '@/lib/equipmentConfig';
+import { normalizeEquipmentCustomFields } from '@/components/equipment/CustomFieldsEditor';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { PhotoMetadataManager, type PdfPhotoEntry } from '@/components/photos/PhotoMetadataManager';
 import { LinkButton } from '@/components/ui/Button';
@@ -53,7 +54,7 @@ export default function EquipmentDetailPage() {
   const { auditId, type, itemId } = useParams<{ auditId: string; type: string; itemId: string }>();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const config = getEquipmentConfig(type!);
+  const routeConfig = getEquipmentConfig(type!);
   const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
   const query = useQuery({
     queryKey: ['equipment', type, itemId],
@@ -72,10 +73,11 @@ export default function EquipmentDetailPage() {
     enabled: Boolean(zoneId),
   });
 
-  if (!config) return <ErrorBanner message="Unknown equipment type." />;
+  if (!routeConfig) return <ErrorBanner message="Unknown equipment type." />;
   if (query.isLoading || auditQuery.isLoading || (zoneId && zoneQuery.isLoading)) return <Spinner />;
   if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
   const item = query.data!;
+  const config = getWaterAssetConfig(item.assetType) ?? routeConfig;
   const zoneName = zoneQuery.data?.zoneName ?? (zoneQuery.error ? 'Zone unavailable' : 'Unzoned or unavailable');
   const isCompleted = auditQuery.data?.status === 'Completed';
 
@@ -88,14 +90,44 @@ export default function EquipmentDetailPage() {
     }
     return typeof val === 'string' && val ? [{ key: f.key, uri: val, defaultLabel: f.label }] : [];
   });
+  const customFields = normalizeEquipmentCustomFields(item.customFields);
+  const customPhotoEntries = customFields.flatMap((field, fieldIndex) => field.photos.map((uri, photoIndex) => ({
+    key: `customFields.${field.id}.photos.${photoIndex}`,
+    uri,
+    defaultLabel: field.question.trim() ? `${field.question} — Supporting Photo ${photoIndex + 1}` : `Custom Question ${fieldIndex + 1} — Supporting Photo ${photoIndex + 1}`,
+  })));
+  const customPhotoMetadata = customFields.reduce<PhotoMetadataMap>((metadata, field) => {
+    for (const [key, value] of Object.entries(field.photoDescs)) {
+      const match = /^photos\.(\d+)$/.exec(key);
+      if (match) metadata[`customFields.${field.id}.photos.${match[1]}`] = value;
+    }
+    return metadata;
+  }, {});
   const photoEntries = mergePhotoEntries(
-    fieldPhotoEntries,
     equipmentRegistryPhotoEntries(photosQuery.data?.data ?? [], item.id, fieldLabels),
+    fieldPhotoEntries,
+    customPhotoEntries,
   );
 
   async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
     try {
-      await updateEquipment(type!, itemId!, { photoDescs: normalizePhotoMetadataMap(photoDescs) });
+      const normalized = normalizePhotoMetadataMap(photoDescs);
+      const nextCustomFields = customFields.map((field) => {
+        const prefix = `customFields.${field.id}.photos.`;
+        const nested = Object.entries(normalized).reduce<PhotoMetadataMap>((metadata, [key, value]) => {
+          if (key.startsWith(prefix)) metadata[`photos.${key.slice(prefix.length)}`] = value;
+          return metadata;
+        }, {});
+        return { ...field, photoDescs: nested };
+      });
+      const topLevelPhotoDescs = Object.entries(normalized).reduce<PhotoMetadataMap>((metadata, [key, value]) => {
+        if (!key.startsWith('customFields.')) metadata[key] = value;
+        return metadata;
+      }, {});
+      await updateEquipment(type!, itemId!, {
+        photoDescs: topLevelPhotoDescs,
+        customFields: nextCustomFields,
+      });
       await queryClient.invalidateQueries({ queryKey: ['equipment', type, itemId] });
       await queryClient.invalidateQueries({ queryKey: ['audit-photos', auditId] });
       toast.success('Equipment PDF photo settings saved.');
@@ -111,9 +143,9 @@ export default function EquipmentDetailPage() {
         subtitle={`Zone: ${zoneName}`}
         actions={
           <>
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}/edit`}>Edit equipment &amp; photos</LinkButton> : null}
+            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${config.slug}/${itemId}/edit`}>Edit equipment &amp; photos</LinkButton> : null}
             {zoneId ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} variant="secondary">Open zone</LinkButton> : null}
-            <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}`} variant="secondary">Back</LinkButton>
+            <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${config.slug}`} variant="secondary">Back</LinkButton>
           </>
         }
       />
@@ -123,19 +155,34 @@ export default function EquipmentDetailPage() {
           <span>Zone: {zoneName}</span>
         </div>
         <div className="grid gap-2 md:grid-cols-2">
-          {config.fields.filter((f) => f.kind !== 'photo' && f.kind !== 'photos').map((f) => (
+          {config.fields.filter((f) => f.kind !== 'photo' && f.kind !== 'photos' && f.kind !== 'customFields'
+            && (!f.condition || f.condition.values.includes(String(item[f.condition.key] ?? '')))).map((f) => (
             <div key={f.key}>
               <p className="text-xs text-[var(--text-sub)]">{f.label}</p>
               <p className="text-sm">{String(item[f.key] ?? '—')}</p>
             </div>
           ))}
         </div>
+        {customFields.length > 0 ? (
+          <div className="mt-5 border-t border-[var(--border)] pt-4">
+            <h2 className="mb-3 font-semibold">Custom Questions</h2>
+            <div className="space-y-3">
+              {customFields.map((field, index) => (
+                <div key={field.id} className="rounded-lg border border-[var(--border)] bg-[var(--surface2)] p-3">
+                  <p className="text-xs font-bold text-[var(--text-sub)]">{field.question || `Custom Question ${index + 1}`}</p>
+                  <p className="mt-1 whitespace-pre-wrap text-sm">{field.answer || '—'}</p>
+                  {field.photos.length > 0 ? <p className="mt-2 text-xs text-[var(--text-sub)]">{field.photos.length} supporting photo{field.photos.length === 1 ? '' : 's'}</p> : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </Card>
       {photoEntries.length > 0 ? (
         <Card>
           <PhotoMetadataManager
             photos={photoEntries}
-            initialMetadata={normalizePhotoDescsRecord(item)}
+            initialMetadata={{ ...normalizePhotoDescsRecord(item), ...customPhotoMetadata }}
             completedAudit={isCompleted}
             onSave={savePhotoMetadata}
           />

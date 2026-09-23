@@ -126,6 +126,7 @@ export function PhotoGridField({
   entityId,
   entityType,
   fieldPrefix,
+  uploadFieldPrefix,
   onChange,
   photoMetadata = {},
   onPhotoMetadataChange,
@@ -137,6 +138,7 @@ export function PhotoGridField({
   entityId?: string;
   entityType?: string;
   fieldPrefix: string;
+  uploadFieldPrefix?: string;
   onChange: (uris: string[]) => void;
   photoMetadata?: PhotoMetadataMap;
   onPhotoMetadataChange?: (metadata: PhotoMetadataMap) => void;
@@ -151,7 +153,7 @@ export function PhotoGridField({
     const result = await upload({
       file,
       auditId,
-      fieldName: photoUploadFieldName(fieldPrefix, uris.length),
+      fieldName: photoUploadFieldName(uploadFieldPrefix ?? fieldPrefix, uris.length),
       entityId,
       entityType,
     });
