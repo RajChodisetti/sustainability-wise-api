@@ -323,6 +323,7 @@ PUBLIC_BASE_URL=https://api.sustainabilitywise.com.au
 DATABASE_URL=postgresql://sw_api:<password>@<private-db-host>:25060/sustainability_wise?sslmode=require
 JWT_SECRET=<openssl-rand-hex-32>
 JWT_REFRESH_SECRET=<openssl-rand-hex-32>
+ECOAUDIT_COMMAND_HMAC_SECRET=<different-stable-openssl-rand-hex-32>
 UPLOAD_CAPABILITY_SECRET=<openssl-rand-hex-32>
 FILE_CAPABILITY_SECRET=<openssl-rand-hex-32>
 ALLOW_LEGACY_UNSIGNED_UPLOADS=false

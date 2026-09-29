@@ -1,7 +1,8 @@
 import { request } from '@/api/client';
-import type { EquipmentBase } from '@/types/domain';
+import type { AuditMutationGuard, AuditWriteGuard, EquipmentBase } from '@/types/domain';
 import { getEquipmentConfig, getWaterAssetConfig, type EquipmentTypeConfig, type FieldCalculation } from '@/lib/equipmentConfig';
 import { normalizePhotoDescsRecord } from '@/lib/photoMetadata';
+import { auditMutationHeaders, auditWriteHeaders } from '@/lib/auditProtocol';
 
 type EquipmentWireRecord = EquipmentBase & { photo_descs?: unknown };
 
@@ -129,27 +130,49 @@ export async function getEquipment(slug: string, id: string): Promise<EquipmentB
   return normalizeEquipmentRecord(record, getWaterAssetConfig(record.assetType ?? record.asset_type) ?? config);
 }
 
-export async function createEquipment(slug: string, auditId: string, body: Record<string, unknown>): Promise<EquipmentBase> {
+export async function createEquipment(
+  slug: string,
+  auditId: string,
+  body: Record<string, unknown>,
+  guard: AuditWriteGuard,
+): Promise<EquipmentBase> {
   const config = getEquipmentConfig(slug);
   if (!config) throw new Error('Unknown equipment type');
   return normalizeEquipmentRecord(
-    await request<EquipmentWireRecord>('POST', basePath(config, auditId), normalizeEquipmentBody(body, config, { includeAssetType: true })),
+    await request<EquipmentWireRecord>(
+      'POST',
+      basePath(config, auditId),
+      normalizeEquipmentBody(body, config, { includeAssetType: true }),
+      { headers: auditWriteHeaders(guard) },
+    ),
     config,
   );
 }
 
-export async function updateEquipment(slug: string, id: string, body: Record<string, unknown>): Promise<EquipmentBase> {
+export async function updateEquipment(
+  slug: string,
+  id: string,
+  body: Record<string, unknown>,
+  guard: AuditMutationGuard,
+): Promise<EquipmentBase> {
   const routeConfig = getEquipmentConfig(slug);
   if (!routeConfig) throw new Error('Unknown equipment type');
   const config = getWaterAssetConfig(body.assetType) ?? routeConfig;
   return normalizeEquipmentRecord(
-    await request<EquipmentWireRecord>('PATCH', itemPath(config, id), normalizeEquipmentBody(body, config)),
+    await request<EquipmentWireRecord>(
+      'PATCH',
+      itemPath(config, id),
+      normalizeEquipmentBody(body, config),
+      { headers: auditMutationHeaders(guard) },
+    ),
     config,
   );
 }
 
-export function deleteEquipment(slug: string, id: string): Promise<void> {
+export function deleteEquipment(slug: string, id: string, guard: AuditWriteGuard): Promise<void> {
   const config = getEquipmentConfig(slug);
   if (!config) return Promise.reject(new Error('Unknown equipment type'));
-  return request<void>('DELETE', itemPath(config, id));
+  return request<void>('DELETE', itemPath(config, id), undefined, {
+    headers: auditWriteHeaders(guard),
+  });
 }

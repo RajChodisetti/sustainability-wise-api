@@ -9,6 +9,8 @@ type VersionInput = {
   entityId: string;
   snapshot: unknown;
   userId: string;
+  /** Keep version creation inside the caller's aggregate transaction. */
+  executor?: any;
 };
 
 function stableStringify(value: unknown): string {
@@ -21,7 +23,8 @@ function stableStringify(value: unknown): string {
 }
 
 export async function saveRecordVersion(input: VersionInput): Promise<number> {
-  const [latest] = await db
+  const executor = input.executor ?? db;
+  const [latest] = await executor
     .select()
     .from(recordVersions)
     .where(and(
@@ -37,7 +40,7 @@ export async function saveRecordVersion(input: VersionInput): Promise<number> {
   }
 
   const versionNumber = (latest?.versionNumber ?? 0) + 1;
-  await db.insert(recordVersions).values({
+  await executor.insert(recordVersions).values({
     id: randomUUID(),
     app: input.app,
     entityType: input.entityType,

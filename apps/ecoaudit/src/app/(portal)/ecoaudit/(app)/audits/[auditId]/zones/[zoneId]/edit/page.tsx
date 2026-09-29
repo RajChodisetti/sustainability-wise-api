@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { getAudit } from '@/api/audits';
 import { deleteZone, getZone, updateZone } from '@/api/zones';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
@@ -11,26 +10,49 @@ import { PhotoGridField } from '@/components/photos/PhotoField';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
-import type { Zone } from '@/types/domain';
+import type { AuditTree, AuditWriteGuard, Zone } from '@/types/domain';
 import { normalizePhotoDescsRecord, normalizePhotoMetadataMap } from '@/lib/photoMetadata';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
 
 export default function EditZonePage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const zoneQuery = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId) });
+  const authority = useAuditAuthority(auditId);
+  const zoneQuery = useQuery({
+    queryKey: ['zone', zoneId],
+    queryFn: () => getZone(zoneId!),
+    enabled: Boolean(zoneId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
 
-  if (zoneQuery.isLoading || auditQuery.isLoading) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || zoneQuery.isFetching) return <Spinner label="Checking editing access…" />;
   if (zoneQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zoneQuery.error)} />;
-  if (!zoneQuery.data) return <ErrorBanner message="Zone not found." />;
+  if (!zoneQuery.data || !authority.audit || !authority.state) return <ErrorBanner message="Zone not found." />;
 
   return (
-    <ZoneEditForm
-      key={zoneQuery.data.id}
-      auditId={auditId}
-      zoneId={zoneId}
-      zone={zoneQuery.data}
-      isCompleted={auditQuery.data?.status === 'Completed'}
-    />
+    <div>
+      <PageHeader title="Edit zone" actions={<LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} variant="secondary">Back</LinkButton>} />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
+      />
+      {authority.guard ? (
+        <ZoneEditForm
+          key={`${zoneQuery.data.id}-${authority.openedRevision}`}
+          auditId={auditId}
+          zoneId={zoneId}
+          zone={zoneQuery.data}
+          guard={authority.guard}
+          onMutationAccepted={authority.refreshAndAccept}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -38,12 +60,14 @@ function ZoneEditForm({
   auditId,
   zoneId,
   zone,
-  isCompleted,
+  guard,
+  onMutationAccepted,
 }: {
   auditId: string;
   zoneId: string;
   zone: Zone;
-  isCompleted: boolean;
+  guard: AuditWriteGuard;
+  onMutationAccepted: () => Promise<AuditTree | null>;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -57,11 +81,14 @@ function ZoneEditForm({
     e.preventDefault();
     setBusy(true);
     try {
-      await updateZone(zoneId!, { zoneName, zoneDescription, photos, photoDescs: normalizePhotoMetadataMap(photoDescs) });
+      await updateZone(zoneId!, { zoneName, zoneDescription, photos, photoDescs: normalizePhotoMetadataMap(photoDescs) }, guard);
+      if (!await onMutationAccepted()) {
+        throw new Error('The zone was saved, but the latest cloud revision could not be accepted. Refresh before continuing.');
+      }
       toast.success('Zone saved.');
       router.push(`/ecoaudit/audits/${auditId}/zones/${zoneId}`);
     } catch (err) {
-      toast.error(cloudConnectionErrorMessage(err));
+      toast.error(auditProtocolErrorMessage(err) ?? cloudConnectionErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -70,23 +97,24 @@ function ZoneEditForm({
   async function handleDelete() {
     if (!confirm('Delete this zone?')) return;
     try {
-      await deleteZone(zoneId!);
+      await deleteZone(zoneId!, guard);
+      if (!await onMutationAccepted()) {
+        throw new Error('The zone was deleted, but the latest cloud revision could not be accepted. Refresh before continuing.');
+      }
       toast.success('Zone deleted.');
       router.push(`/ecoaudit/audits/${auditId}`);
     } catch (err) {
-      toast.error(cloudConnectionErrorMessage(err));
+      toast.error(auditProtocolErrorMessage(err) ?? cloudConnectionErrorMessage(err));
     }
   }
 
   return (
-    <div>
-      <PageHeader title="Edit zone" actions={<LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} variant="secondary">Back</LinkButton>} />
-      <Card className="max-w-2xl">
+    <Card className="max-w-2xl">
         <form onSubmit={handleSave}>
           <FieldLabel>Zone name</FieldLabel>
-          <Input value={zoneName} onChange={(e) => setZoneName(e.target.value)} disabled={isCompleted} required />
+          <Input value={zoneName} onChange={(e) => setZoneName(e.target.value)} required />
           <FieldLabel>Description</FieldLabel>
-          <Textarea value={zoneDescription} onChange={(e) => setZoneDescription(e.target.value)} disabled={isCompleted} />
+          <Textarea value={zoneDescription} onChange={(e) => setZoneDescription(e.target.value)} />
           <div className="mt-4">
             <PhotoGridField
               label="Zone photos"
@@ -98,17 +126,14 @@ function ZoneEditForm({
               onChange={setPhotos}
               photoMetadata={photoDescs}
               onPhotoMetadataChange={setPhotoDescs}
-              disabled={isCompleted}
+              guard={guard}
             />
           </div>
-          {!isCompleted ? (
-            <div className="mt-4 flex gap-2">
-              <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
-              <Button type="button" variant="danger" onClick={() => void handleDelete()}>Delete</Button>
-            </div>
-          ) : null}
+          <div className="mt-4 flex gap-2">
+            <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button type="button" variant="danger" onClick={() => void handleDelete()}>Delete</Button>
+          </div>
         </form>
-      </Card>
-    </div>
+    </Card>
   );
 }

@@ -1,5 +1,6 @@
 import { sha256 } from 'js-sha256';
 import { checkPhoto, confirmUpload, createUploadSession, uploadPhotoBytes } from '@/api/photos';
+import type { AuditWriteGuard } from '@/types/domain';
 
 export async function uploadPhotoFile(args: {
   file: File;
@@ -7,6 +8,7 @@ export async function uploadPhotoFile(args: {
   fieldName: string;
   entityId?: string;
   entityType?: string;
+  guard: AuditWriteGuard;
 }): Promise<string> {
   const bytes = await args.file.arrayBuffer();
   const checksum = sha256(bytes);
@@ -27,11 +29,11 @@ export async function uploadPhotoFile(args: {
     fileSizeBytes: args.file.size,
     entityId: args.entityId,
     entityType: args.entityType,
-  });
+  }, args.guard);
   if (session.alreadyExists && session.remoteUrl) return session.remoteUrl;
   if (!session.uploadUrl) throw new Error('Upload URL missing');
 
   await uploadPhotoBytes(session.uploadUrl, bytes, args.file.type || 'image/jpeg');
-  const confirmed = await confirmUpload({ sessionId: session.sessionId, checksum });
+  const confirmed = await confirmUpload({ sessionId: session.sessionId, checksum }, args.guard);
   return confirmed.remoteUrl;
 }

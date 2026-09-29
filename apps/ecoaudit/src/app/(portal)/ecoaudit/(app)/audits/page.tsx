@@ -8,9 +8,19 @@ import { StatusBadge } from '@/components/ui/Badges';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { Icon } from '@/components/ui/Icon';
+import { AUDIT_REFRESH_INTERVAL_MS } from '@/hooks/useAuditAuthority';
 
 export default function AuditsPage() {
-  const query = useQuery({ queryKey: ['audits'], queryFn: listAudits });
+  const query = useQuery({
+    queryKey: ['audits'],
+    queryFn: listAudits,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: 'always',
+    refetchInterval: AUDIT_REFRESH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  });
   if (query.isLoading) return <Spinner />;
   if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
   const audits = query.data?.data ?? [];

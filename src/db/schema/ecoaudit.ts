@@ -11,6 +11,7 @@ import {
   real,
   text,
   timestamp,
+  uniqueIndex,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { businessSites } from './shared.js';
@@ -58,6 +59,16 @@ export const eaAudits = pgTable('ea_audits', {
   inspectorName: text('inspector_name').notNull(),
   auditDate: text('audit_date'),
   status: text('status').notNull().default('Draft'),
+  /** Monotonic compare-and-swap fence for the complete audit aggregate. */
+  treeRevision: integer('tree_revision').notNull().default(0),
+  /** Latest immutable record_versions snapshot pinned for this audit. */
+  recordVersionNumber: integer('record_version_number').notNull().default(0),
+  /** Monotonic ownership fence. It survives lease release and token rotation. */
+  editFence: integer('edit_fence').notNull().default(0),
+  copiedFromAuditId: text('copied_from_audit_id'),
+  copiedFromRecordVersionNumber: integer('copied_from_record_version_number'),
+  lineageRootAuditId: text('lineage_root_audit_id'),
+  copyPurpose: text('copy_purpose'),
   reportPdfLocalPath: text('report_pdf_local_path'),
   reportPdfRemoteUrl: text('report_pdf_remote_url'),
   createdByUserId: text('created_by_user_id'),
@@ -73,6 +84,23 @@ export const eaAudits = pgTable('ea_audits', {
     ${table.status} = 'Completed' AND ${table.completedAt} IS NULL
   `),
   index('ea_audits_business_site_idx').on(table.businessSiteId, table.updatedAt),
+  index('ea_audits_copied_from_idx').on(table.copiedFromAuditId),
+  index('ea_audits_lineage_root_idx').on(table.lineageRootAuditId, table.updatedAt),
+  check('ea_audits_tree_revision_check', sql`${table.treeRevision} >= 0`),
+  check('ea_audits_record_version_check', sql`${table.recordVersionNumber} >= 0`),
+  check('ea_audits_edit_fence_check', sql`${table.editFence} >= 0`),
+  check('ea_audits_copy_purpose_check', sql`
+    ${table.copyPurpose} IS NULL OR ${table.copyPurpose} IN ('independent', 'amendment')
+  `),
+  check('ea_audits_copy_provenance_check', sql`
+    (${table.copiedFromAuditId} IS NULL
+      AND ${table.copiedFromRecordVersionNumber} IS NULL
+      AND ${table.copyPurpose} IS NULL)
+    OR (${table.copiedFromAuditId} IS NOT NULL
+      AND ${table.copiedFromRecordVersionNumber} IS NOT NULL
+      AND ${table.copiedFromRecordVersionNumber} >= 1
+      AND ${table.copyPurpose} IS NOT NULL)
+  `),
   check('ea_audits_client_name_check', sql`
     ${table.clientName} IS NULL
     OR char_length(btrim(${table.clientName})) BETWEEN 1 AND 300
@@ -109,6 +137,111 @@ export const eaAudits = pgTable('ea_audits', {
   check('ea_audits_site_address_fingerprint_check', sql`
     ${table.siteAddressFingerprint} IS NULL
     OR ${table.siteAddressFingerprint} ~ '^[0-9a-f]{64}$'
+  `),
+]);
+
+/**
+ * The one active EcoAudit editor. The opaque bearer token is stored only as a
+ * SHA-256 digest; editFence on ea_audits prevents delayed tokens from becoming
+ * valid again after release, completion, or an explicit takeover.
+ */
+export const eaAuditEditLeases = pgTable('ea_audit_edit_leases', {
+  auditId: text('audit_id')
+    .primaryKey()
+    .references(() => eaAudits.id, { onDelete: 'cascade' }),
+  fence: integer('fence').notNull(),
+  ownerUserId: text('owner_user_id').notNull(),
+  clientInstanceId: text('client_instance_id').notNull(),
+  clientKind: text('client_kind').notNull(),
+  clientLabel: text('client_label'),
+  tokenHash: text('token_hash').notNull(),
+  acquiredAt: timestamp('acquired_at').notNull().defaultNow(),
+  lastSeenAt: timestamp('last_seen_at').notNull().defaultNow(),
+  expiresAt: timestamp('expires_at').notNull(),
+}, (table) => [
+  index('ea_audit_edit_leases_owner_idx').on(
+    table.ownerUserId,
+    table.clientInstanceId,
+  ),
+  index('ea_audit_edit_leases_expiry_idx').on(table.expiresAt),
+  check('ea_audit_edit_leases_fence_check', sql`${table.fence} > 0`),
+  check('ea_audit_edit_leases_client_kind_check', sql`
+    ${table.clientKind} IN ('mobile', 'portal')
+  `),
+]);
+
+/** Durable provenance for ownership changes and recovery actions. */
+export const eaAuditEditLeaseEvents = pgTable('ea_audit_edit_lease_events', {
+  id: text('id').primaryKey(),
+  // Intentionally not a foreign key: ownership history must survive the
+  // deliberate hard purge of the mutable audit aggregate.
+  auditId: text('audit_id').notNull(),
+  fence: integer('fence').notNull(),
+  eventType: text('event_type').notNull(),
+  actorUserId: text('actor_user_id').notNull(),
+  clientInstanceId: text('client_instance_id').notNull(),
+  clientKind: text('client_kind').notNull(),
+  previousOwnerUserId: text('previous_owner_user_id'),
+  previousClientInstanceId: text('previous_client_instance_id'),
+  reason: text('reason'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  index('ea_audit_edit_lease_events_audit_idx').on(table.auditId, table.createdAt),
+  check('ea_audit_edit_lease_events_fence_check', sql`${table.fence} > 0`),
+  check('ea_audit_edit_lease_events_type_check', sql`
+    ${table.eventType} IN ('acquired', 'reissued', 'released', 'taken_over', 'completed')
+  `),
+  check('ea_audit_edit_lease_events_client_kind_check', sql`
+    ${table.clientKind} IN ('mobile', 'portal')
+  `),
+]);
+
+/**
+ * Permanent, non-secret evidence that an audit identifier was deliberately
+ * hard-purged. Deterministic create retries must never resurrect that ID.
+ */
+export const eaAuditPurgeTombstones = pgTable('ea_audit_purge_tombstones', {
+  auditId: text('audit_id').primaryKey(),
+  purgedByUserId: text('purged_by_user_id').notNull(),
+  lastTreeRevision: integer('last_tree_revision').notNull(),
+  lastEditFence: integer('last_edit_fence').notNull(),
+  purgedAt: timestamp('purged_at').notNull().defaultNow(),
+}, (table) => [
+  index('ea_audit_purge_tombstones_purged_at_idx').on(table.purgedAt),
+  check('ea_audit_purge_tombstones_revision_check', sql`
+    ${table.lastTreeRevision} >= 0 AND ${table.lastEditFence} >= 0
+  `),
+]);
+
+/** Idempotent aggregate commands (sync, completion, and copy/amendment). */
+export const eaAuditIdempotency = pgTable('ea_audit_idempotency', {
+  id: text('id').primaryKey(),
+  auditId: text('audit_id')
+    .notNull()
+    .references(() => eaAudits.id, { onDelete: 'cascade' }),
+  operation: text('operation').notNull(),
+  actorUserId: text('actor_user_id').notNull(),
+  clientInstanceId: text('client_instance_id').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  requestFingerprint: text('request_fingerprint').notNull(),
+  baseTreeRevision: integer('base_tree_revision').notNull(),
+  resultingTreeRevision: integer('resulting_tree_revision').notNull(),
+  recordVersionNumber: integer('record_version_number').notNull(),
+  result: jsonb('result').notNull().$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('ea_audit_idempotency_scope_unique').on(
+    table.auditId,
+    table.operation,
+    table.actorUserId,
+    table.clientInstanceId,
+    table.idempotencyKey,
+  ),
+  index('ea_audit_idempotency_audit_idx').on(table.auditId, table.createdAt),
+  check('ea_audit_idempotency_revision_check', sql`
+    ${table.baseTreeRevision} >= 0
+    AND ${table.resultingTreeRevision} >= 0
+    AND ${table.recordVersionNumber} >= 0
   `),
 ]);
 

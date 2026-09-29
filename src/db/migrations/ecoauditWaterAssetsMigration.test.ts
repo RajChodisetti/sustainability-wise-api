@@ -36,11 +36,13 @@ test('creates the canonical EcoAudit water asset table and subtype constraint', 
   assert.match(sql, /jsonb_typeof\("custom_fields"\) = 'array'/);
   assert.match(sql, /CREATE INDEX "ea_water_assets_audit_idx"/);
   assert.match(sql, /CREATE INDEX "ea_water_assets_zone_idx"/);
-  assert.deepEqual(journal.entries.at(-1), {
+  const entry = journal.entries.find(({ idx }) => idx === 62);
+  assert.deepEqual(entry, {
     idx: 62,
     version: '7',
     when: 1790102209000,
     tag: '0062_ecoaudit_water_assets',
     breakpoints: true,
   });
+  assert.ok(journal.entries.some(({ idx }) => idx > 62), 'later migrations remain append-only');
 });

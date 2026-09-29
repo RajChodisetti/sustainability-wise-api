@@ -9,7 +9,6 @@ import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { slugify } from '@/lib/download';
 import { useExportJob } from '@/hooks/useExportJob';
-import { getAudit } from '@/api/audits';
 import { PhotoThumb } from '@/components/photos/PhotoThumb';
 import { ExportJobStatus } from '@/components/exports/ExportJobStatus';
 import { Button, LinkButton } from '@/components/ui/Button';
@@ -17,24 +16,33 @@ import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components
 import { FieldLabel, Select } from '@/components/ui/FormFields';
 import { Icon } from '@/components/ui/Icon';
 import { EQUIPMENT_TYPES } from '@/lib/equipmentConfig';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
 
 export default function AuditPhotosPage() {
   const { auditId } = useParams<{ auditId: string }>();
   const toast = useToast();
   const [zipMode, setZipMode] = useState<PhotoZipMode>('by-zone');
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const photosQuery = useQuery({ queryKey: ['audit-photos', auditId], queryFn: () => listAuditPhotos(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const photosQuery = useQuery({
+    queryKey: ['audit-photos', auditId],
+    queryFn: () => listAuditPhotos(auditId!),
+    enabled: Boolean(auditId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const zipJob = useExportJob({
     scopeKey: ['ecoaudit', auditId ?? '', 'photos-zip'],
     loadLatest: () => getLatestExportJob(auditId!, 'photos-zip'),
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id, job.contentType),
-    fallbackFilename: `${slugify(auditQuery.data?.siteName ?? 'audit')}-${zipMode === 'by-zone' ? 'zone' : 'equipment'}-photos.zip`,
+    fallbackFilename: `${slugify(authority.audit?.siteName ?? 'audit')}-${zipMode === 'by-zone' ? 'zone' : 'equipment'}-photos.zip`,
   });
 
-  if (photosQuery.isLoading || auditQuery.isLoading) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || photosQuery.isLoading) return <Spinner label="Checking the latest cloud audit…" />;
   if (photosQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(photosQuery.error)} />;
-  if (auditQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(auditQuery.error)} />;
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
   const photos = photosQuery.data?.data ?? [];
 
   async function handleExport() {
@@ -82,6 +90,14 @@ export default function AuditPhotosPage() {
             <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>
           </>
         }
+      />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        completedPhotoMetadataEditable={Boolean(authority.photoMetadataGuard)}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
       />
       <div className="mb-5 max-w-xs">
         <FieldLabel htmlFor="zip-folder-mode">ZIP folder structure</FieldLabel>
@@ -131,7 +147,7 @@ export default function AuditPhotosPage() {
                 <p className="mt-0.5 break-all text-xs text-[var(--muted)]">{p.originalFilename}</p>
                 {settingsHref ? (
                   <LinkButton href={settingsHref} variant="secondary" className="mt-3 w-full !px-3 !text-xs">
-                    Edit PDF caption &amp; size
+                    {authority.guard || authority.photoMetadataGuard ? 'Edit' : 'View'} PDF caption &amp; size
                   </LinkButton>
                 ) : null}
               </Card>

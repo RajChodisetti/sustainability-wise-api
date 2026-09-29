@@ -85,7 +85,7 @@ const fixtureCategories = [
   'Combi Oven / Steamer',
   'Ice Machine',
   'Zip Tap / Boiling Unit',
-  'Pre-Rinse Spray Valve',
+  'Other',
 ];
 
 const systemCategories = [
@@ -95,12 +95,38 @@ const systemCategories = [
   'Process Cooling & Industrial Equipment',
   'Dust Suppression / Truck Standpipe',
   'Network Leak / Pipework Defect',
+  'Other',
 ];
+
+/** Preserve historical values while keeping them out of new-entry lists. */
+export function legacyEquipmentSelectValue(
+  options: readonly string[] | undefined,
+  value: unknown,
+): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return options?.includes(value) ? null : value;
+}
 
 const whenCategory = (...values: string[]): FieldCondition => ({ key: 'category', values });
 const yesNo = ['Yes', 'No'];
 
-export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
+const EQUIPMENT_DISPLAY_ORDER = [
+  'main-switchboards',
+  'additional-switchboards',
+  'hvac-units',
+  'lighting-systems',
+  'solar-pv',
+  'forklift-chargers',
+  'general-electricity',
+  'hot-water-systems',
+  'water-meters',
+  'water-submeters-loggers',
+  'water-fixtures',
+  'water-assets-systems',
+  'general-water',
+] as const;
+
+const EQUIPMENT_TYPE_DEFINITIONS: EquipmentTypeConfig[] = [
   {
     slug: 'main-switchboards',
     label: 'Main Switchboards',
@@ -313,7 +339,7 @@ export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
     fields: [
       waterRoot('name', 'Submeter / Logger Tag ID', 'text'),
       waterData('connectedToBms', 'Connected To BMS?', 'select', ['Yes', 'No', 'Dry-contact available']),
-      waterData('dataLoggerFitted', 'Data Logger Fitted?', 'select', ['None', 'Wattwatchers', 'Kallipr', 'Outpost', 'EDMI', 'Other']),
+      waterData('dataLoggerFitted', 'Data Logger Fitted?', 'select', ['None', 'SUMS', 'Kallipr', 'Outpost', 'Other']),
       waterData('dataLoggerOther', 'Other Data Logger', 'text', undefined, { key: 'dataLoggerFitted', values: ['Other'] }),
       waterData('loggerSerial', 'Logger Serial'),
       waterData('pulseWeight', 'Pulse Weight', 'text'),
@@ -520,6 +546,11 @@ export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [
     ],
   },
 ];
+
+export const EQUIPMENT_TYPES: EquipmentTypeConfig[] = [...EQUIPMENT_TYPE_DEFINITIONS].sort((left, right) => (
+  EQUIPMENT_DISPLAY_ORDER.indexOf(left.slug as typeof EQUIPMENT_DISPLAY_ORDER[number])
+  - EQUIPMENT_DISPLAY_ORDER.indexOf(right.slug as typeof EQUIPMENT_DISPLAY_ORDER[number])
+));
 
 const WATER_ASSET_AGGREGATE_CONFIG: EquipmentTypeConfig = {
   slug: 'water-assets',

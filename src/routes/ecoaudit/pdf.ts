@@ -32,10 +32,16 @@ import { renderPdf } from '../../pdf/renderer.js';
 import { renderPdfEquipmentIcon } from '../../pdf/equipmentIcons.js';
 import { mergePdfBuffers } from '../../pdf/merge.js';
 import { prepareCompressedPdfPhotos } from '../../pdf/photoCompression.js';
-import { publicFileUrl, sanitizeStorageSegment, writeLocalFile } from '../../storage/localFiles.js';
+import {
+  deleteLocalFile,
+  publicFileUrl,
+  sanitizeStorageSegment,
+  writeLocalFile,
+} from '../../storage/localFiles.js';
 import { mirrorPdfToOneDrive } from '../../onedrive/photoBackup.js';
 import { makePdfStorageKeyFromName } from '../../services/storageNaming.js';
 import { assertAuditAccess, assertFound } from './helpers.js';
+import { conflict } from '../../utils/errors.js';
 import {
   loadCurrentPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
@@ -1163,10 +1169,10 @@ function byEquipmentBody(args: BodyArgs): string {
     + (lightList.length ? `${secHeader('3', 'Lighting Systems')}${lightList.map((l) => renderLight(l, photosForEntity(photos, l.id, l.photoDescs), zoneMap)).join('')}` : '')
     + (solarList.length ? `${secHeader('4', 'Solar PV Infrastructure')}${solarList.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap)).join('')}` : '')
     + (forkliftList.length ? `${secHeader('5', 'Forklift Charging')}${forkliftList.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap)).join('')}` : '')
-    + (hotWaterList.length ? `${secHeader('6', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap)).join('')}` : '')
+    + (genElecList.length ? `${secHeader('6', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
+    + (hotWaterList.length ? `${secHeader('7', 'Hot Water Systems')}${hotWaterList.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap)).join('')}` : '')
     + renderWaterAssetsByEquipment(waterAssetList, photos, zoneMap)
-    + (genWaterList.length ? `${secHeader('7', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
-    + (genElecList.length ? `${secHeader('8', 'General Electricity')}${genElecList.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
+    + (genWaterList.length ? `${secHeader('8', 'General Water')}${genWaterList.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap)).join('')}` : '')
     + observationsBody(hvacList, lightList, solarList, forkliftList, hotWaterList, consolidatedObservations);
 }
 
@@ -1234,10 +1240,10 @@ function byZoneBody(args: BodyArgs): string {
       ${zone.zLight.length ? `<div class="zone-type-label">Lighting Systems</div>${zone.zLight.map((l) => renderLight(l, photosForEntity(photos, l.id, l.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zSolar.length ? `<div class="zone-type-label">Solar PV</div>${zone.zSolar.map((s) => renderSolar(s, photosForEntity(photos, s.id, s.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zFork.length ? `<div class="zone-type-label">Forklift Charging</div>${zone.zFork.map((f) => renderForklift(f, photosForEntity(photos, f.id, f.photoDescs), zoneMap, false)).join('')}` : ''}
+      ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
       ${zone.zHw.length ? `<div class="zone-type-label">Hot Water</div>${zone.zHw.map((h) => renderHotWater(h, photosForEntity(photos, h.id, h.photoDescs), zoneMap, false)).join('')}` : ''}
       ${renderWaterAssetsInZone(zone.zWaterAssets, photos, zoneMap)}
       ${zone.zGw.length ? `<div class="zone-type-label">General Water</div>${zone.zGw.map((g, i) => renderGenWater(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
-      ${zone.zGe.length ? `<div class="zone-type-label">General Electricity</div>${zone.zGe.map((g, i) => renderGenElec(g, i, photosForEntity(photos, g.id, g.photoDescs), zoneMap, false)).join('')}` : ''}
     </div>`;
   }).join('');
 }
@@ -1644,6 +1650,105 @@ function zoneScopedWhere<T extends { auditId: unknown; deletedAt: unknown; zoneI
   return and(...conditions);
 }
 
+async function loadEcoAuditReportSnapshot(
+  auditId: string,
+  requestedZoneIds: string[],
+  requestedZoneOrder: string[],
+) {
+  return db.transaction(async (tx) => {
+    const [audit] = await tx.select().from(eaAudits)
+      .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
+    const foundAudit = assertFound(audit, 'Audit');
+
+    const zoneConditions = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
+    if (requestedZoneIds.length > 0) {
+      zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
+    }
+    const zoneRows = await tx.select().from(eaZones)
+      .where(and(...zoneConditions))
+      .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
+    const zones = orderReportZones(
+      zoneRows,
+      requestedZoneOrder.length > 0 ? requestedZoneOrder : requestedZoneIds,
+    );
+    const selectedZoneIds = requestedZoneIds.length > 0
+      ? zones.map((zone) => zone.id)
+      : [];
+    const restrictToZones = requestedZoneIds.length > 0;
+
+    const [
+      mainSwitchboards,
+      additionalSwitchboards,
+      hvacUnits,
+      lightingSystems,
+      solarPv,
+      forkliftChargers,
+      hotWaterSystems,
+      waterAssets,
+      generalWater,
+      generalElectricity,
+      photos,
+    ] = await Promise.all([
+      tx.select().from(eaMainSwitchboards).where(zoneScopedWhere(eaMainSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaAdditionalSwitchboards).where(zoneScopedWhere(eaAdditionalSwitchboards, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaHvacUnits).where(zoneScopedWhere(eaHvacUnits, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaLightingSystems).where(zoneScopedWhere(eaLightingSystems, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaWaterAssets).where(zoneScopedWhere(eaWaterAssets, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
+      tx.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
+      loadCurrentPhotosForParent({
+        app: 'ecoaudit',
+        parentId: auditId,
+        executor: tx as unknown as typeof db,
+      }),
+    ]);
+
+    return {
+      audit: foundAudit,
+      sourceTreeRevision: foundAudit.treeRevision,
+      zones,
+      mainSwitchboards,
+      additionalSwitchboards,
+      hvacUnits,
+      lightingSystems,
+      solarPv,
+      forkliftChargers,
+      hotWaterSystems,
+      waterAssets,
+      generalWater,
+      generalElectricity,
+      photos,
+    };
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+}
+
+export function ecoAuditReportPointerValues(storageKey: string, remoteUrl: string) {
+  return {
+    reportPdfLocalPath: storageKey,
+    reportPdfRemoteUrl: remoteUrl,
+  };
+}
+
+async function publishEcoAuditReportPointer(input: {
+  auditId: string;
+  sourceTreeRevision: number;
+  storageKey: string;
+  remoteUrl: string;
+}): Promise<void> {
+  const [published] = await db.update(eaAudits)
+    .set(ecoAuditReportPointerValues(input.storageKey, input.remoteUrl))
+    .where(and(
+      eq(eaAudits.id, input.auditId),
+      isNull(eaAudits.deletedAt),
+      eq(eaAudits.treeRevision, input.sourceTreeRevision),
+    ))
+    .returning({ id: eaAudits.id });
+  if (!published) throw conflict('audit_report_source_revision_changed');
+}
+
 // ── Route handler ─────────────────────────────────────────────────────────────────
 async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   const { auditId } = request.params as { auditId: string };
@@ -1656,31 +1761,19 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   const requestedZoneIds = normalizeReportIdList(body.zoneIds);
   const requestedZoneOrder = normalizeReportIdList(body.zoneOrder);
 
-  const [audit] = await db
-    .select()
-    .from(eaAudits)
+  const [accessibleAudit] = await db.select().from(eaAudits)
     .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-  const foundAudit = assertFound(audit, 'Audit');
-  assertAuditAccess(foundAudit, request.user);
+  assertAuditAccess(assertFound(accessibleAudit, 'Audit'), request.user);
   await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: request.user });
-
-  const zoneConditions = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
-  if (requestedZoneIds.length > 0) {
-    zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
-  }
-
-  const zoneRows = await db.select().from(eaZones)
-    .where(and(...zoneConditions))
-    .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
-  const zones = orderReportZones(
-    zoneRows,
-    requestedZoneOrder.length > 0 ? requestedZoneOrder : requestedZoneIds,
+  const snapshot = await loadEcoAuditReportSnapshot(
+    auditId,
+    requestedZoneIds,
+    requestedZoneOrder,
   );
-  const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((zone) => zone.id) : [];
-  const restrictToZones = requestedZoneIds.length > 0;
-  const orderedZoneIds = zones.map((zone) => zone.id);
-
-  const [
+  const {
+    audit: foundAudit,
+    sourceTreeRevision,
+    zones,
     mainSwitchboards,
     additionalSwitchboards,
     hvacUnits,
@@ -1692,19 +1785,9 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     generalWater,
     generalElectricity,
     photos,
-  ] = await Promise.all([
-    db.select().from(eaMainSwitchboards).where(zoneScopedWhere(eaMainSwitchboards, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaAdditionalSwitchboards).where(zoneScopedWhere(eaAdditionalSwitchboards, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaHvacUnits).where(zoneScopedWhere(eaHvacUnits, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaLightingSystems).where(zoneScopedWhere(eaLightingSystems, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaWaterAssets).where(zoneScopedWhere(eaWaterAssets, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
-  ]);
+  } = snapshot;
+  assertAuditAccess(foundAudit, request.user);
+  const orderedZoneIds = zones.map((zone) => zone.id);
 
   const allowedPhotoEntityIds = new Set([
     ...zones.map((zone) => zone.id),
@@ -1759,6 +1842,17 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
   });
   await writeLocalFile(storageKey, pdf);
   const remoteUrl = publicFileUrl(storageKey);
+  try {
+    await publishEcoAuditReportPointer({
+      auditId,
+      sourceTreeRevision,
+      storageKey,
+      remoteUrl,
+    });
+  } catch (error) {
+    await deleteLocalFile(storageKey);
+    throw error;
+  }
   await mirrorPdfToOneDrive({
     app: 'ecoaudit',
     parentId: auditId,
@@ -1768,11 +1862,6 @@ async function handleEcoAuditPdf(request: FastifyRequest, reply: FastifyReply) {
     body: pdf,
     logger: request.log,
   });
-
-  await db
-    .update(eaAudits)
-    .set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() })
-    .where(eq(eaAudits.id, auditId));
 
   return reply
     .header('Content-Disposition', `attachment; filename="ecoaudit-${auditId}.pdf"`)
@@ -1791,33 +1880,21 @@ export async function runEcoAuditPdfJob(
 ): Promise<{ storageKey: string; remoteUrl: string }> {
   await onPhase?.('Fetching audit data…');
 
-  const [audit] = await db
-    .select()
-    .from(eaAudits)
-    .where(and(eq(eaAudits.id, auditId), isNull(eaAudits.deletedAt)));
-  if (!audit) throw new Error('Audit not found');
   // Background jobs have no authenticated actor. They may remap an existing
   // trusted grant, but reconciliation cannot create a new generic grant here.
   await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId });
 
   const requestedZoneIds = normalizeReportIdList(zoneIds);
   const requestedZoneOrder = normalizeReportIdList(zoneOrder);
-  const zoneConditions: ReturnType<typeof eq>[] = [eq(eaZones.auditId, auditId), isNull(eaZones.deletedAt)];
-  if (requestedZoneIds.length > 0) {
-    zoneConditions.push(inArray(eaZones.id, requestedZoneIds));
-  }
-  const zoneRows = await db.select().from(eaZones)
-    .where(and(...zoneConditions))
-    .orderBy(asc(eaZones.createdAt), asc(eaZones.id));
-  const zones = orderReportZones(
-    zoneRows,
-    requestedZoneOrder.length > 0 ? requestedZoneOrder : requestedZoneIds,
+  const snapshot = await loadEcoAuditReportSnapshot(
+    auditId,
+    requestedZoneIds,
+    requestedZoneOrder,
   );
-  const selectedZoneIds = requestedZoneIds.length > 0 ? zones.map((z) => z.id) : [];
-  const restrictToZones = requestedZoneIds.length > 0;
-  const orderedZoneIds = zones.map((zone) => zone.id);
-
-  const [
+  const {
+    audit,
+    sourceTreeRevision,
+    zones,
     mainSwitchboards,
     additionalSwitchboards,
     hvacUnits,
@@ -1829,19 +1906,8 @@ export async function runEcoAuditPdfJob(
     generalWater,
     generalElectricity,
     photos,
-  ] = await Promise.all([
-    db.select().from(eaMainSwitchboards).where(zoneScopedWhere(eaMainSwitchboards, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaAdditionalSwitchboards).where(zoneScopedWhere(eaAdditionalSwitchboards, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaHvacUnits).where(zoneScopedWhere(eaHvacUnits, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaLightingSystems).where(zoneScopedWhere(eaLightingSystems, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaSolarPv).where(zoneScopedWhere(eaSolarPv, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaForkliftChargers).where(zoneScopedWhere(eaForkliftChargers, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaHotWaterSystems).where(zoneScopedWhere(eaHotWaterSystems, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaWaterAssets).where(zoneScopedWhere(eaWaterAssets, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaGeneralWater).where(zoneScopedWhere(eaGeneralWater, auditId, selectedZoneIds, restrictToZones)),
-    db.select().from(eaGeneralElectricity).where(zoneScopedWhere(eaGeneralElectricity, auditId, selectedZoneIds, restrictToZones)),
-    loadCurrentPhotosForParent({ app: 'ecoaudit', parentId: auditId }),
-  ]);
+  } = snapshot;
+  const orderedZoneIds = zones.map((zone) => zone.id);
 
   const allowedPhotoEntityIds = new Set([
     ...zones.map((z) => z.id),
@@ -1901,6 +1967,17 @@ export async function runEcoAuditPdfJob(
   });
   await writeLocalFile(storageKey, pdf);
   const remoteUrl = publicFileUrl(storageKey);
+  try {
+    await publishEcoAuditReportPointer({
+      auditId,
+      sourceTreeRevision,
+      storageKey,
+      remoteUrl,
+    });
+  } catch (error) {
+    await deleteLocalFile(storageKey);
+    throw error;
+  }
   await mirrorPdfToOneDrive({
     app: 'ecoaudit',
     parentId: auditId,
@@ -1909,11 +1986,6 @@ export async function runEcoAuditPdfJob(
     storageKey,
     body: pdf,
   });
-
-  await db
-    .update(eaAudits)
-    .set({ reportPdfLocalPath: storageKey, reportPdfRemoteUrl: remoteUrl, updatedAt: new Date() })
-    .where(eq(eaAudits.id, auditId));
 
   return { storageKey, remoteUrl };
 }

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
 import { PhotoGridField } from '@/components/photos/PhotoField';
 import { normalizePhotoMetadataMap, type PhotoMetadataMap } from '@/lib/photoMetadata';
+import type { AuditWriteGuard } from '@/types/domain';
 
 export type EquipmentCustomField = {
   id: string;
@@ -44,6 +45,7 @@ export function CustomFieldsEditor({
   entityId,
   entityType,
   disabled,
+  guard,
 }: {
   value: unknown;
   onChange: (value: EquipmentCustomField[]) => void;
@@ -51,6 +53,7 @@ export function CustomFieldsEditor({
   entityId?: string;
   entityType?: string;
   disabled?: boolean;
+  guard: AuditWriteGuard;
 }) {
   const fields = normalizeEquipmentCustomFields(value);
 
@@ -103,6 +106,7 @@ export function CustomFieldsEditor({
               photoMetadata={field.photoDescs}
               onPhotoMetadataChange={(photoDescs) => update(index, { photoDescs })}
               disabled={disabled}
+              guard={guard}
             />
           </div>
         </section>

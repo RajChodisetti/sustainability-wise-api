@@ -14,6 +14,24 @@ function optional(name: string, fallback = ''): string {
   return process.env[name] ?? fallback;
 }
 
+export function parseEcoAuditCommandHmacSecret(
+  value: string | undefined,
+  jwtSecret: string,
+  jwtRefreshSecret: string,
+): string {
+  const secret = value?.trim() ?? '';
+  if (!secret) {
+    throw new Error('Missing required environment variable: ECOAUDIT_COMMAND_HMAC_SECRET');
+  }
+  if (secret.length < 32) {
+    throw new Error('ECOAUDIT_COMMAND_HMAC_SECRET must contain at least 32 characters');
+  }
+  if (secret === jwtSecret || secret === jwtRefreshSecret) {
+    throw new Error('ECOAUDIT_COMMAND_HMAC_SECRET must be distinct from JWT secrets');
+  }
+  return secret;
+}
+
 function optionalBool(name: string, fallback: boolean): boolean {
   const value = process.env[name];
   if (value === undefined) return fallback;
@@ -142,6 +160,18 @@ export function parseFileCapabilityTtlSeconds(value: string | undefined): number
   return parsed;
 }
 
+export function parseEcoAuditEditLeaseTtlSeconds(value: string | undefined): number {
+  if (value === undefined) return 72 * 60 * 60;
+  if (!/^\d+$/.test(value)) {
+    throw new Error('ECOAUDIT_EDIT_LEASE_TTL_SECONDS must be an integer between 900 and 2592000');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 15 * 60 || parsed > 30 * 24 * 60 * 60) {
+    throw new Error('ECOAUDIT_EDIT_LEASE_TTL_SECONDS must be an integer between 900 and 2592000');
+  }
+  return parsed;
+}
+
 export function parseSchedulerInvoiceGstRate(value: string | undefined): number {
   const parsed = Number(value ?? '0.10');
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
@@ -247,6 +277,14 @@ const defaultPublicBaseUrl =
 const publicBaseUrl = optional('PUBLIC_BASE_URL', defaultPublicBaseUrl).replace(/\/$/, '');
 const allowInsecurePublicBaseUrl = optionalBool('ALLOW_INSECURE_PUBLIC_BASE_URL', false);
 const jwtSecret = required('JWT_SECRET');
+const jwtRefreshSecret = required('JWT_REFRESH_SECRET');
+// Stable across JWT signing-key rotation: delayed exact create/copy/acquire
+// retries must recover the same initial lease token.
+const ecoauditCommandHmacSecret = parseEcoAuditCommandHmacSecret(
+  process.env.ECOAUDIT_COMMAND_HMAC_SECRET,
+  jwtSecret,
+  jwtRefreshSecret,
+);
 // JWT_SECRET fallback keeps mixed-version rollbacks bootable. Production should
 // configure a distinct UPLOAD_CAPABILITY_SECRET.
 const uploadCapabilitySecret = optional('UPLOAD_CAPABILITY_SECRET', jwtSecret);
@@ -455,6 +493,16 @@ export const config = {
     'INSTALLHUB_UPLOAD_REVISION_CAS_REQUIRED',
     !isProduction,
   ),
+  // Roll out the additive lease/revision protocol API-first. Once the updated
+  // portal and minimum mobile build are deployed this flag closes legacy write
+  // paths while leaving all reads backward compatible.
+  ecoauditEditProtocolRequired: optionalBool(
+    'ECOAUDIT_EDIT_PROTOCOL_REQUIRED',
+    false,
+  ),
+  ecoauditEditLeaseTtlSeconds: parseEcoAuditEditLeaseTtlSeconds(
+    process.env.ECOAUDIT_EDIT_LEASE_TTL_SECONDS,
+  ),
   /** Seller branding + GST for InstallHub tax invoices. */
   installhubInvoice: {
     sellerName: optional('IH_INVOICE_SELLER_NAME', 'Sustainability Wise'),
@@ -583,7 +631,8 @@ export const config = {
   },
   databaseUrl: required('DATABASE_URL'),
   jwtSecret,
-  jwtRefreshSecret: required('JWT_REFRESH_SECRET'),
+  ecoauditCommandHmacSecret,
+  jwtRefreshSecret,
   uploadCapability: {
     secret: uploadCapabilitySecret,
     ttlSeconds: uploadCapabilityTtlSeconds,

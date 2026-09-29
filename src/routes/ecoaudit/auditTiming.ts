@@ -20,6 +20,21 @@ export function resolveReopenTiming(audit: Partial<AuditTiming>): AuditTiming {
   };
 }
 
+/**
+ * Legacy reopen is available only for audits that have never participated in
+ * the v2 edit protocol. Keep its fence unchanged so reopening does not
+ * accidentally opt the audit into v2 without also issuing an edit lease.
+ */
+export function resolveLegacyReopenMutation(
+  audit: Partial<AuditTiming> & { editFence: number },
+): AuditTiming & { status: 'Draft'; editFence: number } {
+  return {
+    status: 'Draft',
+    ...resolveReopenTiming(audit),
+    editFence: audit.editFence,
+  };
+}
+
 export function resolveSyncedAuditTiming(input: {
   status: string;
   incomingStartedAt: Date | null;

@@ -2,7 +2,6 @@
 
 import { useParams } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { getAudit } from '@/api/audits';
 import { getEquipment, updateEquipment } from '@/api/equipment';
 import { listAuditPhotos, type PhotoMeta } from '@/api/photos';
 import { getZone } from '@/api/zones';
@@ -22,6 +21,9 @@ import {
   photoMetadataKeyFromUploadField,
   type PhotoMetadataMap,
 } from '@/lib/photoMetadata';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
 
 function mergePhotoEntries(...entryGroups: PdfPhotoEntry[][]): PdfPhotoEntry[] {
   const byKey = new Map<string, PdfPhotoEntry>();
@@ -55,31 +57,39 @@ export default function EquipmentDetailPage() {
   const queryClient = useQueryClient();
   const toast = useToast();
   const routeConfig = getEquipmentConfig(type!);
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const photoMetadataGuard = authority.guard ?? authority.photoMetadataGuard;
   const query = useQuery({
     queryKey: ['equipment', type, itemId],
     queryFn: () => getEquipment(type!, itemId!),
-    enabled: Boolean(type && itemId),
+    enabled: Boolean(type && itemId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
   const photosQuery = useQuery({
     queryKey: ['audit-photos', auditId],
     queryFn: () => listAuditPhotos(auditId!),
-    enabled: Boolean(auditId),
+    enabled: Boolean(auditId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
   const zoneId = query.data?.zoneId;
   const zoneQuery = useQuery({
     queryKey: ['zone', zoneId],
     queryFn: () => getZone(zoneId!),
     enabled: Boolean(zoneId),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   if (!routeConfig) return <ErrorBanner message="Unknown equipment type." />;
-  if (query.isLoading || auditQuery.isLoading || (zoneId && zoneQuery.isLoading)) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || query.isFetching || photosQuery.isFetching || (zoneId && zoneQuery.isFetching)) return <Spinner label="Checking the latest cloud audit…" />;
   if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
   const item = query.data!;
   const config = getWaterAssetConfig(item.assetType) ?? routeConfig;
   const zoneName = zoneQuery.data?.zoneName ?? (zoneQuery.error ? 'Zone unavailable' : 'Unzoned or unavailable');
-  const isCompleted = auditQuery.data?.status === 'Completed';
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
 
   const photoFields = config.fields.filter((f) => f.kind === 'photo' || f.kind === 'photos');
   const fieldLabels = new Map(photoFields.map((field) => [field.key, field.label]));
@@ -110,6 +120,10 @@ export default function EquipmentDetailPage() {
   );
 
   async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
+    if (!photoMetadataGuard) {
+      toast.error('Refresh the latest cloud audit before changing PDF photo settings.');
+      return;
+    }
     try {
       const normalized = normalizePhotoMetadataMap(photoDescs);
       const nextCustomFields = customFields.map((field) => {
@@ -124,15 +138,23 @@ export default function EquipmentDetailPage() {
         if (!key.startsWith('customFields.')) metadata[key] = value;
         return metadata;
       }, {});
-      await updateEquipment(type!, itemId!, {
+      const metadataPatch: Record<string, unknown> = {
         photoDescs: topLevelPhotoDescs,
-        customFields: nextCustomFields,
-      });
+      };
+      if (config.assetType) {
+        metadataPatch.customFields = nextCustomFields.map((field) => ({
+          id: field.id,
+          photoDescs: field.photoDescs,
+        }));
+      }
+      const updated = await updateEquipment(type!, itemId!, metadataPatch, photoMetadataGuard);
+      if (typeof updated.treeRevision === 'number') authority.acceptRevision(updated.treeRevision);
+      else await authority.refreshAndAccept();
       await queryClient.invalidateQueries({ queryKey: ['equipment', type, itemId] });
       await queryClient.invalidateQueries({ queryKey: ['audit-photos', auditId] });
       toast.success('Equipment PDF photo settings saved.');
     } catch (error) {
-      toast.error(cloudConnectionErrorMessage(error));
+      toast.error(auditProtocolErrorMessage(error) ?? cloudConnectionErrorMessage(error));
     }
   }
 
@@ -143,11 +165,19 @@ export default function EquipmentDetailPage() {
         subtitle={`Zone: ${zoneName}`}
         actions={
           <>
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${config.slug}/${itemId}/edit`}>Edit equipment &amp; photos</LinkButton> : null}
+            {authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${config.slug}/${itemId}/edit`}>Edit equipment &amp; photos</LinkButton> : null}
             {zoneId ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}`} variant="secondary">Open zone</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${config.slug}`} variant="secondary">Back</LinkButton>
           </>
         }
+      />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        completedPhotoMetadataEditable={Boolean(authority.photoMetadataGuard)}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
       />
       <Card className="mb-4">
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--primary-soft)] px-3 py-2.5 text-sm font-bold text-[var(--primary)]">
@@ -183,7 +213,7 @@ export default function EquipmentDetailPage() {
           <PhotoMetadataManager
             photos={photoEntries}
             initialMetadata={{ ...normalizePhotoDescsRecord(item), ...customPhotoMetadata }}
-            completedAudit={isCompleted}
+            readOnly={!photoMetadataGuard}
             onSave={savePhotoMetadata}
           />
         </Card>

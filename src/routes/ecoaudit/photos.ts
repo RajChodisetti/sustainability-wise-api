@@ -1,19 +1,24 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
-import { pdfJobs } from '../../db/schema/shared.js';
+import {
+  pdfJobs,
+  photoCopyReferences,
+  photoRegistry,
+  recordVersions,
+} from '../../db/schema/shared.js';
 import { eaAudits } from '../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../auth/middleware.js';
 import { assertAuditAccess } from './helpers.js';
 import {
   makeNamedStorageKeyForFilename,
+  deleteLocalFile,
   publicFileUrl,
   sanitizeStorageSegment,
 } from '../../storage/localFiles.js';
 import { loadEcoAuditByIdOrName, loadPhotoByIdOrName } from '../../services/storageNaming.js';
 import {
-  deletePhotoUnlessReferenced,
   hasAccessibleCopyReference,
   loadCurrentPhotosForParent,
   reconcilePhotoCopyReferencesForParent,
@@ -39,6 +44,19 @@ import {
   type EcoAuditPhotoZipContext,
   type EcoAuditPhotoZipMode,
 } from './photoZipHierarchy.js';
+import {
+  lockEcoAuditForMutation,
+  setEcoAuditRevisionHeader,
+} from './auditConcurrency.js';
+
+export function assertEcoAuditPhotoIsUnreferenced(
+  photos: Array<Pick<PhotoRow, 'id'>>,
+  photoId: string,
+): void {
+  if (photos.some((photo) => photo.id === photoId)) {
+    throw conflict('Photo is still referenced by the current audit');
+  }
+}
 
 function photoMetadata(photo: PhotoRow, context?: EcoAuditPhotoZipContext) {
   return {
@@ -244,9 +262,48 @@ export async function eaPhotoRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { photoId } = request.params as { photoId: string };
     const found = await loadPhotoByIdOrName('ecoaudit', photoId);
-    if (!(await deletePhotoUnlessReferenced(found))) {
-      throw conflict('Photo is still referenced by one or more copied audits');
-    }
+    const result = await db.transaction(async (tx) => {
+      const locked = await lockEcoAuditForMutation(tx, {
+        auditId: found.parentId,
+        user: request.user,
+        request,
+      });
+      const currentPhotos = await loadCurrentPhotosForParent({
+        app: 'ecoaudit',
+        parentId: found.parentId,
+        executor: tx as unknown as typeof db,
+        includeUnconfirmed: true,
+      });
+      assertEcoAuditPhotoIsUnreferenced(currentPhotos, found.id);
+      const [registry] = await tx.select().from(photoRegistry).where(and(
+        eq(photoRegistry.id, found.id),
+        eq(photoRegistry.app, 'ecoaudit'),
+      )).for('update').limit(1);
+      if (!registry) throw notFound('Photo');
+      const [[copyReference], [versionReference]] = await Promise.all([
+        tx.select({ id: photoCopyReferences.id }).from(photoCopyReferences)
+          .where(eq(photoCopyReferences.photoId, found.id)).limit(1),
+        tx.select({ id: recordVersions.id }).from(recordVersions)
+          .where(sql`EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(COALESCE(${recordVersions.snapshot}->'mediaManifest', '[]'::jsonb)) AS media
+            WHERE media->>'id' = ${found.id}
+          )`).limit(1),
+      ]);
+      if (copyReference || versionReference) {
+        throw conflict('Photo is still referenced by one or more audit versions or copies');
+      }
+      const [deleted] = await tx.delete(photoRegistry).where(eq(
+        photoRegistry.id,
+        found.id,
+      )).returning();
+      if (!deleted) throw notFound('Photo');
+      return { storageKey: deleted.storageKey, treeRevision: locked.audit.treeRevision };
+    });
+    await deleteLocalFile(result.storageKey).catch((error) => {
+      request.log.warn({ error, photoId: found.id }, 'EcoAudit deleted photo byte cleanup deferred');
+    });
+    setEcoAuditRevisionHeader(reply, result.treeRevision);
     return reply.status(204).send();
   });
 }

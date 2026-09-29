@@ -11,7 +11,7 @@
     "start": "node --import tsx/esm src/index.ts",
     "build": "npm run web:build",
     "test": "npm run test:api && npm run test:portal && npm run test:release-preflight",
-    "test:api": "NODE_ENV=test DATABASE_URL=postgresql://test:test@127.0.0.1:5432/test JWT_SECRET=test-secret JWT_REFRESH_SECRET=test-refresh-secret node --import tsx --test 'src/**/*.test.ts'",
+    "test:api": "NODE_ENV=test DATABASE_URL=postgresql://test:test@127.0.0.1:5432/test JWT_SECRET=test-secret JWT_REFRESH_SECRET=test-refresh-secret ECOAUDIT_COMMAND_HMAC_SECRET=test-ecoaudit-command-hmac-secret-32 node --import tsx --test 'src/**/*.test.ts'",
     "test:portal": "npm --prefix apps/ecoaudit test",
     "test:release-preflight": "node --test scripts/release-preflight.test.mjs",
     "api:typecheck": "tsc --noEmit",

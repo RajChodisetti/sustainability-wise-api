@@ -776,6 +776,7 @@ function validateTarget(raw) {
     [
       "JWT_SECRET",
       "JWT_REFRESH_SECRET",
+      "ECOAUDIT_COMMAND_HMAC_SECRET",
       "UPLOAD_CAPABILITY_SECRET",
       "FILE_CAPABILITY_SECRET",
     ],

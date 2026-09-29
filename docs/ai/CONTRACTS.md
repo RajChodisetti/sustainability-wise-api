@@ -21,10 +21,13 @@ type PhotoMetadataMap = Record<string, PhotoMetadata>;
   helpers such as `lightingPhotoField.ts`.
 - PDF authority: the record's canonical `photoDescs`; the PDF must not maintain a
   second caption or sizing field.
-- Completed EcoAudit records remain immutable except for an authenticated
-  `photoDescs`-only update. That exception may change photo captions/PDF sizing
-  but no business fields, and an older mobile sync must not overwrite newer
-  server-side photo metadata.
+- Completed EcoAudit records remain immutable except for an elevated
+  (`admin`/`service_account`) portal protocol-v2 correction at the exact current
+  tree revision. That exception may change only photo captions/PDF sizing in
+  `photoDescs` (including matching nested custom-question `photoDescs`); it may
+  not change questions, answers, photo arrays, or other business fields. Mobile
+  clients and inspectors cannot use the exception, and an older mobile sync
+  must not overwrite newer server-side photo metadata.
 
 The lighting controls image is canonically `switchboardControlsPhoto`.
 `switchboardPhotoNotes` is a legacy compatibility alias only. A rename must cover

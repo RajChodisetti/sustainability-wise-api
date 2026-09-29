@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   buildEcoAuditChunkHtml,
   buildEcoAuditReportOverview,
   buildInlineEcoAuditChunks,
+  ecoAuditReportPointerValues,
   scopeEcoAuditReportPhotos,
 } from './pdf.js';
 
@@ -12,6 +14,48 @@ type PdfZone = PdfBodyArgs['zones'][number];
 type PdfPhoto = NonNullable<Parameters<typeof buildEcoAuditReportOverview>[1]>[number];
 
 const generatedAt = new Date('2026-07-30T00:00:00.000Z');
+
+test('derived report pointers do not mutate the audit business revision clocks', () => {
+  const values = ecoAuditReportPointerValues('ecoaudit/report.pdf', '/v1/files/report.pdf');
+  assert.deepEqual(values, {
+    reportPdfLocalPath: 'ecoaudit/report.pdf',
+    reportPdfRemoteUrl: '/v1/files/report.pdf',
+  });
+  assert.equal('updatedAt' in values, false);
+  assert.equal('treeRevision' in values, false);
+});
+
+test('sync and background PDF paths use one snapshot and CAS before publishing or mirroring', async () => {
+  const source = await readFile(new URL('./pdf.ts', import.meta.url), 'utf8');
+  assert.equal((source.match(/loadEcoAuditReportSnapshot\(/g) ?? []).length, 3);
+  assert.match(source, /isolationLevel: 'repeatable read', accessMode: 'read only'/);
+  assert.match(source, /loadCurrentPhotosForParent\(\{[\s\S]*?executor: tx as unknown as typeof db,[\s\S]*?\}\)/);
+  assert.match(source, /eq\(eaAudits\.treeRevision, input\.sourceTreeRevision\)/);
+
+  const direct = source.slice(
+    source.indexOf('async function handleEcoAuditPdf('),
+    source.indexOf('// ── Async job runner'),
+  );
+  const background = source.slice(
+    source.indexOf('export async function runEcoAuditPdfJob('),
+    source.indexOf('async function runEcoAuditPdfJobInBackground('),
+  );
+  const accessIndex = direct.indexOf('assertAuditAccess(assertFound(accessibleAudit');
+  const reconcileIndex = direct.indexOf('await reconcilePhotoCopyReferencesForParent({');
+  const snapshotIndex = direct.indexOf('await loadEcoAuditReportSnapshot(');
+  assert.ok(accessIndex >= 0);
+  assert.ok(reconcileIndex > accessIndex);
+  assert.ok(snapshotIndex > reconcileIndex);
+  for (const pathSource of [direct, background]) {
+    const casIndex = pathSource.indexOf('await publishEcoAuditReportPointer({');
+    const cleanupIndex = pathSource.indexOf('await deleteLocalFile(storageKey);');
+    const mirrorIndex = pathSource.indexOf('await mirrorPdfToOneDrive({');
+    assert.ok(casIndex >= 0);
+    assert.ok(cleanupIndex > casIndex);
+    assert.ok(mirrorIndex > cleanupIndex);
+    assert.doesNotMatch(pathSource, /reportPdfRemoteUrl: remoteUrl, updatedAt/);
+  }
+});
 
 function zone(id: string, zoneName: string): PdfZone {
   return {
@@ -120,6 +164,55 @@ test('chunked reports keep global executive counts and do not restart zone numbe
   assert.match(htmlParts[0], /<div class="exec-title">Executive Summary<\/div>/);
   assert.doesNotMatch(htmlParts[1], /<div class="exec-title">Executive Summary<\/div>/);
   assert.doesNotMatch(htmlParts.join(''), /zh-num-wrap/);
+});
+
+test('General Electricity renders before hot-water and water sections in both report layouts', () => {
+  const reportZone = zone('zone-order', 'Order Zone');
+  const args: PdfBodyArgs = {
+    ...reportArgs([reportZone], []),
+    mode: 'by-equipment',
+    genElecList: [{
+      id: 'electricity-1', auditId: 'audit-1', zoneId: reportZone.id,
+      question: 'Electricity observation', answer: 'Recorded', photos: [], extraPhotos: [],
+      photoDescs: {},
+    }] as PdfBodyArgs['genElecList'],
+    hotWaterList: [{
+      id: 'hot-water-1', auditId: 'audit-1', zoneId: reportZone.id,
+      dhwDetailsType: 'Storage', photoDescs: {},
+    }] as PdfBodyArgs['hotWaterList'],
+    waterAssetList: [{
+      id: 'water-meter-1', auditId: 'audit-1', zoneId: reportZone.id,
+      assetType: 'water_meter', name: 'WM-1', category: null, data: {},
+      customFields: [], photos: [], photoDescs: {},
+    }] as PdfBodyArgs['waterAssetList'],
+    genWaterList: [{
+      id: 'water-1', auditId: 'audit-1', zoneId: reportZone.id,
+      question: 'Water observation', answer: 'Recorded', photos: [], extraPhotos: [],
+      photoDescs: {},
+    }] as PdfBodyArgs['genWaterList'],
+  };
+  const equipmentHtml = buildEcoAuditChunkHtml(
+    args,
+    buildEcoAuditReportOverview(args, []),
+    0,
+    1,
+  );
+  const electricitySection = '<span class="sec-bar-name">General Electricity</span>';
+  assert.ok(equipmentHtml.indexOf(electricitySection) < equipmentHtml.indexOf('<span class="sec-bar-name">Hot Water Systems</span>'));
+  assert.ok(equipmentHtml.indexOf(electricitySection) < equipmentHtml.indexOf('<span class="sec-bar-name">Water Meters</span>'));
+  assert.ok(equipmentHtml.indexOf(electricitySection) < equipmentHtml.indexOf('<span class="sec-bar-name">General Water</span>'));
+
+  const zoneArgs = { ...args, mode: 'by-zone' as const };
+  const zoneHtml = buildEcoAuditChunkHtml(
+    zoneArgs,
+    buildEcoAuditReportOverview(zoneArgs, []),
+    0,
+    1,
+  );
+  const electricityLabel = '<div class="zone-type-label">General Electricity</div>';
+  assert.ok(zoneHtml.indexOf(electricityLabel) < zoneHtml.indexOf('<div class="zone-type-label">Hot Water</div>'));
+  assert.ok(zoneHtml.indexOf(electricityLabel) < zoneHtml.indexOf('<div class="zone-type-label">Water Meters</div>'));
+  assert.ok(zoneHtml.indexOf(electricityLabel) < zoneHtml.indexOf('<div class="zone-type-label">General Water</div>'));
 });
 
 test('executive zone totals include empty zones in the selected report scope', () => {

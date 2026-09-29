@@ -9,28 +9,32 @@ import { getEquipmentConfig, equipmentDisplayName } from '@/lib/equipmentConfig'
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
-import { getAudit } from '@/api/audits';
 import { listZones } from '@/api/zones';
 import { Icon } from '@/components/ui/Icon';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
 
 export default function EquipmentListPage() {
   const { auditId, type } = useParams<{ auditId: string; type: string }>();
   const [selectedZoneId, setSelectedZoneId] = useState('all');
   const config = getEquipmentConfig(type!);
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId && authority.authoritativeReady), staleTime: 0, refetchOnMount: 'always' });
   const listQuery = useQuery({
     queryKey: ['equipment', type, auditId],
     queryFn: () => listEquipment(type!, auditId!),
-    enabled: Boolean(auditId && type && config),
+    enabled: Boolean(auditId && type && config && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   if (!config) return <ErrorBanner message="Unknown equipment type." />;
-  if (auditQuery.isLoading || listQuery.isLoading || zonesQuery.isLoading) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || listQuery.isLoading || zonesQuery.isLoading) return <Spinner label="Checking the latest cloud audit…" />;
   if (listQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(listQuery.error)} />;
   if (zonesQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zonesQuery.error)} />;
   const items = listQuery.data?.data ?? [];
-  const isCompleted = auditQuery.data?.status === 'Completed';
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
   const zones = zonesQuery.data?.data ?? [];
   const knownZoneIds = new Set(zones.map((zone) => zone.id));
   const visibleZones = selectedZoneId === 'all' ? zones : zones.filter((zone) => zone.id === selectedZoneId);
@@ -43,16 +47,23 @@ export default function EquipmentListPage() {
         subtitle="Choose a zone to see only this equipment type within that zone."
         actions={
           <>
-            {!isCompleted && zones.length > 0 ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/new`}>Add equipment</LinkButton> : null}
+            {authority.guard && zones.length > 0 ? <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/new`}>Add equipment</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>
           </>
         }
+      />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
       />
       {zones.length === 0 ? (
         <EmptyState
           title="Add a zone first"
           description="Equipment in the mobile app and portal belongs directly to a zone."
-          actions={!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`}>Add zone</LinkButton> : undefined}
+          actions={authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`}>Add zone</LinkButton> : undefined}
         />
       ) : (
         <div>
@@ -91,7 +102,7 @@ export default function EquipmentListPage() {
                       </Link>
                       {zone.zoneDescription ? <p className="text-sm text-[var(--text-sub)]">{zone.zoneDescription}</p> : null}
                     </div>
-                    {!isCompleted ? (
+                    {authority.guard ? (
                       <LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/new?zoneId=${encodeURIComponent(zone.id)}`} className="shrink-0">
                         <Icon name="plus" size={17} />Add to {zone.zoneName}
                       </LinkButton>

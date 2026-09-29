@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { uploadPhotoFile } from '@/lib/photoUpload';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
+import type { AuditWriteGuard } from '@/types/domain';
 
 export function usePhotoUpload() {
   const [uploading, setUploading] = useState(false);
@@ -14,6 +16,7 @@ export function usePhotoUpload() {
     fieldName: string;
     entityId?: string;
     entityType?: string;
+    guard: AuditWriteGuard;
   }): Promise<{ url: string | null; error: string | null }> {
     setUploading(true);
     setError(null);
@@ -21,7 +24,7 @@ export function usePhotoUpload() {
       const url = await uploadPhotoFile(args);
       return { url, error: null };
     } catch (e) {
-      const message = cloudConnectionErrorMessage(e);
+      const message = auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e);
       setError(message);
       return { url: null, error: message };
     } finally {

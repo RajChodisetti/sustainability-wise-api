@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   resolveCompletionTiming,
+  resolveLegacyReopenMutation,
   resolveReopenTiming,
   resolveSyncedAuditTiming,
 } from './auditTiming.js';
@@ -46,6 +47,20 @@ test('reopening an unstarted draft is idempotent', () => {
   }), {
     startedAt: null,
     completedAt: null,
+  });
+});
+
+test('legacy reopen does not promote an unfenced audit into the v2 protocol', () => {
+  const startedAt = new Date('2026-01-01T01:00:00.000Z');
+  assert.deepEqual(resolveLegacyReopenMutation({
+    startedAt,
+    completedAt: new Date('2026-01-01T02:00:00.000Z'),
+    editFence: 0,
+  }), {
+    status: 'Draft',
+    startedAt,
+    completedAt: null,
+    editFence: 0,
   });
 });
 

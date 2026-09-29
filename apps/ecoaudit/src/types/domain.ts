@@ -6,6 +6,20 @@ export type CloudUser = {
   isActive?: boolean;
 };
 
+export type AuditClientKind = 'mobile' | 'portal';
+
+export type AuditEditLease = {
+  ownerUserId: string;
+  clientInstanceId: string;
+  clientKind: AuditClientKind;
+  clientLabel?: string | null;
+  fence: number;
+  lastSeenAt?: string | null;
+  expiresAt?: string | null;
+  stale?: boolean;
+  ownedByCaller: boolean;
+};
+
 export type Audit = {
   id: string;
   siteName: string;
@@ -22,6 +36,46 @@ export type Audit = {
   createdAt?: string;
   updatedAt?: string;
   syncStatus?: string;
+  treeRevision: number;
+  recordVersionNumber?: number | null;
+  sourceAuditId?: string | null;
+  sourceRecordVersionNumber?: number | null;
+  editFence?: number;
+  editLease?: AuditEditLease | null;
+};
+
+export type AuditWriteGuard = {
+  auditId: string;
+  baseTreeRevision: number;
+  editFence: number;
+  leaseToken: string;
+  clientInstanceId: string;
+};
+
+export type AuditPhotoMetadataGuard = {
+  auditId: string;
+  baseTreeRevision: number;
+  clientInstanceId: string;
+};
+
+export type AuditMutationGuard = AuditWriteGuard | AuditPhotoMetadataGuard;
+
+export type AuditTree = {
+  audit: Audit;
+  zones: Zone[];
+  mainSwitchboards: EquipmentBase[];
+  additionalSwitchboards: EquipmentBase[];
+  hvacUnits: EquipmentBase[];
+  lightingSystems: EquipmentBase[];
+  solarPv: EquipmentBase[];
+  forkliftChargers: EquipmentBase[];
+  hotWaterSystems: EquipmentBase[];
+  generalWater: EquipmentBase[];
+  generalElectricity: EquipmentBase[];
+  waterAssets: EquipmentBase[];
+  treeRevision: number;
+  recordVersionNumber?: number | null;
+  pulledAt: string;
 };
 
 export type Zone = {
@@ -32,6 +86,7 @@ export type Zone = {
   photos: string[];
   photoDescs?: Record<string, unknown>;
   createdAt?: string;
+  treeRevision?: number;
 };
 
 export type EquipmentBase = {

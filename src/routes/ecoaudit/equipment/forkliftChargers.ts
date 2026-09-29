@@ -5,21 +5,16 @@ import { db } from '../../../db/client.js';
 import { eaAudits, eaForkliftChargers } from '../../../db/schema/ecoaudit.js';
 import { authenticate, requireApp, requireRole } from '../../../auth/middleware.js';
 import {
-  reconcilePhotoCopyReferencesForParent,
   releaseCopyReferencesForEntity,
 } from '../../../storage/photoCopyReferences.js';
-import { assertFound, assertDraftMutable, assertAuditOwnerPatchMutable, assertAuditAccess, dateOrNow, requiredString, str, arr, photoMetadata, type JsonRecord } from '../helpers.js';
+import { assertFound, assertAuditAccess, dateOrNow, requiredString, str, arr, photoMetadata, type JsonRecord } from '../helpers.js';
+import { setEcoAuditRevisionHeader } from '../auditConcurrency.js';
+import { isCompletedPhotoMetadataPatch, mutateEcoAuditTree } from '../auditMutation.js';
+import { assertCompletedPhotoMetadataReferencesExistingPhotos } from '../completedPhotoMetadata.js';
 
 async function loadAudit(id: string) {
   const [a] = await db.select().from(eaAudits).where(and(eq(eaAudits.id, id), isNull(eaAudits.deletedAt)));
   return a;
-}
-
-async function assertMutableAudit(id: string, user: Parameters<typeof assertAuditAccess>[1], patchBody?: JsonRecord) {
-  const audit = assertFound(await loadAudit(id), 'Audit');
-  assertAuditAccess(audit, user);
-  if (patchBody) assertAuditOwnerPatchMutable(audit, patchBody, 'Audit');
-  else assertDraftMutable(audit, 'Audit');
 }
 
 export async function eaForkliftChargerRoutes(app: FastifyInstance): Promise<void> {
@@ -37,9 +32,9 @@ export async function eaForkliftChargerRoutes(app: FastifyInstance): Promise<voi
     async (req, reply) => {
       const { auditId } = req.params as { auditId: string };
       const body = req.body as JsonRecord;
-      await assertMutableAudit(auditId, req.user);
       const zoneId = typeof body.zoneId === 'string' ? body.zoneId : assertFound(null, 'zoneId');
-      const [row] = await db.insert(T).values({
+      const mutation = await mutateEcoAuditTree({ auditId, zoneId, user: req.user, request: req, mutate: async (tx) => {
+        const [row] = await tx.insert(T).values({
         id: randomUUID(), serverId: randomUUID(), syncStatus: 'synced', updatedAt: dateOrNow(body.updatedAt), zoneId, auditId, createdAt: dateOrNow(body.createdAt),
         chargerType: requiredString(body, 'chargerType'), chargerPhoto: str(body.chargerPhoto), brandModel: str(body.brandModel), rating: str(body.rating),
         chargerLabelPhoto: str(body.chargerLabelPhoto), powerSupply: str(body.powerSupply), electricConnectionPhoto: str(body.electricConnectionPhoto),
@@ -51,9 +46,11 @@ export async function eaForkliftChargerRoutes(app: FastifyInstance): Promise<voi
         schedulingOpportunity: str(body.schedulingOpportunity), energyImprovementObservations: str(body.energyImprovementObservations),
         extraNotes: str(body.extraNotes), extraPhotos: arr(body.extraPhotos),
         photoDescs: photoMetadata(body.photoDescs),
-      } as any).returning();
-      await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: auditId, actor: req.user });
-      return reply.status(201).send(row);
+        } as any).returning();
+        return assertFound(row, label);
+      } });
+      setEcoAuditRevisionHeader(reply, mutation.audit.treeRevision);
+      return reply.status(201).send(mutation.value);
     });
 
   app.get('/forklift-chargers/:id', { schema: { tags: ['EcoAudit Equipment'] }, preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')] },
@@ -71,16 +68,22 @@ export async function eaForkliftChargerRoutes(app: FastifyInstance): Promise<voi
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
       const found = assertFound(row, label);
       const body = req.body as JsonRecord;
-      await assertMutableAudit(found.auditId, req.user, body);
-      const c: Record<string, unknown> = { updatedAt: new Date(), syncStatus: 'local' };
+      const c: Record<string, unknown> = { updatedAt: new Date(), syncStatus: 'synced' };
       if ('chargerType' in body) c.chargerType = requiredString(body, 'chargerType');
       for (const k of ['chargerPhoto','brandModel','rating','chargerLabelPhoto','powerSupply','electricConnectionPhoto','location','chargerSpacePhoto','connectionDescription','socketConnectionPhoto','localIsolator','circuitIdentifiable','distanceToSwitchboard','spaceForAdditional','hardwiredSocket','schedulingOpportunity','energyImprovementObservations','extraNotes']) if (k in body) c[k] = str(body[k]);
       if ('quantity' in body) c.quantity = typeof body.quantity === 'number' ? Math.round(body.quantity) : null;
       if ('extraPhotos' in body) c.extraPhotos = arr(body.extraPhotos);
       if ('photoDescs' in body) c.photoDescs = photoMetadata(body.photoDescs);
-      const [updated] = await db.update(T).set(c as any).where(eq(T.id, id)).returning();
-      await reconcilePhotoCopyReferencesForParent({ app: 'ecoaudit', parentId: found.auditId, actor: req.user });
-      return reply.send(assertFound(updated, label));
+      const mutation = await mutateEcoAuditTree({ auditId: found.auditId, user: req.user, request: req,
+        completedPhotoMetadataValidation: isCompletedPhotoMetadataPatch(body)
+          ? () => assertCompletedPhotoMetadataReferencesExistingPhotos(found, body.photoDescs)
+          : undefined,
+        mutate: async (tx) => {
+          const [updated] = await tx.update(T).set(c as any).where(and(eq(T.id, id), eq(T.auditId, found.auditId), isNull(T.deletedAt))).returning();
+          return assertFound(updated, label);
+        } });
+      setEcoAuditRevisionHeader(reply, mutation.audit.treeRevision);
+      return reply.send(mutation.value);
     });
 
   app.delete('/forklift-chargers/:id', { schema: { tags: ['EcoAudit Equipment'] }, preHandler: [authenticate, requireApp('ecoaudit'), requireRole('inspector')] },
@@ -88,9 +91,15 @@ export async function eaForkliftChargerRoutes(app: FastifyInstance): Promise<voi
       const { id } = req.params as { id: string };
       const [row] = await db.select().from(T).where(and(eq(T.id, id), isNull(T.deletedAt)));
       const found = assertFound(row, label);
-      await assertMutableAudit(found.auditId, req.user);
-      await db.update(T).set({ deletedAt: new Date(), updatedAt: new Date() }).where(eq(T.id, id));
-      await releaseCopyReferencesForEntity('ecoaudit', id);
+      const mutation = await mutateEcoAuditTree({ auditId: found.auditId, user: req.user, request: req, mutate: async (tx) => {
+        const [deleted] = await tx.update(T).set({ deletedAt: new Date(), updatedAt: new Date(), syncStatus: 'synced' })
+          .where(and(eq(T.id, id), eq(T.auditId, found.auditId), isNull(T.deletedAt))).returning();
+        return assertFound(deleted, label);
+      } });
+      await releaseCopyReferencesForEntity('ecoaudit', id).catch((error) => {
+        req.log.warn({ error, entityId: id }, 'EcoAudit photo reference cleanup deferred');
+      });
+      setEcoAuditRevisionHeader(reply, mutation.audit.treeRevision);
       return reply.status(204).send();
     });
 }

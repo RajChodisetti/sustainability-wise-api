@@ -74,6 +74,7 @@ async function fixture(t) {
     databasePassword: "database-password-production-0123456789",
     jwt: "jwt-secret-production-012345678901234567890123",
     refresh: "refresh-secret-production-012345678901234567",
+    ecoauditCommand: "ecoaudit-command-production-012345678901234567",
     upload: "upload-secret-production-0123456789012345678",
     file: "file-secret-production-012345678901234567890",
     azure: "azure-secret-production-01234567890123456789",
@@ -94,6 +95,7 @@ async function fixture(t) {
     `DATABASE_URL=postgresql://sw_api:${values.databasePassword}@db.prod.invalid:25060/sustainability_wise?sslmode=require`,
     `JWT_SECRET=${values.jwt}`,
     `JWT_REFRESH_SECRET=${values.refresh}`,
+    `ECOAUDIT_COMMAND_HMAC_SECRET=${values.ecoauditCommand}`,
     `UPLOAD_CAPABILITY_SECRET=${values.upload}`,
     "UPLOAD_CAPABILITY_TTL_SECONDS=900",
     "ALLOW_LEGACY_UNSIGNED_UPLOADS=false",
@@ -235,6 +237,7 @@ async function fixture(t) {
       secretSha256: {
         JWT_SECRET: sha256Fingerprint(values.jwt),
         JWT_REFRESH_SECRET: sha256Fingerprint(values.refresh),
+        ECOAUDIT_COMMAND_HMAC_SECRET: sha256Fingerprint(values.ecoauditCommand),
         UPLOAD_CAPABILITY_SECRET: sha256Fingerprint(values.upload),
         FILE_CAPABILITY_SECRET: sha256Fingerprint(values.file),
       },

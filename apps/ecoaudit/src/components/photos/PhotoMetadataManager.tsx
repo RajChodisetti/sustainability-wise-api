@@ -20,12 +20,12 @@ export type PdfPhotoEntry = {
 export function PhotoMetadataManager({
   photos,
   initialMetadata,
-  completedAudit,
+  readOnly,
   onSave,
 }: {
   photos: PdfPhotoEntry[];
   initialMetadata: unknown;
-  completedAudit?: boolean;
+  readOnly?: boolean;
   onSave: (metadata: PhotoMetadataMap) => Promise<void>;
 }) {
   const controlId = useId().replaceAll(':', '');
@@ -46,8 +46,8 @@ export function PhotoMetadataManager({
       <div className="mb-4">
         <h2 className="font-semibold">Photos and PDF settings</h2>
         <p className="mt-1 text-sm text-[var(--text-sub)]">
-          {completedAudit
-            ? 'This audit is completed, so its record details and photo content remain read-only. Photo captions and PDF layout can still be updated.'
+          {readOnly
+            ? 'Photo captions and PDF layout are read-only here. Create or open the authorised editable audit to change them.'
             : 'Rename each photo caption and choose whether it uses a large or compact layout in the PDF.'}
         </p>
       </div>
@@ -65,18 +65,18 @@ export function PhotoMetadataManager({
                 id={`${controlId}-${index}`}
                 defaultLabel={photo.defaultLabel}
                 value={value}
-                disabled={busy}
+                disabled={busy || readOnly}
                 onChange={(next) => setMetadata((current) => setPhotoMetadata(current, photo.key, next))}
               />
             </div>
           );
         })}
       </div>
-      <div className="mt-4 flex justify-end">
+      {!readOnly ? <div className="mt-4 flex justify-end">
         <Button onClick={() => void handleSave()} disabled={busy} aria-busy={busy}>
           {busy ? 'Saving PDF photo settings…' : 'Save PDF photo settings'}
         </Button>
-      </div>
+      </div> : null}
     </div>
   );
 }

@@ -16,7 +16,7 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { db } from '../db/client.js';
-import { eaAudits } from '../db/schema/ecoaudit.js';
+import { eaAuditEditLeases, eaAudits } from '../db/schema/ecoaudit.js';
 import {
   ihGridSupplies,
   ihInstallations,
@@ -62,6 +62,11 @@ import {
 } from './schedulerLeaveService.js';
 import { parseSchedulerDispatchAddress } from './schedulerAddressService.js';
 import { resolveCompletionTiming } from '../routes/ecoaudit/auditTiming.js';
+import { nextAuditUpdatedAt } from '../routes/ecoaudit/auditVersion.js';
+import {
+  loadEcoAuditTree,
+  pinEcoAuditRecordVersion,
+} from '../routes/ecoaudit/auditTreeService.js';
 import { completeLinkedSchedulerEvents } from './schedulerCompletionService.js';
 import { completeInstallHubInstallation } from './installHubCompletionService.js';
 import type { SchedulerFinanceExecutor } from './schedulerFinanceService.js';
@@ -607,6 +612,21 @@ function validateAppTypePair(sourceApp: ScheduleSourceApp, sourceType: ScheduleS
   }
 }
 
+async function assertEcoAuditNotDeviceOwned(
+  executor: ScheduleExecutor,
+  audit: Pick<typeof eaAudits.$inferSelect, 'id' | 'editFence'>,
+): Promise<void> {
+  // A zero fence with no lease is an unclaimed Scheduler draft, not an
+  // in-progress device audit. The first device claim makes editFence positive,
+  // and that durable marker keeps Scheduler blocked after release/completion.
+  const [lease] = await executor.select({ auditId: eaAuditEditLeases.auditId })
+    .from(eaAuditEditLeases)
+    .where(eq(eaAuditEditLeases.auditId, audit.id))
+    .limit(1);
+  if (lease) throw conflict('audit_edit_lease_held');
+  if (audit.editFence > 0) throw conflict('audit_edit_lease_required');
+}
+
 async function alignLinkedSourceAssignment(
   executor: ScheduleExecutor,
   sourceApp: ScheduleSourceApp,
@@ -623,7 +643,13 @@ async function alignLinkedSourceAssignment(
   if (sourceApp === 'ecoaudit' && sourceType === 'audit') {
     const desiredAssignee = requireProductUserId(subject, 'ecoaudit');
     const [current] = await executor
-      .select({ assignedInspectorUserId: eaAudits.assignedInspectorUserId })
+      .select({
+        id: eaAudits.id,
+        assignedInspectorUserId: eaAudits.assignedInspectorUserId,
+        treeRevision: eaAudits.treeRevision,
+        editFence: eaAudits.editFence,
+        updatedAt: eaAudits.updatedAt,
+      })
       .from(eaAudits)
       .where(and(
         eq(eaAudits.id, sourceId),
@@ -636,6 +662,7 @@ async function alignLinkedSourceAssignment(
       if (!strict) return { assignmentChanged: false, sourceProjectionChanged: false };
       throw conflict('Linked audit is no longer an active Draft');
     }
+    await assertEcoAuditNotDeviceOwned(executor, current);
     if (current.assignedInspectorUserId === desiredAssignee) {
       return { assignmentChanged: false, sourceProjectionChanged: false };
     }
@@ -643,12 +670,14 @@ async function alignLinkedSourceAssignment(
       .update(eaAudits)
       .set({
         assignedInspectorUserId: desiredAssignee,
-        updatedAt: new Date(),
-        syncStatus: 'local',
+        treeRevision: current.treeRevision + 1,
+        updatedAt: nextAuditUpdatedAt(current.updatedAt),
+        syncStatus: 'synced',
       })
       .where(and(
         eq(eaAudits.id, sourceId),
         eq(eaAudits.status, 'Draft'),
+        eq(eaAudits.treeRevision, current.treeRevision),
         isNull(eaAudits.deletedAt),
       ))
       .returning({ id: eaAudits.id });
@@ -772,13 +801,27 @@ async function clearLinkedSourceAssignment(
 ): Promise<void> {
   if (!sourceId || sourceApp === 'custom' || sourceType === 'custom') return;
   if (sourceApp === 'ecoaudit' && sourceType === 'audit') {
+    const [current] = await executor.select({
+      id: eaAudits.id,
+      editFence: eaAudits.editFence,
+      treeRevision: eaAudits.treeRevision,
+      updatedAt: eaAudits.updatedAt,
+    }).from(eaAudits).where(and(
+      eq(eaAudits.id, sourceId),
+      eq(eaAudits.status, 'Draft'),
+      isNull(eaAudits.deletedAt),
+    )).for('update').limit(1);
+    if (!current) return;
+    await assertEcoAuditNotDeviceOwned(executor, current);
     await executor.update(eaAudits).set({
       assignedInspectorUserId: null,
-      updatedAt: new Date(),
-      syncStatus: 'local',
+      treeRevision: current.treeRevision + 1,
+      updatedAt: nextAuditUpdatedAt(current.updatedAt),
+      syncStatus: 'synced',
     }).where(and(
       eq(eaAudits.id, sourceId),
       eq(eaAudits.status, 'Draft'),
+      eq(eaAudits.treeRevision, current.treeRevision),
       isNull(eaAudits.deletedAt),
     ));
     return;
@@ -895,19 +938,34 @@ async function completeSchedulerLinkedSource(
     const [audit] = await executor.select().from(eaAudits).where(and(
       eq(eaAudits.id, input.sourceId),
       isNull(eaAudits.deletedAt),
-    )).limit(1);
+    )).for('update').limit(1);
     if (!audit) throw notFound('Audit');
     if (audit.status !== 'Completed') {
+      await assertEcoAuditNotDeviceOwned(executor, audit);
       const timing = resolveCompletionTiming(audit, observedAt);
-      await executor.update(eaAudits).set({
+      const [completed] = await executor.update(eaAudits).set({
         status: 'Completed',
         startedAt: sql<Date>`coalesce(${eaAudits.startedAt}, ${sql.param(timing.startedAt, eaAudits.startedAt)})`,
         completedAt: sql<Date>`coalesce(${eaAudits.completedAt}, ${sql.param(timing.completedAt, eaAudits.completedAt)})`,
-        updatedAt: observedAt,
-        syncStatus: 'local',
+        treeRevision: audit.treeRevision + 1,
+        updatedAt: nextAuditUpdatedAt(audit.updatedAt, observedAt),
+        syncStatus: 'synced',
       }).where(and(
         eq(eaAudits.id, input.sourceId),
+        eq(eaAudits.treeRevision, audit.treeRevision),
         isNull(eaAudits.deletedAt),
+      )).returning();
+      if (!completed) throw conflict('audit_tree_revision_changed');
+      const tree = await loadEcoAuditTree(executor, input.sourceId);
+      if (!tree) throw notFound('Audit');
+      const recordVersionNumber = await pinEcoAuditRecordVersion({
+        executor,
+        tree,
+        userId: requireProductUserId(actor, 'ecoaudit'),
+      });
+      await executor.update(eaAudits).set({ recordVersionNumber }).where(and(
+        eq(eaAudits.id, input.sourceId),
+        eq(eaAudits.treeRevision, completed.treeRevision),
       ));
     }
     await completeLinkedSchedulerEvents(executor, {
@@ -2210,6 +2268,9 @@ async function createDispatchedProductJob(
       inspectorName,
       auditDate,
       status: 'Draft',
+      treeRevision: 1,
+      recordVersionNumber: 0,
+      editFence: 0,
       createdByUserId: requireProductUserId(actor, 'ecoaudit'),
       assignedInspectorUserId: requireProductUserId(assignee, 'ecoaudit'),
       startedAt: null,

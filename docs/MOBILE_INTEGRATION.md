@@ -658,6 +658,132 @@ specific restriction before local completion.
 
 ## EcoAudit Pro Mobile — Changes Summary
 
+### Fenced edit ownership and immutable completion (protocol v2)
+
+Mobile build 120 checks authenticated `GET /v1/ecoaudit/sync/capabilities`
+before sending sync writes. The response is
+`{ auditProtocolVersion: 2, idempotentAuditRegistration: true, ready: boolean }`.
+Readiness requires the command HMAC configuration; the response contains no
+secret material and uses `Cache-Control: no-store`. Deploy this endpoint with
+the v2 routes and migrations before installing the client. A missing endpoint
+or a false readiness value pauses writes and produces a server-update message.
+This prevents an older server from ignoring idempotency/client IDs and creating
+a new audit on each retry. Clients recheck availability automatically; they do
+not fall back to unprotected legacy writes.
+
+Every lease-guarded v2 Draft mutation sends `X-EcoAudit-Protocol-Version: 2`,
+`X-EcoAudit-Client-Instance-Id`, `X-EcoAudit-Lease-Token`,
+`X-EcoAudit-Lease-Fence`, and `X-EcoAudit-Base-Tree-Revision`. Retriable
+commands also send `Idempotency-Key`. The token is stored in SecureStore, never
+SQLite. Lease expiry is diagnostic only: it never transfers ownership. The
+same user/client may renew an expired lease only by proving its cached token
+and fence; another client must create a copy or use the audited admin takeover
+route. The elevated Completed-photo metadata correction described below is
+lease-free: it sends protocol version, portal client kind, client instance, and
+the exact base tree revision, but no lease token or fence.
+
+A new mobile audit first calls `POST /v1/ecoaudit/audits` with its existing
+local UUID in `id`, an `idempotencyKey`, and
+`editClient: { clientInstanceId, clientKind: "mobile", clientLabel? }`. The API
+uses that UUID as `ea_audits.id` and returns the initial lease. V2 sync does not
+create an audit implicitly or accept a base-zero push.
+
+Before opening an audit, compare the accessible audit heads and fetch
+`GET /v1/ecoaudit/audits/:id/tree`. This is the consistent aggregate read and
+returns every zone/equipment collection plus `treeRevision`,
+`recordVersionNumber`, provenance, and the safe `editLease` summary. Acquire an
+unclaimed audit with `POST /audits/:id/edit-lease`. POST never rotates an
+existing lease, even after expiry. The existing owner renews an active or
+expired lease with `PUT /audits/:id/edit-lease`, proving the cached token,
+fence, client instance, and exact base tree revision. Reads do not renew
+ownership, and another client requires the audited administrator takeover or a
+copy.
+
+Clients that already hold a reconciled tree may append
+`?knownTreeRevision=<non-negative integer>` to the aggregate read. An exact
+match returns `{ audit, treeUnchanged: true }`, including current public lease
+metadata, without querying or transmitting child collections. A different
+revision, or an omitted parameter, returns the existing full-tree response.
+The revision check, audit row and lease summary share one repeatable-read
+snapshot; authentication, ownership checks and `Cache-Control: no-store` still
+apply. Clients must not interpret omitted collections as empty, must validate
+that an unchanged response matches their requested revision, and must request
+the full tree when local reconciliation is required. This optimization does
+not replace lease proof, fencing or exact-revision checks on writes.
+
+The initial `POST /audits/:id/edit-lease` acquisition is also an idempotent
+command. Persist its high-entropy `idempotencyKey` and exact request before
+sending it, and reuse both after an ambiguous response. Create, copy, and
+acquire command keys are hashed at rest. Their initial lease token is derived
+server-side from that secret command key, so an exact retry returns the same
+token and fence; it never rotates a newer lease or grants recovery after the
+audit revision/fence has advanced.
+
+An exact idempotent create/copy replay is the only internal exception: the
+durable command's unguessable idempotency key and matching fingerprint
+authorize the server to rotate and return that command's existing lease. This
+recovers an ambiguous first response without exposing a tokenless public
+reissue path.
+
+`POST /v1/ecoaudit/sync/push` requires `syncStage: "draft" | "complete"`.
+Draft pushes atomically replace/update the guarded aggregate and advance one
+tree revision. A complete push atomically applies the final tree, marks the
+audit Completed, pins an immutable record version, completes its Scheduler
+projection, stores the idempotent result, and releases/fences the edit lease.
+
+`ECOAUDIT_EDIT_PROTOCOL_REQUIRED=true` rejects legacy client writes, but it
+does not freeze an unclaimed Scheduler-created Draft whose `editFence` is zero
+and which has no lease. Scheduler can still assign or reschedule that unopened
+work. The first device claim makes the fence positive; from then on Scheduler
+cannot mutate or complete the audit, even after the lease expires or is
+administratively taken over. A Draft owner cannot voluntarily release a lease
+for another device to claim; completion, protected deletion, and audited admin
+takeover are the ownership-ending transitions.
+
+Completed audits are never reopened by protocol v2. A change starts with
+`POST /audits/:id/copy` using an exact `expectedTreeRevision`, `purpose`
+(`amendment` or `independent`), `idempotencyKey`, and `editClient`; the response
+contains a new Draft audit and its lease while preserving
+`sourceAuditId`/`sourceRecordVersionNumber`. The old explicit reopen and
+timestamp CAS remain only as a temporary compatibility path for audits whose
+durable `editFence` is still zero. Set `ECOAUDIT_EDIT_PROTOCOL_REQUIRED=true`
+only after legacy clients have been retired.
+
+The sole Completed-row compatibility exception is presentation metadata for
+existing photos (`photoDescs`, plus the matching nested water custom-photo
+metadata). It cannot change photo identity or business answers. A v2 correction
+requires an authenticated `admin` or `service_account`, an explicit portal
+client kind, and the exact current `treeRevision`; it advances that revision and
+pins a new immutable record version. Legacy clients, mobile clients, and
+inspectors cannot use this exception, even during the API-first compatibility
+window. The portal remains read-only for broader Completed content; all broader
+changes use an amendment copy.
+
+Production rollout is not complete while
+`ECOAUDIT_EDIT_PROTOCOL_REQUIRED=false`: that value exists only so the additive
+API can be deployed before the updated clients. After the portal and minimum
+mobile build are available, set it to `true` and verify a legacy write is
+rejected. Until that gate is closed, never treat source deployment alone as
+proof that every old client has been fenced.
+
+`ECOAUDIT_COMMAND_HMAC_SECRET` is the dedicated server-only key for exact
+create, copy, and initial lease-acquisition response recovery. It must be at
+least 32 characters, distinct from the JWT and capability secrets, and remain
+stable during normal JWT signing-key rotation. Rotating it invalidates recovery
+of an initial lease token for an in-flight command, so any deliberate rotation
+requires a coordinated client drain rather than an ordinary auth-key rollout.
+
+Common conflicts are `audit_edit_lease_held`, `audit_edit_lease_expired`,
+`audit_edit_lease_invalid`, `audit_tree_revision_changed`,
+`audit_completed_copy_required`, `audit_source_revision_changed`, and
+`ecoaudit_client_upgrade_required`. A create using an identifier that was
+deliberately hard-purged returns `audit_id_permanently_purged`; it must not be
+retried as a new audit under that ID. Report generation can return
+`audit_report_source_revision_changed` when the tree changed during rendering;
+rerun it from the new head. On any ownership/revision conflict, discard the
+attempted write, pull the current head/tree, and ask the user to continue on the
+owning device or create a copy. Never retry against a guessed revision.
+
 ### New Files
 
 | File | Purpose |

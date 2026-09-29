@@ -347,6 +347,7 @@ export async function loadEcoAuditPhotoZipContext(auditId: string): Promise<EcoA
   addEquipment(lightingSystems, 'lighting_system', (row) => row.lightType);
   addEquipment(solarPv, 'solar_pv', () => 'Solar PV');
   addEquipment(forkliftChargers, 'forklift_charger', (row) => row.chargerType);
+  addEquipment(generalElectricity, 'general_electricity', (row, index) => row.question || `Electricity Item ${index + 1}`);
   addEquipment(hotWaterSystems, 'hot_water_system', (row) => row.dhwDetailsType);
   waterAssets.forEach((row, index) => {
     entities.set(entityKey('water_asset', row.id), {
@@ -357,7 +358,6 @@ export async function loadEcoAuditPhotoZipContext(auditId: string): Promise<EcoA
     });
   });
   addEquipment(generalWater, 'general_water', (row, index) => row.question || `Water Item ${index + 1}`);
-  addEquipment(generalElectricity, 'general_electricity', (row, index) => row.question || `Electricity Item ${index + 1}`);
 
   return { entities };
 }

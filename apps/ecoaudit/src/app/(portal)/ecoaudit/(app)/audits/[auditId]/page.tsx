@@ -1,13 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { completeAudit, deleteAudit, getAudit, reopenAudit, startAudit } from '@/api/audits';
+import {
+  acquireAuditEditLease,
+  completeAudit,
+  createAuditAmendment,
+  deleteAudit,
+  renewAuditEditLease,
+  startAudit,
+} from '@/api/audits';
 import { listZones } from '@/api/zones';
 import { listEquipment } from '@/api/equipment';
 import { cloudConnectionErrorMessage } from '@/api/client';
+import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badges';
@@ -22,29 +30,180 @@ import {
 } from '@/lib/auditTiming';
 import { EquipmentIcon, Icon } from '@/components/ui/Icon';
 import type { EquipmentBase, Zone } from '@/types/domain';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import {
+  auditProtocolErrorMessage,
+  beginPendingAuditAcquireCommand,
+  beginPendingAuditCopyCommand,
+  clearPendingAuditCommand,
+  clearStoredAuditLease,
+  getAuditClientInstanceId,
+  getPendingAuditAcquireCommand,
+  getPendingAuditCopyCommand,
+  getStoredAuditLease,
+  isDefinitiveAuditCommandRejection,
+  newAuditCommandId,
+  storeAuditLeaseDurably,
+  type PendingAuditAcquireCommand,
+  type PendingAuditCopyCommand,
+} from '@/lib/auditProtocol';
 
 export default function AuditDetailPage() {
   const { auditId } = useParams<{ auditId: string }>();
   const router = useRouter();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { user } = useAuth();
   const [workspaceView, setWorkspaceView] = useState<'zones' | 'equipment'>('zones');
-  const [statusAction, setStatusAction] = useState<'complete' | 'reopen' | null>(null);
+  const [statusAction, setStatusAction] = useState<'complete' | 'copy' | 'claim' | null>(null);
+  const [pendingCopyCommand, setPendingCopyCommand] = useState<PendingAuditCopyCommand | null>(null);
+  const [pendingAcquireCommand, setPendingAcquireCommand] = useState<PendingAuditAcquireCommand | null>(null);
+  const completionCommandId = useRef<string | null>(null);
+  const copyResumeAuditId = useRef<string | null>(null);
+  const acquireResumeAuditId = useRef<string | null>(null);
+  const activeActorUserId = useRef<string | null>(user?.id ?? null);
+  const durableInFlightCommandId = useRef<string | null>(null);
 
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const acceptAuthorityRevision = authority.acceptRevision;
+  const refreshAndAcceptAuthority = authority.refreshAndAccept;
+
+  useLayoutEffect(() => {
+    activeActorUserId.current = user?.id ?? null;
+  }, [user?.id]);
+  const zonesQuery = useQuery({
+    queryKey: ['zones', auditId],
+    queryFn: () => listZones(auditId!),
+    enabled: Boolean(auditId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const equipmentQueries = useQueries({
     queries: EQUIPMENT_TYPES.map((equipmentType) => ({
       queryKey: ['equipment', equipmentType.slug, auditId],
       queryFn: () => listEquipment(equipmentType.slug, auditId!),
-      enabled: Boolean(auditId),
+      enabled: Boolean(auditId && authority.authoritativeReady),
+      staleTime: 0,
+      refetchOnMount: 'always' as const,
     })),
   });
 
+  const executeCopyCommand = useCallback(async (command: PendingAuditCopyCommand) => {
+    if (
+      activeActorUserId.current !== command.actorUserId
+      || durableInFlightCommandId.current !== null
+    ) return;
+    durableInFlightCommandId.current = command.idempotencyKey;
+    setPendingCopyCommand(command);
+    setStatusAction('copy');
+    try {
+      const result = await createAuditAmendment(command);
+      if (activeActorUserId.current !== command.actorUserId) {
+        throw new Error('The signed-in account changed while the saved command was running. Sign back into the original account to recover it safely.');
+      }
+      const leaseStored = storeAuditLeaseDurably({
+        auditId: result.audit.id,
+        clientInstanceId: command.clientInstanceId,
+        leaseToken: result.leaseToken,
+        editFence: result.editFence,
+      });
+      if (!leaseStored) {
+        throw new Error('The editable copy was created, but this browser could not save its editing access. The saved command will retry safely.');
+      }
+      if (!clearPendingAuditCommand(command)) {
+        throw new Error('The editable copy was created, but the saved command could not be cleared. Retry to finish safely.');
+      }
+      setPendingCopyCommand(null);
+      toast.success('Editable copy created. The completed original is unchanged.');
+      router.push(`/ecoaudit/audits/${result.audit.id}`);
+    } catch (error) {
+      if (isDefinitiveAuditCommandRejection(error) && clearPendingAuditCommand(command)) {
+        setPendingCopyCommand(null);
+      }
+      toast.error(auditProtocolErrorMessage(error) ?? cloudConnectionErrorMessage(error));
+    } finally {
+      if (durableInFlightCommandId.current === command.idempotencyKey) {
+        durableInFlightCommandId.current = null;
+        setStatusAction(null);
+      }
+    }
+  }, [router, toast]);
+
+  const executeAcquireCommand = useCallback(async (command: PendingAuditAcquireCommand) => {
+    if (
+      activeActorUserId.current !== command.actorUserId
+      || durableInFlightCommandId.current !== null
+    ) return;
+    durableInFlightCommandId.current = command.idempotencyKey;
+    setPendingAcquireCommand(command);
+    setStatusAction('claim');
+    try {
+      const result = await acquireAuditEditLease(command);
+      if (activeActorUserId.current !== command.actorUserId) {
+        throw new Error('The signed-in account changed while the saved command was running. Sign back into the original account to recover it safely.');
+      }
+      const leaseStored = storeAuditLeaseDurably({
+        auditId: command.auditId,
+        clientInstanceId: command.clientInstanceId,
+        leaseToken: result.leaseToken,
+        editFence: result.editFence,
+      });
+      if (!leaseStored) {
+        throw new Error('Editing access was granted, but this browser could not save it. The saved command will retry safely.');
+      }
+      acceptAuthorityRevision(result.treeRevision);
+      if (!clearPendingAuditCommand(command)) {
+        throw new Error('Editing access was granted, but the saved command could not be cleared. Retry to finish safely.');
+      }
+      setPendingAcquireCommand(null);
+      await refreshAndAcceptAuthority();
+      toast.success('Editing access is active on this browser.');
+    } catch (error) {
+      if (isDefinitiveAuditCommandRejection(error) && clearPendingAuditCommand(command)) {
+        setPendingAcquireCommand(null);
+      }
+      toast.error(auditProtocolErrorMessage(error) ?? cloudConnectionErrorMessage(error));
+    } finally {
+      if (durableInFlightCommandId.current === command.idempotencyKey) {
+        durableInFlightCommandId.current = null;
+        setStatusAction(null);
+      }
+    }
+  }, [acceptAuthorityRevision, refreshAndAcceptAuthority, toast]);
+
+  useEffect(() => {
+    const actorUserId = user?.id ?? null;
+    if (!auditId) return;
+    const scope = `${actorUserId ?? 'signed-out'}:${auditId}`;
+    if (copyResumeAuditId.current === scope) return;
+    copyResumeAuditId.current = scope;
+    const command = actorUserId ? getPendingAuditCopyCommand(auditId, actorUserId) : null;
+    const timer = window.setTimeout(() => {
+      setPendingCopyCommand(command);
+      if (command) void executeCopyCommand(command);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [auditId, executeCopyCommand, user?.id]);
+
+  useEffect(() => {
+    const actorUserId = user?.id ?? null;
+    if (!auditId) return;
+    const scope = `${actorUserId ?? 'signed-out'}:${auditId}`;
+    if (acquireResumeAuditId.current === scope) return;
+    acquireResumeAuditId.current = scope;
+    const command = actorUserId ? getPendingAuditAcquireCommand(auditId, actorUserId) : null;
+    const timer = window.setTimeout(() => {
+      setPendingAcquireCommand(command);
+      if (command) void executeAcquireCommand(command);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [auditId, executeAcquireCommand, user?.id]);
+
   if (!auditId) return <ErrorBanner message="Audit not found." />;
-  if (auditQuery.isLoading || zonesQuery.isLoading) return <Spinner />;
-  if (auditQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(auditQuery.error)} />;
-  const audit = auditQuery.data!;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || zonesQuery.isLoading) return <Spinner label="Checking the latest cloud audit…" />;
+  const audit = authority.audit!;
   const zones = zonesQuery.data?.data ?? [];
   const isCompleted = audit.status === 'Completed';
   const startedAt = getAuditStartedAt(audit);
@@ -66,58 +225,143 @@ export default function AuditDetailPage() {
 
   async function refreshStatus() {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ['audit', auditId] }),
+      authority.refreshAndAccept(),
       queryClient.invalidateQueries({ queryKey: ['audits'] }),
     ]);
   }
 
   async function handleStart() {
+    if (!authority.guard) return;
     try {
-      await startAudit(auditId);
+      await startAudit(auditId, authority.guard);
       await refreshStatus();
       toast.success('Audit started. Timer is running.');
     } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
+      toast.error(auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e));
     }
   }
 
   async function handleComplete() {
-    if (statusAction) return;
+    if (statusAction || !authority.guard) return;
     setStatusAction('complete');
     try {
-      await completeAudit(auditId);
+      completionCommandId.current ??= newAuditCommandId('complete-audit', auditId);
+      await completeAudit(auditId, authority.guard, completionCommandId.current);
+      clearStoredAuditLease(auditId);
       await refreshStatus();
       toast.success('Audit marked as completed.');
     } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
+      if (isDefinitiveAuditCommandRejection(e)) completionCommandId.current = null;
+      toast.error(auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e));
     } finally {
       setStatusAction(null);
     }
   }
 
-  async function handleReopen() {
+  async function handleCopy() {
     if (statusAction) return;
-    if (!confirm('Change this audit to In Progress? This will unlock its details, zones, equipment, and photos for editing.')) return;
-    setStatusAction('reopen');
+    if (!user?.id) {
+      toast.error('Sign in before creating an editable copy.');
+      return;
+    }
+    if (!confirm('Create an editable copy of this completed audit? The completed original will remain unchanged.')) return;
+    const pending = getPendingAuditCopyCommand(auditId, user.id);
+    if (pending) {
+      await executeCopyCommand(pending);
+      return;
+    }
+    setStatusAction('copy');
     try {
-      await reopenAudit(auditId);
-      await refreshStatus();
-      toast.success('Audit changed to In Progress.');
+      const latest = await authority.refreshAndAccept();
+      if (!latest) {
+        toast.error('Could not verify the latest cloud audit. Check the connection and try again.');
+        return;
+      }
+      if (latest.audit.status !== 'Completed') {
+        toast.error('The audit state changed. Review the latest cloud version before creating a copy.');
+        return;
+      }
+      const command = beginPendingAuditCopyCommand({
+        sourceAuditId: auditId,
+        expectedTreeRevision: latest.audit.treeRevision,
+      }, user.id);
+      await executeCopyCommand(command);
     } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
+      toast.error(auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e));
+    } finally {
+      setStatusAction(null);
+    }
+  }
+
+  async function handleClaim() {
+    if (statusAction || audit.status === 'Completed') return;
+    if (!user?.id) {
+      toast.error('Sign in before starting to edit.');
+      return;
+    }
+    const pending = getPendingAuditAcquireCommand(auditId, user.id);
+    if (pending) {
+      await executeAcquireCommand(pending);
+      return;
+    }
+    setStatusAction('claim');
+    try {
+      const latest = await authority.refreshAndAccept();
+      if (!latest) {
+        toast.error('Could not verify the latest cloud audit. Check the connection and try again.');
+        return;
+      }
+      if (latest.audit.status === 'Completed') {
+        toast.error('This audit is now completed. Create an editable copy if further changes are needed.');
+        return;
+      }
+      const clientInstanceId = getAuditClientInstanceId();
+      if (latest.audit.editLease) {
+        const stored = getStoredAuditLease(auditId, clientInstanceId);
+        if (
+          !latest.audit.editLease.ownedByCaller
+          || latest.audit.editLease.clientInstanceId !== clientInstanceId
+          || !stored
+          || stored.editFence !== latest.audit.editLease.fence
+        ) {
+          throw new Error(
+            'This browser cannot prove the existing editing lease. Ask an administrator to perform an audited takeover.',
+          );
+        }
+        const result = await renewAuditEditLease(auditId, {
+          auditId,
+          clientInstanceId,
+          leaseToken: stored.leaseToken,
+          editFence: stored.editFence,
+          baseTreeRevision: latest.audit.treeRevision,
+        });
+        authority.acceptRevision(result.treeRevision);
+        await authority.refreshAndAccept();
+        toast.success('Editing access is active on this browser.');
+        return;
+      }
+      const command = beginPendingAuditAcquireCommand({
+        auditId,
+        expectedTreeRevision: latest.audit.treeRevision,
+      }, user.id, clientInstanceId);
+      await executeAcquireCommand(command);
+    } catch (e) {
+      toast.error(auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e));
     } finally {
       setStatusAction(null);
     }
   }
 
   async function handleDelete() {
+    if (!authority.guard) return;
     if (!confirm('Delete this audit?')) return;
     try {
-      await deleteAudit(auditId, true);
+      await deleteAudit(auditId, authority.guard);
+      clearStoredAuditLease(auditId);
       toast.success('Audit deleted.');
       router.push('/ecoaudit/audits');
     } catch (e) {
-      toast.error(cloudConnectionErrorMessage(e));
+      toast.error(auditProtocolErrorMessage(e) ?? cloudConnectionErrorMessage(e));
     }
   }
 
@@ -129,11 +373,11 @@ export default function AuditDetailPage() {
         actions={
           <>
             <StatusBadge status={audit.status} />
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/edit`} variant="secondary">Edit</LinkButton> : null}
+            {authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/edit`} variant="secondary">Edit</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}/photos`} variant="secondary"><Icon name="camera" size={17} />Photos</LinkButton>
             <LinkButton href={`/ecoaudit/audits/${auditId}/report`} variant="secondary"><Icon name="file-text" size={17} />Report PDF</LinkButton>
-            {needsStart ? <Button variant="secondary" onClick={() => void handleStart()}>Start</Button> : null}
-            {!isCompleted ? (
+            {needsStart && authority.guard ? <Button variant="secondary" onClick={() => void handleStart()}>Start</Button> : null}
+            {authority.guard ? (
               <Button
                 onClick={() => void handleComplete()}
                 disabled={statusAction !== null}
@@ -141,19 +385,37 @@ export default function AuditDetailPage() {
               >
                 {statusAction === 'complete' ? 'Completing…' : 'Complete'}
               </Button>
-            ) : (
+            ) : isCompleted ? (
               <Button
                 variant="secondary"
-                onClick={() => void handleReopen()}
+                onClick={() => void handleCopy()}
                 disabled={statusAction !== null}
-                aria-busy={statusAction === 'reopen'}
+                aria-busy={statusAction === 'copy'}
               >
-                {statusAction === 'reopen' ? 'Changing…' : 'Change to In Progress'}
+                {statusAction === 'copy' ? 'Creating copy…' : pendingCopyCommand ? 'Retry saved copy' : 'Create editable copy'}
               </Button>
-            )}
-            <Button variant="danger" onClick={() => void handleDelete()}>Delete</Button>
+            ) : pendingAcquireCommand || authority.state === 'unclaimed' || authority.state === 'owned-expired' ? (
+              <Button variant="secondary" onClick={() => void handleClaim()} disabled={statusAction !== null}>
+                {statusAction === 'claim'
+                  ? 'Checking…'
+                  : pendingAcquireCommand
+                    ? 'Retry saved editing access'
+                    : authority.state === 'unclaimed'
+                      ? 'Start editing here'
+                      : 'Renew editing access'}
+              </Button>
+            ) : null}
+            {authority.guard ? <Button variant="danger" onClick={() => void handleDelete()}>Delete</Button> : null}
           </>
         }
+      />
+
+      <AuditAuthorityBanner
+        state={authority.state!}
+        lease={audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
       />
 
       <Card className="mb-6">
@@ -164,6 +426,14 @@ export default function AuditDetailPage() {
             <p className="text-sm"><span className="text-[var(--text-sub)]">Started:</span> {formatDateTime(startedAt)}</p>
             <p className="text-sm"><span className="text-[var(--text-sub)]">Completed:</span> {formatDateTime(completedAt)}</p>
             <p className="text-sm"><span className="text-[var(--text-sub)]">Time spent:</span> {formatDuration(durationMs)}{!isCompleted && startedAt ? ' (in progress)' : ''}</p>
+            {audit.sourceAuditId ? (
+              <p className="text-sm">
+                <span className="text-[var(--text-sub)]">Editable copy of:</span>{' '}
+                <Link className="font-semibold text-[var(--primary)] hover:underline" href={`/ecoaudit/audits/${audit.sourceAuditId}`}>
+                  completed audit{audit.sourceRecordVersionNumber ? ` version ${audit.sourceRecordVersionNumber}` : ''}
+                </Link>
+              </p>
+            ) : null}
           </div>
       </Card>
 
@@ -202,7 +472,7 @@ export default function AuditDetailPage() {
                 <h3 className="font-bold">Zones and their equipment</h3>
                 <p className="mt-1 text-sm text-[var(--text-sub)]">Open a zone to manage its photos and every equipment record assigned to it.</p>
               </div>
-              {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`}><Icon name="plus" size={17} />Add zone</LinkButton> : null}
+              {authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/new`}><Icon name="plus" size={17} />Add zone</LinkButton> : null}
             </div>
             {equipmentLoading ? <Spinner label="Loading zone equipment…" /> : null}
             {equipmentError ? <ErrorBanner message={cloudConnectionErrorMessage(equipmentError)} /> : null}

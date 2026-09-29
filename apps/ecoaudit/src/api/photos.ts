@@ -1,7 +1,8 @@
 import { request } from '@/api/client';
 import { API_URL, resolveApiRequestUrl } from '@/lib/config';
 import { getStoredJwt } from '@/api/client';
-import type { PhotoRecord } from '@/types/domain';
+import { auditWriteHeaders } from '@/lib/auditProtocol';
+import type { AuditWriteGuard, PhotoRecord } from '@/types/domain';
 
 export { extractPhotoIdFromUri } from '@/lib/photoReferences';
 
@@ -41,8 +42,10 @@ export function checkPhoto(args: CheckPhotoArgs): Promise<CheckPhotoResult> {
   return request<CheckPhotoResult>('POST', '/v1/ecoaudit/sync/check-photo', args);
 }
 
-export function createUploadSession(args: CreateSessionArgs): Promise<CreateSessionResult> {
-  return request<CreateSessionResult>('POST', '/v1/ecoaudit/sync/create-upload-session', args);
+export function createUploadSession(args: CreateSessionArgs, guard: AuditWriteGuard): Promise<CreateSessionResult> {
+  return request<CreateSessionResult>('POST', '/v1/ecoaudit/sync/create-upload-session', args, {
+    headers: auditWriteHeaders(guard),
+  });
 }
 
 export async function uploadPhotoBytes(uploadUrl: string, bytes: ArrayBuffer, mimeType: string): Promise<void> {
@@ -51,8 +54,13 @@ export async function uploadPhotoBytes(uploadUrl: string, bytes: ArrayBuffer, mi
   if (!res.ok) throw new Error(await res.text().catch(() => res.statusText));
 }
 
-export function confirmUpload(args: { sessionId: string; checksum: string }): Promise<{ remoteUrl: string }> {
-  return request<{ remoteUrl: string }>('POST', '/v1/ecoaudit/sync/confirm-upload', args);
+export function confirmUpload(
+  args: { sessionId: string; checksum: string },
+  guard: AuditWriteGuard,
+): Promise<{ remoteUrl: string }> {
+  return request<{ remoteUrl: string }>('POST', '/v1/ecoaudit/sync/confirm-upload', args, {
+    headers: auditWriteHeaders(guard),
+  });
 }
 
 export type PhotoMeta = PhotoRecord & {
@@ -93,8 +101,10 @@ export async function exportPhotosZip(auditId: string, mode: PhotoZipMode = 'by-
   return res.blob();
 }
 
-export function deletePhoto(photoId: string): Promise<void> {
-  return request<void>('DELETE', `/v1/ecoaudit/photos/${encodeURIComponent(photoId)}`);
+export function deletePhoto(photoId: string, guard: AuditWriteGuard): Promise<void> {
+  return request<void>('DELETE', `/v1/ecoaudit/photos/${encodeURIComponent(photoId)}`, undefined, {
+    headers: auditWriteHeaders(guard),
+  });
 }
 
 /** Mobile-local paths cannot be shown in the browser. */

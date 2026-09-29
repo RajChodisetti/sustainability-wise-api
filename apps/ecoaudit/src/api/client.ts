@@ -12,12 +12,18 @@ export class ApiError extends Error {
   readonly type = 'api' as const;
   status: number;
   detail?: string;
-  constructor(message: string, status: number, detail?: string) {
+  code?: string;
+  constructor(message: string, status: number, detail?: string, code?: string) {
     super(message);
     this.status = status;
     this.detail = detail;
+    this.code = code;
   }
 }
+
+export type RequestOptions = {
+  headers?: Record<string, string>;
+};
 
 const JWT_KEY = 'ea_web_jwt';
 const REFRESH_KEY = 'ea_web_refresh';
@@ -44,14 +50,23 @@ export function subscribeAuthSession(listener: AuthSessionListener): () => void 
   };
 }
 
-function parseErrorBody(text: string): { message: string; detail?: string } {
+function parseErrorBody(text: string): { message: string; detail?: string; code?: string } {
   try {
-    const json = JSON.parse(text) as { detail?: string; error?: string; message?: string };
+    const json = JSON.parse(text) as { code?: string; detail?: string; error?: string; message?: string };
     const detail = json.detail ?? json.message ?? json.error;
-    return { message: detail ?? text, detail };
+    const code = typeof json.code === 'string'
+      ? json.code
+      : typeof json.detail === 'string' && /^[a-z0-9_]+$/.test(json.detail)
+        ? json.detail
+        : undefined;
+    return { message: detail ?? text, detail, code };
   } catch {
     return { message: text };
   }
+}
+
+function isMachineErrorDetail(value: string | undefined): boolean {
+  return typeof value === 'string' && /^[a-z0-9_]+$/.test(value);
 }
 
 export function cloudConnectionErrorMessage(error: unknown): string {
@@ -63,7 +78,11 @@ export function cloudConnectionErrorMessage(error: unknown): string {
     if (error.status === 401) return error.detail ?? 'Incorrect username or password.';
     if (error.status === 403) return error.detail ?? 'Not authorised for this action.';
     if (error.status === 404) return error.detail ?? 'The requested resource was not found.';
-    if (error.status === 409) return error.detail ?? 'This account already exists.';
+    if (error.status === 409) {
+      return error.detail && !isMachineErrorDetail(error.detail)
+        ? error.detail
+        : 'This change conflicts with the latest cloud data. Refresh and try again.';
+    }
     if (error.status === 410) return error.detail ?? 'Registration is closed. Contact your administrator.';
     if (error.status >= 500) return 'The API server is unavailable. Try again later.';
     return error.detail ?? `API error (${error.status}): ${message}`;
@@ -123,7 +142,7 @@ async function refreshAccessToken(refreshToken: string): Promise<string | null> 
       clearTokensIfRefreshToken(refreshToken);
       return null;
     }
-    throw new ApiError(parsed.message, res.status, parsed.detail);
+    throw new ApiError(parsed.message, res.status, parsed.detail, parsed.code);
   }
 
   const data = (await res.json()) as { accessToken?: string; refreshToken?: string };
@@ -169,7 +188,13 @@ async function refreshAfterUnauthorized(jwt: string): Promise<string | null> {
   return tryRefreshToken();
 }
 
-export async function request<T>(method: string, path: string, body?: unknown, retried = false): Promise<T> {
+export async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options: RequestOptions = {},
+  retried = false,
+): Promise<T> {
   const jwt = await getJwt();
   try {
     const res = await fetch(`${API_URL}${path}`, {
@@ -177,19 +202,20 @@ export async function request<T>(method: string, path: string, body?: unknown, r
       headers: {
         Authorization: `Bearer ${jwt}`,
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...options.headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     if (res.status === 401 && !retried) {
       const fresh = await refreshAfterUnauthorized(jwt);
-      if (fresh) return request<T>(method, path, body, true);
+      if (fresh) return request<T>(method, path, body, options, true);
       throw sessionExpiredFor(jwt);
     }
     if (res.status === 401) throw sessionExpiredFor(jwt);
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
       const parsed = parseErrorBody(text);
-      throw new ApiError(parsed.message, res.status, parsed.detail);
+      throw new ApiError(parsed.message, res.status, parsed.detail, parsed.code);
     }
     if (res.status === 204) return undefined as T;
     const text = await res.text();
@@ -221,7 +247,7 @@ export async function requestBinary(method: string, path: string, body?: unknown
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
       const parsed = parseErrorBody(text);
-      throw new ApiError(parsed.message, res.status, parsed.detail);
+      throw new ApiError(parsed.message, res.status, parsed.detail, parsed.code);
     }
     return res.arrayBuffer();
   } catch (e) {
@@ -255,7 +281,7 @@ export async function requestDownload(
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
       const parsed = parseErrorBody(text);
-      throw new ApiError(parsed.message, res.status, parsed.detail);
+      throw new ApiError(parsed.message, res.status, parsed.detail, parsed.code);
     }
     return {
       blob: await res.blob(),
@@ -285,7 +311,7 @@ export async function publicRequest<T>(
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText);
       const parsed = parseErrorBody(text);
-      throw new ApiError(parsed.message, res.status, parsed.detail);
+      throw new ApiError(parsed.message, res.status, parsed.detail, parsed.code);
     }
     const text = await res.text();
     if (!text.trim()) return undefined as T;

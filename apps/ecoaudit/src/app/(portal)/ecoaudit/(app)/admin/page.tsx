@@ -8,10 +8,20 @@ import { AdminLayout } from '@/components/layout/ProtectedLayout';
 import { LinkButton } from '@/components/ui/Button';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { cloudConnectionErrorMessage } from '@/api/client';
+import { AUDIT_REFRESH_INTERVAL_MS } from '@/hooks/useAuditAuthority';
 
 function AdminDashboardContent() {
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: listUsers });
-  const auditsQuery = useQuery({ queryKey: ['audits'], queryFn: listAudits });
+  const auditsQuery = useQuery({
+    queryKey: ['audits'],
+    queryFn: listAudits,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: 'always',
+    refetchInterval: AUDIT_REFRESH_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+  });
 
   if (usersQuery.isLoading || auditsQuery.isLoading) return <Spinner />;
   if (usersQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(usersQuery.error)} />;

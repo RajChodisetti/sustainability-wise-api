@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getAudit } from '@/api/audits';
 import { listEquipment } from '@/api/equipment';
 import { listAuditPhotos, type PhotoMeta } from '@/api/photos';
 import { getZone, updateZone } from '@/api/zones';
@@ -22,6 +21,9 @@ import {
   photoMetadataKeyFromUploadField,
   type PhotoMetadataMap,
 } from '@/lib/photoMetadata';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
 
 function mergePhotoEntries(...entryGroups: PdfPhotoEntry[][]): PdfPhotoEntry[] {
   const byKey = new Map<string, PdfPhotoEntry>();
@@ -51,25 +53,31 @@ export default function ZoneDetailPage() {
   const { auditId, zoneId } = useParams<{ auditId: string; zoneId: string }>();
   const queryClient = useQueryClient();
   const toast = useToast();
-  const zoneQuery = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId) });
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const photoMetadataGuard = authority.guard ?? authority.photoMetadataGuard;
+  const zoneQuery = useQuery({ queryKey: ['zone', zoneId], queryFn: () => getZone(zoneId!), enabled: Boolean(zoneId && authority.authoritativeReady), staleTime: 0, refetchOnMount: 'always' });
   const photosQuery = useQuery({
     queryKey: ['audit-photos', auditId],
     queryFn: () => listAuditPhotos(auditId!),
-    enabled: Boolean(auditId),
+    enabled: Boolean(auditId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
   const equipmentQueries = useQueries({
     queries: EQUIPMENT_TYPES.map((equipmentType) => ({
       queryKey: ['equipment', equipmentType.slug, auditId],
       queryFn: () => listEquipment(equipmentType.slug, auditId!),
-      enabled: Boolean(auditId),
+      enabled: Boolean(auditId && authority.authoritativeReady),
+      staleTime: 0,
+      refetchOnMount: 'always' as const,
     })),
   });
 
-  if (zoneQuery.isLoading || auditQuery.isLoading) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || zoneQuery.isFetching || photosQuery.isFetching) return <Spinner label="Checking the latest cloud audit…" />;
   if (zoneQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zoneQuery.error)} />;
   const zone = zoneQuery.data!;
-  const isCompleted = auditQuery.data?.status === 'Completed';
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
   const equipmentLoading = equipmentQueries.some((equipmentQuery) => equipmentQuery.isLoading);
   const equipmentError = equipmentQueries.find((equipmentQuery) => equipmentQuery.error)?.error;
   const equipmentByType = EQUIPMENT_TYPES.map((equipmentType, index) => ({
@@ -88,13 +96,19 @@ export default function ZoneDetailPage() {
   );
 
   async function savePhotoMetadata(photoDescs: PhotoMetadataMap) {
+    if (!photoMetadataGuard) {
+      toast.error('Refresh the latest cloud audit before changing PDF photo settings.');
+      return;
+    }
     try {
-      await updateZone(zoneId!, { photoDescs: normalizePhotoMetadataMap(photoDescs) });
+      const updated = await updateZone(zoneId!, { photoDescs: normalizePhotoMetadataMap(photoDescs) }, photoMetadataGuard);
+      if (typeof updated.treeRevision === 'number') authority.acceptRevision(updated.treeRevision);
+      else await authority.refreshAndAccept();
       await queryClient.invalidateQueries({ queryKey: ['zone', zoneId] });
       await queryClient.invalidateQueries({ queryKey: ['audit-photos', auditId] });
       toast.success('Zone PDF photo settings saved.');
     } catch (error) {
-      toast.error(cloudConnectionErrorMessage(error));
+      toast.error(auditProtocolErrorMessage(error) ?? cloudConnectionErrorMessage(error));
     }
   }
 
@@ -105,10 +119,19 @@ export default function ZoneDetailPage() {
         subtitle="Zone workspace: zone photos and all equipment assigned to this zone."
         actions={
           <>
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}>Edit zone &amp; photos</LinkButton> : null}
+            {authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`}>Edit zone &amp; photos</LinkButton> : null}
             <LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back to audit</LinkButton>
           </>
         }
+      />
+
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        completedPhotoMetadataEditable={Boolean(authority.photoMetadataGuard)}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
       />
 
       <Card className="mb-5">
@@ -121,7 +144,7 @@ export default function ZoneDetailPage() {
           <PhotoMetadataManager
             photos={photoEntries}
             initialMetadata={normalizePhotoDescsRecord(zone)}
-            completedAudit={isCompleted}
+            readOnly={!photoMetadataGuard}
             onSave={savePhotoMetadata}
           />
         </Card>
@@ -132,7 +155,7 @@ export default function ZoneDetailPage() {
               <h2 className="font-semibold">Zone photos</h2>
               <p className="mt-1 text-sm text-[var(--text-sub)]">No zone photos have been added.</p>
             </div>
-            {!isCompleted ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`} variant="secondary"><Icon name="camera" size={17} />Add photos</LinkButton> : null}
+            {authority.guard ? <LinkButton href={`/ecoaudit/audits/${auditId}/zones/${zoneId}/edit`} variant="secondary"><Icon name="camera" size={17} />Add photos</LinkButton> : null}
           </div>
         </Card>
       )}
@@ -160,7 +183,7 @@ export default function ZoneDetailPage() {
                       <p className="text-xs text-[var(--text-sub)]">{items.length} item{items.length === 1 ? '' : 's'}</p>
                     </div>
                   </div>
-                  {!isCompleted ? (
+                  {authority.guard ? (
                     <LinkButton
                       href={`/ecoaudit/audits/${auditId}/equipment/${equipmentType.slug}/new?zoneId=${encodeURIComponent(zoneId)}`}
                       variant="secondary"

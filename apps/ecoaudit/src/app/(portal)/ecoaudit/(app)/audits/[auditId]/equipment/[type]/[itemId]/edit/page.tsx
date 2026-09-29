@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { getAudit } from '@/api/audits';
 import { deleteEquipment, getEquipment, updateEquipment } from '@/api/equipment';
 import { getEquipmentConfig, getWaterAssetConfig } from '@/lib/equipmentConfig';
 import { cloudConnectionErrorMessage } from '@/api/client';
@@ -11,28 +10,46 @@ import { useToast } from '@/contexts/ToastContext';
 import { EquipmentFormFields } from '@/components/equipment/EquipmentFormFields';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
+import type { AuditTree, AuditWriteGuard } from '@/types/domain';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
 
 export default function EditEquipmentPage() {
   const { auditId, type, itemId } = useParams<{ auditId: string; type: string; itemId: string }>();
   const routeConfig = getEquipmentConfig(type!);
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const itemQuery = useQuery({ queryKey: ['equipment', type, itemId], queryFn: () => getEquipment(type!, itemId!), enabled: Boolean(type && itemId) });
+  const authority = useAuditAuthority(auditId);
+  const itemQuery = useQuery({ queryKey: ['equipment', type, itemId], queryFn: () => getEquipment(type!, itemId!), enabled: Boolean(type && itemId && authority.authoritativeReady), staleTime: 0, refetchOnMount: 'always' });
 
   if (!routeConfig) return <ErrorBanner message="Unknown equipment type." />;
-  if (itemQuery.isLoading || auditQuery.isLoading) return <Spinner />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || itemQuery.isFetching) return <Spinner label="Checking editing access…" />;
   if (itemQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(itemQuery.error)} />;
-  if (!itemQuery.data) return <ErrorBanner message="Equipment record not found." />;
+  if (!itemQuery.data || !authority.audit || !authority.state) return <ErrorBanner message="Equipment record not found." />;
 
   return (
-    <EquipmentEditForm
-      key={itemQuery.data.id}
-      auditId={auditId}
-      type={getWaterAssetConfig(itemQuery.data.assetType)?.slug ?? type}
-      itemId={itemId}
-      config={getWaterAssetConfig(itemQuery.data.assetType) ?? routeConfig}
-      initialValues={itemQuery.data}
-      isCompleted={auditQuery.data?.status === 'Completed'}
-    />
+    <div>
+      <PageHeader title={`Edit ${(getWaterAssetConfig(itemQuery.data.assetType) ?? routeConfig).label.slice(0, -1)}`} actions={<LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}`} variant="secondary">Back</LinkButton>} />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
+      />
+      {authority.guard ? (
+        <EquipmentEditForm
+          key={`${itemQuery.data.id}-${authority.openedRevision}`}
+          auditId={auditId}
+          type={getWaterAssetConfig(itemQuery.data.assetType)?.slug ?? type}
+          itemId={itemId}
+          config={getWaterAssetConfig(itemQuery.data.assetType) ?? routeConfig}
+          initialValues={itemQuery.data}
+          guard={authority.guard}
+          onMutationAccepted={authority.refreshAndAccept}
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -42,14 +59,16 @@ function EquipmentEditForm({
   itemId,
   config,
   initialValues,
-  isCompleted,
+  guard,
+  onMutationAccepted,
 }: {
   auditId: string;
   type: string;
   itemId: string;
   config: NonNullable<ReturnType<typeof getEquipmentConfig>>;
   initialValues: Record<string, unknown>;
-  isCompleted: boolean;
+  guard: AuditWriteGuard;
+  onMutationAccepted: () => Promise<AuditTree | null>;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -66,11 +85,14 @@ function EquipmentEditForm({
     try {
       const { id, zoneId, auditId: _a, createdAt, ...body } = values;
       void id; void zoneId; void _a; void createdAt;
-      await updateEquipment(type!, itemId!, body);
+      await updateEquipment(type!, itemId!, body, guard);
+      if (!await onMutationAccepted()) {
+        throw new Error('The record was saved, but the latest cloud revision could not be accepted. Refresh before continuing.');
+      }
       toast.success('Saved successfully.');
       router.push(`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}`);
     } catch (err) {
-      toast.error(cloudConnectionErrorMessage(err));
+      toast.error(auditProtocolErrorMessage(err) ?? cloudConnectionErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -79,28 +101,26 @@ function EquipmentEditForm({
   async function handleDelete() {
     if (!confirm('Delete this record?')) return;
     try {
-      await deleteEquipment(type!, itemId!);
+      await deleteEquipment(type!, itemId!, guard);
+      if (!await onMutationAccepted()) {
+        throw new Error('The record was deleted, but the latest cloud revision could not be accepted. Refresh before continuing.');
+      }
       toast.success('Deleted.');
       router.push(`/ecoaudit/audits/${auditId}/equipment/${type}`);
     } catch (err) {
-      toast.error(cloudConnectionErrorMessage(err));
+      toast.error(auditProtocolErrorMessage(err) ?? cloudConnectionErrorMessage(err));
     }
   }
 
   return (
-    <div>
-      <PageHeader title={`Edit ${config.label.slice(0, -1)}`} actions={<LinkButton href={`/ecoaudit/audits/${auditId}/equipment/${type}/${itemId}`} variant="secondary">Back</LinkButton>} />
-      <Card>
+    <Card>
         <form onSubmit={handleSave}>
-          <EquipmentFormFields config={config} values={values} onChange={onChange} auditId={auditId!} entityId={itemId} disabled={isCompleted} />
-          {!isCompleted ? (
-            <div className="mt-4 flex gap-2">
-              <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
-              <Button type="button" variant="danger" onClick={() => void handleDelete()}>Delete</Button>
-            </div>
-          ) : null}
+          <EquipmentFormFields config={config} values={values} onChange={onChange} auditId={auditId!} entityId={itemId} guard={guard} />
+          <div className="mt-4 flex gap-2">
+            <Button type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button type="button" variant="danger" onClick={() => void handleDelete()}>Delete</Button>
+          </div>
         </form>
-      </Card>
-    </div>
+    </Card>
   );
 }

@@ -1,6 +1,7 @@
 import { request } from '@/api/client';
 import { normalizePhotoDescsRecord } from '@/lib/photoMetadata';
-import type { Zone } from '@/types/domain';
+import { auditMutationHeaders, auditWriteHeaders } from '@/lib/auditProtocol';
+import type { AuditMutationGuard, AuditWriteGuard, Zone } from '@/types/domain';
 
 type ZoneWireRecord = Zone & { photo_descs?: unknown };
 
@@ -27,14 +28,26 @@ export async function getZone(id: string): Promise<Zone> {
   return normalizeZone(await request<ZoneWireRecord>('GET', `/v1/ecoaudit/zones/${encodeURIComponent(id)}`));
 }
 
-export async function createZone(auditId: string, body: Partial<Zone>): Promise<Zone> {
-  return normalizeZone(await request<ZoneWireRecord>('POST', `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/zones`, normalizeZoneBody(body)));
+export async function createZone(auditId: string, body: Partial<Zone>, guard: AuditWriteGuard): Promise<Zone> {
+  return normalizeZone(await request<ZoneWireRecord>(
+    'POST',
+    `/v1/ecoaudit/audits/${encodeURIComponent(auditId)}/zones`,
+    normalizeZoneBody(body),
+    { headers: auditWriteHeaders(guard) },
+  ));
 }
 
-export async function updateZone(id: string, body: Partial<Zone>): Promise<Zone> {
-  return normalizeZone(await request<ZoneWireRecord>('PATCH', `/v1/ecoaudit/zones/${encodeURIComponent(id)}`, normalizeZoneBody(body)));
+export async function updateZone(id: string, body: Partial<Zone>, guard: AuditMutationGuard): Promise<Zone> {
+  return normalizeZone(await request<ZoneWireRecord>(
+    'PATCH',
+    `/v1/ecoaudit/zones/${encodeURIComponent(id)}`,
+    normalizeZoneBody(body),
+    { headers: auditMutationHeaders(guard) },
+  ));
 }
 
-export function deleteZone(id: string): Promise<void> {
-  return request<void>('DELETE', `/v1/ecoaudit/zones/${encodeURIComponent(id)}`);
+export function deleteZone(id: string, guard: AuditWriteGuard): Promise<void> {
+  return request<void>('DELETE', `/v1/ecoaudit/zones/${encodeURIComponent(id)}`, undefined, {
+    headers: auditWriteHeaders(guard),
+  });
 }

@@ -2,29 +2,60 @@
 
 import { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { useQuery } from '@tanstack/react-query';
-import { getAudit, updateAudit } from '@/api/audits';
+import { updateAudit } from '@/api/audits';
 import { cloudConnectionErrorMessage } from '@/api/client';
 import { useToast } from '@/contexts/ToastContext';
 import { Button, LinkButton } from '@/components/ui/Button';
 import { Card, ErrorBanner, PageHeader, Spinner } from '@/components/ui/Card';
 import { FieldLabel, Input, Textarea } from '@/components/ui/FormFields';
-import type { Audit } from '@/types/domain';
+import type { Audit, AuditTree, AuditWriteGuard } from '@/types/domain';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
+import { auditProtocolErrorMessage } from '@/lib/auditProtocol';
 
 export default function EditAuditPage() {
   const { auditId } = useParams<{ auditId: string }>();
-  const query = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
 
   if (!auditId) return <ErrorBanner message="Audit not found." />;
-  if (query.isLoading) return <Spinner />;
-  if (query.error) return <ErrorBanner message={cloudConnectionErrorMessage(query.error)} />;
-  if (query.data?.status === 'Completed') return <ErrorBanner message="Completed audits cannot be edited." />;
-  if (!query.data) return <ErrorBanner message="Audit not found." />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady) return <Spinner label="Checking editing access…" />;
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
 
-  return <EditAuditForm key={query.data.id} auditId={auditId} audit={query.data} />;
+  return (
+    <div>
+      <PageHeader title="Edit audit" actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
+      />
+      {authority.guard ? (
+        <EditAuditForm
+          key={`${authority.audit.id}-${authority.openedRevision}`}
+          auditId={auditId}
+          audit={authority.audit}
+          guard={authority.guard}
+          onMutationAccepted={authority.refreshAndAccept}
+        />
+      ) : null}
+    </div>
+  );
 }
 
-function EditAuditForm({ auditId, audit }: { auditId: string; audit: Audit }) {
+function EditAuditForm({
+  auditId,
+  audit,
+  guard,
+  onMutationAccepted,
+}: {
+  auditId: string;
+  audit: Audit;
+  guard: AuditWriteGuard;
+  onMutationAccepted: () => Promise<AuditTree | null>;
+}) {
   const router = useRouter();
   const toast = useToast();
   const [siteName, setSiteName] = useState(audit.siteName);
@@ -39,11 +70,14 @@ function EditAuditForm({ auditId, audit }: { auditId: string; audit: Audit }) {
     setBusy(true);
     setError(null);
     try {
-      await updateAudit(auditId!, { siteName, siteAddress, inspectorName, auditDate: auditDate || null });
+      await updateAudit(auditId!, { siteName, siteAddress, inspectorName, auditDate: auditDate || null }, guard);
+      if (!await onMutationAccepted()) {
+        throw new Error('The audit was saved, but the latest cloud revision could not be accepted. Refresh before continuing.');
+      }
       toast.success('Audit updated.');
       router.push(`/ecoaudit/audits/${auditId}`);
     } catch (err) {
-      const msg = cloudConnectionErrorMessage(err);
+      const msg = auditProtocolErrorMessage(err) ?? cloudConnectionErrorMessage(err);
       setError(msg);
       toast.error(msg);
     } finally {
@@ -52,9 +86,7 @@ function EditAuditForm({ auditId, audit }: { auditId: string; audit: Audit }) {
   }
 
   return (
-    <div>
-      <PageHeader title="Edit audit" actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
-      <Card className="max-w-xl">
+    <Card className="max-w-xl">
         <form onSubmit={handleSubmit}>
           <FieldLabel>Site name</FieldLabel>
           <Input value={siteName} onChange={(e) => setSiteName(e.target.value)} required />
@@ -67,7 +99,6 @@ function EditAuditForm({ auditId, audit }: { auditId: string; audit: Audit }) {
           {error ? <div className="mt-3"><ErrorBanner message={error} /></div> : null}
           <Button type="submit" className="mt-4" disabled={busy}>{busy ? 'Saving…' : 'Save'}</Button>
         </form>
-      </Card>
-    </div>
+    </Card>
   );
 }

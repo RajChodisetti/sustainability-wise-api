@@ -16,6 +16,7 @@ import {
   type PhotoMetadataMap,
   type PhotoMetadataValue,
 } from '@/lib/photoMetadata';
+import type { AuditWriteGuard } from '@/types/domain';
 
 export function PhotoField({
   label,
@@ -28,6 +29,7 @@ export function PhotoField({
   photoMetadata,
   onPhotoMetadataChange,
   disabled,
+  guard,
 }: {
   label: string;
   uri?: string | null;
@@ -39,6 +41,7 @@ export function PhotoField({
   photoMetadata?: PhotoMetadataValue;
   onPhotoMetadataChange?: (metadata: PhotoMetadataValue) => void;
   disabled?: boolean;
+  guard: AuditWriteGuard;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
   const toast = useToast();
@@ -48,7 +51,7 @@ export function PhotoField({
 
   async function handleFile(file: File | undefined) {
     if (!file) return;
-    const result = await upload({ file, auditId, fieldName, entityId, entityType });
+    const result = await upload({ file, auditId, fieldName, entityId, entityType, guard });
     if (result.url) {
       onChange(result.url);
       toast.success(`${label} uploaded successfully.`);
@@ -131,6 +134,7 @@ export function PhotoGridField({
   photoMetadata = {},
   onPhotoMetadataChange,
   disabled,
+  guard,
 }: {
   label: string;
   uris: string[];
@@ -143,6 +147,7 @@ export function PhotoGridField({
   photoMetadata?: PhotoMetadataMap;
   onPhotoMetadataChange?: (metadata: PhotoMetadataMap) => void;
   disabled?: boolean;
+  guard: AuditWriteGuard;
 }) {
   const { upload, uploading, error } = usePhotoUpload();
   const toast = useToast();
@@ -156,6 +161,7 @@ export function PhotoGridField({
       fieldName: photoUploadFieldName(uploadFieldPrefix ?? fieldPrefix, uris.length),
       entityId,
       entityType,
+      guard,
     });
     if (result.url) {
       onChange([...uris, result.url]);

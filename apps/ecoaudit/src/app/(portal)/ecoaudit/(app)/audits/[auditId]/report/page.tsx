@@ -4,7 +4,6 @@ import { useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { listZones } from '@/api/zones';
-import { getAudit } from '@/api/audits';
 import {
   downloadExportJob,
   getExportJobStatus,
@@ -24,6 +23,8 @@ import {
   moveReportZone,
   orderReportZoneRecords,
 } from '@/lib/reportZoneOrder';
+import { useAuditAuthority } from '@/hooks/useAuditAuthority';
+import { AuditAuthorityBanner } from '@/components/audits/AuditAuthorityBanner';
 
 export default function ReportPage() {
   const { auditId } = useParams<{ auditId: string }>();
@@ -33,14 +34,20 @@ export default function ReportPage() {
   const [zoneOrder, setZoneOrder] = useState<string[]>([]);
   const [zoneOrderAnnouncement, setZoneOrderAnnouncement] = useState('');
 
-  const auditQuery = useQuery({ queryKey: ['audit', auditId], queryFn: () => getAudit(auditId!), enabled: Boolean(auditId) });
-  const zonesQuery = useQuery({ queryKey: ['zones', auditId], queryFn: () => listZones(auditId!), enabled: Boolean(auditId) });
+  const authority = useAuditAuthority(auditId);
+  const zonesQuery = useQuery({
+    queryKey: ['zones', auditId],
+    queryFn: () => listZones(auditId!),
+    enabled: Boolean(auditId && authority.authoritativeReady),
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
   const reportJob = useExportJob({
     scopeKey: ['ecoaudit', auditId ?? '', 'report-pdf'],
     loadLatest: () => getLatestExportJob(auditId!, 'pdf'),
     getStatus: getExportJobStatus,
     downloadJob: (job) => downloadExportJob(job.id, job.contentType),
-    fallbackFilename: `${slugify(auditQuery.data?.siteName ?? 'audit')}-report.pdf`,
+    fallbackFilename: `${slugify(authority.audit?.siteName ?? 'audit')}-report.pdf`,
   });
   const zones = zonesQuery.data?.data;
 
@@ -49,9 +56,10 @@ export default function ReportPage() {
     [zones, zoneOrder],
   );
 
-  if (auditQuery.isLoading || zonesQuery.isLoading) return <Spinner />;
-  if (auditQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(auditQuery.error)} />;
+  if (authority.query.error) return <ErrorBanner message={cloudConnectionErrorMessage(authority.query.error)} />;
+  if (!authority.authoritativeReady || zonesQuery.isLoading) return <Spinner label="Checking the latest cloud audit…" />;
   if (zonesQuery.error) return <ErrorBanner message={cloudConnectionErrorMessage(zonesQuery.error)} />;
+  if (!authority.audit || !authority.state) return <ErrorBanner message="Audit not found." />;
 
   function handleMoveZone(selectedZoneId: string, direction: -1 | 1) {
     const currentOrder = orderedZones.map((zone) => zone.id);
@@ -89,6 +97,13 @@ export default function ReportPage() {
   return (
     <div>
       <PageHeader title="Generate report" subtitle="Choose how audit information is organised in the report." actions={<LinkButton href={`/ecoaudit/audits/${auditId}`} variant="secondary">Back</LinkButton>} />
+      <AuditAuthorityBanner
+        state={authority.state}
+        lease={authority.audit.editLease}
+        changedSinceOpen={authority.changedSinceOpen}
+        onRefresh={() => void authority.refreshAndAccept()}
+        refreshing={authority.query.isFetching}
+      />
       <Card className="max-w-2xl">
         <FieldLabel htmlFor="report-mode">Report mode</FieldLabel>
         <Select id="report-mode" value={mode} onChange={(e) => setMode(e.target.value as 'by-equipment' | 'by-zone')}>

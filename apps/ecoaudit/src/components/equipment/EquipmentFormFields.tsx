@@ -1,6 +1,10 @@
 'use client';
 
-import type { EquipmentTypeConfig, FieldDef } from '@/lib/equipmentConfig';
+import {
+  legacyEquipmentSelectValue,
+  type EquipmentTypeConfig,
+  type FieldDef,
+} from '@/lib/equipmentConfig';
 import { PhotoField, PhotoGridField } from '@/components/photos/PhotoField';
 import { CustomFieldsEditor } from '@/components/equipment/CustomFieldsEditor';
 import { FieldHint, FieldLabel, Input, Select, Textarea } from '@/components/ui/FormFields';
@@ -9,6 +13,7 @@ import {
   normalizePhotoMetadataMap,
   setPhotoMetadata,
 } from '@/lib/photoMetadata';
+import type { AuditWriteGuard } from '@/types/domain';
 
 export function EquipmentFormFields({
   config,
@@ -17,6 +22,7 @@ export function EquipmentFormFields({
   auditId,
   entityId,
   disabled,
+  guard,
 }: {
   config: EquipmentTypeConfig;
   values: Record<string, unknown>;
@@ -24,6 +30,7 @@ export function EquipmentFormFields({
   auditId: string;
   entityId?: string;
   disabled?: boolean;
+  guard: AuditWriteGuard;
 }) {
   const photoMetadata = normalizePhotoDescsRecord(values);
 
@@ -63,6 +70,7 @@ export function EquipmentFormFields({
           entityId={entityId}
           entityType={config.entityType}
           disabled={disabled}
+          guard={guard}
         />
       );
     }
@@ -84,6 +92,7 @@ export function EquipmentFormFields({
             normalizePhotoMetadataMap(setPhotoMetadata(photoMetadata, field.key, metadata)),
           )}
           disabled={disabled}
+          guard={guard}
         />
       );
     }
@@ -103,6 +112,7 @@ export function EquipmentFormFields({
           photoMetadata={photoMetadata}
           onPhotoMetadataChange={(metadata) => onChange('photoDescs', metadata)}
           disabled={disabled}
+          guard={guard}
         />
       );
     }
@@ -117,11 +127,13 @@ export function EquipmentFormFields({
     }
 
     if (field.kind === 'select') {
+      const legacyValue = legacyEquipmentSelectValue(field.options, val);
       return (
         <div key={`${field.key}-${field.condition?.values.join('-') ?? 'all'}`}>
           <FieldLabel>{field.label}{field.required ? ' *' : ''}</FieldLabel>
           <Select required={field.required} value={typeof val === 'string' ? val : ''} onChange={(e) => onChange(field.key, e.target.value)} disabled={disabled}>
             <option value="">Select…</option>
+            {legacyValue ? <option value={legacyValue}>{legacyValue} (legacy value)</option> : null}
             {(field.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
           </Select>
         </div>

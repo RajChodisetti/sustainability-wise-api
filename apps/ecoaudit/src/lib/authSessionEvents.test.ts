@@ -201,3 +201,45 @@ test('a token rotated during a failed refresh is not cleared by the stale 401', 
     restoreBrowserGlobals();
   }
 });
+
+test('EcoAudit request preserves protocol headers after refreshing an expired access token', async () => {
+  const restoreBrowserGlobals = installBrowserGlobals();
+  const originalFetch = globalThis.fetch;
+  const resourceHeaders: Headers[] = [];
+
+  try {
+    saveEcoTokens('eco-expired', 'eco-refresh');
+    globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith('/v1/auth/refresh')) {
+        return Response.json({ accessToken: 'eco-fresh', refreshToken: 'eco-refresh-next' });
+      }
+      resourceHeaders.push(new Headers(init?.headers));
+      if (resourceHeaders.length === 1) return new Response(null, { status: 401 });
+      return Response.json({ ok: true });
+    };
+
+    await ecoRequest('PATCH', '/v1/ecoaudit/audits/audit-1', { siteName: 'Updated' }, {
+      headers: {
+        'X-EcoAudit-Protocol-Version': '2',
+        'X-EcoAudit-Client-Instance-Id': 'portal-client-1',
+        'X-EcoAudit-Lease-Token': 'lease-token',
+        'X-EcoAudit-Lease-Fence': '3',
+        'X-EcoAudit-Base-Tree-Revision': '7',
+      },
+    });
+
+    assert.equal(resourceHeaders.length, 2);
+    assert.equal(resourceHeaders[0].get('authorization'), 'Bearer eco-expired');
+    assert.equal(resourceHeaders[1].get('authorization'), 'Bearer eco-fresh');
+    for (const headers of resourceHeaders) {
+      assert.equal(headers.get('x-ecoaudit-protocol-version'), '2');
+      assert.equal(headers.get('x-ecoaudit-client-instance-id'), 'portal-client-1');
+      assert.equal(headers.get('x-ecoaudit-lease-token'), 'lease-token');
+      assert.equal(headers.get('x-ecoaudit-lease-fence'), '3');
+      assert.equal(headers.get('x-ecoaudit-base-tree-revision'), '7');
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreBrowserGlobals();
+  }
+});
