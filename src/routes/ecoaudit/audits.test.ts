@@ -150,8 +150,8 @@ test('reopen is an authenticated EcoAudit inspector route and remains no-body co
       },
       payload: {},
     });
-    assert.equal(v2Reopen.statusCode, 409);
-    assert.equal(v2Reopen.json().message, 'Conflict');
+    assert.equal(v2Reopen.statusCode, 400);
+    assert.equal(v2Reopen.json().message, 'Bad request');
   } finally {
     await app.close();
   }

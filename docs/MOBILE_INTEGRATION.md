@@ -719,11 +719,10 @@ server-side from that secret command key, so an exact retry returns the same
 token and fence; it never rotates a newer lease or grants recovery after the
 audit revision/fence has advanced.
 
-An exact idempotent create/copy replay is the only internal exception: the
-durable command's unguessable idempotency key and matching fingerprint
-authorize the server to rotate and return that command's existing lease. This
-recovers an ambiguous first response without exposing a tokenless public
-reissue path.
+An exact idempotent command replay can recover that command's existing lease
+using its unguessable key and matching fingerprint. It returns the same token
+only while the resulting revision, fence, and owner remain current; it cannot
+rotate or recover a newer editor's lease.
 
 `POST /v1/ecoaudit/sync/push` requires `syncStage: "draft" | "complete"`.
 Draft pushes atomically replace/update the guarded aggregate and advance one
@@ -740,11 +739,26 @@ administratively taken over. A Draft owner cannot voluntarily release a lease
 for another device to claim; completion, protected deletion, and audited admin
 takeover are the ownership-ending transitions.
 
-Completed audits are never reopened by protocol v2. A change starts with
+Completed audits can be explicitly reopened on the same ID with protocol-v2
+`PATCH /audits/:id/reopen`. Fetch the full latest cloud tree first, then send
+its exact `expectedTreeRevision`, a durable `idempotencyKey`, and flat
+`clientInstanceId`, `clientKind`, and `clientLabel` fields using the current
+authenticated user. The transaction verifies ownership and the fetched
+Completed revision, retains its immutable completed version, sets the live
+audit to Draft, clears `completedAt` and current PDF references, and issues a
+new fenced edit lease. The response contains `audit`, `leaseToken`,
+`treeRevision`, and `editFence`. A concurrent cloud change returns 409 without
+reopening. Persist and replay the exact request after response loss; recovery
+is allowed only while that resulting revision and ownership are still current.
+Apply the confirmed full cloud tree locally before enabling editing. Never
+reopen locally first or use generic sync to change a Completed audit to Draft.
+Reopening does not reopen linked Scheduler jobs or change prior billing facts.
+
+To create a separate audit instead, use
 `POST /audits/:id/copy` using an exact `expectedTreeRevision`, `purpose`
 (`amendment` or `independent`), `idempotencyKey`, and `editClient`; the response
 contains a new Draft audit and its lease while preserving
-`sourceAuditId`/`sourceRecordVersionNumber`. The old explicit reopen and
+`sourceAuditId`/`sourceRecordVersionNumber`. The legacy timestamp-based reopen and
 timestamp CAS remain only as a temporary compatibility path for audits whose
 durable `editFence` is still zero. Set `ECOAUDIT_EDIT_PROTOCOL_REQUIRED=true`
 only after legacy clients have been retired.
@@ -756,8 +770,9 @@ requires an authenticated `admin` or `service_account`, an explicit portal
 client kind, and the exact current `treeRevision`; it advances that revision and
 pins a new immutable record version. Legacy clients, mobile clients, and
 inspectors cannot use this exception, even during the API-first compatibility
-window. The portal remains read-only for broader Completed content; all broader
-changes use an amendment copy.
+window. Ordinary writes remain blocked while an audit is Completed. Broader
+changes require an explicit reopen or an amendment copy; the portal currently
+exposes the copy option.
 
 Production rollout is not complete while
 `ECOAUDIT_EDIT_PROTOCOL_REQUIRED=false`: that value exists only so the additive
@@ -767,7 +782,7 @@ rejected. Until that gate is closed, never treat source deployment alone as
 proof that every old client has been fenced.
 
 `ECOAUDIT_COMMAND_HMAC_SECRET` is the dedicated server-only key for exact
-create, copy, and initial lease-acquisition response recovery. It must be at
+create, copy, reopen, and initial lease-acquisition response recovery. It must be at
 least 32 characters, distinct from the JWT and capability secrets, and remain
 stable during normal JWT signing-key rotation. Rotating it invalidates recovery
 of an initial lease token for an in-flight command, so any deliberate rotation

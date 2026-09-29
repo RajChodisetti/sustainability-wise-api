@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { reopenCompletedEcoAudit } from './auditReopen.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db/client.js';
@@ -923,7 +924,15 @@ export async function eaAuditRoutes(app: FastifyInstance): Promise<void> {
   }, async (request, reply) => {
     const { id } = request.params as { id: string };
     if (isEcoAuditProtocolV2(request)) {
-      throw conflict('audit_completed_copy_required');
+      const body = (request.body ?? {}) as JsonRecord;
+      const result = await reopenCompletedEcoAudit({
+        auditId: id,
+        user: request.user,
+        client: parseEcoAuditLeaseRequest(body),
+        idempotencyKey: parseEcoAuditRecoveryKey(body.idempotencyKey),
+      });
+      setEcoAuditRevisionHeader(reply, result.treeRevision);
+      return reply.send(result);
     }
     assertEcoAuditProtocolCompatibility(request);
     const preconditions = parseAuditReopenPreconditions(request.body);

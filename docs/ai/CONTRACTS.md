@@ -21,7 +21,10 @@ type PhotoMetadataMap = Record<string, PhotoMetadata>;
   helpers such as `lightingPhotoField.ts`.
 - PDF authority: the record's canonical `photoDescs`; the PDF must not maintain a
   second caption or sizing field.
-- Completed EcoAudit records remain immutable except for an elevated
+- Completed EcoAudit snapshots remain immutable. The live audit can explicitly
+  reopen to Draft after a full cloud refresh and an exact-revision protocol-v2
+  reopen command that issues new fenced ownership. Generic sync cannot reopen
+  it. While still Completed, the only content-write exception is an elevated
   (`admin`/`service_account`) portal protocol-v2 correction at the exact current
   tree revision. That exception may change only photo captions/PDF sizing in
   `photoDescs` (including matching nested custom-question `photoDescs`); it may

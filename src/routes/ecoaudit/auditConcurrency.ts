@@ -89,7 +89,7 @@ export function ecoAuditIdempotencyStorageKey(idempotencyKey: string): string {
  */
 export function ecoAuditCommandLeaseToken(input: {
   auditId: string;
-  operation: 'create' | 'copy' | 'acquire';
+  operation: 'create' | 'copy' | 'acquire' | 'reopen';
   actorUserId: string;
   clientInstanceId: string;
   idempotencyKey: string;
@@ -101,7 +101,7 @@ export function deriveEcoAuditCommandLeaseToken(
   commandHmacSecret: string,
   input: {
     auditId: string;
-    operation: 'create' | 'copy' | 'acquire';
+    operation: 'create' | 'copy' | 'acquire' | 'reopen';
     actorUserId: string;
     clientInstanceId: string;
     idempotencyKey: string;
@@ -532,6 +532,7 @@ export async function createEcoAuditLeaseForNewAudit(
     client: EcoAuditEditClient;
     fence?: number;
     leaseToken?: string;
+    reason?: string;
   },
 ) {
   const now = new Date();
@@ -559,16 +560,17 @@ export async function createEcoAuditLeaseForNewAudit(
     actorUserId: input.actorUserId,
     clientInstanceId: input.client.clientInstanceId,
     clientKind: input.client.clientKind,
+    reason: input.reason,
   });
   return { lease: saved, leaseToken: generated.token };
 }
 
-function recoverCommandLease(input: {
+export function recoverCommandLease(input: {
   audit: typeof eaAudits.$inferSelect;
   lease: typeof eaAuditEditLeases.$inferSelect | undefined;
   user: AuthUser;
   client: EcoAuditEditClient;
-  operation: 'create' | 'copy' | 'acquire';
+  operation: 'create' | 'copy' | 'acquire' | 'reopen';
   idempotencyKey: string;
   expectedTreeRevision: number;
   expectedFence: number;
